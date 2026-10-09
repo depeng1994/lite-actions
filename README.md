@@ -66,16 +66,19 @@ flowchart LR
 
 同一个 Workflow 使用 `concurrency.queue: max`、`cancel-in-progress: false` 串行排队；不同 Workflow 通过 `(宿主机 ID, 物理 NPU ID)` 锁互斥，设备不重叠可并行。`wall -n` 只广播到**执行机宿主机和训练容器**，不广播调度机。
 
-### 1.3 职责边界：新增机器、调度通道和测试用例是三件事
+### 1.3 职责边界：测试用例与调度配置分别维护
 
-| 仓库 / 路径 | 归属与职责 | 什么情况下修改 |
-| --- | --- | --- |
-| [torchtitan-npu](https://github.com/depeng1994/torchtitan-npu) `tests/integration_tests/`、`examples/` | **测试用例的唯一来源**：模型、EP/DP/TP、优化器、step、断言、TensorBoard 验证 | 新增或修改测试用例 |
-| torchtitan-npu `.github/workflows/`、`.github/scripts/a3-ci-wait-result.py` | Actions **触发入口**及云端等待/结果协议 | 新增独立 Workflow 通道 |
-| [lite-actions](https://github.com/depeng1994/lite-actions) `config/pools.json` | 调度机眼中的**物理资源清单**（机器、SSH、chip ID、广播地址） | 新增/调整机器 |
-| lite-actions `config/pipelines.json` | **已授权调度通道**：受信任 Workflow 与物理资源池/设备分配、超时、可信执行器的映射 | 新建通道、换资源、改执行器；**不是模型用例注册表** |
-| lite-actions `unified_agent.py`、`ci_core/` | 拉取 GitHub 任务、授权过滤、NPU 锁、SSH 分发、日志摘取、GitHub REST 回传 | 调度或执行协议需要扩展 |
-| lite-actions `github/` | Workflow/Waiter 的维护副本，须同步回模型仓才能在 GitHub 生效 | 改 GitHub 通道协议 |
+正确的职责边界应该是：
+
+| 位置 | 负责什么 |
+| --- | --- |
+| `torchtitan-npu/tests/integration_tests/` | 测试用例、模型配置、执行参数、结果校验 |
+| `torchtitan-npu/.github/workflows/` | GitHub Actions 的触发入口 |
+| `lite-actions/config/pools.json` | 执行机器、SSH 地址及 NPU 资源 |
+| `lite-actions/config/pipelines.json` | **调度通道与资源授权映射**，不是模型测试用例注册表 |
+| `lite-actions/ci_core/` | 资源互斥、执行调度、日志摘取和 GitHub 结果回传 |
+
+**补充说明**：`torchtitan-npu/examples/` 维护模型训练脚本；`lite-actions/github/` 是 Workflow/Waiter 的维护副本，需同步到模型仓 `.github/` 下才能在 GitHub Actions 生效；`lite-actions/unified_agent.py` 负责轮询、验证并接收授权任务。
 
 **最重要的判断规则：**
 
