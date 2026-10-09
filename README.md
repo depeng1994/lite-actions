@@ -1,11 +1,13 @@
-# A3 CI（2P / 8P）
+# Lite Actions
 
-**机制**：GitHub Action 手工触发并等待；内网 Agent 每 60 秒主动轮询 GitHub，执行预设流水线，将 PASS/FAIL 和最多 20 行日志写入 Commit Comment，Action 读取并判定结果。**无需入站网络或 Self-hosted Runner**。
+**机制**：GitHub Action 手工触发并串行排队（`queue: max`）；内网单 Agent 主动 GET 领取可信任务，按物理 NPU 锁调度本地/SSH 多机流水线；训练日志留执行机，仅 POST PASS/FAIL + 最多 20 行诊断。无需公网入站或 Self-hosted Runner。
 
-- **2P**：`agent.py` → `pipeline.sh` → 本机 `npu-smi info`（仅连通性 PoC）；回传末尾 20 行。
-- **8P**：`../torchtitan-npu-a3-8p-ci/.github/scripts/a3-8p-agent.py` → 打包指定 commit → SSH `a3-4-docker-relay` → DeepSeek-V4 Flash 8P 训练（eager、5 steps）；完整日志留执行机 `/mnt/share/ci_tests/<任务名>/`。PASS 回传前 20 行 TPS/耗时指标；FAIL 优先报错栈与末尾日志（合计 ≤20 行）。
-- **启动**（本目录）：2P：`nohup ./run-agent.sh >/dev/null 2>&1 < /dev/null &`；8P：`nohup ../torchtitan-npu-a3-8p-ci/.github/scripts/a3-8p-start-agent.sh >/dev/null 2>&1 < /dev/null &`。各自防多开，**容器重启不自启**。
-- **触发**：[GitHub Actions](https://github.com/depeng1994/torchtitan-npu/actions) → A3-2p-CI / A3-8p-CI → Run workflow（`master`）。**8P 仍在 PR #26，尚未合入 master**。
-- **依赖**：Python 3、GitHub 出站 HTTPS、`gh auth login`（评论写权限）或 `A3_CI_GITHUB_TOKEN` / `A3_8P_CI_GITHUB_TOKEN`；8P 另需 SSH 与执行机训练环境。
-- **日志**：2P：`logs/`；8P：`a3-8p/logs/`。`runs/YYYY-MM-DD_HH-MM-SS_run-ID_attempt-N/`（北京时间）存任务日志和上传计量；`system/` 为 Agent 日志，`state/processed.json` 防重。只清理旧的 `runs/`。
-- **维护**：2P 测试 `python3 -m unittest -q test_agent`、`python3 agent.py --smoke`；单次回传 Body ≤7 KB，统计不含 TLS/代理与空闲轮询。**公开 Commit Comment 勿含敏感数据**；GitCode 强制同步须保留 GitHub 专属 `.github/` 文件。
+- **入口**：`github/workflows/`（2P NPU 连通性、8P 训练、16P 双机训练）；模型仓需部署对应 YAML 与 `github/wait_result.py`，本仓是调度逻辑主源。
+- **核心**：`unified_agent.py`（轮询/去重/回传）、`ci_core/resources.py`（跨进程芯片锁）、`ci_core/dispatch.py`（受信任执行器）、`config/`（A3/A5 资源池及用例映射）。
+- **启停**：`nohup ./run-unified-agent.sh >/dev/null 2>&1 < /dev/null &`；先停旧 2P/8P/16P Agent，避免同任务重复领取。默认仅接收 `master` 的维护者手工任务；测试分支由 `A3_CI_ALLOWED_BRANCHES` 显式授权。容器重启不自启。
+- **测试**：`python3 -m unittest discover -s tests`；`python3 -m unittest test_agent`；`python3 unified_agent.py --validate`。A5 64P 为禁用的 8×8 Mock 配置，不执行训练。
+- **数据**：`logs/runs/YYYY-MM-DD_HH-MM-SS_run-ID_attempt-N/`（北京时间）存执行日志/上传计量，`state/` 存去重与锁；清理时只删除旧的 `logs/runs/`。
+- **约束**：同设备串行、互不重叠允许并行；不抢占其他人的 NPU。物理占用检查无法消除外部用户启动任务的竞争。上传 Body ≤7 KB，传输统计不含空闲轮询/TLS；GitHub Commit Comment 公开可见，勿上传敏感数据。
+- **待完善**：取消任务后跨节点远端进程的强一致清理、异常重启恢复、模型仓工作流随上游同步的保留策略。详见 `docs/CI_REFACTOR_DESIGN.md`。
+
+`legacy/` 保留旧 Agent/Waiter 快照；Dispatcher 暂用其中 8P/16P 远程流水线适配脚本。**不要同时启动旧 Agent 与统一 Agent 监听相同 Workflow**。
