@@ -67,6 +67,8 @@ flowchart TB
 | **`A3-16p-CI-Example`** | `a3-16p` | A3-3 chip 0–7 + A3-4 chip 8–15，EP16 Eager 5 steps | 示例，已验证 |
 | `A5-64p-CI`（尚无 Workflow） | `a5-64p` | A5 Pro 8×8 假资源池 | **禁用，仅 CPU Mock** |
 
+**发布状态**：Example 名称已写入 [torchtitan-npu PR #26](https://github.com/depeng1994/torchtitan-npu/pull/26) 的分支。当前 `master` 中对应 Workflow 文件已被上游同步覆盖，GitHub Actions 旧注册项仍显示原名；**先将配置合入上游或实现 `ci-config` Overlay 并发布到默认分支**，才能让默认 Actions 列表稳定显示 Example 名称。
+
 现有 YAML 文件名 `a3-8p-ci.yml` / `a3-16p-ci.yml`、`case_id`、`pipeline_id` **均不因显示名称增加 Example 而改变**。Agent 过渡期兼容 master 上尚未同步的新旧显示名称及各自结果标识。
 
 未来正式 CI 建议按硬件和目标机器区分，例如 `A3-8p-CI-<内网IP>`、`A5-64p-CI-<内网IP或资源池标识>`，而不是复用 Example。**GitHub 仓库如为公开仓，Workflow 展示名中的内网 IP 也会公开**；若 IP 属敏感网络信息，应使用不泄漏真实地址的机房/主机别名，实际 IP 只配置在内网调度机。
