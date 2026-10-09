@@ -192,7 +192,7 @@ def verify(nodes: list[dict], runner: dict, base: str, timeout: int, test_case: 
 
 def run(case: dict, sha: str, stamp: str, *, test_case: str,
         remote_dir: str | None = None, root: Path = ROOT,
-        path: str | None = None, params: dict | None = None) -> int:
+        params: dict | None = None) -> int:
     # stamp is the internal immutable GitHub run identity used for safe process
     # termination; remote_dir is only the operator-facing folder name.
     remote_dir = remote_dir if remote_dir is not None else stamp
@@ -205,7 +205,7 @@ def run(case: dict, sha: str, stamp: str, *, test_case: str,
     with tempfile.TemporaryDirectory(prefix="lite-ci-stage-") as tmp:
         archive = model_archive(sha, Path(tmp))
         runner = load_profile(archive, test_case, nodes=len(nodes), ngpu=len(nodes[0]["devices"]),
-                              path=path, params=params)
+                              params=params)
         dirs = {}
         with ThreadPoolExecutor(max_workers=len(nodes)) as executor:
             futures = {executor.submit(stage, node, base, archive, sha): node for node in nodes}
@@ -301,12 +301,15 @@ def main() -> int:
         items = parse_request(request, {"id": args.run_id,
                                         "run_attempt": args.run_attempt,
                                         "head_sha": args.sha})
+        max_cases = 1 if case["name"] == "a5-64p" else 2
+        if len(items) > max_cases:
+            raise ValueError("CI request exceeds per-channel runtime budget")
         for index, item in enumerate(items):
             dirname = args.remote_dir if len(items) == 1 else (
                 f"{args.remote_dir}_case-{index+1:02d}_{item['test_id']}")
             print(f"CASE_START {index+1}/{len(items)}: {item['test_id']}", flush=True)
             rc = run(case, args.sha, args.stamp, test_case=item["test_id"],
-                     path=item["path"], params=item["params"],
+                     params=item["params"],
                      remote_dir=dirname)
             print(f"CASE_END {index+1}/{len(items)}: {item['test_id']} rc={rc}", flush=True)
             if rc != 0:

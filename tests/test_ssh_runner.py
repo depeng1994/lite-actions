@@ -132,8 +132,8 @@ class SharedSshRunnerTests(unittest.TestCase):
         from unittest.mock import patch
         request={"schema":1,"run_id":1234,"attempt":1,"sha":"a"*40,
                  "cases":[
-                    {"test_id":TEST_8P,"path":"tests/integration_tests/nightly_all_models_test/a3_8p_tests.py","params":{}},
-                    {"test_id":TEST_8P,"path":"tests/integration_tests/nightly_all_models_test/a3_8p_tests.py","params":{"STEPS":"3"}},
+                    {"test_id":TEST_8P,"params":{}},
+                    {"test_id":TEST_8P,"params":{"STEPS":"3"}},
                  ]}
         with tempfile.TemporaryDirectory() as td:
             manifest=Path(td)/"request.json"

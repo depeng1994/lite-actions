@@ -49,6 +49,27 @@ class WorkflowContractTests(unittest.TestCase):
                 self.assertTrue(all(not any(k in n for k in ("ascend_env", "hf_assets_path", "ckpt_init_path"))
                                     for n in pool["nodes"]))
 
+    def test_waiter_budget_and_admission_are_finite_and_fail_closed(self):
+        import re
+        config=load_config(BASE)
+        for name in ("a3-8p","a3-16p","a5-64p"):
+            with self.subTest(name=name):
+                yaml=(BASE/"github/workflows"/config[name]["workflow"]).read_text()
+                max_cases=1 if name=="a5-64p" else 2
+                self.assertIn(f'CI_MAX_CASES: "{max_cases}"',yaml)
+                self.assertIn('name: Validate CI admission',yaml)
+                self.assertIn('CI_REQUEST_REF:',yaml)
+                self.assertIn('timeout-minutes: 300',yaml)
+                match=re.search(r'CI_WAIT_TIMEOUT_SECONDS: "([0-9]+)"',yaml)
+                self.assertIsNotNone(match)
+                budget=int(match.group(1))
+                self.assertGreaterEqual(budget,config[name]["timeout_seconds"]*max_cases+1000)
+                self.assertLess(budget,300*60)
+        a5=(BASE/"github/workflows/a5-64p-ci.yml").read_text()
+        self.assertIn('CI_CHANNEL_ENABLED: "false"',a5)
+        for name in ("a3-8p-ci.yml","a3-16p-ci.yml"):
+            self.assertIn('CI_CHANNEL_ENABLED: "true"',(BASE/"github/workflows"/name).read_text())
+
     def test_github_custom_run_name_matches_case_and_marker(self):
         case=load_config(BASE)["a3-8p"]
         text="A3-8p-CI-Example | test=dsv4_flash_a3_8p_example"

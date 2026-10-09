@@ -98,7 +98,7 @@ flowchart LR
 
 | Actions 展示名称 | 通道 ID | 作用 | 状态 |
 | --- | --- | --- | --- |
-| `A3-2p-CI` | `a3-smoke` | 调度机本地 `npu-smi` 连通性 PoC | 可用；不是 2P 训练 |
+| `Dispatcher-Smoke` | `a3-smoke` | 调度机本地 `npu-smi` 连通性 PoC | 可用；不是 2P 训练 |
 | `A3-8p-CI-Example` | `a3-8p` | A3-4：DeepSeek-V4 Flash，Eager 5 steps | **统一 SSH Runner 实机已通过** |
 | `A3-16p-CI-Example` | `a3-16p` | A3-3 + A3-4：EP16，Eager 5 steps | **统一 SSH Runner + nightly 用例已实机通过 5 steps** |
 | `A5-64p-CI`（尚未部署 Workflow） | `a5-64p` | A5 8 台 × 每台 8P | **通用 SSH 执行器已配置；暂未启用，待实机验收** |
@@ -291,7 +291,7 @@ on:
       test_cases:
         type: string
         required: true
-        default: '[{"path":"tests/integration_tests/nightly_all_models_test/a3_8p_tests.py","test_id":"dsv4_flash_a3_8p_example","params":{}}]'
+        default: '[{"test_id":"dsv4_flash_a3_8p_example","params":{}}]'
 jobs:
   prepare:
     runs-on: ubuntu-latest
@@ -319,25 +319,27 @@ jobs:
 
 ```bash
 gh workflow run a3-8p-ci.yml --ref refactor/unified-a3-a5-ci \
-  -f 'test_cases=[{"path":"tests/integration_tests/nightly_all_models_test/a3_8p_tests.py","test_id":"dsv4_flash_a3_8p_example","params":{"STEPS":"5"}}]'
+  -f 'test_cases=[{"test_id":"dsv4_flash_a3_8p_example","params":{"STEPS":"5"}}]'
 ```
 
-`test_cases` 是 1～12 个注册用例组成的 **JSON 数组**。可在其中依次添加同属 8P 通道的不同测试：
+`test_cases` 是 A3 最多 2 个（A5 最多 1 个）注册用例组成的 **JSON 数组**。可在其中依次添加同属 8P 通道的其他注册测试：
 
 ```json
 [
-  {"path":"tests/integration_tests/nightly_all_models_test/a3_8p_tests.py", "test_id":"dsv4_flash_a3_8p_example", "params":{"STEPS":"5"}},
-  {"path":"tests/integration_tests/nightly_all_models_test/a3_8p_tests.py", "test_id":"dsv4_flash_a3_8p_example", "params":{"STEPS":"3"}}
+  {"test_id":"dsv4_flash_a3_8p_example", "params":{"STEPS":"5"}},
+  {"test_id":"dsv4_flash_a3_8p_example", "params":{"STEPS":"3"}}
 ]
 ```
 
-示例的第二项用于演示两次不同参数的执行；实际多模型时换成注册表中的其他 test ID 和对应路径。**执行顺序即数组顺序，任一用例失败则本次 Action 失败并停止后续用例**；一个 Run 对所有用例共同持有 NPU 锁，输出分别写入各用例目录。`params` 只能覆盖该 SHA 注册表的 `env_vars` 已声明参数，不能改 `NODE_IPS`、设备可见性、CANN 路径等调度/安全配置。
+示例的第二项用于演示两次不同参数的执行；实际多模型时换成注册表中的其他已注册 test ID。**执行顺序即数组顺序，任一用例失败则本次 Action 失败并停止后续用例**；一个 Run 对所有用例共同持有 NPU 锁，输出分别写入各用例目录。`params` 只能覆盖该 SHA 注册表的 `env_vars` 已声明参数，不能改 `NODE_IPS`、设备可见性、CANN 路径等调度/安全配置。
 
-调度机每轮通过 GitHub `GET /actions/runs` 查询可信任务，再通过 `GET /actions/runs/{run_id}/artifacts` 和 `GET /actions/artifacts/{id}/zip` 获取该 Run 上传的 JSON 清单。清单绑定 Run ID、attempt 和 Commit SHA；调度机用该精确 SHA 下的 `ci_registry.json` 校验每个 `path + test_id + params` 的合法性和拓扑兼容性，再交给通用 SSH Runner 顺序执行。不再从 Run 的 `name` / `display_title` 解析参数，也不会把输入拼成可执行 Shell 命令。GitHub Artifact 签名下载链接使用不附带 GitHub Token 的独立请求。
+调度机每轮通过 GitHub `GET /actions/runs` 查询可信任务，再通过 `GET /actions/runs/{run_id}/artifacts` 和 `GET /actions/artifacts/{id}/zip` 获取该 Run 上传的 JSON 清单。清单绑定 Run ID、attempt 和 Commit SHA；调度机用该精确 SHA 下的 `ci_registry.json` 校验每个 `test_id + params` 的合法性和拓扑兼容性，再交给通用 SSH Runner 顺序执行。不再从 Run 的 `name` / `display_title` 解析参数，也不会把输入拼成可执行 Shell 命令。GitHub Artifact 签名下载链接使用不附带 GitHub Token 的独立请求。
 
 调用链：`workflow_dispatch(test_cases)` → `prepare Job 生成 ci-request.json` → `upload-artifact` → `调度机 GitHub REST 读取` → `固定 SHA 注册表校验` → `统一 SSH Runner` → `主节点 TensorBoard 校验` → `调度机 GitHub 回传` → `Waiter 判定 Job Success/Failure`。
 
 **Waiter** 统一为模型仓 `.github/scripts/ci-wait-result.py` 和 Lite Actions 维护副本 `github/ci_wait_result.py`；与 A3/A5 无关。A3 `process_indexing=card-die` 和 A5 `process_indexing=card` 属于调度机物理资源，CANN 环境、Tokenizer、Checkpoint、训练步数和模型参数属于模型仓注册用例。
+
+**维护源**：模型仓 `torchtitan-npu/.github/{workflows,scripts}` 是唯一可被 GitHub 执行的权威实现；本仓 `github/` 是只读测试/部署镜像，不能独立发布。修改后执行 `python3 scripts/sync_ci_mirror.py --model-repo ../torchtitan-npu-ci-refactor` 生成镜像，再用 `--check` 检查字节级一致。`a3-2p-ci.yml` 保留历史 Workflow 文件名，但展示为 **Dispatcher-Smoke**（本地 `npu-smi` 探测，非两卡训练）。新的 8P/16P Action 最多串行两个测试，Waiter 16800 秒、Job 上限 300 分钟，A5 被禁用时 Prepare Job 失败，不会产生误报 Success。
 
 **部署注意**：本协议要求模型仓 Workflow 已包含 `prepare`/Artifact 步骤，再启动新版调度 Agent；不能只修改一侧。上一个版本将用例 ID 放到 `run-name` 的做法仅作为历史兼容，不再用于新任务选用例。
 

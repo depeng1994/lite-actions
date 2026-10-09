@@ -116,9 +116,12 @@ def prepare_profile(case: dict, run: dict) -> tuple[str, dict]:
             return test_id, load_profile(archive, test_id, nodes=len(allocation),
                                          ngpu=len(allocation[0]["devices"]))
         cases = parse_request(run["_ci_request"], run)
+        max_cases = 1 if case["name"] == "a5-64p" else 2
+        if len(cases) > max_cases:
+            raise ValueError("test count exceeds resource/Waiter timeout budget")
         profiles = [load_profile(archive, item["test_id"], nodes=len(allocation),
                                  ngpu=len(allocation[0]["devices"]),
-                                 path=item["path"], params=item["params"])
+                                 params=item["params"])
                     for item in cases]
         if len({p["ascend_env"] for p in profiles}) != 1:
             raise ValueError("tests in the same CI run must share the CANN setup")
@@ -221,7 +224,8 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
                     start_new_session=True,
                 )
                 try:
-                    rc = proc.wait(timeout=case["timeout_seconds"])
+                    case_count = len(run.get("_ci_request", {}).get("cases", [])) or 1
+                    rc = proc.wait(timeout=case["timeout_seconds"] * case_count)
                 except subprocess.TimeoutExpired:
                     os.killpg(proc.pid, signal.SIGTERM)
                     try:

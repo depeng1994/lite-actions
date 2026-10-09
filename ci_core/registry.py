@@ -1,8 +1,7 @@
 """Resolve a GitHub-selected test only against a pinned model-repo registry.
 
-workflow_dispatch inputs are not reliably returned as fields by GitHub's
-list-runs REST endpoint; the model Workflow explicitly projects the chosen
-`test_case` into its `run-name`, exposed as `display_title`.
+GitHub Actions inputs are transferred via a bounded run/attempt/SHA-bound
+Artifact, and the model's pinned commit registry authorizes selected modules.
 """
 from __future__ import annotations
 
@@ -12,7 +11,7 @@ import re
 import tarfile
 
 SELECTOR = re.compile(r"[a-z][a-z0-9_]{0,79}\Z")
-MODULE = re.compile(r"tests\.integration_tests\.nightly_all_models_test\.[a-z][a-z0-9_]*_tests\Z")
+MODULE = re.compile(r"tests\.integration_tests(?:\.[a-z][a-z0-9_]*){1,6}\Z")
 ENV_KEY = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 RESERVED = {"NODE_IPS", "NGPU", "NNODES", "ASCEND_RT_VISIBLE_DEVICES",
             "PYTHONUNBUFFERED", "LITE_CI_JOB_ID", "HF_ASSETS_PATH",
@@ -64,14 +63,10 @@ def parse_request(data: dict, run: dict) -> list[dict]:
     if not isinstance(cases, list) or not 1 <= len(cases) <= 12:
         raise ValueError("CI request must contain 1..12 cases")
     for item in cases:
-        if not isinstance(item, dict) or set(item) != {"path", "test_id", "params"}:
+        if not isinstance(item, dict) or set(item) != {"test_id", "params"}:
             raise ValueError("invalid CI case format")
         if not isinstance(item["test_id"], str) or not SELECTOR.fullmatch(item["test_id"]):
             raise ValueError("invalid CI test ID")
-        if not isinstance(item["path"], str) or not re.fullmatch(
-            r"tests/integration_tests/nightly_all_models_test/[a-z][a-z0-9_]*_tests\.py", item["path"]
-        ):
-            raise ValueError("invalid CI test path")
         params = item["params"]
         if not isinstance(params, dict) or len(params) > 12 or any(
             not isinstance(k, str) or not ENV_KEY.fullmatch(k)
@@ -83,7 +78,7 @@ def parse_request(data: dict, run: dict) -> list[dict]:
 
 
 def load_profile(archive: Path, test_case: str, *, nodes: int, ngpu: int,
-                 path: str | None = None, params: dict | None = None) -> dict:
+                 params: dict | None = None) -> dict:
     """Read data, not executable code, from precisely the dispatched Git SHA."""
     if not SELECTOR.fullmatch(test_case):
         raise ValueError("unsafe CI test selector")
@@ -100,9 +95,6 @@ def load_profile(archive: Path, test_case: str, *, nodes: int, ngpu: int,
     profile = items[test_case]
     if not isinstance(profile, dict) or not MODULE.fullmatch(profile.get("module", "")):
         raise ValueError("invalid model-registered entrypoint")
-    module_path = profile["module"].replace(".", "/") + ".py"
-    if path is not None and path != module_path:
-        raise ValueError("requested test path does not match registered module")
     if profile.get("mode") not in ("single", "distributed"):
         raise ValueError("invalid model test mode")
     if type(profile.get("nnodes")) is not int or type(profile.get("ngpu")) is not int:

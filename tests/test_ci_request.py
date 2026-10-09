@@ -12,28 +12,26 @@ from ci_core.registry import parse_request,load_profile
 from tests.test_ssh_runner import archive_with,DEFAULT,TEST_8P
 
 RUN={"id":12345,"run_attempt":1,"head_sha":"a"*40}
-CASE={"test_id":TEST_8P,
-      "path":"tests/integration_tests/nightly_all_models_test/a3_8p_tests.py",
-      "params":{"STEPS":"3"}}
+CASE={"test_id":TEST_8P, "params":{"STEPS":"3"}}
 REQ={"schema":1,"run_id":12345,"attempt":1,"sha":"a"*40,"cases":[CASE]}
 
 class RequestTests(unittest.TestCase):
-    def test_binding_and_restricted_path(self):
+    def test_binding_and_restricted_id(self):
         self.assertEqual(parse_request(REQ,RUN),[CASE])
         for key,value in (("run_id",99),("attempt",2),("sha","b"*40)):
             with self.subTest(key=key),self.assertRaises(ValueError):
                 parse_request({**REQ,key:value},RUN)
-        with self.assertRaisesRegex(ValueError,"test path"):
+        with self.assertRaisesRegex(ValueError,"case format"):
             parse_request({**REQ,"cases":[{**CASE,"path":"../../bin/sh"}]},RUN)
+        with self.assertRaisesRegex(ValueError,"test ID"):
+            parse_request({**REQ,"cases":[{**CASE,"test_id":"../../bin/sh"}]},RUN)
 
-    def test_profile_matches_case_path_and_params(self):
+    def test_profile_derives_module_from_registry_and_checks_params(self):
         with tempfile.TemporaryDirectory() as td:
             archive=archive_with({TEST_8P:DEFAULT},Path(td)/"model.tar.gz")
             profile=load_profile(archive,TEST_8P,nodes=1,ngpu=8,
-                                 path=CASE["path"],params=CASE["params"])
+                                 params=CASE["params"])
             self.assertEqual(profile["env_vars"]["STEPS"],"3")
-            with self.assertRaisesRegex(ValueError,"path does not match"):
-                load_profile(archive,TEST_8P,nodes=1,ngpu=8,path="tests/integration_tests/nightly_all_models_test/a3_16p_tests.py")
             with self.assertRaisesRegex(ValueError,"not allowed"):
                 load_profile(archive,TEST_8P,nodes=1,ngpu=8,params={"NODE_IPS":"foo"})
 
