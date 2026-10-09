@@ -13,7 +13,7 @@ class AgentTests(unittest.TestCase):
         cls.cases=load_config(Path(agent.__file__).resolve().parent)
 
     def base_run(self):
-        return {"id":39100291,"run_attempt":1,"head_sha":"a"*40,
+        return {"id":39100291,"run_number":9,"run_attempt":1,"head_sha":"a"*40,
                 "created_at":"2026-10-09T01:00:00Z","event":"workflow_dispatch",
                 "status":"in_progress","head_branch":"master",
                 "actor":{"login":"depeng1994"},
@@ -30,6 +30,12 @@ class AgentTests(unittest.TestCase):
         self.assertTrue(reporting.report_payload(
             case,run,reporting.make_report(case,run,0,["PASS"])
         ).startswith("A3-8p-CI-RESULT 39100291:1\n"))
+
+    def test_missing_or_invalid_run_number_denied(self):
+        for number in (None, 0, "6", True):
+            run=self.base_run()
+            run["run_number"]=number
+            self.assertFalse(agent.eligible(run,self.cases["a3-8p"]))
 
     def test_untrusted_actor_denied(self):
         run=self.base_run()

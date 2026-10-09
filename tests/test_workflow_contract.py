@@ -40,7 +40,7 @@ class WorkflowContractTests(unittest.TestCase):
             old = unified_agent.LEGACY_STATUSES[case_id]
             run = dict(id=124, head_branch="master", event="workflow_dispatch",
                        status="in_progress", head_sha="b"*40,
-                       run_attempt=1, actor={"login":"depeng1994"},
+                       run_number=6, run_attempt=1, actor={"login":"depeng1994"},
                        path=".github/workflows/"+case["workflow"], name=old)
             self.assertTrue(unified_agent.eligible(run, case))
             self.assertEqual(reporting.marker(case, run),

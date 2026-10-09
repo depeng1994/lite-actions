@@ -36,15 +36,45 @@ class Execution:
     log: Path
 
 
-def task_dir(run: dict, root: Path) -> Path:
+def _local_run_time(run: dict) -> dt.datetime:
+    """GitHub timestamps are UTC; paths use Beijing time (UTC+08:00)."""
     timestamp = dt.datetime.fromisoformat(run["created_at"].replace("Z", "+00:00"))
     if timestamp.tzinfo is None:
         raise ValueError("created_at must be timezone-aware")
-    local = timestamp.astimezone(dt.timezone(dt.timedelta(hours=8)))
+    return timestamp.astimezone(dt.timezone(dt.timedelta(hours=8)))
+
+
+def task_dir(run: dict, root: Path) -> Path:
+    """Keep globally unique run ID in dispatcher logs/state for correlation."""
+    local = _local_run_time(run)
     return root / "logs/runs" / (
         f"{local:%Y-%m-%d_%H-%M-%S}_run-{int(run['id'])}"
         f"_attempt-{int(run.get('run_attempt', 1))}"
     )
+
+
+def remote_task_name(run: dict) -> str:
+    """Human-readable execution-node folder: time + workflow + run_number.
+
+    GitHub's workflow run_number is the #6 shown in Actions, not the global
+    run ID and not run_attempt. Append attempt only for reruns to avoid a
+    collision with the original execution's immutable training logs.
+    """
+    name = run.get("name")
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,63}", name):
+        raise ValueError("invalid GitHub workflow name for execution directory")
+    # Earlier example workflows include this suffix in GitHub API; keep the
+    # shorter workflow label used by the Actions list and operator reports.
+    name = name.removesuffix("-Example")
+    number = run.get("run_number")
+    attempt = run.get("run_attempt", 1)
+    if type(number) is not int or number < 1:
+        raise ValueError("GitHub run_number must be a positive integer")
+    if type(attempt) is not int or attempt < 1:
+        raise ValueError("GitHub run_attempt must be a positive integer")
+    local = _local_run_time(run)
+    suffix = f"_attempt-{attempt}" if attempt > 1 else ""
+    return f"{local:%Y-%m-%d_%H-%M-%S}_run_{name}_{number}{suffix}"
 
 
 def selected_processes(output: str, devices: list[int], *, indexing: str = "card-die") -> list[str]:
@@ -134,7 +164,8 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
     elif kind == "ssh":
         cmd = [sys.executable, "-u", "-m", "ci_core.ssh_runner",
                "--case", case["name"], "--sha", run["head_sha"],
-               "--stamp", log_dir.name]
+               "--stamp", log_dir.name,
+               "--remote-dir", remote_task_name(run)]
     else:
         raise ValueError(f"unknown trusted runner: {kind}")
     import json

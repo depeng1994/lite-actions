@@ -35,7 +35,8 @@ def eligible(run: dict, case: dict) -> bool:
             and run.get("path") == ".github/workflows/" + case["workflow"]
             and run.get("name") in NAMES.get(case["name"], ())
             and isinstance(run.get("id"), int)
-            and isinstance(run.get("run_attempt", 1), int)
+            and type(run.get("run_number")) is int and run["run_number"] > 0
+            and type(run.get("run_attempt", 1)) is int and run.get("run_attempt", 1) > 0
             and bool(re.fullmatch("[0-9a-f]{40}", run.get("head_sha", ""))))
 
 

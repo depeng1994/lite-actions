@@ -39,6 +39,49 @@ class DispatchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,"Disabled"):
             dispatch.execute(case, {"id": 1, "created_at":"2026-10-09T00:00:00Z"},root=root)
 
+    def test_execution_node_dir_matches_workflow_and_run_number(self):
+        run = {"id": 37913151439, "run_number": 6, "run_attempt": 1,
+               "name": "A3-16p-CI-Example", "created_at": "2026-10-09T09:43:56Z"}
+        self.assertEqual(
+            dispatch.remote_task_name(run),
+            "2026-10-09_17-43-56_run_A3-16p-CI_6",
+        )
+        # Dispatcher keeps globally unique IDs for state, audit and GitHub POST.
+        self.assertEqual(
+            dispatch.task_dir(run, Path("/tmp")).name,
+            "2026-10-09_17-43-56_run-37913151439_attempt-1",
+        )
+        run["run_attempt"] = 2
+        self.assertEqual(
+            dispatch.remote_task_name(run),
+            "2026-10-09_17-43-56_run_A3-16p-CI_6_attempt-2",
+        )
+
+    def test_execution_node_dir_handles_other_trusted_workflow_names(self):
+        run = {"id": 123456, "run_number": 27, "run_attempt": 1,
+               "name": "A5-64p-CI", "created_at": "2026-10-09T08:00:00Z"}
+        self.assertEqual(dispatch.remote_task_name(run),
+                         "2026-10-09_16-00-00_run_A5-64p-CI_27")
+        run["name"] = "A3-8p-CI"
+        self.assertEqual(dispatch.remote_task_name(run),
+                         "2026-10-09_16-00-00_run_A3-8p-CI_27")
+
+    def test_execution_node_dir_rejects_untrusted_metadata(self):
+        run = {"id": 123, "run_number": 6, "run_attempt": 1,
+               "name": "A3-16p-CI", "created_at": "2026-10-09T09:43:56Z"}
+        for value in (None, 0, -5, "6", True):
+            with self.subTest(number=value):
+                with self.assertRaises(ValueError):
+                    dispatch.remote_task_name({**run, "run_number": value})
+        for value in (None, 0, -1, "2", True):
+            with self.subTest(attempt=value):
+                with self.assertRaises(ValueError):
+                    dispatch.remote_task_name({**run, "run_attempt": value})
+        for value in ("../other", "A3 16p CI", "CI_foo", "A3-16p-CI\n"):
+            with self.subTest(workflow=value):
+                with self.assertRaises(ValueError):
+                    dispatch.remote_task_name({**run, "name": value})
+
     def test_real_local_pipeline_runs_without_npu(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)

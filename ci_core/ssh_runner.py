@@ -182,13 +182,17 @@ def verify(nodes: list[dict], runner: dict, base: str, timeout: int) -> int:
         return 124
 
 
-def run(case: dict, sha: str, stamp: str, *, root: Path = ROOT) -> int:
-    if not STAMP.fullmatch(stamp) or not SHA.fullmatch(sha):
-        raise ValueError("unsafe run identifier / commit")
+def run(case: dict, sha: str, stamp: str, *, remote_dir: str | None = None,
+        root: Path = ROOT) -> int:
+    # stamp is the internal immutable GitHub run identity used for safe process
+    # termination; remote_dir is only the operator-facing folder name.
+    remote_dir = remote_dir if remote_dir is not None else stamp
+    if not STAMP.fullmatch(stamp) or not SHA.fullmatch(sha) or not STAMP.fullmatch(remote_dir):
+        raise ValueError("unsafe run identifier / commit / execution directory")
     pools = json.loads((root / "config/pools.json").read_text())
     nodes = allocations(case, pools)
     runner = case["runner"]
-    base = f"{DEST_ROOT}/{stamp}"
+    base = f"{DEST_ROOT}/{remote_dir}"
     with tempfile.TemporaryDirectory(prefix="lite-ci-stage-") as tmp:
         archive = model_archive(sha, Path(tmp))
         dirs = {}
@@ -268,11 +272,13 @@ def main() -> int:
     parser.add_argument("--case", required=True)
     parser.add_argument("--sha", required=True)
     parser.add_argument("--stamp", required=True)
+    parser.add_argument("--remote-dir", required=True,
+                        help="Human-readable remote task directory")
     args = parser.parse_args()
     case = load_config(ROOT).get(args.case)
     if not case or not case["enabled"] or case["runner"]["kind"] != "ssh":
         raise ValueError("unsupported or disabled SSH pipeline")
-    return run(case, args.sha, args.stamp)
+    return run(case, args.sha, args.stamp, remote_dir=args.remote_dir)
 
 
 if __name__ == "__main__":

@@ -12,7 +12,8 @@ from ci_core.config import load_config
 from ci_core import dispatch
 
 
-RUN = {"id": 37868722207, "run_attempt": 1, "created_at": "2026-10-09T01:13:28Z",
+RUN = {"id": 37868722207, "run_number": 6, "run_attempt": 1,
+       "created_at": "2026-10-09T01:13:28Z", "name": "A3-16p-CI-Example",
        "head_sha": "a"*40}
 
 
@@ -77,8 +78,15 @@ class BroadcastTests(unittest.TestCase):
                     else:
                         self.fail("Device lock unexpectedly free during wall")
                 return []
+            self_outer = self
             class Runner:
                 def __init__(self, argv, **kwargs):
+                    self.argv = argv
+                    self_outer.assertIn("--remote-dir", argv)
+                    self_outer.assertEqual(argv[argv.index("--remote-dir")+1],
+                        "2026-10-09_09-13-28_run_A3-16p-CI_6")
+                    self_outer.assertEqual(argv[argv.index("--stamp")+1],
+                        "2026-10-09_09-13-28_run-37868722207_attempt-1")
                     kwargs["stdout"].write("TRAINED\n")
                 def wait(self, **kwargs): return 0
             with patch.object(dispatch,"remote_preflight") as preflight, \

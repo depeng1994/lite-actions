@@ -157,6 +157,41 @@ class SharedSshRunnerTests(unittest.TestCase):
         self.assertIn(nodes[0]["host_id"], cleaned)
         self.assertIn(f"RESULT_HOST: {nodes[1]['ssh']}", output.getvalue())
 
+    def test_remote_dir_override_changes_execution_path_not_job_identity(self):
+        import contextlib
+        import io
+        case = self.cases["a3-8p"]
+        folder = "2026-10-09_17-43-56_run_A3-8p-CI_6"
+        observed = []
+        def fake_stage(node, base, archive, sha):
+            observed.append(base)
+            return f"{base}/node0"
+        def fake_ssh(host, command, **kwargs):
+            observed.append(command)
+            return subprocess.CompletedProcess([host, command],0,"","")
+        output = io.StringIO()
+        with patch.object(ssh_runner, "model_archive", return_value=Path("/virtual/source.tar.gz")), \
+             patch.object(ssh_runner, "stage", side_effect=fake_stage), \
+             patch.object(ssh_runner, "ssh", side_effect=fake_ssh), \
+             contextlib.redirect_stdout(output):
+            rc = ssh_runner.run(case, "a" * 40, RUN_DIR, remote_dir=folder)
+        self.assertEqual(rc, 0)
+        self.assertIn(f"/mnt/share/ci_tests/{folder}", observed)
+        self.assertIn(f"LITE_CI_JOB_ID={RUN_DIR}", " ".join(observed))
+        self.assertIn(f"/mnt/share/ci_tests/{folder}/node0/run.log", output.getvalue())
+        with self.assertRaisesRegex(ValueError, "unsafe run identifier"):
+            ssh_runner.run(case, "a" * 40, RUN_DIR, remote_dir="../outside")
+
+    def test_cli_requires_remote_dir_on_real_execution(self):
+        from unittest.mock import patch
+        import sys
+        args = ["ssh_runner.py", "--case", "a3-8p", "--sha", "a"*40,
+                "--stamp", RUN_DIR,
+                "--remote-dir", "2026-10-09_17-43-56_run_A3-8p-CI_6"]
+        with patch.object(sys, "argv", args), patch.object(ssh_runner, "run", return_value=0) as fn:
+            self.assertEqual(ssh_runner.main(), 0)
+            self.assertEqual(fn.call_args.kwargs["remote_dir"], args[-1])
+
     def test_a5_requires_verified_runtime_paths_before_enable(self):
         import copy
         invalid = copy.deepcopy(self.pools)
