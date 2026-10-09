@@ -390,6 +390,7 @@ python3 -m tests.integration_tests.run_tests /tmp/my-integration-test \
 | [A3 16P Run 37913151439](https://github.com/depeng1994/torchtitan-npu/actions/runs/37913151439) | **统一 SSH Runner 未通过**：恢复 CANN→参数导出顺序后仍发生跨节点 HCCL Socket 超时；已停止重复训练重试 |
 | [A3 8P Run 37939445270](https://github.com/depeng1994/torchtitan-npu/actions/runs/37939445270) | **最新 nightly 重构版实机 Success**：`a3_8p_tests.py`，Eager 5 steps、TensorBoard、结束广播、GitHub PASS |
 | [A3 16P Run 37942444656](https://github.com/depeng1994/torchtitan-npu/actions/runs/37942444656) | **最新 nightly 重构版实机 Success**：`a3_16p_tests.py`，两节点退出码均为 0、Eager 5 steps、TensorBoard、结束广播、GitHub PASS |
+| [A3 8P Run 37952500554](https://github.com/depeng1994/torchtitan-npu/actions/runs/37952500554) | **Inputs + Artifact API 新协议验收 Success**：Run 标题固定 `A3-8p-CI-Example`；Prepare/CI 两个 Job 均 Success；JSON 路径和 `STEPS=5` 由 Artifact 传递，5 steps、TensorBoard、退出码 0、广播和 GitHub PASS |
 | [Run 37869377044](https://github.com/depeng1994/torchtitan-npu/actions/runs/37869377044) | 同一 Workflow 排队行为验证 |
 | [Run 37876792907](https://github.com/depeng1994/torchtitan-npu/actions/runs/37876792907) | 开始/释放广播已验证 |
 | A5 64P | 已接入统一 SSH 执行器与 8×8 资源配置；**SSH 连通性、训练、GitHub E2E 均未通过验证** |
