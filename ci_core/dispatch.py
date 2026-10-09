@@ -16,6 +16,9 @@ import os
 import signal
 
 from ci_core.resources import wait_reserve
+from ci_core.broadcast import broadcast_job
+import logging
+import time
 
 
 BASE = Path(__file__).resolve().parents[1]
@@ -140,8 +143,15 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
     with wait_reserve(lock_root, case.get("allocation", []),
                       timeout=resource_wait_seconds):
         remote_preflight(case, pools)
+        announced = bool(case.get("allocation"))
         with logfile.open("w", encoding="utf-8") as stream:
+            rc = 125
             try:
+                # Mandatory host-user notification before taking over NPUs.
+                if announced:
+                    failures = broadcast_job(case, pools, run, "begin")
+                    if failures:
+                        raise RuntimeError("CI begin wall failed on " + ",".join(failures))
                 proc = subprocess.Popen(
                     cmd, cwd=root, stdout=stream, stderr=subprocess.STDOUT,
                     start_new_session=True,
@@ -158,6 +168,34 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
                     stream.write("\nERROR: dispatcher timeout; check remote child cleanup\n")
                     rc = 124
             except Exception as exc:
-                stream.write(f"\nERROR: {type(exc).__name__}\n")
+                stream.write(f"\nERROR: {type(exc).__name__}: {str(exc)[:240]}\n")
+                logging.exception("CI dispatcher failure run=%s", run["id"])
                 rc = 125
+            finally:
+                if announced:
+                    # Exit broadcast must not falsely claim that remote ranks
+                    # have released devices merely because SSH exited.
+                    idle = False
+                    for retry in range(3):
+                        try:
+                            remote_preflight(case, pools)
+                            idle = True
+                            break
+                        except (RuntimeError, subprocess.SubprocessError, ValueError):
+                            if retry < 2:
+                                time.sleep(2)
+                    phase = "end" if idle else "uncertain"
+                    try:
+                        errors = broadcast_job(case, pools, run, phase)
+                        if errors:
+                            logging.error("CI %s wall failed: %s",phase,errors)
+                            rc = rc or 125
+                    except Exception:
+                        logging.exception("CI exit wall failed")
+                        rc = rc or 125
+                    if not idle:
+                        stream.write("\nERROR: NPU resource release unverified; "
+                                     "remote processes may remain; operator action needed\n")
+                        rc = rc or 125
+                    stream.flush()
     return Execution(rc, summarize(logfile, rc), logfile)
