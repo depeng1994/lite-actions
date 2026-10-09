@@ -212,18 +212,12 @@ def print_result(dest: str, statuses: dict[str, int], verification_ok: bool) -> 
     rc = statuses.get(failed_host, 125)
     if rc == 0 and not passed:
         rc = 1  # Master TensorBoard verification error.
-    log_command = (
-        f"python3 {shlex.quote(node_dir + '/repo/.github/scripts/a3-8p-log-tail.py')} "
-        f"{shlex.quote(node_dir)} {rc}"
-    )
-    try:
-        tail = ssh(failed_host, log_command).stdout.splitlines()[-20:]
-    except Exception as exc:
-        tail = [f"Log selection failed: {type(exc).__name__}"]
+    # The dispatcher fetches a bounded raw excerpt later; executor does not select logs.
     result = {
         "status": "PASS" if passed else "FAIL",
         "node_exit_codes": statuses,
-        "last_20_lines": tail,
+        "log_host": failed_host,
+        "log_file": f"{node_dir}/run.log",
         "result_dir": dest,
     }
     payload = json.dumps(result, ensure_ascii=False, separators=(",", ":"))

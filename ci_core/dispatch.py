@@ -17,6 +17,7 @@ import signal
 
 from ci_core.resources import wait_reserve
 from ci_core.broadcast import broadcast_job
+from ci_core.logs import metadata, select_remote
 import logging
 import time
 
@@ -198,4 +199,15 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
                                      "remote processes may remain; operator action needed\n")
                         rc = rc or 125
                     stream.flush()
-    return Execution(rc, summarize(logfile, rc), logfile)
+    if kind == "local":
+        excerpt = summarize(logfile, rc)
+    else:
+        try:
+            location = metadata(logfile)
+            excerpt = select_remote(location["host"], location["path"], rc)
+        except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:
+            excerpt = summarize(logfile, rc)[-18:]
+            excerpt.append(f"Dispatcher log collection failed: {type(exc).__name__}")
+            if rc == 0:
+                rc = 125
+    return Execution(rc, excerpt[:20], logfile)

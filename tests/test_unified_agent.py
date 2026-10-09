@@ -4,6 +4,7 @@ from unittest.mock import patch
 from ci_core.config import load_config
 from pathlib import Path
 import unified_agent as agent
+from ci_core import reporting
 
 
 class AgentTests(unittest.TestCase):
@@ -26,8 +27,8 @@ class AgentTests(unittest.TestCase):
         run["name"]="A3-8p-CI"
         case=self.cases["a3-8p"]
         self.assertTrue(agent.eligible(run,case))
-        self.assertTrue(agent.report_payload(
-            case,run,agent.make_report(case,run,0,["PASS"])
+        self.assertTrue(reporting.report_payload(
+            case,run,reporting.make_report(case,run,0,["PASS"])
         ).startswith("A3-8p-CI-RESULT 39100291:1\n"))
 
     def test_untrusted_actor_denied(self):
@@ -52,9 +53,9 @@ class AgentTests(unittest.TestCase):
     def test_result_matches_old_waiter_contract(self):
         run=self.base_run()
         case=self.cases["a3-8p"]
-        result=agent.make_report(case,run,0,["PASS"])
+        result=reporting.make_report(case,run,0,["PASS"])
         self.assertEqual(result["pipeline"],"dsv4-flash-8p")
-        self.assertTrue(agent.report_payload(case,run,result).startswith(
+        self.assertTrue(reporting.report_payload(case,run,result).startswith(
             "A3-8p-CI-Example-RESULT 39100291:1\n"))
 
 

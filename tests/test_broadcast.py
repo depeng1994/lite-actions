@@ -81,7 +81,9 @@ class BroadcastTests(unittest.TestCase):
                         self.fail("Device lock unexpectedly free during wall")
                 return []
             with patch.object(dispatch,"remote_preflight") as preflight, \
-                 patch.object(dispatch,"broadcast_job",side_effect=tell):
+                 patch.object(dispatch,"broadcast_job",side_effect=tell), \
+                 patch.object(dispatch,"metadata",return_value={"host":"a3-4-docker-relay","path":"/mnt/share/ci_tests/fake/run.log"}), \
+                 patch.object(dispatch,"select_remote",return_value=["TRAINED"]):
                 result=dispatch.execute(case,RUN,root=root)
             self.assertEqual(result.exit_code,0)
             self.assertEqual(events,["begin","end"])

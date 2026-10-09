@@ -28,25 +28,26 @@ flowchart TB
         direction TB
         W["① GitHub Actions<br/>手工触发 · queue: max"]
         H["② GitHub-hosted Waiter<br/>等待对应 Run ID / SHA"]
-        C["⑥ Commit Comment<br/>PASS / FAIL · 最多 20 行"]
+        C["⑥ GitHub Commit Comment<br/>调度机 Python 直传 PASS / FAIL + 20 行"]
     end
 
     subgraph DIS["内网调度机 · lite-actions"]
         direction TB
-        A["③ 唯一 Pull Agent<br/>主动轮询 · 去重"]
-        D["④ Dispatcher<br/>物理 NPU 锁 · 占用检查 · 广播"]
+        A["③ Pull Agent（仅调度）<br/>GitHub GET · 发现任务 · 去重"]
+        D["④ 调度机 Python<br/>NPU 锁 · SSH · 日志摘取 · 结果封装 / POST"]
     end
 
     subgraph EX["内网执行机 · A3 / A5"]
         direction TB
-        X["⑤ SSH 执行固定训练脚本<br/>生成日志 / TensorBoard"]
+        X["⑤ 训练 / TensorBoard 校验<br/>只存完整日志，不筛选、不连 GitHub"]
     end
 
     W -->|"启动 Waiter"| H
     W -.->|"内网通过 GitHub API 主动拉取"| A
     A --> D
     D -->|"SSH 调度"| X
-    X -->|"Agent 收集结果并回传"| C
+    X -->|"SSH 有界读取原始日志"| D
+    D -->|"GitHub REST API 直接 POST"| C
     C -->|"Waiter 获取结果，结束 Job"| H
 
     style GH fill:#f2f5fb,stroke:#899db7,stroke-width:2px
@@ -60,7 +61,9 @@ flowchart TB
     class X execution
 ```
 
-**按编号阅读**：① 在 GitHub 触发 Action → ② 云端 Waiter 开始等待 → ③ 内网 Agent 主动发现任务 → ④ Dispatcher 预留 NPU、检查占用并广播 → ⑤ 执行机运行训练及验证 → ⑥ Agent 回传 GitHub Comment，由 Waiter 获取结果并结束 Job。② 与 ③～⑤ 并行等待/执行，不是串行阻塞。
+**按编号阅读**：① 在 GitHub 触发 Action → ② 云端 Waiter 开始等待 → ③ 内网 Agent 主动发现任务 → ④ Dispatcher 预留 NPU、检查占用并广播 → ⑤ 执行机运行训练并保留完整日志 → ④ 调度机 Python 从执行机通过 SSH 读取最多 128 KiB 原始日志、摘取最多 20 行、封装结果 → ⑥ **调度机 Python 直接调用 GitHub REST API** 写入 Commit Comment，由 Waiter 获取结果并结束 Job。**Pull Agent 不参与日志筛选、封装或回传；全过程不调用 AI Agent API。** ② 与 ③～⑤ 并行等待/执行，不是串行阻塞。
+
+**数据路径**：执行机保留完整 `run.log`；调度机 Python 通过 SSH 仅读取最后 128 KiB 原始日志，再统一筛选性能指标或异常上下文（最多 20 行，每行最多 180 字符）。`ci_core/reporting.py` 在调度机生成结果 JSON 并调用 GitHub REST API，**执行机无 Token，Pull Agent 只负责发现与提交任务，无任何 AI Agent API 调用**。
 
 同一个 Workflow 使用 `concurrency.queue: max`、`cancel-in-progress: false` 串行排队；不同 Workflow 通过 `(宿主机 ID, 物理 NPU ID)` 锁互斥，设备不重叠可并行。`wall -n` 只广播到**执行机宿主机和训练容器**，不广播调度机。
 
@@ -68,7 +71,7 @@ flowchart TB
 
 | 归属 | 源码位置 | 职责 |
 | --- | --- | --- |
-| **[lite-actions](https://github.com/depeng1994/lite-actions)** | `unified_agent.py`、`ci_core/` | GitHub 轮询、任务去重、设备锁、SSH 执行、终端广播、日志裁剪与结果回传 |
+| **[lite-actions](https://github.com/depeng1994/lite-actions)** | `unified_agent.py`、`ci_core/` | GitHub 轮询及去重、设备锁与 SSH 执行；由调度机 Python 统一日志摘取、结果封装及 GitHub API 回传 |
 | lite-actions | `config/pools.json` | 执行机、物理芯片、SSH 别名及广播目标 |
 | lite-actions | `config/pipelines.json` | 用例 ID → Workflow、资源池、设备分配、执行器、超时 |
 | lite-actions | `github/workflows/`、`github/wait_result.py` | GitHub 端薄 Workflow/Waiter 的**维护副本** |
@@ -107,7 +110,7 @@ tail -f logs/system/unified-agent.log
 
 Agent 默认每 60 秒轮询，只认 `master` 上维护者手工触发的受信任 Workflow；验证分支需显式设置 `A3_CI_ALLOWED_BRANCHES`。文件锁阻止重复启动，但**容器重启后尚无自动拉起服务**，需人工启动。
 
-GitHub 端：进入 [torchtitan-npu Actions](https://github.com/depeng1994/torchtitan-npu/actions) → 选择 Workflow → `Run workflow`；Job 等待内网结果。调度任务目录 `logs/runs/YYYY-MM-DD_HH-MM-SS_run-ID_attempt-N/`（北京时间）；`logs/system/` 为 Agent 日志；`state/` 保存任务去重和设备锁，**不要删除正在使用的 state**。历史运行日志只清理过期的 `logs/runs/`。
+GitHub 端：进入 [torchtitan-npu Actions](https://github.com/depeng1994/torchtitan-npu/actions) → 选择 Workflow → `Run workflow`；Job 等待内网结果。调度任务目录 `logs/runs/YYYY-MM-DD_HH-MM-SS_run-ID_attempt-N/`（北京时间）；`logs/system/` 为 Agent 日志；`state/` 保存任务去重和设备锁，**不要删除正在使用的 state**。旧 2P/8P/16P Agent 目录和历史运行日志已清理；仅保留现役统一 Agent 所需的状态、设备锁和持续运行日志。新生成的 `logs/runs/` 按需清理，不要删除运行中任务日志。
 
 执行机仅广播其**当前任务涉及的节点**：已锁定资源后警示“本环境正在用于torchtitan CI验证，请勿使用！”，退出且检查资源空闲后通知“本任务所占 NPU 资源已释放”；若退出后尚有占用，改发“仍可能被占用，请勿使用”，绝不误报。每条消息含北京时间与 `https://github.com/depeng1994/torchtitan-npu/actions/runs/<run_id>`，由 88 列星号包围。
 

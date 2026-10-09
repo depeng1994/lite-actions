@@ -4,6 +4,7 @@ from pathlib import Path
 import unittest
 
 import unified_agent
+from ci_core import reporting
 from ci_core.config import load_config
 
 
@@ -41,7 +42,7 @@ class WorkflowContractTests(unittest.TestCase):
                        run_attempt=1, actor={"login":"depeng1994"},
                        path=".github/workflows/"+case["workflow"], name=old)
             self.assertTrue(unified_agent.eligible(run, case))
-            self.assertEqual(unified_agent.marker(case, run),
+            self.assertEqual(reporting.marker(case, run),
                              f"{old}-RESULT 124:1")
 
 
