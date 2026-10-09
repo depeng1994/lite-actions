@@ -40,9 +40,11 @@ class WorkflowContractTests(unittest.TestCase):
                 case = config[case_id]
                 self.assertEqual(case["runner"], {"kind": "ssh"})
                 yaml = (BASE / "github/workflows" / case["workflow"]).read_text()
-                self.assertIn('test_case:', yaml)
+                self.assertIn('test_cases:', yaml)
                 self.assertIn('run-name:', yaml)
-                self.assertIn('inputs.test_case', yaml)
+                self.assertIn('inputs.test_cases', yaml)
+                self.assertIn('actions/upload-artifact@v4', yaml)
+                self.assertIn('name: Prepare CI request', yaml)
                 pool = __import__('json').loads((BASE / "config/pools.json").read_text())[case["pool"]]
                 self.assertTrue(all(not any(k in n for k in ("ascend_env", "hf_assets_path", "ckpt_init_path"))
                                     for n in pool["nodes"]))

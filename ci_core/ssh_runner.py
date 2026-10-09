@@ -19,7 +19,7 @@ import sys
 import tempfile
 
 from ci_core.config import load_config
-from ci_core.registry import load_profile, SELECTOR
+from ci_core.registry import load_profile, SELECTOR, parse_request
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO = "git@github.com:depeng1994/torchtitan-npu.git"
@@ -191,7 +191,8 @@ def verify(nodes: list[dict], runner: dict, base: str, timeout: int, test_case: 
 
 
 def run(case: dict, sha: str, stamp: str, *, test_case: str,
-        remote_dir: str | None = None, root: Path = ROOT) -> int:
+        remote_dir: str | None = None, root: Path = ROOT,
+        path: str | None = None, params: dict | None = None) -> int:
     # stamp is the internal immutable GitHub run identity used for safe process
     # termination; remote_dir is only the operator-facing folder name.
     remote_dir = remote_dir if remote_dir is not None else stamp
@@ -203,7 +204,8 @@ def run(case: dict, sha: str, stamp: str, *, test_case: str,
     base = f"{DEST_ROOT}/{remote_dir}"
     with tempfile.TemporaryDirectory(prefix="lite-ci-stage-") as tmp:
         archive = model_archive(sha, Path(tmp))
-        runner = load_profile(archive, test_case, nodes=len(nodes), ngpu=len(nodes[0]["devices"]))
+        runner = load_profile(archive, test_case, nodes=len(nodes), ngpu=len(nodes[0]["devices"]),
+                              path=path, params=params)
         dirs = {}
         with ThreadPoolExecutor(max_workers=len(nodes)) as executor:
             futures = {executor.submit(stage, node, base, archive, sha): node for node in nodes}
@@ -280,7 +282,10 @@ def run(case: dict, sha: str, stamp: str, *, test_case: str,
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--case", required=True)
-    parser.add_argument("--test-case", required=True)
+    parser.add_argument("--test-case")
+    parser.add_argument("--request-file")
+    parser.add_argument("--run-id", type=int)
+    parser.add_argument("--run-attempt", type=int)
     parser.add_argument("--sha", required=True)
     parser.add_argument("--stamp", required=True)
     parser.add_argument("--remote-dir", required=True,
@@ -289,6 +294,26 @@ def main() -> int:
     case = load_config(ROOT).get(args.case)
     if not case or not case["enabled"] or case["runner"]["kind"] != "ssh":
         raise ValueError("unsupported or disabled SSH pipeline")
+    if args.request_file:
+        if args.test_case or not args.run_id or not args.run_attempt:
+            raise ValueError("manifest dispatch requires run_id and attempt, not test-case")
+        request = json.loads(Path(args.request_file).read_text())
+        items = parse_request(request, {"id": args.run_id,
+                                        "run_attempt": args.run_attempt,
+                                        "head_sha": args.sha})
+        for index, item in enumerate(items):
+            dirname = args.remote_dir if len(items) == 1 else (
+                f"{args.remote_dir}_case-{index+1:02d}_{item['test_id']}")
+            print(f"CASE_START {index+1}/{len(items)}: {item['test_id']}", flush=True)
+            rc = run(case, args.sha, args.stamp, test_case=item["test_id"],
+                     path=item["path"], params=item["params"],
+                     remote_dir=dirname)
+            print(f"CASE_END {index+1}/{len(items)}: {item['test_id']} rc={rc}", flush=True)
+            if rc != 0:
+                return rc
+        return 0
+    if not args.test_case or not SELECTOR.fullmatch(args.test_case):
+        raise ValueError("missing registered CI test")
     return run(case, args.sha, args.stamp, test_case=args.test_case,
                remote_dir=args.remote_dir)
 

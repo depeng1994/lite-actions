@@ -15,11 +15,12 @@ import sys
 import os
 import signal
 import tempfile
+import json
 
 from ci_core.resources import wait_reserve
 from ci_core.broadcast import broadcast_job
 from ci_core.logs import metadata, select_remote
-from ci_core.registry import selected_test, workflow_label, load_profile
+from ci_core.registry import selected_test, workflow_label, load_profile, parse_request
 import logging
 import time
 
@@ -105,13 +106,23 @@ def selected_processes(output: str, devices: list[int], *, indexing: str = "card
 def prepare_profile(case: dict, run: dict) -> tuple[str, dict]:
     """Read test-owned CANN/asset settings from the selected GitHub Commit SHA."""
     from ci_core.ssh_runner import model_archive
-    test_id = selected_test(run)
     allocation = case["allocation"]
     with tempfile.TemporaryDirectory(prefix="lite-ci-model-profile-") as tmp:
         archive = model_archive(run["head_sha"], Path(tmp))
-        profile = load_profile(archive, test_id, nodes=len(allocation),
-                               ngpu=len(allocation[0]["devices"]))
-    return test_id, profile
+        if "_ci_request" not in run:
+            # Backwards-compatible local test helper. Production agent never
+            # dispatches SSH without a validated run-bound request artifact.
+            test_id = selected_test(run)
+            return test_id, load_profile(archive, test_id, nodes=len(allocation),
+                                         ngpu=len(allocation[0]["devices"]))
+        cases = parse_request(run["_ci_request"], run)
+        profiles = [load_profile(archive, item["test_id"], nodes=len(allocation),
+                                 ngpu=len(allocation[0]["devices"]),
+                                 path=item["path"], params=item["params"])
+                    for item in cases]
+        if len({p["ascend_env"] for p in profiles}) != 1:
+            raise ValueError("tests in the same CI run must share the CANN setup")
+        return cases[0]["test_id"], profiles[0]
 
 
 def remote_preflight(case: dict, pools: dict, *, ascend_env: str | None = None) -> None:
@@ -180,11 +191,17 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
         setup = profile["ascend_env"]
         cmd = [sys.executable, "-u", "-m", "ci_core.ssh_runner",
                "--case", case["name"], "--sha", run["head_sha"],
-               "--test-case", test_id, "--stamp", log_dir.name,
-               "--remote-dir", remote_task_name(run)]
+               "--stamp", log_dir.name, "--remote-dir", remote_task_name(run)]
+        if "_ci_request" in run:
+            # Already validated against the GitHub Run and the model commit.
+            manifest = log_dir / "ci-request.json"
+            manifest.write_text(json.dumps(run["_ci_request"], separators=(",", ":")) + "\n")
+            cmd += ["--request-file", str(manifest), "--run-id", str(run["id"]),
+                    "--run-attempt", str(run.get("run_attempt", 1))]
+        else:
+            cmd += ["--test-case", test_id]
     else:
         raise ValueError(f"unknown trusted runner: {kind}")
-    import json
     pools = json.loads((root / "config/pools.json").read_text())
     lock_root = lock_root or root / "state/device-locks"
     with wait_reserve(lock_root, case.get("allocation", []),

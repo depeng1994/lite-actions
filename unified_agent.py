@@ -15,7 +15,7 @@ from ci_core.config import load_config
 from ci_core.github import GitHubClient, authorization
 from ci_core.job_state import JobState
 from ci_core.reporting import NAMES, job_key, run_and_report
-from ci_core.registry import selected_test, workflow_label
+from ci_core.registry import workflow_label
 
 ROOT = Path(__file__).resolve().parent
 LOG = ROOT / "logs" / "system" / "unified-agent.log"
@@ -90,11 +90,13 @@ def main():
                     if not case or not eligible(run, case):
                         continue
                     if case["runner"]["kind"] == "ssh":
-                        try:
-                            selected_test(run)
-                        except ValueError:
-                            logging.warning("ignore run=%s: invalid/missing test selector", run.get("id"))
+                        # The preparation Job uploads the structured manifest.
+                        # Poll again if it is not uploaded yet; never guess
+                        # test IDs from the display title.
+                        request = client.ci_request(run)
+                        if request is None:
                             continue
+                        run["_ci_request"] = request
                     key = job_key(run)
                     if key in inflight:
                         continue

@@ -276,32 +276,70 @@ python3 scripts/preflight_pool.py --pool a5-64p-lab --npu
 
 具体训练入口及 EP/DP 参数仍在模型仓的 `examples/` 和 `tests/integration_tests/nightly_all_models_test/*_tests.py`。`ci_entrypoint.py` 根据受信任 Commit SHA 的 `ci_registry.json` 解析用例，单机或分布式执行均使用同一个 Lite Actions SSH 引擎。
 
-### Step 4 · 从 GitHub 任务动态选择测试（不在 Lite Actions 注册 Module）
+### Step 4 · 使用 GitHub Actions 原生 Inputs + Artifact API 传递用例及参数
 
-模型仓 Workflow 增加一个 `workflow_dispatch.inputs.test_case`，并把该值映射到 GitHub Run 的 `display_title`；这是必要的，因为 `GET /actions/runs` 返回 `display_title`，不能依赖其直接提供全部 Dispatch Input 字段：
+**Workflow 的名称固定**（如 `A3-8p-CI-Example`），不再将 `test_case` 或其他参数拼入 `run-name` / Job 标题。参考 TorchTitan 上游 GitHub Actions 的测试矩阵与 Workflow 输入方式，Lite Actions 因调度机处于内网、没有 Github-hosted Runner 的直接内网入口，增加了一个**标准 GitHub Actions Artifact 交接步骤**。
+
+模型仓 `.github/workflows/a3-8p-ci.yml` 的主要结构为：
 
 ```yaml
-name: A5-64p-CI
-run-name: "${{ github.workflow }} | test=${{ inputs.test_case }}"
+name: A3-8p-CI-Example
+run-name: "${{ github.workflow }}"
 on:
   workflow_dispatch:
     inputs:
-      test_case:
-        description: Registered Integration Test ID
+      test_cases:
         type: string
         required: true
-        default: dsv4_pro_a5_64p
+        default: '[{"path":"tests/integration_tests/nightly_all_models_test/a3_8p_tests.py","test_id":"dsv4_flash_a3_8p_example","params":{}}]'
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Inputs
+        env:
+          CI_TEST_CASES: ${{ inputs.test_cases }}
+        run: python3 .github/scripts/prepare-ci-request.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lite-ci-request-${{ github.run_attempt }}
+          path: .ci-request/ci-request.json
+  ci:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 .github/scripts/ci-wait-result.py --case a3-8p
 ```
 
-例如运行时 GitHub 返回 `display_title = "A5-64p-CI | test=dsv4_pro_a5_64p"`。调度机只解析受限制的 **test ID**，检查匹配本通道资源规模，然后从该 Run 的**精确 Commit SHA**下载模型仓源码及注册表，在执行机固定调用 `tests.integration_tests.ci_entrypoint`。**不会把用户输入当作 Python 模块路径或 Shell 命令直接执行**。当新增同等资源规格的测试时，只需在模型仓注册用例、指定测试 ID 并提交，Lite Actions 的 `pipelines.json` 无须新增条目。
+完整 Workflow 还包括 `permissions`、`concurrency`、actor/branch 授权校验和超时，**请直接使用仓库的正式文件，不要用上述简化示意覆盖**。
 
-公共调用流程：`GitHub Actions(test_case)` → `Pull Agent(display_title)` → `Dispatcher(资源锁、CANN预检)` → `SSH Runner(固定 SHA、固定入口 + test ID)` → `模型仓 ci_entrypoint(注册表校验并运行)` → `调度机回传 GitHub`。
+**GitHub 手动运行 / REST API 提交**：在 Actions 的 Run workflow 界面填 `test_cases`，或者通过 GH CLI：
 
-**Waiter 文件命名**：各 Workflow 统一使用 `.github/scripts/ci-wait-result.py`，Lite Actions 的维护版是 `github/ci_wait_result.py`，无 A3 专属逻辑；等待超时环境变量统一为 `CI_WAIT_TIMEOUT_SECONDS`。
+```bash
+gh workflow run a3-8p-ci.yml --ref refactor/unified-a3-a5-ci \
+  -f 'test_cases=[{"path":"tests/integration_tests/nightly_all_models_test/a3_8p_tests.py","test_id":"dsv4_flash_a3_8p_example","params":{"STEPS":"5"}}]'
+```
 
-**环境职责**：A3 `process_indexing=card-die` 和 A5 `process_indexing=card` 属于**硬件物理映射**，仍在 Lite Actions；`ascend_env`、模型目录、Checkpoint、编译开关、steps 归属**模型测试**，不再放入调度机资源清单。
+`test_cases` 是 1～12 个注册用例组成的 **JSON 数组**。可在其中依次添加同属 8P 通道的不同测试：
 
-**上线须知**：这是跨 GitHub Workflow、Waiter、调度器和模型仓的协议更改。更新两仓后须先在可信分支完成离线/实机验收，待相应 Workflow 已部署，再滚动切换 Agent。不要单独升级调度器后让旧版无 `test_case` 的 Workflow 继续发任务。
+```json
+[
+  {"path":"tests/integration_tests/nightly_all_models_test/a3_8p_tests.py", "test_id":"dsv4_flash_a3_8p_example", "params":{"STEPS":"5"}},
+  {"path":"tests/integration_tests/nightly_all_models_test/a3_8p_tests.py", "test_id":"dsv4_flash_a3_8p_example", "params":{"STEPS":"3"}}
+]
+```
+
+示例的第二项用于演示两次不同参数的执行；实际多模型时换成注册表中的其他 test ID 和对应路径。**执行顺序即数组顺序，任一用例失败则本次 Action 失败并停止后续用例**；一个 Run 对所有用例共同持有 NPU 锁，输出分别写入各用例目录。`params` 只能覆盖该 SHA 注册表的 `env_vars` 已声明参数，不能改 `NODE_IPS`、设备可见性、CANN 路径等调度/安全配置。
+
+调度机每轮通过 GitHub `GET /actions/runs` 查询可信任务，再通过 `GET /actions/runs/{run_id}/artifacts` 和 `GET /actions/artifacts/{id}/zip` 获取该 Run 上传的 JSON 清单。清单绑定 Run ID、attempt 和 Commit SHA；调度机用该精确 SHA 下的 `ci_registry.json` 校验每个 `path + test_id + params` 的合法性和拓扑兼容性，再交给通用 SSH Runner 顺序执行。不再从 Run 的 `name` / `display_title` 解析参数，也不会把输入拼成可执行 Shell 命令。GitHub Artifact 签名下载链接使用不附带 GitHub Token 的独立请求。
+
+调用链：`workflow_dispatch(test_cases)` → `prepare Job 生成 ci-request.json` → `upload-artifact` → `调度机 GitHub REST 读取` → `固定 SHA 注册表校验` → `统一 SSH Runner` → `主节点 TensorBoard 校验` → `调度机 GitHub 回传` → `Waiter 判定 Job Success/Failure`。
+
+**Waiter** 统一为模型仓 `.github/scripts/ci-wait-result.py` 和 Lite Actions 维护副本 `github/ci_wait_result.py`；与 A3/A5 无关。A3 `process_indexing=card-die` 和 A5 `process_indexing=card` 属于调度机物理资源，CANN 环境、Tokenizer、Checkpoint、训练步数和模型参数属于模型仓注册用例。
+
+**部署注意**：本协议要求模型仓 Workflow 已包含 `prepare`/Artifact 步骤，再启动新版调度 Agent；不能只修改一侧。上一个版本将用例 ID 放到 `run-name` 的做法仅作为历史兼容，不再用于新任务选用例。
 
 ### Step 5 · 为新增的独立 64P 通道部署 GitHub Workflow
 
@@ -330,7 +368,7 @@ python3 -m tests.integration_tests.run_tests /tmp/my-integration-test \
   --test_suite deepseek_v4 --test_name dsv4_my_new_8p_test --ngpu 8
 ```
 
-以上为单机测试命令模板；实际名称必须存在于对应 suite。对于跨节点测试，多机用例通过 `nightly_all_models_test/runner.py` 适配 `launch` 与 `verify`，且能在独立测试环境最小步数跑通。然后在模型仓 `tests/integration_tests/ci_registry.json` 注册新的 `test ID`、模块、拓扑和 `env_vars` / CANN / Tokenizer / 权重路径；提交模型仓后，从 GitHub Workflow 的 `test_case` 输入框选择新 ID。调度器会核对该 Commit SHA 的注册表及资源匹配才执行，**不需要在 Lite Actions 的 `pipelines.json` 加入测试名，也不会透传任意 Shell 命令**。
+以上为单机测试命令模板；实际名称必须存在于对应 suite。对于跨节点测试，多机用例通过 `nightly_all_models_test/runner.py` 适配 `launch` 与 `verify`，且能在独立测试环境最小步数跑通。然后在模型仓 `tests/integration_tests/ci_registry.json` 注册新的 `test ID`、模块、拓扑和 `env_vars` / CANN / Tokenizer / 权重路径；提交模型仓后，从 GitHub Workflow 的 `test_cases` 输入框提交包含路径、注册 ID、覆盖参数的 JSON 数组。调度器会核对该 Commit SHA 的注册表及资源匹配才执行，**不需要在 Lite Actions 的 `pipelines.json` 加入测试名，也不会透传任意 Shell 命令**。
 
 **Step 3 · 判断要不要改调度层**
 
@@ -362,7 +400,7 @@ python3 -m tests.integration_tests.run_tests /tmp/my-integration-test \
 
 **任务目录命名（均使用北京时间 UTC+08:00，时间取 GitHub Actions `created_at`）**：
 
-- **执行机**：`/mnt/share/ci_tests/YYYY-MM-DD_HH-MM-SS_run_<Workflow名称>_<run_number>/node0/`（多机还有 `node1/` 等）。例如 [A3 16P Run #6](https://github.com/depeng1994/torchtitan-npu/actions/runs/37913151439) 对应 `2026-10-09_17-43-56_run_A3-16p-CI-Example_6/node0/`；目录保留 Workflow YAML 中的完整 `name`（例如 `-Example`）；若 GitHub API 的 `name`/`display_title` 被自定义 `run-name` 扩展为 `Workflow | test=用例ID`，目录仍使用原始 Workflow 名，不包含测试选择后缀。
+- **执行机**：`/mnt/share/ci_tests/YYYY-MM-DD_HH-MM-SS_run_<Workflow名称>_<run_number>/node0/`（多机还有 `node1/` 等）。例如 [A3 16P Run #6](https://github.com/depeng1994/torchtitan-npu/actions/runs/37913151439) 对应 `2026-10-09_17-43-56_run_A3-16p-CI-Example_6/node0/`；目录保留 Workflow YAML 中的完整 `name`（例如 `-Example`）；新 Workflow 的 run-name 固定，测试选择和参数只出现在 GitHub Actions Inputs / Artifact 中，不进入目录名称。
 - **重新运行**：相同 Run 的第 2 次 attempt 为 `2026-10-09_17-43-56_run_A3-16p-CI-Example_6_attempt-2/`，避免覆盖首次执行的完整训练日志；这里的 `6` 是 GitHub Workflow 的 `run_number`，不是全局 Run ID `37913151439`，也不是 `run_attempt`。
 - **调度机（不变）**：`logs/runs/YYYY-MM-DD_HH-MM-SS_run-ID_attempt-N/` 保持 Run ID，用于日志关联和去重；内部作业标识、进程取消校验及 GitHub 回传仍使用 Run ID。既有执行机历史目录不会自动重命名或删除。
 

@@ -1,6 +1,9 @@
 """Small, counted GitHub REST client for outbound-only CI orchestration."""
 from __future__ import annotations
 import json
+import urllib.error
+import io
+import zipfile
 import os
 import subprocess
 import urllib.parse
@@ -65,6 +68,65 @@ class GitHubClient:
         data = self.request("GET",
             "/actions/runs?event=workflow_dispatch&status=in_progress&per_page=100")
         return data.get("workflow_runs", [])
+
+    def ci_request(self, run: dict) -> dict | None:
+        """Retrieve a short structured artifact uploaded by this Actions run.
+
+        Missing artifact means the GitHub preparation job hasn't finished yet;
+        polling will retry. Never put test choices in the run title.
+        """
+        run_id, attempt = run["id"], run.get("run_attempt", 1)
+        if type(run_id) is not int or type(attempt) is not int or run_id < 1 or attempt < 1:
+            raise ValueError("invalid run/attempt")
+        name = f"lite-ci-request-{attempt}"
+        query = urllib.parse.urlencode({"name":name,"per_page":10})
+        listing = self.request("GET", f"/actions/runs/{run_id}/artifacts?{query}")
+        matching = [a for a in listing.get("artifacts", [])
+                    if a.get("name") == name and not a.get("expired")]
+        if not matching:
+            return None
+        if len(matching) != 1:
+            raise ValueError("ambiguous CI request artifacts")
+        artifact = matching[0]
+        if artifact.get("size_in_bytes", 0) > 65536:
+            raise ValueError("CI request artifact oversized")
+        if artifact.get("workflow_run", {}).get("id", run_id) != run_id:
+            raise ValueError("CI artifact does not belong to the selected run")
+        artifact_id = artifact["id"]
+        url = API + f"/actions/artifacts/{artifact_id}/zip"
+        req = urllib.request.Request(url, headers={
+            "Accept":"application/vnd.github+json",
+            "Authorization":f"Bearer {self.token}",
+            "User-Agent":"lite-actions-request/1",
+        })
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
+        try:
+            urllib.request.build_opener(NoRedirect).open(req, timeout=20)
+            raise ValueError("artifact download did not redirect")
+        except urllib.error.HTTPError as exc:
+            if exc.code != 302:
+                raise
+            signed_url = exc.headers.get("Location")
+        parts = urllib.parse.urlsplit(signed_url or "")
+        if parts.scheme != "https" or not parts.hostname:
+            raise ValueError("invalid signed artifact download URL")
+        # Signed URL is bearer access in itself. Never forward GitHub token.
+        with urllib.request.urlopen(urllib.request.Request(signed_url), timeout=25) as response:
+            payload = response.read(65537)
+        if len(payload) > 65536:
+            raise ValueError("downloaded CI request oversized")
+        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+            if archive.namelist() != ["ci-request.json"]:
+                raise ValueError("unexpected CI request archive contents")
+            info = archive.getinfo("ci-request.json")
+            if info.file_size > 32768:
+                raise ValueError("CI request JSON too large")
+            request_data = json.loads(archive.read(info))
+        from ci_core.registry import parse_request
+        parse_request(request_data, run)
+        return request_data
 
     def commit_comments(self, sha: str) -> list[dict]:
         data = self.request("GET", f"/commits/{sha}/comments?per_page=100")

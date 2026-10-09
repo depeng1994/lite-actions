@@ -127,6 +127,31 @@ class SharedSshRunnerTests(unittest.TestCase):
                 ssh_runner.run(self.cases["a3-8p"],"a"*40,STAMP,test_case=TEST_8P,
                                remote_dir="../unsafe")
 
+    def test_manifest_executes_multiple_cases_sequentially(self):
+        import sys
+        from unittest.mock import patch
+        request={"schema":1,"run_id":1234,"attempt":1,"sha":"a"*40,
+                 "cases":[
+                    {"test_id":TEST_8P,"path":"tests/integration_tests/nightly_all_models_test/a3_8p_tests.py","params":{}},
+                    {"test_id":TEST_8P,"path":"tests/integration_tests/nightly_all_models_test/a3_8p_tests.py","params":{"STEPS":"3"}},
+                 ]}
+        with tempfile.TemporaryDirectory() as td:
+            manifest=Path(td)/"request.json"
+            manifest.write_text(json.dumps(request))
+            args=["runner","--case","a3-8p","--sha","a"*40,
+                  "--stamp",STAMP,"--remote-dir","job-123",
+                  "--run-id","1234","--run-attempt","1",
+                  "--request-file",str(manifest)]
+            with patch.object(sys,"argv",args), patch.object(ssh_runner,"run",return_value=0) as execute:
+                self.assertEqual(ssh_runner.main(),0)
+                self.assertEqual(execute.call_count,2)
+                self.assertEqual(execute.call_args_list[0].kwargs["remote_dir"],
+                                 "job-123_case-01_"+TEST_8P)
+                self.assertEqual(execute.call_args_list[1].kwargs["params"],{"STEPS":"3"})
+            with patch.object(sys,"argv",args), patch.object(ssh_runner,"run",side_effect=[0,1]) as execute:
+                self.assertEqual(ssh_runner.main(),1)
+                self.assertEqual(execute.call_count,2)
+
     def test_single_process_group_ownership(self):
         """Real local supervisor must record the process group it actually owns."""
         import signal
