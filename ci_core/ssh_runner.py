@@ -129,12 +129,15 @@ def remote_command(node: dict, nodes: list[dict], runner: dict, dest: str,
     # PID file enables bounded cancellation. Python on the dispatcher always
     # validates job identity before killing its *own* remote process group.
     exports = " ".join(f"{key}={q(value)}" for key, value in env.items())
+    # Preserve legacy A3 ordering: source CANN first, then apply trusted
+    # NODE_IPS / HCCL / device variables so the toolkit cannot override them.
     inner = (f"cd {q(dest+'/repo')} && {setup}"
+             f"export {exports} && "
              f"export PYTHONPATH=\"$PWD:${{PYTHONPATH:-}}\" && "
              f"exec timeout --signal=TERM --kill-after=30s {int(timeout)}s {entry}")
     return (
         f"cd {q(dest)} || exit 125; "
-        f"setsid env {exports} bash -lc {q(inner)} > {q(dest+'/run.log')} 2>&1 & "
+        f"setsid env LITE_CI_JOB_ID={q(stamp)} bash -lc {q(inner)} > {q(dest+'/run.log')} 2>&1 & "
         f"pid=$!; printf '%s\\n' \"$pid\" > {q(dest+'/job.pgid')}; "
         f"wait \"$pid\"; rc=$?; "
         f"printf '%s\\n' \"$rc\" > {q(dest+'/exit_code.txt')}; "
