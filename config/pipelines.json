@@ -17,31 +17,15 @@
     "allocation": [
       {
         "host_id": "a3-4",
-        "devices": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ]
+        "devices": [0, 1, 2, 3, 4, 5, 6, 7]
       }
     ],
     "timeout_seconds": 7500,
     "runner": {
-      "kind": "ssh",
-      "module": "tests.integration_tests.run_multinode_tests",
-      "mode": "single",
-      "env": {
-        "COMPILE_ENABLE": "0",
-        "TORCHINDUCTOR_NPU_BACKEND": "ascendc",
-        "STEPS": "5"
-      }
+      "kind": "ssh"
     },
     "enabled": true,
-    "pipeline_id": "dsv4-flash-8p"
+    "pipeline_id": "a3-8p"
   },
   "a3-16p": {
     "workflow": "a3-16p-ci.yml",
@@ -49,46 +33,19 @@
     "allocation": [
       {
         "host_id": "a3-3",
-        "devices": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ]
+        "devices": [0, 1, 2, 3, 4, 5, 6, 7]
       },
       {
         "host_id": "a3-4",
-        "devices": [
-          8,
-          9,
-          10,
-          11,
-          12,
-          13,
-          14,
-          15
-        ]
+        "devices": [8, 9, 10, 11, 12, 13, 14, 15]
       }
     ],
     "timeout_seconds": 7500,
     "runner": {
-      "kind": "ssh",
-      "module": "tests.integration_tests.run_16p_multinode_tests",
-      "mode": "distributed",
-      "env": {
-        "COMPILE_ENABLE": "0",
-        "MASTER_PORT": "6316",
-        "HCCL_IF_BASE_PORT": "30160",
-        "TORCHINDUCTOR_NPU_BACKEND": "ascendc",
-        "STEPS": "5"
-      }
+      "kind": "ssh"
     },
     "enabled": true,
-    "pipeline_id": "dsv4-flash-16p"
+    "pipeline_id": "a3-16p"
   },
   "a5-64p": {
     "workflow": "a5-64p-ci.yml",
@@ -96,119 +53,42 @@
     "allocation": [
       {
         "host_id": "a5-01",
-        "devices": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ]
+        "devices": [0, 1, 2, 3, 4, 5, 6, 7]
       },
       {
         "host_id": "a5-02",
-        "devices": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ]
+        "devices": [0, 1, 2, 3, 4, 5, 6, 7]
       },
       {
         "host_id": "a5-03",
-        "devices": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ]
+        "devices": [0, 1, 2, 3, 4, 5, 6, 7]
       },
       {
         "host_id": "a5-04",
-        "devices": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ]
+        "devices": [0, 1, 2, 3, 4, 5, 6, 7]
       },
       {
         "host_id": "a5-05",
-        "devices": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ]
+        "devices": [0, 1, 2, 3, 4, 5, 6, 7]
       },
       {
         "host_id": "a5-06",
-        "devices": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ]
+        "devices": [0, 1, 2, 3, 4, 5, 6, 7]
       },
       {
         "host_id": "a5-07",
-        "devices": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ]
+        "devices": [0, 1, 2, 3, 4, 5, 6, 7]
       },
       {
         "host_id": "a5-08",
-        "devices": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ]
+        "devices": [0, 1, 2, 3, 4, 5, 6, 7]
       }
     ],
     "timeout_seconds": 14400,
     "runner": {
-      "kind": "ssh",
-      "module": "tests.integration_tests.run_a5_64p_multinode_tests",
-      "mode": "distributed",
-      "env": {},
-      "requires_assets": true,
-      "requires_checkpoint": true
+      "kind": "ssh"
     },
     "enabled": false,
-    "pipeline_id": "dsv4-a5-64p"
+    "pipeline_id": "a5-64p"
   }
 }

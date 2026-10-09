@@ -15,6 +15,7 @@ from ci_core.config import load_config
 from ci_core.github import GitHubClient, authorization
 from ci_core.job_state import JobState
 from ci_core.reporting import NAMES, job_key, run_and_report
+from ci_core.registry import selected_test
 
 ROOT = Path(__file__).resolve().parent
 LOG = ROOT / "logs" / "system" / "unified-agent.log"
@@ -80,6 +81,12 @@ def main():
                     case = workflows.get(filename)
                     if not case or not eligible(run, case):
                         continue
+                    if case["runner"]["kind"] == "ssh":
+                        try:
+                            selected_test(run)
+                        except ValueError:
+                            logging.warning("ignore run=%s: invalid/missing test selector", run.get("id"))
+                            continue
                     key = job_key(run)
                     if key in inflight:
                         continue

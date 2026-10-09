@@ -17,7 +17,8 @@ class AgentTests(unittest.TestCase):
                 "created_at":"2026-10-09T01:00:00Z","event":"workflow_dispatch",
                 "status":"in_progress","head_branch":"master",
                 "actor":{"login":"depeng1994"},
-                "path":".github/workflows/a3-8p-ci.yml","name":"A3-8p-CI-Example"}
+                "path":".github/workflows/a3-8p-ci.yml","name":"A3-8p-CI-Example",
+                "display_title":"A3-8p-CI-Example | test=dsv4_flash_a3_8p_example"}
 
     def test_valid_dispatch(self):
         self.assertTrue(agent.eligible(self.base_run(),self.cases["a3-8p"]))
@@ -60,7 +61,7 @@ class AgentTests(unittest.TestCase):
         run=self.base_run()
         case=self.cases["a3-8p"]
         result=reporting.make_report(case,run,0,["PASS"])
-        self.assertEqual(result["pipeline"],"dsv4-flash-8p")
+        self.assertEqual(result["pipeline"],"a3-8p")
         self.assertTrue(reporting.report_payload(case,run,result).startswith(
             "A3-8p-CI-Example-RESULT 39100291:1\n"))
 

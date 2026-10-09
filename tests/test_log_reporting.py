@@ -11,7 +11,7 @@ from ci_core import logs, reporting, dispatch
 
 class TestDispatcherReporting(unittest.TestCase):
     def setUp(self):
-        self.case = {"name":"a3-8p","pipeline_id":"dsv4-flash-8p"}
+        self.case = {"name":"a3-8p","pipeline_id":"a3-8p"}
         self.run = {"id":981,"run_attempt":1,"head_sha":"a"*40,
                     "name":"A3-8p-CI-Example"}
 

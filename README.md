@@ -92,7 +92,7 @@ flowchart LR
 - **新增独立 GitHub Action**：增加 Workflow，配置调度通道与 Waiter 的固定标识；这属于**通道授权**，不等于每个模型用例都在调度机注册。
 - **引入新的硬件/跨节点拓扑**：必须先适配安全执行器、占用检查、环境及跨节点启动，不能只靠 JSON 自动支持。
 
-`MODULE`、`CONFIG`、`STEPS`、`train_args`、模型文件路径与训练校验由模型仓控制；调度层不维护这些内容的第二份。模型仓单机 `GPUPool` **不能自动代表多机 8×8**。
+`MODULE`、`CONFIG`、`STEPS`、`train_args`、CANN 环境及模型文件路径与训练校验由模型仓控制；调度层不维护这些内容的第二份。模型仓单机 `GPUPool` **不能自动代表多机 8×8**。
 
 ## 2. 当前已验证能力与运行状态
 
@@ -209,9 +209,28 @@ python3 scripts/preflight_pool.py --pool a5-64p-lab --npu
 
 ### Step 2 · 在 Lite Actions 登记物理资源与调度通道
 
-`config/pools.json` 的 `a5-64p-lab` 已登记 8 个 SSH 节点和每节点 8P，合计 64P。A3、A5 的执行流程完全相同：物理资源在 pool 配置，实际拓扑在 allocation 配置。
+**1）`config/pools.json`：登记 SSH 登录入口和 HCCL 小网地址，不登记模型资产。** 下例的 SSH IP 已知，`node_ip` 尚未提供，故先填 `null`；请用每台机器真实的**HCCL 小网 IP**替换，不能把 `7.246.125.*`（大网 SSH IP）直接复制过去。`device_ids` 与调度分配一律单行，便于核对。
 
-`config/pipelines.json` 的 `a5-64p` 也已把 `pool` 指向 `a5-64p-lab`，并分配 8×8。这个 JSON **不是测试用例表**：它仅声明“将来 `a5-64p-ci.yml` 这条受信任通道占用哪 64 个芯片、采用哪个可信执行器、超时多少”。保持：
+```json
+"a5-64p-lab": {
+  "type": "ascend-a5",
+  "process_indexing": "card",
+  "nodes": [
+    {"host_id": "a5-01", "ssh": "root@7.246.125.19", "node_ip": null, "device_ids": [0,1,2,3,4,5,6,7], "broadcast_ssh": ["root@7.246.125.19"]},
+    {"host_id": "a5-02", "ssh": "root@7.246.125.20", "node_ip": null, "device_ids": [0,1,2,3,4,5,6,7], "broadcast_ssh": ["root@7.246.125.20"]},
+    {"host_id": "a5-03", "ssh": "root@7.246.125.21", "node_ip": null, "device_ids": [0,1,2,3,4,5,6,7], "broadcast_ssh": ["root@7.246.125.21"]},
+    {"host_id": "a5-04", "ssh": "root@7.246.125.22", "node_ip": null, "device_ids": [0,1,2,3,4,5,6,7], "broadcast_ssh": ["root@7.246.125.22"]},
+    {"host_id": "a5-05", "ssh": "root@7.246.125.23", "node_ip": null, "device_ids": [0,1,2,3,4,5,6,7], "broadcast_ssh": ["root@7.246.125.23"]},
+    {"host_id": "a5-06", "ssh": "root@7.246.125.24", "node_ip": null, "device_ids": [0,1,2,3,4,5,6,7], "broadcast_ssh": ["root@7.246.125.24"]},
+    {"host_id": "a5-07", "ssh": "root@7.246.125.25", "node_ip": null, "device_ids": [0,1,2,3,4,5,6,7], "broadcast_ssh": ["root@7.246.125.25"]},
+    {"host_id": "a5-08", "ssh": "root@7.246.125.26", "node_ip": null, "device_ids": [0,1,2,3,4,5,6,7], "broadcast_ssh": ["root@7.246.125.26"]}
+  ]
+}
+```
+
+说明：此处是完整 `a5-64p-lab` 配置项，写到文件顶层 `pools` JSON 内，不要把上述代码当成整个 `pools.json` 覆盖。实际的 `process_indexing` / `device_ids` 还需以 A5 `npu-smi` 进程表核验；`node_ip=null` 时 64P 必须保持禁用。
+
+**2）`config/pipelines.json`：仅登记通道授权和 8×8 资源，不绑定任何测试 Module。**
 
 ```json
 "a5-64p": {
@@ -227,68 +246,60 @@ python3 scripts/preflight_pool.py --pool a5-64p-lab --npu
     {"host_id": "a5-07", "devices": [0,1,2,3,4,5,6,7]},
     {"host_id": "a5-08", "devices": [0,1,2,3,4,5,6,7]}
   ],
-  "runner": {
-    "kind": "ssh",
-    "module": "tests.integration_tests.run_a5_64p_multinode_tests",
-    "mode": "distributed",
-    "env": {},
-    "requires_assets": true,
-    "requires_checkpoint": true
-  },
+  "runner": {"kind": "ssh"},
   "timeout_seconds": 14400,
-  "pipeline_id": "dsv4-a5-64p",
+  "pipeline_id": "a5-64p",
   "enabled": false
 }
 ```
 
-以上为 `pipelines.json` 内单条配置示例；仓库已经包含该配置。接入新 A5 节点时，在 `pools.json` 对应节点设置 `ssh`（登录入口）、`node_ip`（HCCL 训练网地址）、`device_ids`、`process_indexing`、`hf_assets_path`（Tokenizer/模型资产目录）及 `ckpt_init_path`（初始化权重目录）。**两种 IP 可能不同，不能未经确认就把 SSH IP 当训练网 IP。** 不知道的路径不能杜撰；正式使能前必须实地核实并填写全部节点。`--validate` 会拒绝使能缺少必要模型资产路径的通道。
+此处的 `pipeline_id` 仅供 GitHub Waiter 识别**CI 通道**，不是具体测试用例名称。启用 A5 前须补齐 8 台 HCCL IP，验证 SSH/NPU 进程映射和模型资产路径；最后才设置 `enabled=true`。
 
-```bash
-python3 -m unittest discover -s tests
-python3 unified_agent.py --validate
+### Step 3 · 在 torchtitan-npu 注册 Integration Test 和环境
+
+模型仓 `tests/integration_tests/ci_registry.json` 是**用例注册表**；同一个 CI 通道可以运行多个满足该资源规格的注册用例。例如 A5 64P 的用例条目：
+
+```json
+"dsv4_pro_a5_64p": {
+  "module": "tests.integration_tests.run_a5_64p_multinode_tests",
+  "mode": "distributed",
+  "nnodes": 8,
+  "ngpu": 8,
+  "ascend_env": "",
+  "hf_assets_path": "",
+  "ckpt_init_path": "",
+  "env_vars": {"STEPS": "5", "COMPILE_ENABLE": "0"}
+}
 ```
 
-### Step 3 · 在 torchtitan-npu 维护 A5 64P Integration Test
+**这三个空字符串是待部署值，不是有效环境配置**。由用例维护者将 `ascend_env`（CANN set_env.sh）、`hf_assets_path`（Tokenizer/模型目录）和 `ckpt_init_path`（初始权重目录）填写为实际执行机可访问的绝对路径；新执行器会在任务执行前校验并在所有节点复用。A3 的三个路径已有可参考的已知配置，同样已从调度机 `pools.json` 移至模型仓。不同机器如需不同路径，应先统一挂载或在模型仓扩展按节点读取的环境档案，不能在调度拓扑里登记模型路径。
 
-**模型用例仍只在模型仓维护。** `examples/deepseek_v4/debug/deepseek_v4_pro_64p_cpt_4k_a5.sh` 定义 DeepSeek-V4 Pro 64P 的 EP/DP/优化器/训练参数；`tests/integration_tests/run_a5_64p_multinode_tests.py` 提供 `launch`/`verify` 和 TensorBoard 步数、loss 检查。执行器只通过固定 Python module 调用，**不再在 Lite Actions 中复制训练脚本或模型参数**。本仓的 A3 8P/16P 和 A5 64P 都使用 `runner.kind=ssh`。
+具体训练入口及 EP/DP 参数仍在模型仓的 `examples/` 和 `tests/integration_tests/run_*.py`。`ci_entrypoint.py` 根据受信任 Commit SHA 的 `ci_registry.json` 解析用例，单机或分布式执行均使用同一个 Lite Actions SSH 引擎。
 
-新用例所在模型仓分支须合入 GitCode 上游主仓并通过同步出现在 GitHub 对应 SHA，远端才能从精确 SHA 解包运行。64P 的各节点 `NNODES=8`、`NGPU=8` 由通用执行器注入。EP32/DP-shard32/DP-replicate2 属于模型仓当前候选训练配方，**实际能否训练通过仍以 A5 实机验证为准**。
+### Step 4 · 从 GitHub 任务动态选择测试（不在 Lite Actions 注册 Module）
 
-### Step 4 · 使用同一套通用 SSH 执行器（A3/A5 不分叉）
+模型仓 Workflow 增加一个 `workflow_dispatch.inputs.test_case`，并把该值映射到 GitHub Run 的 `display_title`；这是必要的，因为 `GET /actions/runs` 返回 `display_title`，不能依赖其直接提供全部 Dispatch Input 字段：
 
-不需要为 A5 单独实现 Dispatcher。现在代码已统一：
-
-| 公共代码 | A3 8P / A3 16P / A5 64P 共用的行为 |
-| --- | --- |
-| `ci_core/config.py` | 校验受信任的 Workflow、资源及固定 Integration Test 入口 |
-| `ci_core/dispatch.py` | NPU 锁、占用检测、广播、调用唯一 SSH 执行器、读取结果 |
-| `ci_core/ssh_runner.py` | 根据 pool/allocation 取 1/2/8 台机器、分发同一 Commit SHA、并行 SSH 启动、等待节点退出、在主节点执行校验 |
-| `ci_core/logs.py` / `ci_core/reporting.py` | 调度机统一有界读取完整日志的一部分、筛选至多 20 行并回传 GitHub |
-
-核心调用链是（完整代码见仓库）：
-
-```python
-# dispatch.py：三个硬件规模走相同代码路径
-cmd = [sys.executable, "-u", "-m", "ci_core.ssh_runner",
-       "--case", case["name"], "--sha", run["head_sha"],
-       "--stamp", log_dir.name,
-       "--remote-dir", remote_task_name(run)]
-
-# ssh_runner.py：节点从配置动态获取，而不是写死 A3 机器
-nodes = allocations(case, pools)
-for node in nodes:
-    # 阶段一：SSH 分发固定 SHA 的源码
-    # 阶段二：每节点并行执行模型仓固定 module 的 launch
-    # 阶段三：汇总退出码，主节点执行 verify
-    ...
+```yaml
+name: A5-64p-CI
+run-name: "${{ github.workflow }} | test=${{ inputs.test_case }}"
+on:
+  workflow_dispatch:
+    inputs:
+      test_case:
+        description: Registered Integration Test ID
+        type: string
+        required: true
+        default: dsv4_pro_a5_64p
 ```
 
-**硬件差异只通过配置体现**，例如：
+例如运行时 GitHub 返回 `display_title = "A5-64p-CI | test=dsv4_pro_a5_64p"`。调度机只解析受限制的 **test ID**，检查匹配本通道资源规模，然后从该 Run 的**精确 Commit SHA**下载模型仓源码及注册表，在执行机固定调用 `tests.integration_tests.ci_entrypoint`。**不会把用户输入当作 Python 模块路径或 Shell 命令直接执行**。当新增同等资源规格的测试时，只需在模型仓注册用例、指定测试 ID 并提交，Lite Actions 的 `pipelines.json` 无须新增条目。
 
-- A3：`process_indexing=card-die`（现有 A3 两 die 映射），并配置其 `ascend_env` 和 `node_ip`。
-- A5：`process_indexing=card`（按 A5 的 0～7 NPU 逻辑编号设计），其 `npu-smi` 进程输出格式、实际设备映射、`node_ip`/网卡、CANN/资产目录必须上线前核对；无法识别进程占用就拒绝发任务，不抢占用户进程。
+公共调用流程：`GitHub Actions(test_case)` → `Pull Agent(display_title)` → `Dispatcher(资源锁、CANN预检)` → `SSH Runner(固定 SHA、固定入口 + test ID)` → `模型仓 ci_entrypoint(注册表校验并运行)` → `调度机回传 GitHub`。
 
-**超时/异常处理**：远端任务有独立进程组和作业标识，尝试终止时必须校验作业身份；只有复查 NPU 空闲，才广播“设备释放”。目前未做 A5 实机的取消/超时联调，不能将单测等同于全链路验收。
+**环境职责**：A3 `process_indexing=card-die` 和 A5 `process_indexing=card` 属于**硬件物理映射**，仍在 Lite Actions；`ascend_env`、模型目录、Checkpoint、编译开关、steps 归属**模型测试**，不再放入调度机资源清单。
+
+**上线须知**：这是跨 GitHub Workflow、Waiter、调度器和模型仓的协议更改。更新两仓后须先在可信分支完成离线/实机验收，待相应 Workflow 已部署，再滚动切换 Agent。不要单独升级调度器后让旧版无 `test_case` 的 Workflow 继续发任务。
 
 ### Step 5 · 为新增的独立 64P 通道部署 GitHub Workflow
 
@@ -308,7 +319,7 @@ for node in nodes:
 
 对常规**单机**用例，在 `tests/integration_tests/` 对应模型文件增加 `OverrideDefinitions`，设置 `test_name`、`ngpu`、`train_script`、`env_vars`、`train_args`、`expected_steps`、`timeout` 及必要的 loss/TensorBoard 校验；Examples 保存可独立运行的合理默认值。对于**多机**用例，单机 `run_tests.py` 的资源池不能跨主机分配，必须使用明确的多节点 `launch` / `verify` 入口（参照既有 A3 16P 的思路，再泛化至 N 节点）。
 
-**Step 2 · 把用例接入已有 suite / CI 入口并先做本地验证**
+**Step 2 · 将测试注册到模型仓 CI 清单，验证后从 GitHub 选择 test ID**
 
 普通用例应由模型仓 `run_tests.py` 的 suite 构造函数（`_TEST_SUITES_FUNCTION`）包含，能通过 `--test_suite` / `--test_name` 选择；例如已准备完整**单机** NPU 环境时，可从模型仓根目录执行：
 
@@ -317,13 +328,13 @@ python3 -m tests.integration_tests.run_tests /tmp/my-integration-test \
   --test_suite deepseek_v4 --test_name dsv4_my_new_8p_test --ngpu 8
 ```
 
-以上是**单机测试命令模板**，`dsv4_my_new_8p_test` 是占位示例，需要替换为已经注册到该 suite 的实际 `test_name`；并非 A5 64P 启动命令。对于多机/专用 E2E，则需接入该 CI 通道**固定、受信任**的模型仓 `launch` / `verify` 入口，而非把任意 shell 命令通过 GitHub 参数透传。在独立测试环境先做最小 step 数验证并明确失败判据。**此阶段不需要在 lite-actions 的 `pipelines.json` 加入测试名称。**
+以上为单机测试命令模板；实际名称必须存在于对应 suite。对于跨节点测试，测试模块应支持 `launch` 与 `verify` 两个入口，且能在独立测试环境最小步数跑通。然后在模型仓 `tests/integration_tests/ci_registry.json` 注册新的 `test ID`、模块、拓扑和 `env_vars` / CANN / Tokenizer / 权重路径；提交模型仓后，从 GitHub Workflow 的 `test_case` 输入框选择新 ID。调度器会核对该 Commit SHA 的注册表及资源匹配才执行，**不需要在 Lite Actions 的 `pipelines.json` 加入测试名，也不会透传任意 Shell 命令**。
 
 **Step 3 · 判断要不要改调度层**
 
 - **复用已有 Workflow、资源与 runner**：只提交模型仓测试代码/入口；Lite Actions **零改动**。
 - **同一 CI 通道换机器/卡数**：仅改 `pools.json` 和必要的 `pipelines.json` 资源映射，确保执行器支持对应拓扑。
-- **新建独立按钮/新硬件执行器**：按第 4 节 Step 4～6 扩展可信 runner 与 Workflow/Waiter 通道协议。
+- **新建独立按钮/资源通道**：按第 4 节更新受信任 Workflow、pipeline_id、Waiter 协议及资源分配；新增同规模测试不需要新增通道。
 
 每次按 `python3 -m unittest discover -s tests` 和 `python3 unified_agent.py --validate` 检查调度侧变更；模型仓新增用例还必须跑它自己对应的单元测试/Integration Test，不能用调度机静态测试代替真实模型验证。
 
@@ -353,6 +364,6 @@ python3 -m tests.integration_tests.run_tests /tmp/my-integration-test \
 
 `logs/system/` 为 Agent 运行日志，`state/` 保存持久去重状态和设备锁。清理历史 `logs/runs/` 须确认任务已彻底结束，不清理运行中的文件；不要将 Token、隐私信息或大块原始内网日志上传到公开 Commit Comment。
 
-**已知限制**：部署方式目前无开机自动拉起；跨进程 NPU 锁只能协调本调度机管理的任务，不能阻止外部用户；取消/崩溃后的跨节点一致性清理和恢复仍需加强；Github-hosted Waiter 有运行时长约束，不能代替长稳测试的异步执行框架。A5 的设备映射与进程表解析尚未验证，不能假设与 A3 相同。
+**已知限制**：新动态选择协议尚未与模型仓主分支的 Workflow 同步上线；当前仅完成离线验证，不代表 A3/A5 新协议端到端通过。部署方式目前无开机自动拉起；跨进程 NPU 锁只能协调本调度机管理的任务，不能阻止外部用户；取消/崩溃后的跨节点一致性清理和恢复仍需加强；Github-hosted Waiter 有运行时长约束，不能代替长稳测试的异步执行框架。A5 的设备映射与进程表解析尚未验证，不能假设与 A3 相同。
 
 **维护准则**：测试事实在模型仓、资源与授权在 lite-actions；能通过补用例解决的，不复制调度器、日志筛选或 GitHub 回传代码。

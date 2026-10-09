@@ -14,10 +14,12 @@ import shlex
 import sys
 import os
 import signal
+import tempfile
 
 from ci_core.resources import wait_reserve
 from ci_core.broadcast import broadcast_job
 from ci_core.logs import metadata, select_remote
+from ci_core.registry import selected_test, load_profile
 import logging
 import time
 
@@ -98,7 +100,19 @@ def selected_processes(output: str, devices: list[int], *, indexing: str = "card
     return processes
 
 
-def remote_preflight(case: dict, pools: dict) -> None:
+def prepare_profile(case: dict, run: dict) -> tuple[str, dict]:
+    """Read test-owned CANN/asset settings from the selected GitHub Commit SHA."""
+    from ci_core.ssh_runner import model_archive
+    test_id = selected_test(run)
+    allocation = case["allocation"]
+    with tempfile.TemporaryDirectory(prefix="lite-ci-model-profile-") as tmp:
+        archive = model_archive(run["head_sha"], Path(tmp))
+        profile = load_profile(archive, test_id, nodes=len(allocation),
+                               ngpu=len(allocation[0]["devices"]))
+    return test_id, profile
+
+
+def remote_preflight(case: dict, pools: dict, *, ascend_env: str | None = None) -> None:
     """Read-only external occupancy precheck; no preemption."""
     if not case.get("allocation"):
         return
@@ -109,7 +123,7 @@ def remote_preflight(case: dict, pools: dict) -> None:
         raise ValueError("NPU process index mode must be configured")
     for request in case["allocation"]:
         host = by_host[request["host_id"]]["ssh"]
-        setup = by_host[request["host_id"]].get("ascend_env")
+        setup = ascend_env
         command = ((f"source {shlex.quote(setup)} >/dev/null 2>&1 && " if setup else "")
                    + "npu-smi info")
         proc = subprocess.run(
@@ -153,15 +167,18 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
     log_dir = task_dir(run, root)
     log_dir.mkdir(parents=True, exist_ok=True)
     logfile = log_dir / "pipeline.log"
+    setup = None
     if kind == "local":
         script = root / "pipeline.sh"
         if not script.exists():
             raise FileNotFoundError(script)
         cmd = ["bash", str(script)]
     elif kind == "ssh":
+        test_id, profile = prepare_profile(case, run)
+        setup = profile["ascend_env"]
         cmd = [sys.executable, "-u", "-m", "ci_core.ssh_runner",
                "--case", case["name"], "--sha", run["head_sha"],
-               "--stamp", log_dir.name,
+               "--test-case", test_id, "--stamp", log_dir.name,
                "--remote-dir", remote_task_name(run)]
     else:
         raise ValueError(f"unknown trusted runner: {kind}")
@@ -170,7 +187,7 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
     lock_root = lock_root or root / "state/device-locks"
     with wait_reserve(lock_root, case.get("allocation", []),
                       timeout=resource_wait_seconds):
-        remote_preflight(case, pools)
+        remote_preflight(case, pools, ascend_env=setup)
         announced = bool(case.get("allocation"))
         with logfile.open("w", encoding="utf-8") as stream:
             rc = 125
@@ -206,7 +223,7 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
                     idle = False
                     for retry in range(3):
                         try:
-                            remote_preflight(case, pools)
+                            remote_preflight(case, pools, ascend_env=setup)
                             idle = True
                             break
                         except (RuntimeError, subprocess.SubprocessError, ValueError):

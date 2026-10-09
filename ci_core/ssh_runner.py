@@ -19,6 +19,7 @@ import sys
 import tempfile
 
 from ci_core.config import load_config
+from ci_core.registry import load_profile, SELECTOR
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO = "git@github.com:depeng1994/torchtitan-npu.git"
@@ -100,14 +101,11 @@ def stage(node: dict, base: str, archive: Path, sha: str) -> str:
 
 
 def remote_command(node: dict, nodes: list[dict], runner: dict, dest: str,
-                   stamp: str, timeout: int) -> str:
+                   stamp: str, timeout: int, test_case: str) -> str:
     """Remote job owns its own process group; its complete log stays remote."""
-    module = runner["module"]  # strictly validated in ci_core.config
-    entry = f"python3 -u -m {module} "
-    if runner["mode"] == "distributed":
-        entry += f"launch {q(dest+'/output')}"
-    else:
-        entry += q(dest + "/output")
+    # Generic, fixed model-owned entrypoint; never interpolate GitHub modules.
+    entry = ("python3 -u -m tests.integration_tests.ci_entrypoint launch "
+             + q(test_case) + " " + q(dest + "/output"))
     env = {
         "NODE_IPS": ",".join(x["node_ip"] for x in nodes),
         "NGPU": str(len(node["devices"])),
@@ -115,17 +113,14 @@ def remote_command(node: dict, nodes: list[dict], runner: dict, dest: str,
         "ASCEND_RT_VISIBLE_DEVICES": ",".join(map(str, node["devices"])),
         "PYTHONUNBUFFERED": "1",
         "LITE_CI_JOB_ID": stamp,
-        **runner.get("env", {}),
+        **runner.get("env_vars", {}),
     }
     if node.get("network_interface"):
         env["Network_Interface"] = node["network_interface"]
-    if node.get("hf_assets_path"):
-        env["HF_ASSETS_PATH"] = node["hf_assets_path"]
-    if node.get("ckpt_init_path"):
-        env["CKPT_INIT_LOAD_PATH"] = node["ckpt_init_path"]
+    env["HF_ASSETS_PATH"] = runner["hf_assets_path"]
+    env["CKPT_INIT_LOAD_PATH"] = runner["ckpt_init_path"]
     env["CKPT_SAVE_LOAD_PATH"] = dest + "/checkpoints"
-    setup = (f"source {q(node['ascend_env'])} >/dev/null 2>&1 && "
-             if node.get("ascend_env") else "")
+    setup = f"source {q(runner['ascend_env'])} >/dev/null 2>&1 && "
     # PID file enables bounded cancellation. Python on the dispatcher always
     # validates job identity before killing its *own* remote process group.
     exports = " ".join(f"{key}={q(value)}" for key, value in env.items())
@@ -165,16 +160,19 @@ def cancel(node: dict, dest: str, stamp: str) -> None:
         print(f"CLEANUP_UNVERIFIED: {node['host_id']} {type(exc).__name__}", flush=True)
 
 
-def verify(nodes: list[dict], runner: dict, base: str, timeout: int) -> int:
+def verify(nodes: list[dict], runner: dict, base: str, timeout: int, test_case: str) -> int:
     if runner["mode"] != "distributed":
         return 0
     node = nodes[0]
     dest = base + "/node0"
-    module = runner["module"]
+    exports = {**runner["env_vars"], "HF_ASSETS_PATH": runner["hf_assets_path"],
+               "CKPT_INIT_LOAD_PATH": runner["ckpt_init_path"]}
+    exported = " ".join(f"{key}={q(value)}" for key, value in exports.items())
     command = (f"cd {q(dest+'/repo')} && "
-               + (f"source {q(node['ascend_env'])} >/dev/null 2>&1 && " if node.get("ascend_env") else "")
+               + f"source {q(runner['ascend_env'])} >/dev/null 2>&1 && "
+               + f"export {exported} && "
                + f"export PYTHONPATH=\"$PWD:${{PYTHONPATH:-}}\" && "
-               + f"python3 -u -m {module} verify {q(dest+'/output')} > {q(dest+'/verify.log')} 2>&1; "
+               + f"python3 -u -m tests.integration_tests.ci_entrypoint verify {q(test_case)} {q(dest+'/output')} > {q(dest+'/verify.log')} 2>&1; "
                + f"rc=$?; if test $rc -ne 0; then cat {q(dest+'/verify.log')} >> {q(dest+'/run.log')}; fi; exit $rc")
     try:
         return ssh(node["ssh"], command, timeout=timeout, check=False).returncode
@@ -182,19 +180,20 @@ def verify(nodes: list[dict], runner: dict, base: str, timeout: int) -> int:
         return 124
 
 
-def run(case: dict, sha: str, stamp: str, *, remote_dir: str | None = None,
-        root: Path = ROOT) -> int:
+def run(case: dict, sha: str, stamp: str, *, test_case: str,
+        remote_dir: str | None = None, root: Path = ROOT) -> int:
     # stamp is the internal immutable GitHub run identity used for safe process
     # termination; remote_dir is only the operator-facing folder name.
     remote_dir = remote_dir if remote_dir is not None else stamp
-    if not STAMP.fullmatch(stamp) or not SHA.fullmatch(sha) or not STAMP.fullmatch(remote_dir):
+    if (not STAMP.fullmatch(stamp) or not SHA.fullmatch(sha)
+            or not STAMP.fullmatch(remote_dir) or not SELECTOR.fullmatch(test_case)):
         raise ValueError("unsafe run identifier / commit / execution directory")
     pools = json.loads((root / "config/pools.json").read_text())
     nodes = allocations(case, pools)
-    runner = case["runner"]
     base = f"{DEST_ROOT}/{remote_dir}"
     with tempfile.TemporaryDirectory(prefix="lite-ci-stage-") as tmp:
         archive = model_archive(sha, Path(tmp))
+        runner = load_profile(archive, test_case, nodes=len(nodes), ngpu=len(nodes[0]["devices"]))
         dirs = {}
         with ThreadPoolExecutor(max_workers=len(nodes)) as executor:
             futures = {executor.submit(stage, node, base, archive, sha): node for node in nodes}
@@ -218,7 +217,8 @@ def run(case: dict, sha: str, stamp: str, *, remote_dir: str | None = None,
             futures = {}
             for node in nodes:
                 dest = dirs[node["host_id"]]
-                cmd = remote_command(node, nodes, runner, dest, stamp, case["timeout_seconds"] - 120)
+                cmd = remote_command(node, nodes, runner, dest, stamp,
+                                     case["timeout_seconds"] - 120, test_case)
                 futures[executor.submit(ssh, node["ssh"], cmd,
                                         timeout=case["timeout_seconds"] - 30,
                                         check=False)] = node
@@ -257,7 +257,7 @@ def run(case: dict, sha: str, stamp: str, *, remote_dir: str | None = None,
                 cancel(node, dirs[node["host_id"]], stamp)
     rc = first_error[1] if first_error else 0
     if rc == 0:
-        rc = verify(nodes, runner, base, min(360, case["timeout_seconds"] // 5))
+        rc = verify(nodes, runner, base, min(360, case["timeout_seconds"] // 5), test_case)
     # Dispatcher's log selector chooses a success/error excerpt from this path.
     failed = next((n for n in nodes if first_error and n["host_id"] == first_error[0]), nodes[0])
     path = dirs[failed["host_id"]] + "/run.log"
@@ -270,6 +270,7 @@ def run(case: dict, sha: str, stamp: str, *, remote_dir: str | None = None,
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--case", required=True)
+    parser.add_argument("--test-case", required=True)
     parser.add_argument("--sha", required=True)
     parser.add_argument("--stamp", required=True)
     parser.add_argument("--remote-dir", required=True,
@@ -278,7 +279,8 @@ def main() -> int:
     case = load_config(ROOT).get(args.case)
     if not case or not case["enabled"] or case["runner"]["kind"] != "ssh":
         raise ValueError("unsupported or disabled SSH pipeline")
-    return run(case, args.sha, args.stamp, remote_dir=args.remote_dir)
+    return run(case, args.sha, args.stamp, test_case=args.test_case,
+               remote_dir=args.remote_dir)
 
 
 if __name__ == "__main__":

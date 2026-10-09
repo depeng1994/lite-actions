@@ -5,63 +5,24 @@
       {
         "host_id": "a3-3",
         "ssh": "a3-3-docker-relay",
-        "device_ids": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7,
-          8,
-          9,
-          10,
-          11,
-          12,
-          13,
-          14,
-          15
-        ],
+        "device_ids": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
         "broadcast_ssh": [
           "a3-3-relay",
           "a3-3-docker-relay"
         ],
         "node_ip": "192.168.0.30",
-        "network_interface": "enp23s0f3",
-        "ascend_env": "/mnt/share/Ascend/20260805101249091/ascend-toolkit/latest/set_env.sh",
-        "hf_assets_path": "/mnt/share/models/DeepSeek-V4-Flash-bf16"
+        "network_interface": "enp23s0f3"
       },
       {
         "host_id": "a3-4",
         "ssh": "a3-4-docker-relay",
-        "device_ids": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7,
-          8,
-          9,
-          10,
-          11,
-          12,
-          13,
-          14,
-          15
-        ],
+        "device_ids": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
         "broadcast_ssh": [
           "a3-4-relay",
           "a3-4-docker-relay"
         ],
         "node_ip": "192.168.0.107",
-        "network_interface": "enp23s0f3",
-        "ascend_env": "/mnt/share/Ascend/20260805101249091/ascend-toolkit/latest/set_env.sh",
-        "hf_assets_path": "/mnt/share/models/DeepSeek-V4-Flash-bf16",
-        "ckpt_init_path": "/mnt/share/dsv4_ckpt_8rank"
+        "network_interface": "enp23s0f3"
       }
     ],
     "notes": "Chip IDs must be confirmed with npu-smi; 2 dies per physical card in this environment.",
@@ -83,146 +44,74 @@
       {
         "host_id": "a5-01",
         "ssh": "root@7.246.125.19",
-        "device_ids": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ],
+        "device_ids": [0, 1, 2, 3, 4, 5, 6, 7],
         "broadcast_ssh": [
           "root@7.246.125.19"
         ],
-        "node_ip": "7.246.125.19"
+        "node_ip": null
       },
       {
         "host_id": "a5-02",
         "ssh": "root@7.246.125.20",
-        "device_ids": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ],
+        "device_ids": [0, 1, 2, 3, 4, 5, 6, 7],
         "broadcast_ssh": [
           "root@7.246.125.20"
         ],
-        "node_ip": "7.246.125.20"
+        "node_ip": null
       },
       {
         "host_id": "a5-03",
         "ssh": "root@7.246.125.21",
-        "device_ids": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ],
+        "device_ids": [0, 1, 2, 3, 4, 5, 6, 7],
         "broadcast_ssh": [
           "root@7.246.125.21"
         ],
-        "node_ip": "7.246.125.21"
+        "node_ip": null
       },
       {
         "host_id": "a5-04",
         "ssh": "root@7.246.125.22",
-        "device_ids": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ],
+        "device_ids": [0, 1, 2, 3, 4, 5, 6, 7],
         "broadcast_ssh": [
           "root@7.246.125.22"
         ],
-        "node_ip": "7.246.125.22"
+        "node_ip": null
       },
       {
         "host_id": "a5-05",
         "ssh": "root@7.246.125.23",
-        "device_ids": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ],
+        "device_ids": [0, 1, 2, 3, 4, 5, 6, 7],
         "broadcast_ssh": [
           "root@7.246.125.23"
         ],
-        "node_ip": "7.246.125.23"
+        "node_ip": null
       },
       {
         "host_id": "a5-06",
         "ssh": "root@7.246.125.24",
-        "device_ids": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ],
+        "device_ids": [0, 1, 2, 3, 4, 5, 6, 7],
         "broadcast_ssh": [
           "root@7.246.125.24"
         ],
-        "node_ip": "7.246.125.24"
+        "node_ip": null
       },
       {
         "host_id": "a5-07",
         "ssh": "root@7.246.125.25",
-        "device_ids": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ],
+        "device_ids": [0, 1, 2, 3, 4, 5, 6, 7],
         "broadcast_ssh": [
           "root@7.246.125.25"
         ],
-        "node_ip": "7.246.125.25"
+        "node_ip": null
       },
       {
         "host_id": "a5-08",
         "ssh": "root@7.246.125.26",
-        "device_ids": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ],
+        "device_ids": [0, 1, 2, 3, 4, 5, 6, 7],
         "broadcast_ssh": [
           "root@7.246.125.26"
         ],
-        "node_ip": "7.246.125.26"
+        "node_ip": null
       }
     ],
     "notes": "Real addresses from operators. SSH, NPU numbering, broadcast and multi-node training are NOT hardware-verified; CI disabled.",

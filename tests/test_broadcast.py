@@ -14,7 +14,8 @@ from ci_core import dispatch
 
 RUN = {"id": 37868722207, "run_number": 6, "run_attempt": 1,
        "created_at": "2026-10-09T01:13:28Z", "name": "A3-16p-CI-Example",
-       "head_sha": "a"*40}
+       "head_sha": "a"*40,
+       "display_title":"A3-16p-CI-Example | test=dsv4_flash_a3_16p_example"}
 
 
 class BroadcastTests(unittest.TestCase):
@@ -89,7 +90,8 @@ class BroadcastTests(unittest.TestCase):
                         "2026-10-09_09-13-28_run-37868722207_attempt-1")
                     kwargs["stdout"].write("TRAINED\n")
                 def wait(self, **kwargs): return 0
-            with patch.object(dispatch,"remote_preflight") as preflight, \
+            with patch.object(dispatch,"prepare_profile",return_value=("dsv4_flash_a3_16p_example",{"ascend_env":"/path/set_env.sh"})), \
+                 patch.object(dispatch,"remote_preflight") as preflight, \
                  patch.object(dispatch,"broadcast_job",side_effect=tell), \
                  patch.object(dispatch.subprocess,"Popen",Runner), \
                  patch.object(dispatch,"metadata",return_value={"host":"a3-4-docker-relay","path":"/mnt/share/ci_tests/fake/run.log"}), \
@@ -109,7 +111,7 @@ class BroadcastTests(unittest.TestCase):
                   "allocation":[{"host_id":"a3-4","devices":[0]}],
                   "pool":"test","enabled":True,"timeout_seconds":5}
             phases=[]
-            def preflight(*args):
+            def preflight(*args, **kwargs):
                 if phases:
                     raise RuntimeError("NPU process still present")
             def notice(*args):
@@ -118,7 +120,8 @@ class BroadcastTests(unittest.TestCase):
             class Runner:
                 def __init__(self, argv, **kwargs): pass
                 def wait(self, **kwargs): return 0
-            with patch.object(dispatch,"remote_preflight",side_effect=preflight), \
+            with patch.object(dispatch,"prepare_profile",return_value=("dsv4_flash_a3_16p_example",{"ascend_env":"/path/set_env.sh"})), \
+                 patch.object(dispatch,"remote_preflight",side_effect=preflight), \
                  patch.object(dispatch,"broadcast_job",side_effect=notice), \
                  patch.object(dispatch.subprocess,"Popen",Runner), \
                  patch.object(dispatch.time,"sleep"):
@@ -138,7 +141,8 @@ class BroadcastTests(unittest.TestCase):
             def wall(*args):
                 events.append(args[-1])
                 return ["a3-4-relay"] if args[-1]=="begin" else []
-            with patch.object(dispatch,"remote_preflight"), \
+            with patch.object(dispatch,"prepare_profile",return_value=("dsv4_flash_a3_16p_example",{"ascend_env":"/path/set_env.sh"})), \
+                 patch.object(dispatch,"remote_preflight"), \
                  patch.object(dispatch,"broadcast_job",side_effect=wall):
                 result=dispatch.execute(case,RUN,root=root)
             self.assertEqual(result.exit_code,125)
