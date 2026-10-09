@@ -16,10 +16,19 @@ class AgentTests(unittest.TestCase):
                 "created_at":"2026-10-09T01:00:00Z","event":"workflow_dispatch",
                 "status":"in_progress","head_branch":"master",
                 "actor":{"login":"depeng1994"},
-                "path":".github/workflows/a3-8p-ci.yml","name":"A3-8p-CI"}
+                "path":".github/workflows/a3-8p-ci.yml","name":"A3-8p-CI-Example"}
 
     def test_valid_dispatch(self):
         self.assertTrue(agent.eligible(self.base_run(),self.cases["a3-8p"]))
+
+    def test_old_name_kept_compatible_until_upstream_updates(self):
+        run=self.base_run()
+        run["name"]="A3-8p-CI"
+        case=self.cases["a3-8p"]
+        self.assertTrue(agent.eligible(run,case))
+        self.assertTrue(agent.report_payload(
+            case,run,agent.make_report(case,run,0,["PASS"])
+        ).startswith("A3-8p-CI-RESULT 39100291:1\n"))
 
     def test_untrusted_actor_denied(self):
         run=self.base_run()
@@ -46,7 +55,7 @@ class AgentTests(unittest.TestCase):
         result=agent.make_report(case,run,0,["PASS"])
         self.assertEqual(result["pipeline"],"dsv4-flash-8p")
         self.assertTrue(agent.report_payload(case,run,result).startswith(
-            "A3-8p-CI-RESULT 39100291:1\n"))
+            "A3-8p-CI-Example-RESULT 39100291:1\n"))
 
 
 if __name__=="__main__":

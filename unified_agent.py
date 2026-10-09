@@ -28,8 +28,11 @@ OWNER = "depeng1994"
 BRANCHES = set(filter(None, os.environ.get("A3_CI_ALLOWED_BRANCHES", "master").split(",")))
 MAX_WORKERS = 2
 INTERVAL = int(os.environ.get("A3_CI_POLL_SECONDS", "60"))
-STATUSES = {"a3-smoke": "A3-2p-CI", "a3-8p": "A3-8p-CI",
-            "a3-16p": "A3-16p-CI"}
+STATUSES = {"a3-smoke": "A3-2p-CI",
+            "a3-8p": "A3-8p-CI-Example",
+            "a3-16p": "A3-16p-CI-Example"}
+# Temporary compatibility for master workflows not yet updated from GitCode.
+LEGACY_STATUSES = {"a3-8p": "A3-8p-CI", "a3-16p": "A3-16p-CI"}
 STATE_MUTEX = threading.RLock()
 
 
@@ -63,14 +66,18 @@ def eligible(run: dict, case: dict) -> bool:
             and run.get("head_branch") in BRANCHES
             and run.get("actor", {}).get("login") == OWNER
             and run.get("path") == ".github/workflows/" + case["workflow"]
-            and run.get("name") == STATUSES.get(case["name"])
+            and run.get("name") in (STATUSES.get(case["name"]),
+                                    LEGACY_STATUSES.get(case["name"]))
             and isinstance(run.get("id"), int)
             and isinstance(run.get("run_attempt", 1), int)
             and bool(re.fullmatch("[0-9a-f]{40}", run.get("head_sha", ""))))
 
 
 def marker(case: dict, run: dict) -> str:
-    return f"{STATUSES[case['name']]}-RESULT {task_identity(run)}"
+    display = run.get("name", STATUSES[case["name"]])
+    if display not in (STATUSES[case["name"]], LEGACY_STATUSES.get(case["name"])):
+        raise ValueError("unrecognized workflow display name")
+    return f"{display}-RESULT {task_identity(run)}"
 
 
 def make_report(case: dict, run: dict, exit_code: int, lines: list[str]) -> dict:

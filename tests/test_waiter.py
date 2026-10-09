@@ -15,11 +15,11 @@ class WaiterTests(unittest.TestCase):
                 "pipeline":"dsv4-flash-8p","status":"PASS",
                 "exit_code":0,"last_20_lines":["ok"]}
         import json
-        body="A3-8p-CI-RESULT 42:1\n"+json.dumps(data)
+        body="A3-8p-CI-Example-RESULT 42:1\n"+json.dumps(data)
         comments=[{"user":{"login":"depeng1994"},"body":body}]
-        self.assertEqual(waiter.find_result(comments,"A3-8p-CI-RESULT 42:1",
+        self.assertEqual(waiter.find_result(comments,"A3-8p-CI-Example-RESULT 42:1",
                         "b"*40,42,1,"dsv4-flash-8p"),data)
-        self.assertIsNone(waiter.find_result(comments,"A3-8p-CI-RESULT 42:1",
+        self.assertIsNone(waiter.find_result(comments,"A3-8p-CI-Example-RESULT 42:1",
                         "b"*40,42,1,"dsv4-flash-16p"))
 
     def test_all_workflows_queue_without_cancel(self):
