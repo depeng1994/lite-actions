@@ -1,0 +1,180 @@
+{
+  "a3-shared": {
+    "type": "ascend-a3",
+    "nodes": [
+      {
+        "host_id": "a3-3",
+        "ssh": "a3-3-docker-relay",
+        "device_ids": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ]
+      },
+      {
+        "host_id": "a3-4",
+        "ssh": "a3-4-docker-relay",
+        "device_ids": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ]
+      }
+    ],
+    "notes": "Chip IDs must be confirmed with npu-smi; 2 dies per physical card in this environment."
+  },
+  "local-smoke": {
+    "type": "local",
+    "nodes": [
+      {
+        "host_id": "dispatcher",
+        "ssh": null,
+        "device_ids": []
+      }
+    ]
+  },
+  "a5-mock": {
+    "type": "ascend-a5",
+    "mock_only": true,
+    "nodes": [
+      {
+        "host_id": "a5-01",
+        "ssh": null,
+        "device_ids": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ]
+      },
+      {
+        "host_id": "a5-02",
+        "ssh": null,
+        "device_ids": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ]
+      },
+      {
+        "host_id": "a5-03",
+        "ssh": null,
+        "device_ids": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ]
+      },
+      {
+        "host_id": "a5-04",
+        "ssh": null,
+        "device_ids": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ]
+      },
+      {
+        "host_id": "a5-05",
+        "ssh": null,
+        "device_ids": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ]
+      },
+      {
+        "host_id": "a5-06",
+        "ssh": null,
+        "device_ids": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ]
+      },
+      {
+        "host_id": "a5-07",
+        "ssh": null,
+        "device_ids": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ]
+      },
+      {
+        "host_id": "a5-08",
+        "ssh": null,
+        "device_ids": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ]
+      }
+    ]
+  }
+}

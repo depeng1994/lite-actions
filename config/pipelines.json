@@ -1,0 +1,193 @@
+{
+  "a3-smoke": {
+    "workflow": "a3-2p-ci.yml",
+    "pool": "local-smoke",
+    "allocation": [],
+    "timeout_seconds": 90,
+    "runner": {
+      "kind": "local",
+      "script": "pipeline.sh"
+    },
+    "enabled": true,
+    "pipeline_id": "npu-smi"
+  },
+  "a3-8p": {
+    "workflow": "a3-8p-ci.yml",
+    "pool": "a3-shared",
+    "allocation": [
+      {
+        "host_id": "a3-4",
+        "devices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ]
+      }
+    ],
+    "timeout_seconds": 7500,
+    "runner": {
+      "kind": "legacy_8p"
+    },
+    "enabled": true,
+    "pipeline_id": "dsv4-flash-8p"
+  },
+  "a3-16p": {
+    "workflow": "a3-16p-ci.yml",
+    "pool": "a3-shared",
+    "allocation": [
+      {
+        "host_id": "a3-3",
+        "devices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ]
+      },
+      {
+        "host_id": "a3-4",
+        "devices": [
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ]
+      }
+    ],
+    "timeout_seconds": 7500,
+    "runner": {
+      "kind": "legacy_16p"
+    },
+    "enabled": true,
+    "pipeline_id": "dsv4-flash-16p"
+  },
+  "a5-64p": {
+    "workflow": "a5-64p-ci.yml",
+    "pool": "a5-mock",
+    "allocation": [
+      {
+        "host_id": "a5-01",
+        "devices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ]
+      },
+      {
+        "host_id": "a5-02",
+        "devices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ]
+      },
+      {
+        "host_id": "a5-03",
+        "devices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ]
+      },
+      {
+        "host_id": "a5-04",
+        "devices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ]
+      },
+      {
+        "host_id": "a5-05",
+        "devices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ]
+      },
+      {
+        "host_id": "a5-06",
+        "devices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ]
+      },
+      {
+        "host_id": "a5-07",
+        "devices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ]
+      },
+      {
+        "host_id": "a5-08",
+        "devices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ]
+      }
+    ],
+    "timeout_seconds": 14400,
+    "runner": {
+      "kind": "mock"
+    },
+    "enabled": false,
+    "pipeline_id": "dsv4-a5-64p"
+  }
+}
