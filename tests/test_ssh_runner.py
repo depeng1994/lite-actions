@@ -21,7 +21,7 @@ TEST_8P = "dsv4_flash_a3_8p_example"
 TEST_16P = "dsv4_flash_a3_16p_example"
 TEST_64P = "dsv4_pro_a5_64p"
 DEFAULT = {
-    "module": "tests.integration_tests.run_multinode_tests",
+    "module": "tests.integration_tests.nightly_all_models_test.a3_8p_tests",
     "mode": "single", "nnodes": 1, "ngpu": 8,
     "ascend_env": "/opt/ascend/set_env.sh",
     "hf_assets_path": "/models/flash",
@@ -106,7 +106,9 @@ class SharedSshRunnerTests(unittest.TestCase):
         selected = ssh_runner.allocations(self.cases["a3-8p"],self.pools)
         dest="/mnt/share/ci_tests/2026-10-09_run_A3-8p-CI-Example_4/node0"
         cmd=ssh_runner.remote_command(selected[0],selected,profile,dest,STAMP,90,TEST_8P)
-        self.assertIn(dest+"/run.log",cmd)
+        self.assertIn(dest,cmd)
+        self.assertIn('job.pgid',cmd)
+        self.assertIn('start_new_session=True',cmd)
         self.assertIn("LITE_CI_JOB_ID="+STAMP,cmd)
         self.assertIn(TEST_8P,cmd)
 
@@ -125,38 +127,43 @@ class SharedSshRunnerTests(unittest.TestCase):
                                remote_dir="../unsafe")
 
     def test_single_process_group_ownership(self):
+        """Real local supervisor must record the process group it actually owns."""
         import signal
         import time
         with tempfile.TemporaryDirectory() as td:
             d=Path(td)
-            # Exercise the same setsid/PID ownership protocol without
-            # loading real CANN libraries or printing process environments.
-            launch=f"cd {ssh_runner.q(d)}; " + (
-                "setsid env LITE_CI_JOB_ID="+STAMP+" bash -c 'exec sleep 30' "
-                ">run.log 2>&1 & pid=$!; "
-                "printf '%s\\n' \"$pid\" >job.pgid; "
-                "wait \"$pid\"; rc=$?; "
-                "printf '%s\\n' \"$rc\" >exit_code.txt; exit \"$rc\"")
-            proc=subprocess.Popen(["bash","-lc",launch], stdout=subprocess.PIPE,
+            (d/'repo/tests/integration_tests').mkdir(parents=True)
+            (d/'repo/tests/__init__.py').touch()
+            (d/'repo/tests/integration_tests/__init__.py').touch()
+            (d/'repo/tests/integration_tests/ci_entrypoint.py').write_text(
+                'import time; time.sleep(30)\n')
+            (d/'set_env.sh').write_text('export FAKE_TOOLKIT_ENV=1\n')
+            local_profile={**DEFAULT,'ascend_env':str(d/'set_env.sh')}
+            node={'host_id':'local','node_ip':'127.0.0.1','position':0,
+                  'ssh':'local','devices':[0]}
+            cmd=ssh_runner.remote_command(node,[node],local_profile,
+                                           str(d),STAMP,90,TEST_8P)
+            proc=subprocess.Popen(['bash','-lc',cmd],stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE)
             pid=None
             try:
-                for _ in range(80):
-                    marker=d/"job.pgid"
-                    if marker.exists():
+                for _ in range(100):
+                    marker=d/'job.pgid'
+                    if marker.exists() and marker.read_text().strip():
                         pid=int(marker.read_text().strip())
                         break
-                    time.sleep(0.05)
-                self.assertIsNotNone(pid)
+                    time.sleep(.05)
+                self.assertIsNotNone(pid,'supervised rank PID not recorded')
                 self.assertEqual(os.getpgid(pid),pid)
                 os.killpg(pid,signal.SIGTERM)
-                self.assertNotEqual(proc.wait(timeout=8),0)
-                self.assertTrue((d/"exit_code.txt").exists())
+                self.assertNotEqual(proc.wait(timeout=10),0)
+                self.assertTrue((d/'exit_code.txt').is_file())
             finally:
-                if proc.poll() is None:
-                    if pid: os.killpg(pid,signal.SIGKILL)
-                    proc.kill()
-                proc.communicate(timeout=8)
+                if pid and proc.poll() is None:
+                    try: os.killpg(pid,signal.SIGKILL)
+                    except ProcessLookupError: pass
+                if proc.poll() is None: proc.kill()
+                proc.communicate(timeout=10)
 
 
 if __name__=="__main__":

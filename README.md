@@ -257,11 +257,11 @@ python3 scripts/preflight_pool.py --pool a5-64p-lab --npu
 
 ### Step 3 · 在 torchtitan-npu 注册 Integration Test 和环境
 
-模型仓 `tests/integration_tests/ci_registry.json` 是**用例注册表**；同一个 CI 通道可以运行多个满足该资源规格的注册用例。例如 A5 64P 的用例条目：
+模型仓 `tests/integration_tests/ci_registry.json` 是**用例注册表**，其三个初始用例分别由 `nightly_all_models_test/a3_8p_tests.py`、`a3_16p_tests.py`、`a5_64p_tests.py` 的 `build_*_test_list()` 定义（不增加规格子目录）；同一个 CI 通道可以运行多个满足该资源规格的注册用例。例如 A5 64P 的用例条目：
 
 ```json
 "dsv4_pro_a5_64p": {
-  "module": "tests.integration_tests.run_a5_64p_multinode_tests",
+  "module": "tests.integration_tests.nightly_all_models_test.a5_64p_tests",
   "mode": "distributed",
   "nnodes": 8,
   "ngpu": 8,
@@ -274,7 +274,7 @@ python3 scripts/preflight_pool.py --pool a5-64p-lab --npu
 
 **这三个空字符串是待部署值，不是有效环境配置**。由用例维护者将 `ascend_env`（CANN set_env.sh）、`hf_assets_path`（Tokenizer/模型目录）和 `ckpt_init_path`（初始权重目录）填写为实际执行机可访问的绝对路径；新执行器会在任务执行前校验并在所有节点复用。A3 的三个路径已有可参考的已知配置，同样已从调度机 `pools.json` 移至模型仓。不同机器如需不同路径，应先统一挂载或在模型仓扩展按节点读取的环境档案，不能在调度拓扑里登记模型路径。
 
-具体训练入口及 EP/DP 参数仍在模型仓的 `examples/` 和 `tests/integration_tests/run_*.py`。`ci_entrypoint.py` 根据受信任 Commit SHA 的 `ci_registry.json` 解析用例，单机或分布式执行均使用同一个 Lite Actions SSH 引擎。
+具体训练入口及 EP/DP 参数仍在模型仓的 `examples/` 和 `tests/integration_tests/nightly_all_models_test/*_tests.py`。`ci_entrypoint.py` 根据受信任 Commit SHA 的 `ci_registry.json` 解析用例，单机或分布式执行均使用同一个 Lite Actions SSH 引擎。
 
 ### Step 4 · 从 GitHub 任务动态选择测试（不在 Lite Actions 注册 Module）
 
@@ -297,6 +297,8 @@ on:
 
 公共调用流程：`GitHub Actions(test_case)` → `Pull Agent(display_title)` → `Dispatcher(资源锁、CANN预检)` → `SSH Runner(固定 SHA、固定入口 + test ID)` → `模型仓 ci_entrypoint(注册表校验并运行)` → `调度机回传 GitHub`。
 
+**Waiter 文件命名**：各 Workflow 统一使用 `.github/scripts/ci-wait-result.py`，Lite Actions 的维护版是 `github/ci_wait_result.py`，无 A3 专属逻辑；等待超时环境变量统一为 `CI_WAIT_TIMEOUT_SECONDS`。
+
 **环境职责**：A3 `process_indexing=card-die` 和 A5 `process_indexing=card` 属于**硬件物理映射**，仍在 Lite Actions；`ascend_env`、模型目录、Checkpoint、编译开关、steps 归属**模型测试**，不再放入调度机资源清单。
 
 **上线须知**：这是跨 GitHub Workflow、Waiter、调度器和模型仓的协议更改。更新两仓后须先在可信分支完成离线/实机验收，待相应 Workflow 已部署，再滚动切换 Agent。不要单独升级调度器后让旧版无 `test_case` 的 Workflow 继续发任务。
@@ -305,7 +307,7 @@ on:
 
 如果需要**独立的 `A5-64p-CI` 按钮**，才在模型仓增加 `.github/workflows/a5-64p-ci.yml`。可参考 lite-actions 的 `github/workflows/a3-16p-ci.yml`，分别设置独立 `name`、`workflow_dispatch`、`concurrency.queue: max`、受信任 actor/branch、超时，以及 Waiter 的固定 `--case a5-64p`。
 
-**独立通道仍需保持三处协议一致**：`config/pipelines.json` 的 `workflow` / `pipeline_id`、`ci_core/reporting.py` 的名称白名单、`github/wait_result.py` 的 `PIPELINES`。当新的 A5 Workflow 与 Waiter 测试、代码审查完成后，将维护副本合入 `torchtitan-npu`（GitCode 上游主仓），再通过 `Sync Upstream` 同步到 GitHub；**只修改 lite-actions 副本，GitHub 不会自动出现新 Action**。正式启用前不要发布可触发但无人接单的 Workflow。
+**独立通道仍需保持三处协议一致**：`config/pipelines.json` 的 `workflow` / `pipeline_id`、`ci_core/reporting.py` 的名称白名单、`github/ci_wait_result.py` 的 `PIPELINES`。当新的 A5 Workflow 与 Waiter 测试、代码审查完成后，将维护副本合入 `torchtitan-npu`（GitCode 上游主仓），再通过 `Sync Upstream` 同步到 GitHub；**只修改 lite-actions 副本，GitHub 不会自动出现新 Action**。正式启用前不要发布可触发但无人接单的 Workflow。
 
 ### Step 6 · 分阶段验证并正式启用
 
@@ -328,7 +330,7 @@ python3 -m tests.integration_tests.run_tests /tmp/my-integration-test \
   --test_suite deepseek_v4 --test_name dsv4_my_new_8p_test --ngpu 8
 ```
 
-以上为单机测试命令模板；实际名称必须存在于对应 suite。对于跨节点测试，测试模块应支持 `launch` 与 `verify` 两个入口，且能在独立测试环境最小步数跑通。然后在模型仓 `tests/integration_tests/ci_registry.json` 注册新的 `test ID`、模块、拓扑和 `env_vars` / CANN / Tokenizer / 权重路径；提交模型仓后，从 GitHub Workflow 的 `test_case` 输入框选择新 ID。调度器会核对该 Commit SHA 的注册表及资源匹配才执行，**不需要在 Lite Actions 的 `pipelines.json` 加入测试名，也不会透传任意 Shell 命令**。
+以上为单机测试命令模板；实际名称必须存在于对应 suite。对于跨节点测试，多机用例通过 `nightly_all_models_test/runner.py` 适配 `launch` 与 `verify`，且能在独立测试环境最小步数跑通。然后在模型仓 `tests/integration_tests/ci_registry.json` 注册新的 `test ID`、模块、拓扑和 `env_vars` / CANN / Tokenizer / 权重路径；提交模型仓后，从 GitHub Workflow 的 `test_case` 输入框选择新 ID。调度器会核对该 Commit SHA 的注册表及资源匹配才执行，**不需要在 Lite Actions 的 `pipelines.json` 加入测试名，也不会透传任意 Shell 命令**。
 
 **Step 3 · 判断要不要改调度层**
 

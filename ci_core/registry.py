@@ -12,7 +12,7 @@ import re
 import tarfile
 
 SELECTOR = re.compile(r"[a-z][a-z0-9_]{0,79}\Z")
-MODULE = re.compile(r"tests\.integration_tests\.run_[a-z0-9_]+\Z")
+MODULE = re.compile(r"tests\.integration_tests\.nightly_all_models_test\.[a-z][a-z0-9_]*_tests\Z")
 ENV_KEY = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 RESERVED = {"NODE_IPS", "NGPU", "NNODES", "ASCEND_RT_VISIBLE_DEVICES",
             "PYTHONUNBUFFERED", "LITE_CI_JOB_ID", "HF_ASSETS_PATH",

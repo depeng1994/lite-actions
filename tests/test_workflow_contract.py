@@ -10,7 +10,7 @@ from ci_core.config import load_config
 
 BASE = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location(
-    "waiter_contract", BASE / "github/wait_result.py"
+    "waiter_contract", BASE / "github/ci_wait_result.py"
 )
 waiter = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(waiter)

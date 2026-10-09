@@ -130,14 +130,23 @@ def remote_command(node: dict, nodes: list[dict], runner: dict, dest: str,
              f"export {exports} && "
              f"export PYTHONPATH=\"$PWD:${{PYTHONPATH:-}}\" && "
              f"exec timeout --signal=TERM --kill-after=30s {int(timeout)}s {entry}")
-    return (
-        f"cd {q(dest)} || exit 125; "
-        f"setsid env LITE_CI_JOB_ID={q(stamp)} bash -lc {q(inner)} > {q(dest+'/run.log')} 2>&1 & "
-        f"pid=$!; printf '%s\\n' \"$pid\" > {q(dest+'/job.pgid')}; "
-        f"wait \"$pid\"; rc=$?; "
-        f"printf '%s\\n' \"$rc\" > {q(dest+'/exit_code.txt')}; "
-        f"printf 'NODE_EXIT: %s\\n' \"$rc\"; exit \"$rc\""
+    # The previous `setsid ... & pid=$!` occasionally recorded a wrapper PID
+    # instead of the process-group leader. Python's start_new_session creates
+    # the exact PGID/PID that we persist and may safely cancel by job marker.
+    supervisor = (
+        "import os,pathlib,subprocess,sys; "
+        "dest=pathlib.Path(sys.argv[1]); marker=sys.argv[2]; inner=sys.argv[3]; "
+        "log=(dest/'run.log').open('wb'); "
+        "env=dict(os.environ,LITE_CI_JOB_ID=marker); "
+        "proc=subprocess.Popen(['bash','-lc',inner],stdout=log,"
+        "stderr=subprocess.STDOUT,env=env,start_new_session=True); "
+        "(dest/'job.pgid').write_text(str(proc.pid)+'\\n'); "
+        "rc=proc.wait(); log.close(); "
+        "(dest/'exit_code.txt').write_text(str(rc)+'\\n'); "
+        "print('NODE_EXIT:',rc,flush=True); sys.exit(rc)"
     )
+    return (f"cd {q(dest)} || exit 125; "
+            f"python3 -c {q(supervisor)} {q(dest)} {q(stamp)} {q(inner)}")
 
 
 def cancel(node: dict, dest: str, stamp: str) -> None:

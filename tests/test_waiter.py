@@ -4,7 +4,7 @@ from pathlib import Path
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location("a3_ci_waiter", ROOT/"github/wait_result.py")
+spec = importlib.util.spec_from_file_location("a3_ci_waiter", ROOT/"github/ci_wait_result.py")
 waiter = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(waiter)
 
@@ -27,7 +27,7 @@ class WaiterTests(unittest.TestCase):
             text=(ROOT/"github/workflows"/file).read_text()
             self.assertIn("queue: max",text)
             self.assertIn("cancel-in-progress: false",text)
-            self.assertIn(".github/scripts/a3-ci-wait-result.py",text)
+            self.assertIn(".github/scripts/ci-wait-result.py",text)
 
 
 if __name__=="__main__":
