@@ -112,6 +112,7 @@ def remote_command(node: dict, nodes: list[dict], runner: dict, dest: str,
         "NNODES": str(len(nodes)),
         "ASCEND_RT_VISIBLE_DEVICES": ",".join(map(str, node["devices"])),
         "PYTHONUNBUFFERED": "1",
+        "ASCEND_SET_ENV_PATH": runner["ascend_env"],
         "LITE_CI_JOB_ID": stamp,
         **runner.get("env_vars", {}),
     }

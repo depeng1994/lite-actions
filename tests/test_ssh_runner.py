@@ -67,7 +67,7 @@ class SharedSshRunnerTests(unittest.TestCase):
     def test_registry_cannot_override_device_assignment(self):
         with tempfile.TemporaryDirectory() as td:
             for data in ({"NODE_IPS": "127.0.0.1"}, {"LITE_CI_JOB_ID": "bad"},
-                         {"ASCEND_RT_VISIBLE_DEVICES": "5"}, {"NGPU": "64"},
+                         {"ASCEND_RT_VISIBLE_DEVICES": "5"}, {"ASCEND_SET_ENV_PATH": "/tmp/bad"}, {"NGPU": "64"},
                          {"evil-name": "x"}):
                 with self.subTest(env=data):
                     tar = archive_with({TEST_8P: {**DEFAULT, "env_vars": data}},
@@ -99,6 +99,7 @@ class SharedSshRunnerTests(unittest.TestCase):
                     self.assertIn("ci_entrypoint launch", script)
                     self.assertIn("LITE_CI_JOB_ID",script)
                     self.assertIn("NGPU=8",script)
+                    self.assertIn("ASCEND_SET_ENV_PATH",script)
                     self.assertNotIn("git@github.com",script)
 
     def test_dir_override_changes_remote_path_not_process_identity(self):

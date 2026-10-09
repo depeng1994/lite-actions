@@ -17,7 +17,7 @@ ENV_KEY = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 RESERVED = {"NODE_IPS", "NGPU", "NNODES", "ASCEND_RT_VISIBLE_DEVICES",
             "PYTHONUNBUFFERED", "LITE_CI_JOB_ID", "HF_ASSETS_PATH",
             "CKPT_INIT_LOAD_PATH", "CKPT_SAVE_LOAD_PATH", "Network_Interface",
-            "PYTHONPATH"}
+            "PYTHONPATH", "ASCEND_SET_ENV_PATH"}
 REGISTRY = "tests/integration_tests/ci_registry.json"
 
 
