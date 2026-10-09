@@ -21,18 +21,27 @@ RESERVED = {"NODE_IPS", "NGPU", "NNODES", "ASCEND_RT_VISIBLE_DEVICES",
 REGISTRY = "tests/integration_tests/ci_registry.json"
 
 
-def selected_test(run: dict) -> str:
+def workflow_label(run: dict) -> str:
+    """Extract the static Workflow name from a GitHub custom run-name.
+
+    GitHub's runs API sets BOTH `name` and `display_title` to the run-name,
+    so unlike the Workflow YAML `name`, the fields can include test selection.
+    """
     name = run.get("name")
     title = run.get("display_title")
-    if not isinstance(name, str) or not isinstance(title, str):
-        raise ValueError("missing GitHub workflow display title / name")
-    prefix = f"{name} | test="
-    if not title.startswith(prefix):
-        raise ValueError("Workflow must expose test_case in trusted run-name")
-    selected = title[len(prefix):]
-    if not SELECTOR.fullmatch(selected):
-        raise ValueError("invalid CI test selector")
-    return selected
+    if not isinstance(name, str) or not isinstance(title, str) or name != title:
+        raise ValueError("inconsistent GitHub run name/display_title")
+    prefix, separator, selector = title.partition(" | test=")
+    if not separator or not SELECTOR.fullmatch(selector):
+        raise ValueError("missing or invalid GitHub CI test selector")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,63}", prefix):
+        raise ValueError("unsafe Workflow name")
+    return prefix
+
+
+def selected_test(run: dict) -> str:
+    workflow_label(run)
+    return run["display_title"].split(" | test=", 1)[1]
 
 
 def load_profile(archive: Path, test_case: str, *, nodes: int, ngpu: int) -> dict:

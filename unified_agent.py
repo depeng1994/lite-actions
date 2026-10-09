@@ -15,7 +15,7 @@ from ci_core.config import load_config
 from ci_core.github import GitHubClient, authorization
 from ci_core.job_state import JobState
 from ci_core.reporting import NAMES, job_key, run_and_report
-from ci_core.registry import selected_test
+from ci_core.registry import selected_test, workflow_label
 
 ROOT = Path(__file__).resolve().parent
 LOG = ROOT / "logs" / "system" / "unified-agent.log"
@@ -28,13 +28,21 @@ LEGACY_STATUSES = {case: labels[1] for case, labels in NAMES.items() if len(labe
 
 
 def eligible(run: dict, case: dict) -> bool:
+    name = run.get("name")
+    known_names = NAMES.get(case["name"], ())
+    authorized_name = name in known_names
+    if not authorized_name and case["runner"]["kind"] == "ssh":
+        try:
+            authorized_name = workflow_label(run) in known_names
+        except ValueError:
+            authorized_name = False
     return (case["enabled"]
             and run.get("event") == "workflow_dispatch"
             and run.get("status") == "in_progress"
             and run.get("head_branch") in BRANCHES
             and run.get("actor", {}).get("login") == OWNER
             and run.get("path") == ".github/workflows/" + case["workflow"]
-            and run.get("name") in NAMES.get(case["name"], ())
+            and authorized_name
             and isinstance(run.get("id"), int)
             and type(run.get("run_number")) is int and run["run_number"] > 0
             and type(run.get("run_attempt", 1)) is int and run.get("run_attempt", 1) > 0

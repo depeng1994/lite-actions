@@ -47,6 +47,19 @@ class WorkflowContractTests(unittest.TestCase):
                 self.assertTrue(all(not any(k in n for k in ("ascend_env", "hf_assets_path", "ckpt_init_path"))
                                     for n in pool["nodes"]))
 
+    def test_github_custom_run_name_matches_case_and_marker(self):
+        case=load_config(BASE)["a3-8p"]
+        text="A3-8p-CI-Example | test=dsv4_flash_a3_8p_example"
+        run=dict(id=37939445270,head_branch="refactor/unified-a3-a5-ci",
+                 event="workflow_dispatch",status="in_progress",head_sha="a"*40,
+                 run_number=10,run_attempt=1,actor={"login":"depeng1994"},
+                 display_title=text,name=text,path=".github/workflows/a3-8p-ci.yml")
+        from unittest.mock import patch
+        with patch.object(unified_agent, "BRANCHES", {"refactor/unified-a3-a5-ci"}):
+            self.assertTrue(unified_agent.eligible(run,case))
+        self.assertEqual(reporting.marker(case,run),
+                         "A3-8p-CI-Example-RESULT 37939445270:1")
+
     def test_old_names_can_still_be_received_from_old_master(self):
         config = load_config(BASE)
         for case_id in ("a3-8p", "a3-16p"):

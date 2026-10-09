@@ -57,6 +57,14 @@ class DispatchTests(unittest.TestCase):
             "2026-10-09_17-43-56_run_A3-16p-CI-Example_6_attempt-2",
         )
 
+    def test_custom_github_run_name_preserves_static_workflow_directory(self):
+        run = {"id":37939445270,"run_number":10,"run_attempt":1,
+               "name":"A3-8p-CI-Example | test=dsv4_flash_a3_8p_example",
+               "display_title":"A3-8p-CI-Example | test=dsv4_flash_a3_8p_example",
+               "created_at":"2026-10-09T13:48:04Z"}
+        self.assertEqual(dispatch.remote_task_name(run),
+                         "2026-10-09_21-48-04_run_A3-8p-CI-Example_10")
+
     def test_execution_node_dir_handles_other_trusted_workflow_names(self):
         run = {"id": 123456, "run_number": 27, "run_attempt": 1,
                "name": "A5-64p-CI", "created_at": "2026-10-09T08:00:00Z"}

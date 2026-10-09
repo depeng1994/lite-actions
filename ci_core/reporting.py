@@ -13,6 +13,7 @@ from ci_core.dispatch import execute, task_dir
 from ci_core.github import GitHubClient, authorization
 from ci_core.job_state import JobState
 from ci_core.logs import clean
+from ci_core.registry import workflow_label
 
 NAMES = {
     "a3-smoke": ("A3-2p-CI",),
@@ -28,6 +29,8 @@ def job_key(run: dict) -> str:
 
 def marker(case: dict, run: dict) -> str:
     name = run.get("name", NAMES[case["name"]][0])
+    if name not in NAMES[case["name"]] and case["runner"]["kind"] == "ssh":
+        name = workflow_label(run)
     if name not in NAMES[case["name"]]:
         raise ValueError("unexpected workflow name")
     return f"{name}-RESULT {job_key(run)}"

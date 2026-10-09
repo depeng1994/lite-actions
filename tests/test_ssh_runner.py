@@ -44,7 +44,7 @@ class SharedSshRunnerTests(unittest.TestCase):
         cls.cases = load_config(ROOT)
 
     def test_selector_reads_run_name_and_never_executable_commands(self):
-        r = {"name": "A3-16p-CI-Example",
+        r = {"name": "A3-16p-CI-Example | test=dsv4_flash_a3_16p_example",
              "display_title": "A3-16p-CI-Example | test=dsv4_flash_a3_16p_example"}
         self.assertEqual(selected_test(r), TEST_16P)
         for bad in ({"display_title": "old run"}, {"display_title": "A3-16p-CI-Example | test=;rm -rf x"},
@@ -52,7 +52,7 @@ class SharedSshRunnerTests(unittest.TestCase):
                     {"display_title": "A3-16p-CI-Example | test=TEST;$(echo hi)"}):
             with self.subTest(bad=bad):
                 with self.assertRaises(ValueError):
-                    selected_test({**r, **bad})
+                    selected_test({**r, "name": bad.get("display_title", r["name"]), **bad})
 
     def test_profile_follows_pinned_archive_and_validates_hardware(self):
         with tempfile.TemporaryDirectory() as td:

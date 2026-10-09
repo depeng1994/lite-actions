@@ -19,7 +19,7 @@ import tempfile
 from ci_core.resources import wait_reserve
 from ci_core.broadcast import broadcast_job
 from ci_core.logs import metadata, select_remote
-from ci_core.registry import selected_test, load_profile
+from ci_core.registry import selected_test, workflow_label, load_profile
 import logging
 import time
 
@@ -63,6 +63,8 @@ def remote_task_name(run: dict) -> str:
     collision with the original execution's immutable training logs.
     """
     name = run.get("name")
+    if isinstance(name, str) and " | test=" in name:
+        name = workflow_label(run)
     if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,63}", name):
         raise ValueError("invalid GitHub workflow name for execution directory")
     number = run.get("run_number")
