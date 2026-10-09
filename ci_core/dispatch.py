@@ -63,9 +63,6 @@ def remote_task_name(run: dict) -> str:
     name = run.get("name")
     if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,63}", name):
         raise ValueError("invalid GitHub workflow name for execution directory")
-    # Earlier example workflows include this suffix in GitHub API; keep the
-    # shorter workflow label used by the Actions list and operator reports.
-    name = name.removesuffix("-Example")
     number = run.get("run_number")
     attempt = run.get("run_attempt", 1)
     if type(number) is not int or number < 1:

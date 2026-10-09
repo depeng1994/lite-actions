@@ -44,7 +44,7 @@ class DispatchTests(unittest.TestCase):
                "name": "A3-16p-CI-Example", "created_at": "2026-10-09T09:43:56Z"}
         self.assertEqual(
             dispatch.remote_task_name(run),
-            "2026-10-09_17-43-56_run_A3-16p-CI_6",
+            "2026-10-09_17-43-56_run_A3-16p-CI-Example_6",
         )
         # Dispatcher keeps globally unique IDs for state, audit and GitHub POST.
         self.assertEqual(
@@ -54,7 +54,7 @@ class DispatchTests(unittest.TestCase):
         run["run_attempt"] = 2
         self.assertEqual(
             dispatch.remote_task_name(run),
-            "2026-10-09_17-43-56_run_A3-16p-CI_6_attempt-2",
+            "2026-10-09_17-43-56_run_A3-16p-CI-Example_6_attempt-2",
         )
 
     def test_execution_node_dir_handles_other_trusted_workflow_names(self):

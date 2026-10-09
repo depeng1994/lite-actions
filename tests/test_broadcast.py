@@ -84,7 +84,7 @@ class BroadcastTests(unittest.TestCase):
                     self.argv = argv
                     self_outer.assertIn("--remote-dir", argv)
                     self_outer.assertEqual(argv[argv.index("--remote-dir")+1],
-                        "2026-10-09_09-13-28_run_A3-16p-CI_6")
+                        "2026-10-09_09-13-28_run_A3-16p-CI-Example_6")
                     self_outer.assertEqual(argv[argv.index("--stamp")+1],
                         "2026-10-09_09-13-28_run-37868722207_attempt-1")
                     kwargs["stdout"].write("TRAINED\n")
