@@ -149,7 +149,8 @@ def cancel(node: dict, dest: str, stamp: str) -> None:
         "folder=pathlib.Path(sys.argv[1]); marker=sys.argv[2]\n"
         "pid=int((folder/'job.pgid').read_text().strip())\n"
         "if pid <= 1: raise SystemExit('invalid pgid')\n"
-        "environ=pathlib.Path(f'/proc/{pid}/environ').read_bytes()\n"
+        "try: environ=pathlib.Path(f'/proc/{pid}/environ').read_bytes()\n"
+        "except FileNotFoundError: raise SystemExit(0)\n"
         "if b'LITE_CI_JOB_ID='+marker.encode()+b'\\x00' not in environ: "
         "raise SystemExit('refuse unrelated process')\n"
         "if os.getpgid(pid)!=pid: raise SystemExit('not group leader')\n"
@@ -200,6 +201,7 @@ def run(case: dict, sha: str, stamp: str, *, root: Path = ROOT) -> int:
             if errors:
                 raise RuntimeError(f"staging failed: {errors}")
     results = {}
+    first_error: tuple[str, int] | None = None
     def terminated(signum: int, _frame: object) -> None:
         raise KeyboardInterrupt(f"dispatcher signal {signum}; cancel owned ranks")
 
@@ -223,6 +225,17 @@ def run(case: dict, sha: str, stamp: str, *, root: Path = ROOT) -> int:
                         rc = 124
                     results[node["host_id"]] = rc
                     print(f"NODE_EXIT: {node['host_id']}={rc}", flush=True)
+                    if rc != 0 and first_error is None:
+                        first_error = (node["host_id"], rc)
+                        # An early rank failure can leave other nodes blocked in
+                        # HCCL indefinitely. Stop siblings immediately, do not
+                        # wait for their SSH timeouts to finish.
+                        pending = [other for other in nodes
+                                   if other["host_id"] not in results]
+                        if pending:
+                            with ThreadPoolExecutor(max_workers=len(pending)) as cleaner:
+                                list(cleaner.map(lambda other: cancel(other,
+                                    dirs[other["host_id"]], stamp), pending))
             except BaseException:
                 # Cleanup begins BEFORE the thread pool waits for SSH clients.
                 # Parallel SSH cancellation bounds eight-node cleanup latency.
@@ -235,11 +248,11 @@ def run(case: dict, sha: str, stamp: str, *, root: Path = ROOT) -> int:
         for node in nodes:
             if results.get(node["host_id"]) in (124, 255):
                 cancel(node, dirs[node["host_id"]], stamp)
-    rc = next((results[n["host_id"]] for n in nodes if results[n["host_id"]]), 0)
+    rc = first_error[1] if first_error else 0
     if rc == 0:
         rc = verify(nodes, runner, base, min(360, case["timeout_seconds"] // 5))
     # Dispatcher's log selector chooses a success/error excerpt from this path.
-    failed = next((n for n in nodes if results[n["host_id"]]), nodes[0])
+    failed = next((n for n in nodes if first_error and n["host_id"] == first_error[0]), nodes[0])
     path = dirs[failed["host_id"]] + "/run.log"
     print(f"RESULT_HOST: {failed['ssh']}", flush=True)
     print(f"RESULT_LOG: {path}", flush=True)

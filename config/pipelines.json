@@ -35,7 +35,9 @@
       "module": "tests.integration_tests.run_multinode_tests",
       "mode": "single",
       "env": {
-        "COMPILE_ENABLE": "0"
+        "COMPILE_ENABLE": "0",
+        "TORCHINDUCTOR_NPU_BACKEND": "ascendc",
+        "STEPS": "5"
       }
     },
     "enabled": true,
@@ -80,7 +82,9 @@
       "env": {
         "COMPILE_ENABLE": "0",
         "MASTER_PORT": "6316",
-        "HCCL_IF_BASE_PORT": "30160"
+        "HCCL_IF_BASE_PORT": "30160",
+        "TORCHINDUCTOR_NPU_BACKEND": "ascendc",
+        "STEPS": "5"
       }
     },
     "enabled": true,

@@ -121,6 +121,42 @@ class SharedSshRunnerTests(unittest.TestCase):
                     proc.kill()
                 proc.communicate(timeout=8)
 
+    def test_failed_node_cancels_siblings_and_preserves_causal_error(self):
+        import threading
+        import contextlib
+        import io
+        import time
+        from concurrent.futures import TimeoutError
+        case = self.cases["a3-16p"]
+        canceled = threading.Event()
+        cleaned = []
+        nodes = ssh_runner.allocations(case, self.pools)
+
+        def staged(node, base, _archive, _sha):
+            return f"{base}/node{node['position']}"
+
+        def fake_ssh(host, command, **kwargs):
+            if host == nodes[0]["ssh"]:
+                if not canceled.wait(timeout=3):
+                    raise AssertionError("failed to cancel stuck sibling promptly")
+                return subprocess.CompletedProcess([host,command],143,"","")
+            return subprocess.CompletedProcess([host,command],1,"","")
+
+        def fake_cancel(node, dest, stamp):
+            cleaned.append(node["host_id"])
+            canceled.set()
+
+        output = io.StringIO()
+        with patch.object(ssh_runner, "model_archive", return_value=Path("/virtual/source.tar.gz")), \
+             patch.object(ssh_runner, "stage", side_effect=staged), \
+             patch.object(ssh_runner, "ssh", side_effect=fake_ssh), \
+             patch.object(ssh_runner, "cancel", side_effect=fake_cancel), \
+             contextlib.redirect_stdout(output):
+            rc = ssh_runner.run(case, "a"*40, RUN_DIR)
+        self.assertEqual(rc, 1)
+        self.assertIn(nodes[0]["host_id"], cleaned)
+        self.assertIn(f"RESULT_HOST: {nodes[1]['ssh']}", output.getvalue())
+
     def test_a5_requires_verified_runtime_paths_before_enable(self):
         import copy
         invalid = copy.deepcopy(self.pools)
