@@ -34,6 +34,9 @@ def load_config(root: Path) -> dict:
         kind = spec["runner"]["kind"]
         if kind not in ("local", "legacy_8p", "legacy_16p", "mock"):
             raise ValueError(f"unknown trusted runner: {kind}")
+        # Mock-only definitions must never become dispatchable by flipping enabled.
+        if spec.get("enabled") and (kind == "mock" or pools[pool].get("mock_only")):
+            raise ValueError(f"unsafe enable of mock/unverified pipeline: {name}")
         if not isinstance(spec["timeout_seconds"], int) or spec["timeout_seconds"] < 1:
             raise ValueError("invalid timeout")
         resolved[name] = {**spec, "name": name}

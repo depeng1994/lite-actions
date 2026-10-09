@@ -46,7 +46,13 @@ def main():
     args = parser.parse_args()
     cases = load_config(ROOT)
     if args.validate:
-        print("Valid pipelines:", ",".join(sorted(cases)))
+        print("Configured CI channels (validation passed):")
+        for name, case in sorted(cases.items()):
+            chips = sum(len(n["devices"]) for n in case.get("allocation", []))
+            status = "ENABLED" if case["enabled"] else "DISABLED"
+            print(f"  {name}: {status} | {case['workflow']} | "
+                  f"pool={case['pool']} | devices={chips} | "
+                  f"runner={case['runner']['kind']}")
         return
 
     LOG.parent.mkdir(parents=True, exist_ok=True)

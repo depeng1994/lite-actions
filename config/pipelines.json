@@ -76,7 +76,7 @@
   },
   "a5-64p": {
     "workflow": "a5-64p-ci.yml",
-    "pool": "a5-mock",
+    "pool": "a5-64p-lab",
     "allocation": [
       {
         "host_id": "a5-01",

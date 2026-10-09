@@ -67,6 +67,60 @@
       }
     ]
   },
+  "a5-64p-lab": {
+    "type": "ascend-a5",
+    "nodes": [
+      {
+        "host_id": "a5-01",
+        "ssh": "root@7.246.125.19",
+        "device_ids": [0, 1, 2, 3, 4, 5, 6, 7],
+        "broadcast_ssh": ["root@7.246.125.19"]
+      },
+      {
+        "host_id": "a5-02",
+        "ssh": "root@7.246.125.20",
+        "device_ids": [0, 1, 2, 3, 4, 5, 6, 7],
+        "broadcast_ssh": ["root@7.246.125.20"]
+      },
+      {
+        "host_id": "a5-03",
+        "ssh": "root@7.246.125.21",
+        "device_ids": [0, 1, 2, 3, 4, 5, 6, 7],
+        "broadcast_ssh": ["root@7.246.125.21"]
+      },
+      {
+        "host_id": "a5-04",
+        "ssh": "root@7.246.125.22",
+        "device_ids": [0, 1, 2, 3, 4, 5, 6, 7],
+        "broadcast_ssh": ["root@7.246.125.22"]
+      },
+      {
+        "host_id": "a5-05",
+        "ssh": "root@7.246.125.23",
+        "device_ids": [0, 1, 2, 3, 4, 5, 6, 7],
+        "broadcast_ssh": ["root@7.246.125.23"]
+      },
+      {
+        "host_id": "a5-06",
+        "ssh": "root@7.246.125.24",
+        "device_ids": [0, 1, 2, 3, 4, 5, 6, 7],
+        "broadcast_ssh": ["root@7.246.125.24"]
+      },
+      {
+        "host_id": "a5-07",
+        "ssh": "root@7.246.125.25",
+        "device_ids": [0, 1, 2, 3, 4, 5, 6, 7],
+        "broadcast_ssh": ["root@7.246.125.25"]
+      },
+      {
+        "host_id": "a5-08",
+        "ssh": "root@7.246.125.26",
+        "device_ids": [0, 1, 2, 3, 4, 5, 6, 7],
+        "broadcast_ssh": ["root@7.246.125.26"]
+      }
+    ],
+    "notes": "Real addresses from operators. SSH, NPU numbering, broadcast and multi-node training are NOT hardware-verified; CI disabled."
+  },
   "a5-mock": {
     "type": "ascend-a5",
     "mock_only": true,
