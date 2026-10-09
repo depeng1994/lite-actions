@@ -1,10 +1,6 @@
 # Runtime data (never version-control job state or logs).
 logs/
 state/
-a3-8p/logs/
-a3-8p/state/
-a3-16p/logs/
-a3-16p/state/
 
 # Interpreter/build artifacts.
 __pycache__/
