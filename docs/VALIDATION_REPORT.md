@@ -28,5 +28,13 @@
 - `lite-actions`：17 项 CPU 单元测试 + 4 项原有单元测试，通过；包括资源竞争、NPU 解析、信任校验、Waiter 协议和 `queue:max` 静态检查。
 - `torchtitan-npu`：A5 64P 3 项配置/拓扑测试通过。
 - **尚未解决**：远端进程在 Action 取消/网络断开后的强一致清理；Agent 重启时 `running` 状态需要人工确认；共享环境的外部任务不遵守本 CI 的锁；`master` 上的专属 Workflow 可能被 GitCode 强制同步覆盖。
-- 旧 Agent 仍监听 `master`，新 Agent 仅在测试分支运行。正式切换前必须先停止旧实例、确定源码同步策略，不可并行监听同一任务。
+- **2026-10-09 正式切换**：旧 2P/8P/16P Agent 进程均已停止，统一 Agent 已迁至 `lite-actions/main` 实际接管（受信任 master / 验证分支）。旧 Agent/Waiter 源码已从本仓移除，历史日志与状态保留。
 - 8P/16P 的模型专用 launch/verify 适配器暂保留；本轮统一的是 GitHub 控制面、资源管理、执行调用接口和日志回传。更彻底的 N 节点 SSH 传输抽象可以后续独立重构。
+
+## 执行机广播（2026-10-09）
+
+- 调度机不广播；Dispatcher 在确认资源空闲并持有物理 NPU 锁后，通过 `wall -n` 广播到本次执行机**宿主机及训练容器**，使用北京时间、88 列星号边框和动态 GitHub Run URL。
+- 真实 A3 8P [Run 37876792907](https://github.com/depeng1994/torchtitan-npu/actions/runs/37876792907)：5-step Eager 训练结束，GitHub Job **Success**；10:55:29–30 开始广播、11:02:45–46 结束广播均成功发送到 `a3-4-relay` 宿主机及 `a3-4-docker-relay` 容器。资源锁释放，Agent 最终状态 `reported/PASS`。
+- A3 16P 本次预检查发现 A3-3 外部任务占用，因此未触发新一轮训练，也**未发送误导性占用通知**。
+- 本版本的广播格式、失败拒绝启动、退出后资源复查、未释放时改发警告通过 CPU Mock；2026-10-09 共 23 项单测通过。
+- 本次 8P 验证上传计量：POST Body 2410 B，任务阶段 HTTP 应用层上传约 3062 B；终端广播通过内网 SSH，不计入 GitHub 上传额度。
