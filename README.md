@@ -24,23 +24,45 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    W["GitHub Actions<br/>workflow_dispatch · queue: max"]
-    H["GitHub-hosted Waiter<br/>等待 Run ID / SHA 对应的结果"]
-    A["lite-actions / 唯一 Pull Agent<br/>主动轮询 GitHub API · 去重 · 状态"]
-    D["Dispatcher<br/>跨用例物理 NPU 锁 · 占用检查 · 任务广播"]
-    X["A3/A5 执行机宿主机 + 容器<br/>SSH · 固定训练脚本 · TensorBoard"]
-    G["GitHub Commit Comment<br/>PASS / FAIL + 最多 20 行"]
-    W --> H
-    W -. "GitHub API，内网主动拉取" .-> A
-    A --> D --> X
-    X --> D --> A --> G --> H
-    classDef control fill:#eef2f7,stroke:#9aa8b8,color:#172033;
-    classDef worker fill:#e3f4ee,stroke:#4aaf90,color:#164e3b;
-    class W,H,A,D,G control;
-    class X worker;
+    subgraph GH["云端 GitHub"]
+        direction TB
+        W["① GitHub Actions<br/>手工触发 · queue: max"]
+        H["② GitHub-hosted Waiter<br/>等待对应 Run ID / SHA"]
+        C["⑥ Commit Comment<br/>PASS / FAIL · 最多 20 行"]
+    end
+
+    subgraph DIS["内网调度机 · lite-actions"]
+        direction TB
+        A["③ 唯一 Pull Agent<br/>主动轮询 · 去重"]
+        D["④ Dispatcher<br/>物理 NPU 锁 · 占用检查 · 广播"]
+    end
+
+    subgraph EX["内网执行机 · A3 / A5"]
+        direction TB
+        X["⑤ SSH 执行固定训练脚本<br/>生成日志 / TensorBoard"]
+    end
+
+    W -->|"启动 Waiter"| H
+    W -.->|"内网通过 GitHub API 主动拉取"| A
+    A --> D
+    D -->|"SSH 调度"| X
+    X -->|"Agent 收集结果并回传"| C
+    C -->|"Waiter 获取结果，结束 Job"| H
+
+    style GH fill:#f2f5fb,stroke:#899db7,stroke-width:2px
+    style DIS fill:#edf5fb,stroke:#6d98ba,stroke-width:2px
+    style EX fill:#e8f6ef,stroke:#4eaa82,stroke-width:2px
+    classDef cloud fill:#ffffff,stroke:#899db7,color:#172033
+    classDef dispatch fill:#ffffff,stroke:#6d98ba,color:#172033
+    classDef execution fill:#ffffff,stroke:#4eaa82,color:#164e3b
+    class W,H,C cloud
+    class A,D dispatch
+    class X execution
 ```
 
-同一个 Workflow 使用 `concurrency.queue: max`、`cancel-in-progress: false` 串行等待；**不同 Workflow** 通过 `(宿主机 ID, 物理 NPU ID)` 文件锁互斥，不重叠的设备可并行。仅向本次占用的**执行机宿主机及训练容器** `wall -n` 广播占用/释放通知（星号框、北京时间和 GitHub Run 链接），**不广播调度机**。
+**按编号阅读**：① 在 GitHub 触发 Action → ② 云端 Waiter 开始等待 → ③ 内网 Agent 主动发现任务 → ④ Dispatcher 预留 NPU、检查占用并广播 → ⑤ 执行机运行训练及验证 → ⑥ Agent 回传 GitHub Comment，由 Waiter 获取结果并结束 Job。② 与 ③～⑤ 并行等待/执行，不是串行阻塞。
+
+同一个 Workflow 使用 `concurrency.queue: max`、`cancel-in-progress: false` 串行排队；不同 Workflow 通过 `(宿主机 ID, 物理 NPU ID)` 锁互斥，设备不重叠可并行。`wall -n` 只广播到**执行机宿主机和训练容器**，不广播调度机。
 
 ### 1.3 两个仓库分别维护什么
 
