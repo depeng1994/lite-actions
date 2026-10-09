@@ -19,6 +19,10 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(dispatch.selected_processes(out,[8]),
                          ["chip 8: pid 4567"])
         self.assertEqual(dispatch.selected_processes(out,[0,1]), [])
+        self.assertEqual(dispatch.selected_processes(out,[3],indexing="card"),
+                         ["chip 3: pid 2345", "chip 3: pid 3456"])
+        with self.assertRaises(ValueError):
+            dispatch.selected_processes(out,[0],indexing="unknown")
         with self.assertRaises(ValueError):
             dispatch.selected_processes("failed", [0])
 

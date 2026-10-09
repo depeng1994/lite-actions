@@ -52,7 +52,7 @@ class ResourceTests(unittest.TestCase):
                 with reserve(root, [{"host_id":"a3-3","devices":[0]}]):
                     pass
 
-    def test_a5_64p_is_mock_only_and_has_8x8_devices(self):
+    def test_a5_64p_configured_as_shared_ssh_and_has_8x8_devices(self):
         root = Path(__file__).resolve().parents[1]
         cfg = load_config(root)
         a5 = cfg["a5-64p"]

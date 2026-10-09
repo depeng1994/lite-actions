@@ -9,16 +9,15 @@ from pathlib import Path
 
 ESCAPE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 SAFE_PATH = re.compile(r"^/mnt/share/ci_tests/[A-Za-z0-9_-]+/(?:node[0-9]+/)?run\.log$")
-SAFE_HOSTS = {"a3-3-docker-relay", "a3-4-docker-relay"}
 METRIC = re.compile(r"tps\b|elapsed_time_per_step|\bstep:\s*[1-9]|\bloss:", re.I)
 ERROR = re.compile(r"Traceback|Error:|Exception:|RuntimeError|AssertionError|FAILED|fatal", re.I)
 RANK0 = re.compile(r"rank0\b|rank[_= ]0\b|global_rank_0", re.I)
 MAX_REMOTE_BYTES = 131072
 
 
-def remote_excerpt(host: str, path: str, *, runner=subprocess.run) -> str:
+def remote_excerpt(host: str, path: str, *, approved_hosts: set[str], runner=subprocess.run) -> str:
     """Retrieve only the last 128 KiB from approved execution hosts."""
-    if host not in SAFE_HOSTS or not SAFE_PATH.fullmatch(path):
+    if host not in approved_hosts or not SAFE_PATH.fullmatch(path):
         raise ValueError("untrusted execution log locator")
     command = "tail -c 131072 -- " + shlex.quote(path)
     result = runner(
@@ -58,8 +57,9 @@ def select_lines(data: str, exit_code: int) -> list[str]:
 
 
 def select_remote(host: str, path: str, exit_code: int, *,
-                  runner=subprocess.run) -> list[str]:
-    return select_lines(remote_excerpt(host, path, runner=runner), exit_code)
+                  approved_hosts: set[str], runner=subprocess.run) -> list[str]:
+    return select_lines(remote_excerpt(host, path, approved_hosts=approved_hosts,
+                                       runner=runner), exit_code)
 
 
 def metadata(log: Path) -> dict[str, str]:

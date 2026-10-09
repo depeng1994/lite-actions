@@ -18,6 +18,7 @@ NAMES = {
     "a3-smoke": ("A3-2p-CI",),
     "a3-8p": ("A3-8p-CI-Example", "A3-8p-CI"),
     "a3-16p": ("A3-16p-CI-Example", "A3-16p-CI"),
+    "a5-64p": ("A5-64p-CI",),
 }
 
 

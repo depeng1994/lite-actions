@@ -22,6 +22,7 @@ class WorkflowContractTests(unittest.TestCase):
         for case_id, expected_name in (
             ("a3-8p", "A3-8p-CI-Example"),
             ("a3-16p", "A3-16p-CI-Example"),
+            ("a5-64p", "A5-64p-CI"),
         ):
             with self.subTest(case=case_id):
                 case = config[case_id]

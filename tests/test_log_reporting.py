@@ -36,7 +36,8 @@ class TestDispatcherReporting(unittest.TestCase):
             seen.append(args)
             return subprocess.CompletedProcess(args,0,b"[rank0] step: 5 loss: 12.1\n",b"")
         result=logs.select_remote("a3-4-docker-relay",
-            "/mnt/share/ci_tests/2026-10-09_run-1_attempt-1/run.log",0,runner=ssh)
+            "/mnt/share/ci_tests/2026-10-09_run-1_attempt-1/run.log",0,
+            approved_hosts={"a3-4-docker-relay"},runner=ssh)
         self.assertEqual(len(result),1)
         self.assertIn("tail -c 131072",seen[0][-1])
         self.assertNotIn("grep",seen[0][-1])
@@ -44,7 +45,7 @@ class TestDispatcherReporting(unittest.TestCase):
                           ("a3-4-docker-relay","/etc/passwd"),
                           ("a3-4-docker-relay","/mnt/share/ci_tests/a/../run.log")):
             with self.assertRaises(ValueError):
-                logs.remote_excerpt(host,path,runner=ssh)
+                logs.remote_excerpt(host,path,approved_hosts={"a3-4-docker-relay"},runner=ssh)
 
     def test_dispatcher_refuses_false_pass_without_remote_log(self):
         with tempfile.TemporaryDirectory() as tmp:

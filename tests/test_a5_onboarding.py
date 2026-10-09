@@ -23,10 +23,10 @@ class A5OnboardingTests(unittest.TestCase):
         case = cases["a5-64p"]
         self.assertEqual(case["pool"], "a5-64p-lab")
         self.assertFalse(case["enabled"])
-        self.assertEqual(case["runner"]["kind"], "mock")
+        self.assertEqual(case["runner"]["kind"], "ssh")
         self.assertEqual(sum(len(item["devices"]) for item in case["allocation"]), 64)
 
-    def test_mock_cannot_be_activated_by_config_flag(self):
+    def test_a5_cannot_enable_before_assets_are_configured(self):
         from tempfile import TemporaryDirectory
         from shutil import copyfile
         import json
@@ -37,7 +37,7 @@ class A5OnboardingTests(unittest.TestCase):
             cases = json.loads((ROOT / "config/pipelines.json").read_text())
             cases["a5-64p"]["enabled"] = True
             (root / "config/pipelines.json").write_text(json.dumps(cases))
-            with self.assertRaisesRegex(ValueError, "unsafe enable"):
+            with self.assertRaisesRegex(ValueError, "missing HF assets path"):
                 load_config(root)
 
     def test_preflight_never_executes_training_and_does_not_auto_accept_keys(self):

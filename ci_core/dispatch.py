@@ -10,8 +10,8 @@ import collections
 import datetime as dt
 import re
 import subprocess
-import shutil
 import shlex
+import sys
 import os
 import signal
 
@@ -26,11 +26,7 @@ BASE = Path(__file__).resolve().parents[1]
 CHIP_PROCESS = re.compile(r"^\|\s*(\d+)\s+([01])\s*\|\s*(\d+)\s*\|")
 MARKER_START = "RESULT_LAST_20_LINES_BEGIN"
 MARKER_END = "RESULT_LAST_20_LINES_END"
-SCRIPTS = {
-    "local": BASE / "pipeline.sh",
-    "legacy_8p": BASE / "legacy/github/scripts/a3-8p-remote-pipeline.sh",
-    "legacy_16p": BASE / "legacy/github/scripts/a3-16p-remote-pipeline.sh",
-}
+SCRIPTS = {"local": BASE / "pipeline.sh"}
 
 
 @dataclass
@@ -51,7 +47,7 @@ def task_dir(run: dict, root: Path) -> Path:
     )
 
 
-def selected_processes(output: str, devices: list[int]) -> list[str]:
+def selected_processes(output: str, devices: list[int], *, indexing: str = "card-die") -> list[str]:
     """Fail closed if NPU process table is unrecognizable.
 
     This particular A3 environment exposes two physical chip IDs per card;
@@ -59,14 +55,19 @@ def selected_processes(output: str, devices: list[int]) -> list[str]:
     """
     if "Process id in container" not in output:
         raise ValueError("npu-smi process table absent")
+    if indexing not in ("card", "card-die"):
+        raise ValueError("unknown NPU process index mapping")
     selected = set(devices)
     processes = []
     for line in output.split("Process id in container")[-1].splitlines():
         match = CHIP_PROCESS.match(line)
         if match:
-            chip_id = int(match.group(1)) * 2 + int(match.group(2))
+            chip_id = int(match.group(1)) * 2 + int(match.group(2)) if indexing == "card-die" else int(match.group(1))
             if chip_id in selected:
                 processes.append(f"chip {chip_id}: pid {match.group(3)}")
+        elif re.match(r"^\|\s*\d+\s+\d+\s*\|", line):
+            # An unknown process-row format cannot safely imply that chips are idle.
+            raise ValueError("unrecognized NPU process row")
     return processes
 
 
@@ -76,12 +77,14 @@ def remote_preflight(case: dict, pools: dict) -> None:
         return
     pool = pools[case["pool"]]
     by_host = {x["host_id"]: x for x in pool["nodes"]}
-    if pool["type"] != "ascend-a3":
-        raise ValueError("Only A3 real hardware has a verified process-table parser")
+    indexing = pool.get("process_indexing")
+    if indexing not in ("card", "card-die"):
+        raise ValueError("NPU process index mode must be configured")
     for request in case["allocation"]:
         host = by_host[request["host_id"]]["ssh"]
-        setup = "/mnt/share/Ascend/20260805101249091/ascend-toolkit/latest/set_env.sh"
-        command = f"source {setup} >/dev/null 2>&1 && npu-smi info"
+        setup = by_host[request["host_id"]].get("ascend_env")
+        command = ((f"source {shlex.quote(setup)} >/dev/null 2>&1 && " if setup else "")
+                   + "npu-smi info")
         proc = subprocess.run(
             ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
              host, "bash -lc " + shlex.quote(command)],
@@ -89,7 +92,7 @@ def remote_preflight(case: dict, pools: dict) -> None:
         )
         if proc.returncode != 0:
             raise RuntimeError(f"NPU preflight failed on {request['host_id']}")
-        found = selected_processes(proc.stdout, request["devices"])
+        found = selected_processes(proc.stdout, request["devices"], indexing=indexing)
         if found:
             raise RuntimeError(
                 f"External NPU activity on {request['host_id']}: {found[:3]}"
@@ -120,24 +123,20 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
     if not case.get("enabled"):
         raise ValueError("Disabled pipeline cannot run on real hardware")
     kind = case["runner"]["kind"]
-    if kind == "mock":
-        raise ValueError("A5 mock must never launch hardware")
     log_dir = task_dir(run, root)
     log_dir.mkdir(parents=True, exist_ok=True)
     logfile = log_dir / "pipeline.log"
-    script = SCRIPTS[kind] if root == BASE else (
-        root / ("pipeline.sh" if kind == "local" else
-                "legacy/github/scripts/a3-8p-remote-pipeline.sh" if kind == "legacy_8p" else
-                "legacy/github/scripts/a3-16p-remote-pipeline.sh")
-    )
-    if not script.exists():
-        raise FileNotFoundError(script)
-    stable = log_dir / "pipeline-snapshot.sh"
-    shutil.copyfile(script, stable)
-    cmd = ["bash", str(stable)]
-    if kind != "local":
-        cmd += [str(run["id"]), str(run.get("run_attempt", 1)),
-                run["head_sha"], log_dir.name]
+    if kind == "local":
+        script = root / "pipeline.sh"
+        if not script.exists():
+            raise FileNotFoundError(script)
+        cmd = ["bash", str(script)]
+    elif kind == "ssh":
+        cmd = [sys.executable, "-u", "-m", "ci_core.ssh_runner",
+               "--case", case["name"], "--sha", run["head_sha"],
+               "--stamp", log_dir.name]
+    else:
+        raise ValueError(f"unknown trusted runner: {kind}")
     import json
     pools = json.loads((root / "config/pools.json").read_text())
     lock_root = lock_root or root / "state/device-locks"
@@ -162,7 +161,7 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
                 except subprocess.TimeoutExpired:
                     os.killpg(proc.pid, signal.SIGTERM)
                     try:
-                        proc.wait(timeout=20)
+                        proc.wait(timeout=60)
                     except subprocess.TimeoutExpired:
                         os.killpg(proc.pid, signal.SIGKILL)
                         proc.wait()
@@ -204,7 +203,9 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
     else:
         try:
             location = metadata(logfile)
-            excerpt = select_remote(location["host"], location["path"], rc)
+            approved = {node["ssh"] for node in pools[case["pool"]]["nodes"] if node.get("ssh")}
+            excerpt = select_remote(location["host"], location["path"], rc,
+                                    approved_hosts=approved)
         except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:
             excerpt = summarize(logfile, rc)[-18:]
             excerpt.append(f"Dispatcher log collection failed: {type(exc).__name__}")

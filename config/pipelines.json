@@ -31,7 +31,12 @@
     ],
     "timeout_seconds": 7500,
     "runner": {
-      "kind": "legacy_8p"
+      "kind": "ssh",
+      "module": "tests.integration_tests.run_multinode_tests",
+      "mode": "single",
+      "env": {
+        "COMPILE_ENABLE": "0"
+      }
     },
     "enabled": true,
     "pipeline_id": "dsv4-flash-8p"
@@ -69,7 +74,14 @@
     ],
     "timeout_seconds": 7500,
     "runner": {
-      "kind": "legacy_16p"
+      "kind": "ssh",
+      "module": "tests.integration_tests.run_16p_multinode_tests",
+      "mode": "distributed",
+      "env": {
+        "COMPILE_ENABLE": "0",
+        "MASTER_PORT": "6316",
+        "HCCL_IF_BASE_PORT": "30160"
+      }
     },
     "enabled": true,
     "pipeline_id": "dsv4-flash-16p"
@@ -185,7 +197,12 @@
     ],
     "timeout_seconds": 14400,
     "runner": {
-      "kind": "mock"
+      "kind": "ssh",
+      "module": "tests.integration_tests.run_a5_64p_multinode_tests",
+      "mode": "distributed",
+      "env": {},
+      "requires_assets": true,
+      "requires_checkpoint": true
     },
     "enabled": false,
     "pipeline_id": "dsv4-a5-64p"

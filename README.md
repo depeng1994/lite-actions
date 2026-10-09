@@ -96,7 +96,7 @@ flowchart LR
 | `A3-2p-CI` | `a3-smoke` | 调度机本地 `npu-smi` 连通性 PoC | 可用；不是 2P 训练 |
 | `A3-8p-CI-Example` | `a3-8p` | A3-4：DeepSeek-V4 Flash，Eager 5 steps | 示例，已有成功记录 |
 | `A3-16p-CI-Example` | `a3-16p` | A3-3 + A3-4：EP16，Eager 5 steps | 示例，已有成功记录 |
-| `A5-64p-CI`（尚未部署 Workflow） | `a5-64p` | A5 8 台 × 每台 8P | **已登记真实 SSH 资源；禁用、Mock 执行器、未实机验证** |
+| `A5-64p-CI`（尚未部署 Workflow） | `a5-64p` | A5 8 台 × 每台 8P | **通用 SSH 执行器已配置；暂未启用，待实机验收** |
 
 `github/workflows/` 是维护副本，不等于 GitHub 上已部署。目标是先把 Workflow 和 Waiter 合入 GitCode 上游主仓，再通过 `Sync Upstream` 镜像到 GitHub；在此之前，镜像同步可能覆盖 GitHub 上专有的 Workflow。已有 PR [#26](https://github.com/depeng1994/torchtitan-npu/pull/26) 涉及 A3 Example 名称，但须以 GitHub 当前实际部署的文件为准。
 
@@ -177,7 +177,7 @@ ls -ltr logs/runs/ | tail
 
 ## 4. 实战：新增 A5 64P（8 台 × 8P）
 
-本节是**真实地址接入配置 + 安全上线流程**，不代表已完成 A5 训练。当前调度机对这 8 个 SSH 地址的探测连接超时；因此配置中 `a5-64p` 保持 `enabled: false`、`runner.kind: mock`，不能直接触发实机 CI。
+本节是**真实地址接入配置 + 安全上线流程**，不代表已完成 A5 训练。当前调度机对这 8 个 SSH 地址的探测连接超时，因此 `a5-64p` 暂为 `enabled: false`。它已经与 A3 共用正式 SSH 执行器，但不能在 SSH/环境未验收时触发训练。
 
 ### Step 1 · 确认 8 台机器的 SSH / NPU / 网络基础条件
 
@@ -204,57 +204,95 @@ python3 scripts/preflight_pool.py --pool a5-64p-lab --npu
 
 ### Step 2 · 在 Lite Actions 登记物理资源与调度通道
 
-仓库内**已经新增** `config/pools.json` 的 `a5-64p-lab`：8 个 `host_id`，SSH 地址如上，每台 `device_ids: [0,1,2,3,4,5,6,7]`，合计 64P。现有 `a5-mock` 仅供 CPU 模拟，不应与真实资源池混用。
+`config/pools.json` 的 `a5-64p-lab` 已登记 8 个 SSH 节点和每节点 8P，合计 64P。A3、A5 的执行流程完全相同：物理资源在 pool 配置，实际拓扑在 allocation 配置。
 
 `config/pipelines.json` 的 `a5-64p` 也已把 `pool` 指向 `a5-64p-lab`，并分配 8×8。这个 JSON **不是测试用例表**：它仅声明“将来 `a5-64p-ci.yml` 这条受信任通道占用哪 64 个芯片、采用哪个可信执行器、超时多少”。保持：
 
 ```json
-{
+"a5-64p": {
+  "workflow": "a5-64p-ci.yml",
   "pool": "a5-64p-lab",
-  "runner": { "kind": "mock" },
+  "allocation": [
+    {"host_id": "a5-01", "devices": [0,1,2,3,4,5,6,7]},
+    {"host_id": "a5-02", "devices": [0,1,2,3,4,5,6,7]},
+    {"host_id": "a5-03", "devices": [0,1,2,3,4,5,6,7]},
+    {"host_id": "a5-04", "devices": [0,1,2,3,4,5,6,7]},
+    {"host_id": "a5-05", "devices": [0,1,2,3,4,5,6,7]},
+    {"host_id": "a5-06", "devices": [0,1,2,3,4,5,6,7]},
+    {"host_id": "a5-07", "devices": [0,1,2,3,4,5,6,7]},
+    {"host_id": "a5-08", "devices": [0,1,2,3,4,5,6,7]}
+  ],
+  "runner": {
+    "kind": "ssh",
+    "module": "tests.integration_tests.run_a5_64p_multinode_tests",
+    "mode": "distributed",
+    "env": {},
+    "requires_assets": true,
+    "requires_checkpoint": true
+  },
+  "timeout_seconds": 14400,
+  "pipeline_id": "dsv4-a5-64p",
   "enabled": false
 }
 ```
 
-以上是**关键字段摘录**，不是替换整个文件的内容。`mock` 会拒绝真实运行；即使误将 `enabled` 改为 `true`，`--validate` 也会拒绝启动，避免尚未验证的 A5 流水线被意外使能。
+以上为 `pipelines.json` 内单条配置示例；仓库已经包含该配置。接入新 A5 节点时，在 `pools.json` 对应节点设置 `ssh`（登录入口）、`node_ip`（HCCL 训练网地址）、`device_ids`、`process_indexing`、`hf_assets_path`（Tokenizer/模型资产目录）及 `ckpt_init_path`（初始化权重目录）。**两种 IP 可能不同，不能未经确认就把 SSH IP 当训练网 IP。** 不知道的路径不能杜撰；正式使能前必须实地核实并填写全部节点。`--validate` 会拒绝使能缺少必要模型资产路径的通道。
 
 ```bash
 python3 -m unittest discover -s tests
 python3 unified_agent.py --validate
 ```
 
-### Step 3 · 在 torchtitan-npu 编写真正的 A5 64P Integration Test
+### Step 3 · 在 torchtitan-npu 维护 A5 64P Integration Test
 
-**测试逻辑只能放在模型仓**。建议为跨节点 A5 创建如下可执行入口（**下列 64P 文件是待实现的建议路径，不是当前已有可运行脚本**）：
+**模型用例仍只在模型仓维护。** `examples/deepseek_v4/debug/deepseek_v4_pro_64p_cpt_4k_a5.sh` 定义 DeepSeek-V4 Pro 64P 的 EP/DP/优化器/训练参数；`tests/integration_tests/run_a5_64p_multinode_tests.py` 提供 `launch`/`verify` 和 TensorBoard 步数、loss 检查。执行器只通过固定 Python module 调用，**不再在 Lite Actions 中复制训练脚本或模型参数**。本仓的 A3 8P/16P 和 A5 64P 都使用 `runner.kind=ssh`。
 
-- `examples/deepseek_v4/debug/deepseek_v4_pro_64p_cpt_4k_a5.sh`：64P 模型训练 recipe，独立确定 EP/DP/TP/优化器/数据资产。
-- `tests/integration_tests/run_a5_64p_multinode_tests.py`：`launch` / `verify` 两个入口，分别启动训练并验证所有 steps、TensorBoard 标量和退出码。
-- `tests/integration_tests/ci_distributed_cases.py` / 对应单测：定义和验证 8 节点 × 每节点 8P 的拓扑、期望步数等。该文件目前只在现有重构候选分支中提供 **specification-only** 示例，不是已部署的 runner。
-- `tests/integration_tests/README.md`：记录用例名称、运行命令、依赖、校验标准与真实测试状态。
+新用例所在模型仓分支须合入 GitCode 上游主仓并通过同步出现在 GitHub 对应 SHA，远端才能从精确 SHA 解包运行。64P 的各节点 `NNODES=8`、`NGPU=8` 由通用执行器注入。EP32/DP-shard32/DP-replicate2 属于模型仓当前候选训练配方，**实际能否训练通过仍以 A5 实机验证为准**。
 
-已有 A5 Pro `32p` Shell **不能不经修改就当作 64P 脚本**；候选参数 EP32、DP_SHARD32、DP_REPLICATE2 仅做静态合法性校验，必须以实际模型、显存、通信和正确的 64-rank 配置验证。保留 `NNODES=8`、每节点 `NGPU=8`，由通用多机启动器注入经过验证的 rank、master 地址/端口、网卡、设备可见性及集群地址，绝不能把 64P 当成单机 `--ngpu 64` 用 `GPUPool` 启动。
+### Step 4 · 使用同一套通用 SSH 执行器（A3/A5 不分叉）
 
-### Step 4 · 扩展调度执行器（A5 真正可运行前必须完成）
+不需要为 A5 单独实现 Dispatcher。现在代码已统一：
 
-**当前代码尚不具备通用 A5 64P 实机执行能力。** `ci_core/dispatch.py` 只实现 A3 的进程表占用检查，现有 `legacy_16p` 固定两台 A3 SSH 目标。需要为 A5 完成：
+| 公共代码 | A3 8P / A3 16P / A5 64P 共用的行为 |
+| --- | --- |
+| `ci_core/config.py` | 校验受信任的 Workflow、资源及固定 Integration Test 入口 |
+| `ci_core/dispatch.py` | NPU 锁、占用检测、广播、调用唯一 SSH 执行器、读取结果 |
+| `ci_core/ssh_runner.py` | 根据 pool/allocation 取 1/2/8 台机器、分发同一 Commit SHA、并行 SSH 启动、等待节点退出、在主节点执行校验 |
+| `ci_core/logs.py` / `ci_core/reporting.py` | 调度机统一有界读取完整日志的一部分、筛选至多 20 行并回传 GitHub |
 
-1. 通用 N 节点 SSH 启动器：从 `pool` 和 `allocation` 获取节点，向 8 台机器分发**同一受信任 Commit SHA** 的代码，并行运行模型仓固定入口；校验每个节点退出码及 rank 编排。
-2. A5 对应的只读占用检测：先确认 `npu-smi` 进程表映射；检测失败要 **fail closed**，不自动杀死其他用户的任务；使用已存在的按 `(host_id, physical chip ID)` 加锁逻辑。
-3. 生命周期管理：超时/失败时清理**本 CI 自己启动**的跨节点进程，确认释放状态后广播。不能把 SSH 客户端退出直接解释成远端 rank 退出。
-4. 日志与结果：原始日志只保存在执行机，调度机通过 `ci_core/logs.py` 读取有界原始日志，统一选择最多 20 行，再由 `ci_core/reporting.py` 通过 GitHub API 发布。执行机不能调用 GitHub，也不负责裁剪日志。
-5. 在 `ci_core/config.py` 的可信执行器白名单和 `ci_core/dispatch.py` 中注册/实现新 runner，并补齐模拟失败、并发资源锁、异常/超时清理和结果协议测试。**不能执行来自 GitHub 输入的任意 Shell 命令。**
+核心调用链是（完整代码见仓库）：
 
-**只有**新执行器通过离线检查与实机阶段验证后，才能把 `runner.kind` 从 `mock` 改成新 runner，并将 `enabled` 设置为 `true`。此项不是单纯修改配置就能跳过的工作。
+```python
+# dispatch.py：三个硬件规模走相同代码路径
+cmd = [sys.executable, "-u", "-m", "ci_core.ssh_runner",
+       "--case", case["name"], "--sha", run["head_sha"],
+       "--stamp", log_dir.name]
+
+# ssh_runner.py：节点从配置动态获取，而不是写死 A3 机器
+nodes = allocations(case, pools)
+for node in nodes:
+    # 阶段一：SSH 分发固定 SHA 的源码
+    # 阶段二：每节点并行执行模型仓固定 module 的 launch
+    # 阶段三：汇总退出码，主节点执行 verify
+    ...
+```
+
+**硬件差异只通过配置体现**，例如：
+
+- A3：`process_indexing=card-die`（现有 A3 两 die 映射），并配置其 `ascend_env` 和 `node_ip`。
+- A5：`process_indexing=card`（按 A5 的 0～7 NPU 逻辑编号设计），其 `npu-smi` 进程输出格式、实际设备映射、`node_ip`/网卡、CANN/资产目录必须上线前核对；无法识别进程占用就拒绝发任务，不抢占用户进程。
+
+**超时/异常处理**：远端任务有独立进程组和作业标识，尝试终止时必须校验作业身份；只有复查 NPU 空闲，才广播“设备释放”。目前未做 A5 实机的取消/超时联调，不能将单测等同于全链路验收。
 
 ### Step 5 · 为新增的独立 64P 通道部署 GitHub Workflow
 
 如果需要**独立的 `A5-64p-CI` 按钮**，才在模型仓增加 `.github/workflows/a5-64p-ci.yml`。可参考 lite-actions 的 `github/workflows/a3-16p-ci.yml`，分别设置独立 `name`、`workflow_dispatch`、`concurrency.queue: max`、受信任 actor/branch、超时，以及 Waiter 的固定 `--case a5-64p`。
 
-**独立通道还需要保持三处协议一致**：`config/pipelines.json` 的 `workflow` / `pipeline_id`、`ci_core/reporting.py` 的名称白名单、`github/wait_result.py` 的 `PIPELINES`。当新的 A5 Workflow 与 Waiter 测试、代码审查完成后，将维护副本合入 `torchtitan-npu`（GitCode 上游主仓），再通过 `Sync Upstream` 同步到 GitHub；**只修改 lite-actions 副本，GitHub 不会自动出现新 Action**。正式启用前不要发布可触发但无人接单的 Workflow。
+**独立通道仍需保持三处协议一致**：`config/pipelines.json` 的 `workflow` / `pipeline_id`、`ci_core/reporting.py` 的名称白名单、`github/wait_result.py` 的 `PIPELINES`。当新的 A5 Workflow 与 Waiter 测试、代码审查完成后，将维护副本合入 `torchtitan-npu`（GitCode 上游主仓），再通过 `Sync Upstream` 同步到 GitHub；**只修改 lite-actions 副本，GitHub 不会自动出现新 Action**。正式启用前不要发布可触发但无人接单的 Workflow。
 
 ### Step 6 · 分阶段验证并正式启用
 
-按照 **代码单测/CPU Mock → 8 台 SSH 连通性 → 只读 NPU/广播检查 → 单机短跑 → 8 机 1 step → 8 机 5 steps + TensorBoard → GitHub Actions E2E** 逐关放行。验收时同时检查 Commit SHA 一致性、所有 64 rank、资源锁互斥、外部占用防护、超时清理、广播、结果回传和 GitHub Job Success/Failure。
+按照 **代码单测/配置校验 → 8 台 SSH 连通性 → 只读 NPU/广播检查 → 单机短跑 → 8 机 1 step → 8 机 5 steps + TensorBoard → GitHub Actions E2E** 逐关放行。验收时同时检查 Commit SHA 一致性、所有 64 rank、资源锁互斥、外部占用防护、超时清理、广播、结果回传和 GitHub Job Success/Failure。
 
 如果 SSH、A5 占用解析、跨节点启动或模型测试任一环节没有通过，就维持 `a5-64p` 为**禁用**，不得为了出现在 Actions 页面上提前启用。
 
@@ -291,7 +329,7 @@ python3 -m tests.integration_tests.run_tests /tmp/my-integration-test \
 | [A3 16P Run 37868722207](https://github.com/depeng1994/torchtitan-npu/actions/runs/37868722207) | 双机 EP16，Eager，5 steps Success |
 | [Run 37869377044](https://github.com/depeng1994/torchtitan-npu/actions/runs/37869377044) | 同一 Workflow 排队行为验证 |
 | [Run 37876792907](https://github.com/depeng1994/torchtitan-npu/actions/runs/37876792907) | 开始/释放广播已验证 |
-| A5 64P | 目前只有 CPU 静态模拟与 8×8 资源登记；**SSH 连通性、训练、GitHub E2E 均未通过验证** |
+| A5 64P | 已接入统一 SSH 执行器与 8×8 资源配置；**SSH 连通性、训练、GitHub E2E 均未通过验证** |
 
 常见阻塞：**Agent 不接单**，依次看是否运行、Workflow 文件路径/名称、actor、branch、`enabled`、唯一 agent lock；**Waiter 不结束**，核对 `run_id` / attempt / SHA、`pipeline_id`、结果 marker 和 GitHub POST 权限；**SSH 失败**，检查调度机路由、host key、密钥和非交互登录；**GPU/NPU 占用**，检查外部进程，禁止抢占别人作业；**重启后任务未恢复**，先查远端实际进程，再处理本地状态。
 

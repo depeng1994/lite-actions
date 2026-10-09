@@ -57,14 +57,11 @@ class BroadcastTests(unittest.TestCase):
     def test_begin_then_end_while_device_lock_held(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)
-            script=root/"legacy/github/scripts/a3-8p-remote-pipeline.sh"
-            script.parent.mkdir(parents=True)
-            script.write_text("printf 'TRAINED\\n'\n")
             (root/"config").mkdir()
             (root/"config/pools.json").write_text(json.dumps({"test":{"type":"ascend-a3","nodes":[
                 {"host_id":"a3-4","ssh":"a3-4-docker-relay","device_ids":[0],
                  "broadcast_ssh":["a3-4-relay","a3-4-docker-relay"]}]}}))
-            case={"runner":{"kind":"legacy_8p"},"allocation":[
+            case={"name":"test-ci","runner":{"kind":"ssh"},"allocation":[
                 {"host_id":"a3-4","devices":[0]}],"pool":"test",
                 "timeout_seconds":10,"enabled":True}
             events=[]
@@ -80,8 +77,13 @@ class BroadcastTests(unittest.TestCase):
                     else:
                         self.fail("Device lock unexpectedly free during wall")
                 return []
+            class Runner:
+                def __init__(self, argv, **kwargs):
+                    kwargs["stdout"].write("TRAINED\n")
+                def wait(self, **kwargs): return 0
             with patch.object(dispatch,"remote_preflight") as preflight, \
                  patch.object(dispatch,"broadcast_job",side_effect=tell), \
+                 patch.object(dispatch.subprocess,"Popen",Runner), \
                  patch.object(dispatch,"metadata",return_value={"host":"a3-4-docker-relay","path":"/mnt/share/ci_tests/fake/run.log"}), \
                  patch.object(dispatch,"select_remote",return_value=["TRAINED"]):
                 result=dispatch.execute(case,RUN,root=root)
@@ -93,12 +95,9 @@ class BroadcastTests(unittest.TestCase):
     def test_release_not_verified_warns_instead_of_falsely_free(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)
-            script=root/"legacy/github/scripts/a3-8p-remote-pipeline.sh"
-            script.parent.mkdir(parents=True)
-            script.write_text("echo TRAINING_DONE\n")
             (root/"config").mkdir()
             (root/"config/pools.json").write_text('{"test":{"type":"ascend-a3","nodes":[]}}')
-            case={"runner":{"kind":"legacy_8p"},
+            case={"name":"test-ci","runner":{"kind":"ssh"},
                   "allocation":[{"host_id":"a3-4","devices":[0]}],
                   "pool":"test","enabled":True,"timeout_seconds":5}
             phases=[]
@@ -108,8 +107,12 @@ class BroadcastTests(unittest.TestCase):
             def notice(*args):
                 phases.append(args[-1])
                 return []
+            class Runner:
+                def __init__(self, argv, **kwargs): pass
+                def wait(self, **kwargs): return 0
             with patch.object(dispatch,"remote_preflight",side_effect=preflight), \
                  patch.object(dispatch,"broadcast_job",side_effect=notice), \
+                 patch.object(dispatch.subprocess,"Popen",Runner), \
                  patch.object(dispatch.time,"sleep"):
                 result=dispatch.execute(case,RUN,root=root)
             self.assertEqual(result.exit_code,125)
@@ -119,12 +122,9 @@ class BroadcastTests(unittest.TestCase):
     def test_failed_begin_stops_launch_and_sends_exit(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)
-            script=root/"legacy/github/scripts/a3-8p-remote-pipeline.sh"
-            script.parent.mkdir(parents=True)
-            script.write_text("echo SHOULD_NOT_RUN\n")
             (root/"config").mkdir()
             (root/"config/pools.json").write_text('{"test":{"type":"ascend-a3","nodes":[]}}')
-            case={"runner":{"kind":"legacy_8p"},"allocation":[{"host_id":"a3-4","devices":[0]}],
+            case={"name":"test-ci","runner":{"kind":"ssh"},"allocation":[{"host_id":"a3-4","devices":[0]}],
                   "pool":"test","enabled":True,"timeout_seconds":5}
             events=[]
             def wall(*args):
