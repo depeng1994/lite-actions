@@ -4,24 +4,21 @@
 
 ## 1. 架构总览
 
-### 1.1 代码同步架构（对应原架构图；`ci-config` 为规划，尚未部署）
+### 1.1 代码同步架构
 
 ```mermaid
 flowchart TB
-    U["GitCode upstream/master<br/>TorchTitan-NPU · tests · examples"]
-    C["GitHub ci-config<br/>长期保留 GitHub 专属 CI（规划中）"]
-    S["Sync Upstream<br/>拉取上游代码 + 叠加 CI（目标行为）"]
-    M["GitHub master<br/>上游最新代码 + GitHub 专属 CI<br/>一次 Push 完成更新"]
-    U --> S
-    C -. "未来提供 CI 配置" .-> S
-    S --> M
+    U["GitCode upstream/master<br/>TorchTitan-NPU · tests · examples<br/>GitHub Workflow / Waiter（待合入）"]
+    S["Sync Upstream<br/>同步上游代码与 CI 配置"]
+    M["GitHub master<br/>镜像 GitCode 上游<br/>运行 GitHub Actions"]
+    U --> S --> M
     classDef base fill:#eef2f7,stroke:#9aa8b8,color:#172033;
     classDef target fill:#e3f4ee,stroke:#4aaf90,color:#164e3b;
-    class U,C,S base;
+    class U,S base;
     class M target;
 ```
 
-**当前事实**：`sync-upstream.yml` 仍按上游分支强制同步，**不会**自动叠加 `ci-config`；目前尚无该配置分支。专属 Workflow 仍需合入 GitCode 上游，或先实现上述 Overlay，避免下一次 Sync 删除。**不要将图中的目标行为误认为已上线。**
+**目标**：将 GitHub Workflow 和 Waiter 直接合入 **GitCode 主仓**，经 `Sync Upstream` 原样同步到 GitHub，不另设配置分支或同步流程。**当前**：上游尚未合入这些文件，强制同步仍可能覆盖 GitHub 专属 Workflow。
 
 ### 1.2 CI 运行架构（已上线）
 
@@ -67,7 +64,7 @@ flowchart TB
 | **`A3-16p-CI-Example`** | `a3-16p` | A3-3 chip 0–7 + A3-4 chip 8–15，EP16 Eager 5 steps | 示例，已验证 |
 | `A5-64p-CI`（尚无 Workflow） | `a5-64p` | A5 Pro 8×8 假资源池 | **禁用，仅 CPU Mock** |
 
-**发布状态**：Example 名称已写入 [torchtitan-npu PR #26](https://github.com/depeng1994/torchtitan-npu/pull/26) 的分支。当前 `master` 中对应 Workflow 文件已被上游同步覆盖，GitHub Actions 旧注册项仍显示原名；**先将配置合入上游或实现 `ci-config` Overlay 并发布到默认分支**，才能让默认 Actions 列表稳定显示 Example 名称。
+**发布状态**：Example 名称已写入 [torchtitan-npu PR #26](https://github.com/depeng1994/torchtitan-npu/pull/26) 分支。当前 `master` 的 Workflow 文件已被上游同步覆盖，GitHub Actions 仍显示旧注册名；**将 Workflow/Waiter 合入 GitCode 主仓并完成同步**后，默认 Actions 列表才能稳定显示新名称。
 
 现有 YAML 文件名 `a3-8p-ci.yml` / `a3-16p-ci.yml`、`case_id`、`pipeline_id` **均不因显示名称增加 Example 而改变**。Agent 过渡期兼容 master 上尚未同步的新旧显示名称及各自结果标识。
 
@@ -165,7 +162,7 @@ GitHub 端：进入 [torchtitan-npu Actions](https://github.com/depeng1994/torch
 1. 从 `lite-actions/github/workflows/a3-8p-ci.yml` 复制薄模板，另起**独立文件名、展示名称、并发组**。正式名称可包含内网 IP（注意公开风险），Example 专供样例用例。
 2. 在 `config/pipelines.json` 注册 `workflow` 与 `pipeline_id`；在 `unified_agent.py` 的 `STATUSES`（及必要的旧版兼容）注册 `case_id → GitHub 展示名称`；在 `github/wait_result.py` 的 `PIPELINES` 注册 `case_id → (展示名称, pipeline_id)`。这些值必须严格一致，否则 Agent 不接单或 Waiter 一直等待。
 3. Workflow 保留 `workflow_dispatch`、`permissions: contents: read`、`concurrency.queue: max`、`cancel-in-progress: false`、可信账号/分支白名单；调用共享 Waiter `python3 .github/scripts/a3-ci-wait-result.py --case <case_id>`。
-4. 将文件同步到**模型仓的** `.github/workflows/` 与 `.github/scripts/a3-ci-wait-result.py`。仅修改 lite-actions 副本**不会**改变 GitHub Actions 页面；同时落实 GitCode 上游同步的文件保留策略。
+4. 将 Workflow 和 Waiter **合入 GitCode 主仓**的 `.github/workflows/`、`.github/scripts/a3-ci-wait-result.py`，然后由 `Sync Upstream` 同步到 GitHub；仅修改 lite-actions 副本**不会**改变 GitHub Actions 页面。
 
 ### Step 6 · 验证和启用
 
