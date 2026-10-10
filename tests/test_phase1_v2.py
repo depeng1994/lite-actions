@@ -60,7 +60,8 @@ class V2Tests(unittest.TestCase):
             root=Path(td)
             (root/"config").mkdir()
             (root/"config/pools.json").write_text(json.dumps(pools))
-            with patch.object(scheduler,"remote_preflight",
+            with patch.dict("os.environ", {"A3_CI_RECLAIM_EXTERNAL_PROCESSES":"0"}), \
+                 patch.object(scheduler,"remote_preflight",
                               side_effect=[RuntimeError("occupied"),None]) as preflight, \
                  patch("ci_core.occupancy.reclaim_candidate") as reclaim:
                 with scheduler.claim_dynamic(root,config["a3-8p"],
