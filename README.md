@@ -315,33 +315,19 @@ gh workflow run a3-8p-lite-actions.yml --ref refactor/unified-a3-a5-ci \
 
 ## 6. 验收参考、排障与限制
 
-| 已有记录 | 结果 |
-| --- | --- |
-| [A3 8P Run 37868718990](https://github.com/depeng1994/torchtitan-npu/actions/runs/37868718990) | Eager 5 steps Success |
-| [A3 16P Run 37868722207](https://github.com/depeng1994/torchtitan-npu/actions/runs/37868722207) | **旧版独立 Dispatcher**：双机 EP16，Eager，5 steps Success；不代表统一 SSH Runner 已通过 |
-| [A3 8P Run 37911399789](https://github.com/depeng1994/torchtitan-npu/actions/runs/37911399789) | **统一 SSH Runner**：8P Eager 5 steps、TensorBoard steps、释放和 GitHub 回传均通过 |
-| [A3 16P Run 37911495316](https://github.com/depeng1994/torchtitan-npu/actions/runs/37911495316) | **统一 SSH Runner 未通过**：A3-4 Rank 报 `duplicate registrations for aten.erfc.default`（初始环境参数尚未恢复时） |
-| [A3 16P Run 37912372023](https://github.com/depeng1994/torchtitan-npu/actions/runs/37912372023) | **统一 SSH Runner 未通过**：HCCL `Communication_Error_Get_Socket(EI0006)`；另一节点通过作业标识保护终止 |
-| [A3 16P Run 37913151439](https://github.com/depeng1994/torchtitan-npu/actions/runs/37913151439) | **统一 SSH Runner 未通过**：恢复 CANN→参数导出顺序后仍发生跨节点 HCCL Socket 超时；已停止重复训练重试 |
-| [A3 8P Run 37939445270](https://github.com/depeng1994/torchtitan-npu/actions/runs/37939445270) | **最新 nightly 重构版实机 Success**：`a3_8p_tests.py`，Eager 5 steps、TensorBoard、结束广播、GitHub PASS |
-| [A3 16P Run 37942444656](https://github.com/depeng1994/torchtitan-npu/actions/runs/37942444656) | **最新 nightly 重构版实机 Success**：`a3_16p_tests.py`，两节点退出码均为 0、Eager 5 steps、TensorBoard、结束广播、GitHub PASS |
-| [A3 8P Run 37952500554](https://github.com/depeng1994/torchtitan-npu/actions/runs/37952500554) | **Inputs + Artifact API 新协议验收 Success**：Run 标题固定 `A3-8p-CI-Example`；Prepare/CI 两个 Job 均 Success；JSON 路径和 `STEPS=5` 由 Artifact 传递，5 steps、TensorBoard、退出码 0、广播和 GitHub PASS |
-| [Run 37869377044](https://github.com/depeng1994/torchtitan-npu/actions/runs/37869377044) | 同一 Workflow 排队行为验证 |
-| [Run 37876792907](https://github.com/depeng1994/torchtitan-npu/actions/runs/37876792907) | 开始/释放广播已验证 |
-| A5 64P | 已接入统一 SSH 执行器与 8×8 资源配置；**SSH 连通性、训练、GitHub E2E 均未通过验证** |
+只保留有代表性的记录；历史成功仅证明**对应提交**，不代表最新 testcase、Workflow 已完成回归。
 
-**16P HCCL 历史故障与修复（2026-10-09）**：早期统一 Runner 的多次 16P 验证曾在 `HcclBroadcast` 阶段报 `EI0006`，基础 TCP 双向连通正常，并不等于 HCCL 设备级连接正常。对照旧版成功脚本后发现，新的 SSH Runner 未向模型仓 `scripts/run_train_multinodes.sh` 传递 `ASCEND_SET_ENV_PATH`，导致它没有按旧流程二次加载 CANN 环境。补回该环境变量后，[Run 37942444656](https://github.com/depeng1994/torchtitan-npu/actions/runs/37942444656) 双机通过 5 steps 和 TensorBoard 校验，GitHub Job Success。该结果说明**新 Runner 的 A3 16P 验收已经通过**；历史失败记录仍保留供追溯。A5 64P 未做实机验收。
+| 场景 | 记录 | 结果 |
+| --- | --- | --- |
+| 8P 成功 | [Run 37939445270](https://github.com/depeng1994/torchtitan-npu/actions/runs/37939445270) | Eager 5 steps、TensorBoard、GitHub PASS |
+| 16P 失败 | [Run 37913151439](https://github.com/depeng1994/torchtitan-npu/actions/runs/37913151439) | 双机 HCCL `EI0006` 超时 |
+| 16P 成功 | [Run 37942444656](https://github.com/depeng1994/torchtitan-npu/actions/runs/37942444656) | 修复 CANN 环境传递后，双机 Eager 5 steps、TensorBoard、GitHub PASS |
+| 64P 待验收 | A5 64P | 通道禁用；SSH/HCCL、设备映射及实际训练尚未完成验证 |
 
-常见阻塞：**Agent 不接单**，依次看是否运行、Workflow 文件路径/名称、actor、branch、`enabled`、唯一 agent lock；**Waiter 不结束**，核对 `run_id` / attempt / SHA、`pipeline_id`、结果 marker 和 GitHub POST 权限；**SSH 失败**，检查调度机路由、host key、密钥和非交互登录；**GPU/NPU 占用**，检查外部进程，禁止抢占别人作业；**重启后任务未恢复**，先查远端实际进程，再处理本地状态。
+**16P 排障经验**：TCP 连通不代表 HCCL 可用；跨机启动须正确传递 `ASCEND_SET_ENV_PATH`。遇到类似错误，优先检查 CANN 环境及 HCCL 网络，而非反复重试训练。
 
-**任务目录命名（均使用北京时间 UTC+08:00，时间取 GitHub Actions `created_at`）**：
+**常见问题**：Agent 不接单查进程、Workflow/actor/branch 白名单与 `enabled`；Waiter 超时查 `run_id/attempt/SHA`、`pipeline_id` 和 GitHub 回传权限；SSH/HCCL 失败查 host key、网络与 CANN；NPU 被占用先查远端残留进程，**禁止抢占他人任务**。
 
-- **执行机**：`/mnt/share/ci_tests/YYYY-MM-DD_HH-MM-SS_run_<Workflow名称>_<run_number>/node0/`（多机还有 `node1/` 等）。例如 [A3 16P Run #6](https://github.com/depeng1994/torchtitan-npu/actions/runs/37913151439) 对应 `2026-10-09_17-43-56_run_A3-16p-CI-Example_6/node0/`；目录保留 Workflow YAML 中的完整 `name`（例如 `-Example`）；新 Workflow 的 run-name 固定，测试选择和参数只出现在 GitHub Actions Inputs / Artifact 中，不进入目录名称。
-- **重新运行**：相同 Run 的第 2 次 attempt 为 `2026-10-09_17-43-56_run_A3-16p-CI-Example_6_attempt-2/`，避免覆盖首次执行的完整训练日志；这里的 `6` 是 GitHub Workflow 的 `run_number`，不是全局 Run ID `37913151439`，也不是 `run_attempt`。
-- **调度机（不变）**：`logs/runs/YYYY-MM-DD_HH-MM-SS_run-ID_attempt-N/` 保持 Run ID，用于日志关联和去重；内部作业标识、进程取消校验及 GitHub 回传仍使用 Run ID。既有执行机历史目录不会自动重命名或删除。
+**日志位置**：执行机完整日志与 TensorBoard 在 `/mnt/share/ci_tests/` 下按北京时间和 Workflow `run_number` 建立的 Run 目录，多机分别保存在 `node0/`、`node1/` 等子目录；重跑通过 `_attempt-N` 避免覆盖。调度机 `logs/runs/` 按 GitHub **Run ID / attempt** 记录任务，`logs/system/` 存 Agent 日志，`state/` 存任务去重与资源锁；不要清理正在运行的任务，或公开 Token、隐私信息及完整内网日志。
 
-`logs/system/` 为 Agent 运行日志，`state/` 保存持久去重状态和设备锁。清理历史 `logs/runs/` 须确认任务已彻底结束，不清理运行中的文件；不要将 Token、隐私信息或大块原始内网日志上传到公开 Commit Comment。
-
-**已知限制**：新动态选择协议已经在模型仓重构分支完成 A3 8P/16P Actions E2E 验收，但仍未与模型仓主分支同步上线；A5 64P 尚未实机验证。部署方式目前无开机自动拉起；跨进程 NPU 锁只能协调本调度机管理的任务，不能阻止外部用户；取消/崩溃后的跨节点一致性清理和恢复仍需加强；Github-hosted Waiter 有运行时长约束，不能代替长稳测试的异步执行框架。A5 的设备映射与进程表解析尚未验证，不能假设与 A3 相同。
-
-**维护准则**：测试事实在模型仓、资源与授权在 lite-actions；能通过补用例解决的，不复制调度器、日志筛选或 GitHub 回传代码。
+**已知限制**：Workflow 仍需与默认分支同步；A5 未实机验收；Agent 无开机自动拉起，资源锁无法约束外部用户，取消或崩溃后须确认远端进程已清理；GitHub Waiter 有时长上限，不用于长稳训练。测试定义归模型仓，机器和调度策略归 Lite Actions。
