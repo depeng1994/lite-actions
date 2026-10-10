@@ -1,6 +1,6 @@
 # Lite Actions V2 重构计划：Phase 1 串行动态调度 → Phase 2 资源池并发
 
-> 状态：**Phase 1 / 待实施**；Phase 2 / 待启动。本文是实施与验收跟踪的唯一计划，不表示任何阶段已通过。  
+> 状态：**Phase 1 / 实施中（独立开发分支，尚未生产切换）**；Phase 2 / 待启动。本文是实施与验收跟踪的唯一计划，不表示任何阶段已通过。  
 > 方案：**A（已确认）**。Phase 1 = 双仓解耦 + GitHub Matrix Jobs + 动态选卡 + **全局串行训练**；Phase 2 = 在 Phase 1 稳定基线之上增加**真正并发**。  
 > 创建：2026-10-10；最近一次计划调整：2026-10-10。  
 > 计划初始代码基线：`lite-actions/main 2a0427c`、`torchtitan-npu/master b91257e`；本计划文件的维护提交不等于执行代码基线更新。  
@@ -307,12 +307,12 @@ Phase 1 Scheduler 流程：
 
 | 里程碑 | 当前状态 | 代码 PR / SHA | 验收 Run / 日志 | 风险与结论 |
 | --- | --- | --- | --- | --- |
-| P1.0 基线/拓扑 | 待开始 | — | — | — |
-| P1.1 仓库去重/契约 | 待开始 | — | — | — |
-| P1.2 Matrix/独立结果 | 待开始 | — | — | — |
-| P1.3 动态选卡/占用策略 | 待开始 | — | — | — |
-| P1.4 8P/16P 与恢复 | 待开始 | — | — | — |
-| P1.5 Phase 1 发布 | 待开始 | — | — | — |
+| P1.0 基线/拓扑 | **进行中** | [Lite Draft PR #1](https://github.com/depeng1994/lite-actions/pull/1) | 旧版 Lite 60 tests OK（1 skipped）；只读 A3 SSH/NPU 检查 | 拓扑组未逐组实机认证 |
+| P1.1 仓库去重/契约 | **开发分支完成，验收待补** | [Lite #1](https://github.com/depeng1994/lite-actions/pull/1) · [模型仓 #28](https://github.com/depeng1994/torchtitan-npu/pull/28) | Lite 67 tests OK（1 skipped）、模型仓 pytest 20 passed | 已移除镜像；线上 Smoke 未执行 |
+| P1.2 Matrix/独立结果 | **CPU 验证中** | [Lite #1](https://github.com/depeng1994/lite-actions/pull/1) · [模型仓 #28](https://github.com/depeng1994/torchtitan-npu/pull/28) | Suite→Matrix、两 Case 独立回传的单测/Mock 通过 | 真实 Actions Matrix、8P 双 PASS 待执行 |
+| P1.3 动态选卡/占用策略 | **开发分支初版完成，实机待验收** | [Lite #1](https://github.com/depeng1994/lite-actions/pull/1) | 配置 validate OK、动态候选组/锁及 PID 分类 CPU 测试通过 | A3 设备组实机验证、受控清理策略 E2E 待执行 |
+| P1.4 8P/16P 与恢复 | **CPU 故障测试进行中** | [Lite #1](https://github.com/depeng1994/lite-actions/pull/1) | Agent 取消与未知残留隔离 Mock 通过 | 真正运行时取消/Agent 重启/8P、16P 实机待验收 |
+| P1.5 Phase 1 发布 | **未开始** | — | — | 生产旧 Agent 未替换，禁止提前上线 |
 | P2.0 并发资源预算 | **待 Phase 1 完成** | — | — | — |
 | P2.1 租约/多任务调度 | 待开始 | — | — | — |
 | P2.2 跨 Host 2×8P | 待开始 | — | — | — |
@@ -332,3 +332,4 @@ Phase 1 Scheduler 流程：
 - **2026-10-10**：原始单阶段重构计划建立，核查已有两仓源码与历史 8P/16P 验收。
 - **2026-10-10**：依维护者要求：`auto-occupy`、`vllm` 可按 PID 定点清理；普通用户进程等待释放，并增加防误杀/重检门槛。
 - **2026-10-10**：维护者确认**方案 A**：Phase 1 完成 Matrix + 动态选卡但**不并发**；Phase 2 再做多任务并发。重新编排 P1.0–P1.5、P2.0–P2.4 的目标、门槛、测试矩阵、发布与回滚；**仅更新计划，未改运行代码、未触发训练、未结束进程**。
+- **2026-10-10**：启动 Phase 1 方案 A 开发。在调度机**独立 Git worktree**建立 `refactor/v2-phase1-serial` 双仓分支；完成 V2 Plan/Matrix/Case Waiter、资源配置解耦及串行动态选卡初版，删除 Lite 重复 `github/` 镜像；推送 [Lite Actions Draft PR #1](https://github.com/depeng1994/lite-actions/pull/1)、[TorchTitan-NPU Draft PR #28](https://github.com/depeng1994/torchtitan-npu/pull/28)。Lite CPU unittest 67 OK（1 skipped），模型仓相关 pytest 20 passed；A3 做了只读 SSH/NPU 探测。**尚未在新链路触发真实 NPU 训练、Kill 外部进程、切换生产 Agent 或完成 Phase 1 门禁。**
