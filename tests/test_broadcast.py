@@ -107,6 +107,36 @@ class BroadcastTests(unittest.TestCase):
             self.assertEqual(preflight.call_count,2)
             self.assertIn("TRAINED",result.log.read_text())
 
+    def test_end_wall_failure_does_not_relabel_verified_training_as_failed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            (root/"config").mkdir()
+            (root/"config/pools.json").write_text('{"test":{"type":"ascend-a3","nodes":[]}}')
+            case={"name":"test-ci","runner":{"kind":"ssh"},"allocation":[
+                {"host_id":"a3-4","devices":[0]}],"pool":"test",
+                "enabled":True,"timeout_seconds":10}
+            events=[]
+            def wall(*args):
+                events.append(args[-1])
+                return ["a3-4-relay"] if args[-1]=="end" else []
+            class Runner:
+                def __init__(self,argv,**kwargs):kwargs["stdout"].write("CASE_RESULT approved PASS 0\n")
+                def poll(self):return None
+                def wait(self,**kwargs):return 0
+            with patch.object(dispatch,"prepare_profile",
+                              return_value=("approved",{"ascend_env":"/path/set_env.sh"})), \
+                 patch.object(dispatch,"remote_preflight"), \
+                 patch.object(dispatch,"broadcast_job",side_effect=wall), \
+                 patch.object(dispatch.subprocess,"Popen",Runner), \
+                 patch.object(dispatch,"metadata",
+                              return_value={"host":"a3-4-docker-relay",
+                                            "path":"/mnt/share/ci_tests/fake/run.log"}), \
+                 patch.object(dispatch,"select_remote",return_value=["step5 PASS"]):
+                execution=dispatch.execute(case,RUN,root=root)
+            self.assertEqual(execution.exit_code,0)
+            self.assertTrue(execution.release_verified)
+            self.assertEqual(events,["begin","end"])
+
     def test_release_not_verified_warns_instead_of_falsely_free(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)

@@ -304,11 +304,14 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
                     try:
                         errors = broadcast_job(case, pools, run, phase)
                         if errors:
-                            logging.error("CI %s wall failed: %s",phase,errors)
-                            rc = rc or 125
+                            # End/uncertain broadcast is best-effort: notification
+                            # transport failures do not invalidate confirmed
+                            # training exit, TensorBoard, or NPU release.
+                            # BEGIN remains mandatory and blocks launch.
+                            logging.warning("CI %s wall delivery incomplete: %s",
+                                            phase, errors)
                     except Exception:
-                        logging.exception("CI exit wall failed")
-                        rc = rc or 125
+                        logging.exception("CI exit wall failed (non-fatal alert)")
                     if not idle:
                         release_verified = False
                         stream.write("\nERROR: NPU resource release unverified; "
