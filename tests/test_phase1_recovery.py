@@ -170,6 +170,8 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(classify(["python3","-m","vllm.entrypoints.openai.api_server"]),
                          "vllm")
         self.assertEqual(classify(["python3","/opt/auto_occupy.py"]),"auto-occupy")
+        self.assertEqual(classify(["python3","/data/example/auto-occupy/auto_occupy_worker.py"]),"auto-occupy")
+        self.assertIsNone(classify(["python3","/data/example/other/auto_occupy_worker.py"]))
         self.assertIsNone(classify(["python3","train.py","--data","/data/vllm"]))
         self.assertIsNone(classify(["python3","train.py","--arg","auto-occupy"]))
 

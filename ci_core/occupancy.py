@@ -75,6 +75,11 @@ def direct_class(argv):
         scripts=[os.path.basename(x).lower() for x in args[:2] if x.endswith(('.py','.sh'))]
         if any(x in ('auto_occupy.py','auto-occupy.py','auto-occupy.sh') for x in scripts):
             return 'auto-occupy'
+        # Explicit trusted worker entrypoint: not an arbitrary flag/data path.
+        if any(os.path.basename(x).lower() == 'auto_occupy_worker.py'
+               and os.path.basename(os.path.dirname(x)).lower() in ('auto-occupy','auto_occupy')
+               for x in args[:2]):
+            return 'auto-occupy'
         if any(x in ('vllm.py','vllm_server.py') for x in scripts):
             return 'vllm'
     return None
