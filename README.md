@@ -1,6 +1,6 @@
 # Lite Actions
 
-> **V2 Phase 1 开发分支说明**：本分支正在实现动态选卡 + GitHub Matrix Jobs + **全局串行训练**。生产调度机当前仍运行旧版 main，不得仅因本分支单测通过就替换生产 Agent。阶段目标、准入门槛、回滚与实施进度参阅 [REFACTOR_PLAN.md](REFACTOR_PLAN.md)。
+> **V2 Phase 1 交付说明**：GitHub Matrix 每个 Case 独立 Job、动态 A3 选卡与**全局串行训练**已完成实机功能回归。发布状态、剩余 Gate 与证据以 [REFACTOR_PLAN.md](REFACTOR_PLAN.md) 为准；生产操作参阅 [Phase 1 运维及回滚手册](docs/phase1_runbook.md)。不能以开发分支单测替代正式发布验收。
 
 **一句话**：用 GitHub Actions 当远程按钮，内网调度机主动领取任务，锁定指定 NPU、SSH 执行训练，再把 PASS/FAIL 和少量日志回传 GitHub。**无需公网 IP、入站端口或 Self-hosted Runner。**
 
@@ -27,7 +27,7 @@ flowchart LR
     class M target;
 ```
 
-**目标**：将 GitHub Workflow 和 Waiter 直接合入 **GitCode 主仓**，经 `Sync Upstream` 原样同步到 GitHub，不另设配置分支或同步流程。**当前**：上游尚未合入这些文件，强制同步仍可能覆盖 GitHub 专属 Workflow。
+**发布规则**：模型仓 GitCode `master` 是上游主源，`Sync Upstream` 每日镜像 GitHub 同名分支。2026-10-10 已在两侧特性分支合并 GitCode/GitHub 原有分叉提交（`99cd7e3`）；正式发布必须将同一个发布 SHA 以快进方式提交到两侧 `master`，避免次日强制同步覆盖。
 
 ### 1.2 CI 运行架构（已上线）
 
@@ -73,7 +73,7 @@ flowchart LR
 
 **数据路径**：执行机保留完整 `run.log`；调度机 Python 通过 SSH 仅读取最后 128 KiB 原始日志，再统一筛选性能指标或异常上下文（最多 20 行，每行最多 180 字符）。`ci_core/reporting.py` 在调度机生成结果 JSON 并调用 GitHub REST API，**执行机无 Token，Pull Agent 只负责发现与提交任务，无任何 AI Agent API 调用**。
 
-**生产 V1** 使用 Workflow 级排队/设备锁；**V2 Phase 1** 由 Dispatcher 统一限制全局 **1 个训练 Case**，即使 GitHub Matrix Waiter 并列展示也不会并行占卡。`wall -n` 只广播到**执行机宿主机和训练容器**，不广播调度机。
+**V2 Phase 1** 由 Dispatcher 统一限制全局 **1 个训练 Case**，即使 GitHub Matrix Waiter 并列展示也不会并行占卡；V1 仅作为受控回滚版本保留。`wall -n` 只广播到**执行机宿主机和训练容器**，不广播调度机。
 
 ### 1.3 职责边界：测试用例与调度配置分别维护
 
@@ -103,11 +103,11 @@ flowchart LR
 | Actions 展示名称 | 通道 ID | 作用 | 状态 |
 | --- | --- | --- | --- |
 | `Dispatcher-Smoke` | `a3-smoke` | 调度机本地 `npu-smi` 连通性 PoC | 可用；不是 2P 训练 |
-| `A3-8p-CI-Example` | `a3-8p` | A3-4：DeepSeek-V4 Flash，Eager 5 steps | **统一 SSH Runner 实机已通过** |
+| `A3-8p-CI-Example` | `a3-8p` | 已验证的 A3-3 / A3-4 合法 8P 组动态选卡，Muon + AdamW Eager 5 steps | **V2 两个独立 Matrix Jobs，5 steps/TB 实机通过** |
 | `A3-16p-CI-Example` | `a3-16p` | A3-3 + A3-4：EP16，Eager 5 steps | **统一 SSH Runner + nightly 用例已实机通过 5 steps** |
 | `A5-64p-CI`（尚未部署 Workflow） | `a5-64p` | A5 8 台 × 每台 8P | **通用 SSH 执行器已配置；暂未启用，待实机验收** |
 
-**V2 代码归属**：模型仓 `.github/` 是唯一 Workflow/Waiter 定义；本仓不再维护镜像。GitCode 主源同步仍可能覆盖 GitHub 上的 V2 Workflow，切换前须核实主源版本。已有 PR [#26](https://github.com/depeng1994/torchtitan-npu/pull/26) 涉及 A3 Example 名称，但须以 GitHub 当前实际部署的文件为准。
+**V2 代码归属**：模型仓 `.github/` 是唯一 Workflow/Waiter 定义；本仓不再维护镜像。发布前验证 GitCode/GitHub `master` 的同 SHA 和 Workflow 白名单。独立 Case Job 的回归证据与取消演练记录见 [Phase 1 计划台账](REFACTOR_PLAN.md)。
 
 **安全提示**：Workflow 展示名和公开仓 README 可被外部看到，尽量不用内网 IP 命名。下文 A5 地址为指定的接入示例；在公开仓推送真实地址前应确认符合内部信息发布要求。
 
@@ -297,11 +297,11 @@ gh workflow run a3-8p-lite-actions.yml --ref master \
   -f 'test_cases=[{"suite":"a3_8p_tests"}]'
 ```
 
-**V2 Phase 1 新链路（开发中，未生产上线）**：GitHub Inputs → Prepare 校验并展开 `build_test_list()` → 一个 SHA/Run/Attempt 绑定的 Artifact + Matrix（每 Case 独立 Job）→ Dispatcher 唯一领取 Run、展开 Case → **全局单训练槽位** → Pool 合法拓扑动态选卡 → SSH/TensorBoard 校验 → Case 级 Commit Comment → 对应 Matrix Waiter 独立结束。A3-8P 计划上限 4 个唯一 Case（当前 Suite 实际 2），16P 上限 2；A5 仍禁用。
+**V2 Phase 1 串行动态调度链路（发布验收）**：GitHub Inputs → Prepare 校验并展开 `build_test_list()` → 一个 SHA/Run/Attempt 绑定的 Artifact + Matrix（每 Case 独立 Job）→ Dispatcher 唯一领取 Run、展开 Case → **全局单训练槽位** → Pool 合法拓扑动态选卡 → SSH/TensorBoard 校验 → Case 级 Commit Comment → 对应 Matrix Waiter 独立结束。A3-8P 计划上限 4 个唯一 Case（当前 Suite 实际 2），16P 上限 2；A5 仍禁用。
 
 **生产 V1 历史链路**：GitHub Inputs → 请求 Artifact → Dispatcher 串行执行 Suite → 汇总 Commit Comment → 一个 Waiter Job。调度端真实超时以 `config/pipelines.json` 为准，而不是 testcase 中对多机不生效的另一份 `timeout`。继续保持 300 分钟 GitHub Job / 16800 秒 Waiter 预算。
 
-**最新实机验收：** [Run 38034002241](https://github.com/depeng1994/torchtitan-npu/actions/runs/38034002241) 基于模型仓 `master` 的 `1dafd49`，Muon 5 steps / AdamW + Virtual Optimizer 4K 5 steps **双 PASS**、每项 Exit Code 0、TensorBoard 5 steps、Commit Comment 两项 PASS，完整 GitHub Job **Success**。早期 [Run 38024403411](https://github.com/depeng1994/torchtitan-npu/actions/runs/38024403411) 的无 Virtual AdamW 曾在反向 FSDP AllGather OOM，已经被本次新的单次 Eager 冒烟验证覆盖，但不代表 Inductor 或长期稳定性通过。16P 本轮依维护者要求沿用此前验收、不再重复跑；A5 仍禁用、未实机验收。正式 Workflow 已进入 GitHub `master`。
+**历史 V1 实机验收：** [Run 38034002241](https://github.com/depeng1994/torchtitan-npu/actions/runs/38034002241) 基于模型仓 `master` 的 `1dafd49`，Muon 5 steps / AdamW + Virtual Optimizer 4K 5 steps **双 PASS**、每项 Exit Code 0、TensorBoard 5 steps、Commit Comment 两项 PASS，完整 GitHub Job **Success**。早期 [Run 38024403411](https://github.com/depeng1994/torchtitan-npu/actions/runs/38024403411) 的无 Virtual AdamW 曾在反向 FSDP AllGather OOM，已经被本次新的单次 Eager 冒烟验证覆盖，但不代表 Inductor 或长期稳定性通过。16P 本轮依维护者要求沿用此前验收、不再重复跑；A5 仍禁用、未实机验收。正式 Workflow 已进入 GitHub `master`。
 
 ### Step 5 · Lite Actions 专属 Workflow/脚本边界
 
