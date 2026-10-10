@@ -211,6 +211,32 @@ class RecoveryTests(unittest.TestCase):
                         proc.kill()
                     proc.wait(timeout=5)
 
+    def test_authorized_auto_occupy_pid_termination_is_scoped(self):
+        """Exercise actual classifier/signals on disposable CPU-only processes."""
+        import subprocess
+        import sys
+        import time
+        with tempfile.TemporaryDirectory() as td:
+            fake = Path(td) / "auto-occupy"
+            fake.symlink_to("/bin/sleep")
+            owned = subprocess.Popen([str(fake), "60"], start_new_session=True)
+            foreign = subprocess.Popen(["sleep", "60"], start_new_session=True)
+            try:
+                time.sleep(0.2)
+                result = subprocess.run(
+                    [sys.executable, "-c", occupancy._REMOTE_TERMINATE,
+                     str(owned.pid)],
+                    capture_output=True, text=True, timeout=12)
+                self.assertEqual(result.returncode, 0,
+                                 result.stdout + result.stderr)
+                self.assertIsNotNone(owned.poll())
+                self.assertIsNone(foreign.poll())
+            finally:
+                for proc in (owned, foreign):
+                    if proc.poll() is None:
+                        proc.kill()
+                    proc.wait(timeout=5)
+
 
 if __name__ == "__main__":
     unittest.main()

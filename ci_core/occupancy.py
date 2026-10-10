@@ -47,6 +47,9 @@ def proc(pid):
     folder=f'/proc/{pid}'
     try:
         stat=open(folder+'/stat').read().rsplit(')',1)[1].split()
+        # A terminated zombie has released NPU contexts; do not mistake the
+        # parent's unreaped /proc entry for a still-running workload.
+        if stat[0]=='Z': return None
         raw=open(folder+'/cmdline','rb').read().split(b'\0')
         argv=tuple(x.decode('utf-8','replace') for x in raw if x)
         return (stat[19],int(stat[1]),argv)
