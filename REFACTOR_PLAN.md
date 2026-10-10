@@ -308,9 +308,9 @@ Phase 1 Scheduler 流程：
 | 里程碑 | 当前状态 | 代码 PR / SHA | 验收 Run / 日志 | 风险与结论 |
 | --- | --- | --- | --- | --- |
 | P1.0 基线/拓扑 | **进行中** | [Lite Draft PR #1](https://github.com/depeng1994/lite-actions/pull/1) | 旧版 Lite 60 tests OK（1 skipped）；只读 A3 SSH/NPU 检查 | 拓扑组未逐组实机认证 |
-| P1.1 仓库去重/契约 | **开发分支完成，验收待补** | [Lite #1](https://github.com/depeng1994/lite-actions/pull/1) · [模型仓 #28](https://github.com/depeng1994/torchtitan-npu/pull/28) | Lite 67 tests OK（1 skipped）、模型仓 pytest 20 passed | 已移除镜像；线上 Smoke 未执行 |
-| P1.2 Matrix/独立结果 | **CPU 验证中** | [Lite #1](https://github.com/depeng1994/lite-actions/pull/1) · [模型仓 #28](https://github.com/depeng1994/torchtitan-npu/pull/28) | Suite→Matrix、两 Case 独立回传的单测/Mock 通过 | 真实 Actions Matrix、8P 双 PASS 待执行 |
-| P1.3 动态选卡/占用策略 | **开发分支初版完成，实机待验收** | [Lite #1](https://github.com/depeng1994/lite-actions/pull/1) | 配置 validate OK、动态候选组/锁及 PID 分类 CPU 测试通过 | A3 设备组实机验证、受控清理策略 E2E 待执行 |
+| P1.1 仓库去重/契约 | **开发分支完成，验收待补** | [Lite #1](https://github.com/depeng1994/lite-actions/pull/1) · [模型仓 #28](https://github.com/depeng1994/torchtitan-npu/pull/28) | Lite 69 tests OK（1 skipped）、模型仓 pytest 21 passed | 已移除镜像；线上 Smoke 未执行 |
+| P1.2 Matrix/独立结果 | **CPU + 云端 Prepare/Matrix 验证通过；Case E2E 待验收** | [Lite #1](https://github.com/depeng1994/lite-actions/pull/1) · [模型仓 #28](https://github.com/depeng1994/torchtitan-npu/pull/28) | [GitHub staging Run 38042640944](https://github.com/depeng1994/torchtitan-npu/actions/runs/38042640944)：Prepare PASS、生成 Muon/AdamW 独立 Jobs；出于安全主动取消，未启动 NPU；Case 级回传 Mock PASS | 真实 Actions Matrix、8P 双 PASS 待执行 |
+| P1.3 动态选卡/占用策略 | **开发分支初版完成，实机待验收** | [Lite #1](https://github.com/depeng1994/lite-actions/pull/1) | 配置 validate OK、动态候选组/锁及 PID 分类 CPU 测试通过；经只读 SSH 证实 npu-smi 同时含宿主机/容器 PID，已改为宿主机 PID 入口清理 | A3 设备组实机验证、受控清理策略 E2E 待执行 |
 | P1.4 8P/16P 与恢复 | **CPU 故障测试进行中** | [Lite #1](https://github.com/depeng1994/lite-actions/pull/1) | Agent 取消与未知残留隔离 Mock 通过 | 真正运行时取消/Agent 重启/8P、16P 实机待验收 |
 | P1.5 Phase 1 发布 | **未开始** | — | — | 生产旧 Agent 未替换，禁止提前上线 |
 | P2.0 并发资源预算 | **待 Phase 1 完成** | — | — | — |
@@ -333,3 +333,4 @@ Phase 1 Scheduler 流程：
 - **2026-10-10**：依维护者要求：`auto-occupy`、`vllm` 可按 PID 定点清理；普通用户进程等待释放，并增加防误杀/重检门槛。
 - **2026-10-10**：维护者确认**方案 A**：Phase 1 完成 Matrix + 动态选卡但**不并发**；Phase 2 再做多任务并发。重新编排 P1.0–P1.5、P2.0–P2.4 的目标、门槛、测试矩阵、发布与回滚；**仅更新计划，未改运行代码、未触发训练、未结束进程**。
 - **2026-10-10**：启动 Phase 1 方案 A 开发。在调度机**独立 Git worktree**建立 `refactor/v2-phase1-serial` 双仓分支；完成 V2 Plan/Matrix/Case Waiter、资源配置解耦及串行动态选卡初版，删除 Lite 重复 `github/` 镜像；推送 [Lite Actions Draft PR #1](https://github.com/depeng1994/lite-actions/pull/1)、[TorchTitan-NPU Draft PR #28](https://github.com/depeng1994/torchtitan-npu/pull/28)。Lite CPU unittest 67 OK（1 skipped），模型仓相关 pytest 20 passed；A3 做了只读 SSH/NPU 探测。**尚未在新链路触发真实 NPU 训练、Kill 外部进程、切换生产 Agent 或完成 Phase 1 门禁。**
+- **2026-10-10**：Phase 1 安全/云端验证追加：Lite 单测 **69 项 OK（1 skipped）**，模型仓 pytest **21 passed**；[GitHub Run 38042640944](https://github.com/depeng1994/torchtitan-npu/actions/runs/38042640944) **Prepare 成功并生成 Muon/AdamW 两个独立 Matrix Jobs**，为避免特性分支任务被生产 Agent 领取，主动取消等待 Job，**未跑实际 NPU**；临时特性分支准入已撤销，恢复 master-only。只读定位了 A3 `npu-smi` 宿主机 PID 与容器 PID 命名空间差异，外部授权进程清理已改为宿主机 SSH 定点操作，并新增防误杀单测；**尚未在物理机执行任何进程清理**。P1.3/P1.4 的实机门禁仍未通过。
