@@ -70,6 +70,11 @@ class GitHubClient:
             "/actions/runs?event=workflow_dispatch&status=in_progress&per_page=100")
         return data.get("workflow_runs", [])
 
+    def workflow_status(self, run_id: int) -> dict:
+        if type(run_id) is not int or run_id < 1:
+            raise ValueError("invalid GitHub workflow run identity")
+        return self.request("GET", f"/actions/runs/{run_id}")
+
     def ci_request(self, run: dict) -> dict | None:
         """Retrieve a short structured artifact uploaded by this Actions run.
 

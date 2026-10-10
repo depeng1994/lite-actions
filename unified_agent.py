@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 import logging
 from logging.handlers import RotatingFileHandler
 import os
@@ -79,13 +80,22 @@ def main():
     inflight = {}
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         while True:
-            for key, job in list(inflight.items()):
+            for key, (job, cancel_event, run_id) in list(inflight.items()):
                 if job.done():
                     try:
                         job.result()
                     except Exception:
                         logging.exception("dispatcher crashed for run %s", key)
                     del inflight[key]
+                else:
+                    # Confirm with the exact run ID (do not infer cancellation
+                    # from a paginated/stale in-progress list).
+                    try:
+                        current = client.workflow_status(run_id)
+                        if current.get("status") == "completed":
+                            cancel_event.set()
+                    except Exception:
+                        logging.warning("GitHub Run status unavailable for %s", run_id)
             try:
                 for run in client.running_workflows():
                     filename = (run.get("path") or "").rsplit("/", 1)[-1]
@@ -119,13 +129,16 @@ def main():
                     handler = (run_and_report_v2 if
                                run.get("_ci_request", {}).get("schema") == 2
                                else run_and_report)
-                    inflight[key] = executor.submit(handler, case, run, root=ROOT)
+                    cancel_event = Event()
+                    run["_ci_cancel_event"] = cancel_event
+                    inflight[key] = (executor.submit(handler, case, run, root=ROOT),
+                                     cancel_event, run["id"])
             except Exception:
                 logging.exception("poll failed")
             if args.once:
                 break
             time.sleep(INTERVAL)
-        for job in inflight.values():
+        for job, _, _ in inflight.values():
             job.result()
 
 

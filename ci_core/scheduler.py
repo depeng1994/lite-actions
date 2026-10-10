@@ -6,7 +6,6 @@ No partial distributed allocation is ever retained while waiting.
 from __future__ import annotations
 
 from contextlib import contextmanager
-import itertools
 import json
 import logging
 from pathlib import Path
@@ -18,6 +17,10 @@ from ci_core.dispatch import remote_preflight
 
 class ResourcesUnavailable(RuntimeError):
     pass
+
+
+class UnsafeResourceState(ResourcesUnavailable):
+    """Previous training may still be active or NPU cleanup was unverified."""
 
 
 def candidates(case: dict, pools: dict) -> list[list[dict]]:
@@ -60,7 +63,8 @@ def validate_allocation(case: dict, pools: dict, allocation: list[dict]) -> None
 
 @contextmanager
 def claim_dynamic(root: Path, case: dict, *, ascend_env: str | None,
-                  timeout: float = 900, sleep: float = 3.0):
+                  timeout: float = 900, sleep: float = 3.0,
+                  owner_key: str | None = None, canceled=None):
     """Choose an entire verified candidate, lock, preflight, then hold to exit.
 
     Candidate probing never blocks a partial device set. After normal expiry,
@@ -73,6 +77,16 @@ def claim_dynamic(root: Path, case: dict, *, ascend_env: str | None,
     deadline = time.monotonic() + timeout
     already_reclaimed = False
     while True:
+        if canceled is not None and canceled():
+            raise ResourcesUnavailable("GitHub Run canceled before allocation")
+        # Phase 1 is globally serial even after a dispatcher restart.
+        # Unresolved prior Case training is not made safe by an unlocked flock.
+        from ci_core.job_state import JobState
+        for key, record in JobState(root).read().items():
+            if key == owner_key or key.count(":") < 2:
+                continue
+            if record.get("quarantined") or record.get("phase") == "running":
+                raise UnsafeResourceState("prior Case release requires reconciliation")
         blocked = []
         for allocation in possibilities:
             try:
@@ -85,6 +99,8 @@ def claim_dynamic(root: Path, case: dict, *, ascend_env: str | None,
                         # fail-closed: never run on an unverified occupied set.
                         blocked.append((allocation, type(exc).__name__))
                         continue
+                    if canceled is not None and canceled():
+                        raise ResourcesUnavailable("GitHub Run canceled after allocation")
                     logging.info("allocated Case %s: %s", case["name"], allocation)
                     yield runtime
                     return

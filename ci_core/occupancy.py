@@ -46,10 +46,34 @@ def proc(pid):
     folder=f'/proc/{pid}'
     try:
         stat=open(folder+'/stat').read().rsplit(')',1)[1].split()
-        cmd=open(folder+'/cmdline','rb').read().replace(b'\0',b' ').decode('utf-8','replace')
-        return (stat[19],int(stat[1]),cmd)
+        raw=open(folder+'/cmdline','rb').read().split(b'\0')
+        argv=tuple(x.decode('utf-8','replace') for x in raw if x)
+        return (stat[19],int(stat[1]),argv)
     except (FileNotFoundError,PermissionError,ValueError,IndexError):
         return None
+def direct_class(argv):
+    if not argv: return None
+    exe=os.path.basename(argv[0]).lower()
+    if exe in ('auto-occupy','auto_occupy','auto-occupy.sh','auto_occupy.sh'):
+        return 'auto-occupy'
+    if exe in ('vllm','vllm-server','vllm_server'):
+        return 'vllm'
+    if exe.startswith(('python','python3','pypy')) or exe=='uv':
+        args=list(argv[1:5])
+        if '-m' in args:
+            i=args.index('-m')
+            if i+1<len(args):
+                module=args[i+1].lower()
+                if module=='vllm' or module.startswith('vllm.'): return 'vllm'
+                if module in ('auto_occupy','auto-occupy'): return 'auto-occupy'
+        # Only an executed SCRIPT positional argument, never a model/data
+        # path appearing later in the command's arbitrary flags.
+        scripts=[os.path.basename(x).lower() for x in args[:2] if x.endswith(('.py','.sh'))]
+        if any(x in ('auto_occupy.py','auto-occupy.py','auto-occupy.sh') for x in scripts):
+            return 'auto-occupy'
+        if any(x in ('vllm.py','vllm_server.py') for x in scripts):
+            return 'vllm'
+    return None
 def classify(pid):
     seen=set()
     for depth in range(6):
@@ -57,11 +81,8 @@ def classify(pid):
         seen.add(pid)
         value=proc(pid)
         if value is None: break
-        cmd=value[2].lower()
-        if re.search(r'(?:^|[/\s._-])auto[-_]occupy(?:[/\s._-]|$)',cmd):
-            return 'auto-occupy'
-        if re.search(r'(?:^|[/\s._-])vllm(?:[/\s._-]|$)',cmd):
-            return 'vllm'
+        found=direct_class(value[2])
+        if found: return found
         pid=value[1]
     return None
 before=proc(pid)

@@ -93,6 +93,7 @@ class BroadcastTests(unittest.TestCase):
                     self_outer.assertEqual(argv[argv.index("--stamp")+1],
                         "2026-10-09_09-13-28_run-37868722207_attempt-1")
                     kwargs["stdout"].write("TRAINED\n")
+                def poll(self): return None
                 def wait(self, **kwargs): return 0
             with patch.object(dispatch,"prepare_profile",return_value=("dsv4_flash_a3_16p_example",{"ascend_env":"/path/set_env.sh"})), \
                  patch.object(dispatch,"remote_preflight") as preflight, \
@@ -123,6 +124,7 @@ class BroadcastTests(unittest.TestCase):
                 return []
             class Runner:
                 def __init__(self, argv, **kwargs): pass
+                def poll(self): return None
                 def wait(self, **kwargs): return 0
             with patch.object(dispatch,"prepare_profile",return_value=("dsv4_flash_a3_16p_example",{"ascend_env":"/path/set_env.sh"})), \
                  patch.object(dispatch,"remote_preflight",side_effect=preflight), \

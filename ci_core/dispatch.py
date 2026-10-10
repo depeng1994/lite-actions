@@ -38,6 +38,7 @@ class Execution:
     exit_code: int
     tail: list[str]
     log: Path
+    release_verified: bool = True
 
 
 def _local_run_time(run: dict) -> dt.datetime:
@@ -189,6 +190,9 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
             resource_wait_seconds: int = 600, pre_reserved: bool = False) -> Execution:
     if not case.get("enabled"):
         raise ValueError("Disabled pipeline cannot run on real hardware")
+    if (run.get("_ci_cancel_event") is not None
+            and run["_ci_cancel_event"].is_set()):
+        raise InterruptedError("CI Run already cancelled; refusing to launch")
     kind = case["runner"]["kind"]
     log_dir = task_dir(run, root)
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -231,6 +235,7 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
     lease = (nullcontext() if pre_reserved else
              wait_reserve(lock_root, case.get("allocation", []),
                           timeout=resource_wait_seconds))
+    release_verified = True
     with lease:
         remote_preflight(case, pools, ascend_env=setup)
         announced = bool(case.get("allocation"))
@@ -248,16 +253,36 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
                 )
                 try:
                     case_count = len(run.get("_ci_expanded_cases", [])) or 1
-                    rc = proc.wait(timeout=case["timeout_seconds"] * case_count)
-                except subprocess.TimeoutExpired:
+                    budget = case["timeout_seconds"] * case_count
+                    deadline = time.monotonic() + budget
+                    cancel = run.get("_ci_cancel_event")
+                    while True:
+                        if proc.poll() is not None:
+                            rc = proc.returncode
+                            break
+                        if cancel is not None and cancel.is_set():
+                            raise InterruptedError("GitHub Run cancelled")
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise subprocess.TimeoutExpired(cmd, budget)
+                        try:
+                            rc = proc.wait(timeout=min(5.0, remaining))
+                            break
+                        except subprocess.TimeoutExpired:
+                            continue
+                except (subprocess.TimeoutExpired, InterruptedError) as exc:
+                    # Only the locally spawned SSH runner's own session.
                     os.killpg(proc.pid, signal.SIGTERM)
                     try:
                         proc.wait(timeout=60)
                     except subprocess.TimeoutExpired:
                         os.killpg(proc.pid, signal.SIGKILL)
                         proc.wait()
-                    stream.write("\nERROR: dispatcher timeout; check remote child cleanup\n")
-                    rc = 124
+                    cancelled = isinstance(exc, InterruptedError)
+                    stream.write("\nERROR: dispatcher " +
+                                 ("cancelled" if cancelled else "timeout") +
+                                 "; checking remote child cleanup\n")
+                    rc = 130 if cancelled else 124
             except Exception as exc:
                 stream.write(f"\nERROR: {type(exc).__name__}: {str(exc)[:240]}\n")
                 logging.exception("CI dispatcher failure run=%s", run["id"])
@@ -285,6 +310,7 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
                         logging.exception("CI exit wall failed")
                         rc = rc or 125
                     if not idle:
+                        release_verified = False
                         stream.write("\nERROR: NPU resource release unverified; "
                                      "remote processes may remain; operator action needed\n")
                         rc = rc or 125
@@ -302,4 +328,4 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
             excerpt.append(f"Dispatcher log collection failed: {type(exc).__name__}")
             if rc == 0:
                 rc = 125
-    return Execution(rc, excerpt[:20], logfile)
+    return Execution(rc, excerpt[:20], logfile, release_verified)

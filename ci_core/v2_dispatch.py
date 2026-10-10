@@ -15,7 +15,7 @@ from ci_core.job_state import JobState
 from ci_core.logs import clean
 from ci_core.protocol_v2 import parse_plan
 from ci_core.reporting import make_report
-from ci_core.scheduler import claim_dynamic, ResourcesUnavailable
+from ci_core.scheduler import claim_dynamic, ResourcesUnavailable, UnsafeResourceState
 
 
 def task_key(run: dict, test_id: str) -> str:
@@ -32,7 +32,9 @@ def result_for_case(case: dict, run: dict, test_id: str, rc: int,
     report = make_report(case, run, rc, excerpt, log)
     checks = report.get("cases", [])
     valid = len(checks) == 1 and checks[0]["test_name"] == test_id
-    if infra or not valid:
+    if rc == 130:
+        status = "CANCELLED"
+    elif infra or not valid:
         status = "INFRA_ERROR"
     elif checks[0]["status"] == "PASS" and rc == 0 and report["status"] == "PASS":
         status = "PASS"
@@ -78,10 +80,22 @@ def run_and_report_v2(case: dict, run: dict, *, root: Path) -> None:
             continue
         if current.get("phase") == "pending_report":
             report = current["report"]
-        elif current.get("phase") == "running":
-            # A lost flock does NOT prove the remote process has exited.
+        elif current.get("phase") in ("running", "blocked_recovery"):
+            # Never restart unknown remote children after a dispatcher crash.
+            state.update(key, phase="blocked_recovery", quarantined=True)
+            state.update(f"{run['id']}:{run.get('run_attempt', 1)}",
+                         phase="blocked_recovery", reason="unverified remote Case")
             logging.error("unfinished V2 case needs remote recovery: %s", key)
             return
+        elif (run.get("_ci_cancel_event") is not None
+              and run["_ci_cancel_event"].is_set()):
+            report = {"schema": 2, "repo": "depeng1994/torchtitan-npu",
+                      "run_id": run["id"], "attempt": run.get("run_attempt", 1),
+                      "sha": run["head_sha"], "pipeline": case["pipeline_id"],
+                      "test_id": test_id, "plan_digest": run["_ci_request"]["plan_digest"],
+                      "status": "CANCELLED", "exit_code": 130,
+                      "last_20_lines": ["GitHub Run cancelled before dispatch"]}
+            state.update(key, phase="pending_report", report=report)
         else:
             subrun = {**run, "_ci_test_id": test_id,
                       "_ci_request": {"schema": 1, "run_id": run["id"],
@@ -105,7 +119,12 @@ def run_and_report_v2(case: dict, run: dict, *, root: Path) -> None:
                     if actual_test != test_id:
                         raise ValueError("pinned model Test ID mismatch")
                     with claim_dynamic(root, case, ascend_env=profile["ascend_env"],
-                                       timeout=900) as selected:
+                                       timeout=900, owner_key=key,
+                                       canceled=(run.get("_ci_cancel_event").is_set
+                                                 if run.get("_ci_cancel_event")
+                                                 is not None else None)) as selected:
+                        # Persist the exact assigned devices before remote SSH.
+                        state.update(key, allocation=selected["allocation"])
                         execution = execute(selected, subrun, root=root,
                                             lock_root=root / "state/device-locks",
                                             pre_reserved=True)
@@ -113,11 +132,18 @@ def run_and_report_v2(case: dict, run: dict, *, root: Path) -> None:
                     execution = execute(case, subrun, root=root,
                                         lock_root=root / "state/device-locks",
                                         resource_wait_seconds=900)
+                if not execution.release_verified:
+                    state.update(key, quarantined=True)
                 report = result_for_case(case, {**subrun, "_ci_request": run["_ci_request"]},
                                          test_id, execution.exit_code,
-                                         execution.tail, execution.log)
+                                         execution.tail, execution.log,
+                                         infra=not execution.release_verified)
             except Exception as exc:
                 logging.exception("V2 case execution error: %s", key)
+                # If a remote assignment existed, an exceptional path
+                # cannot safely prove the remote ranks have stopped.
+                if state.read().get(key, {}).get("allocation"):
+                    state.update(key, quarantined=True)
                 log.parent.mkdir(parents=True, exist_ok=True)
                 if not log.exists():
                     log.write_text(f"Dispatcher error: {type(exc).__name__}\n")
@@ -126,7 +152,11 @@ def run_and_report_v2(case: dict, run: dict, *, root: Path) -> None:
                            "_ci_expanded_cases": [{"test_id": test_id}]},
                     test_id, 125, [f"Dispatcher error: {type(exc).__name__}"],
                     log, infra=True)
-                if isinstance(exc, ResourcesUnavailable):
+                if (run.get("_ci_cancel_event") is not None
+                        and run["_ci_cancel_event"].is_set()):
+                    report["status"] = "CANCELLED"
+                    report["exit_code"] = 130
+                elif isinstance(exc, ResourcesUnavailable) and not isinstance(exc, UnsafeResourceState):
                     report["status"] = "RESOURCE_TIMEOUT"
             state.update(key, phase="pending_report", report=report)
         try:
