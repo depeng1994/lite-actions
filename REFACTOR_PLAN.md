@@ -1,6 +1,6 @@
 # Lite Actions V2 重构计划：Phase 1 串行动态调度 → Phase 2 资源池并发
 
-> 状态：**Phase 1 / 待实施**；Phase 2 / 待启动。本文是实施与验收跟踪的唯一计划，不表示任何阶段已通过。  
+> 状态：**Phase 1 / 实施中（独立开发分支，尚未生产切换）**；Phase 2 / 待启动。本文是实施与验收跟踪的唯一计划，不表示任何阶段已通过。
 > 方案：**A（已确认）**。Phase 1 = 双仓解耦 + GitHub Matrix Jobs + 动态选卡 + **全局串行训练**；Phase 2 = 在 Phase 1 稳定基线之上增加**真正并发**。  
 > 创建：2026-10-10；最近一次计划调整：2026-10-10。  
 > 计划初始代码基线：`lite-actions/main 2a0427c`、`torchtitan-npu/master b91257e`；本计划文件的维护提交不等于执行代码基线更新。  
@@ -348,3 +348,6 @@ Phase 1 Scheduler 流程：
 - **2026-10-10**：原始单阶段重构计划建立，核查已有两仓源码与历史 8P/16P 验收。
 - **2026-10-10**：依维护者要求：`auto-occupy`、`vllm` 可按 PID 定点清理；普通用户进程等待释放，并增加防误杀/重检门槛。
 - **2026-10-10**：维护者确认**方案 A**：Phase 1 完成 Matrix + 动态选卡但**不并发**；Phase 2 再做多任务并发。重新编排 P1.0–P1.5、P2.0–P2.4 的目标、门槛、测试矩阵、发布与回滚；**仅更新计划，未改运行代码、未触发训练、未结束进程**。
+- **2026-10-10**：启动 Phase 1 方案 A 开发。在调度机**独立 Git worktree**建立 `refactor/v2-phase1-serial` 双仓分支；完成 V2 Plan/Matrix/Case Waiter、资源配置解耦及串行动态选卡初版，删除 Lite 重复 `github/` 镜像；推送 [Lite Actions Draft PR #1](https://github.com/depeng1994/lite-actions/pull/1)、[TorchTitan-NPU Draft PR #28](https://github.com/depeng1994/torchtitan-npu/pull/28)。Lite CPU unittest 67 OK（1 skipped），模型仓相关 pytest 20 passed；A3 做了只读 SSH/NPU 探测。**尚未在新链路触发真实 NPU 训练、Kill 外部进程、切换生产 Agent 或完成 Phase 1 门禁。**
+- **2026-10-10**：Phase 1 安全/云端验证追加：Lite 单测 **69 项 OK（1 skipped）**，模型仓 pytest **21 passed**；[GitHub Run 38042640944](https://github.com/depeng1994/torchtitan-npu/actions/runs/38042640944) **Prepare 成功并生成 Muon/AdamW 两个独立 Matrix Jobs**，为避免特性分支任务被生产 Agent 领取，主动取消等待 Job，**未跑实际 NPU**；临时特性分支准入已撤销，恢复 master-only。只读定位了 A3 `npu-smi` 宿主机 PID 与容器 PID 命名空间差异，外部授权进程清理已改为宿主机 SSH 定点操作，并新增防误杀单测；**尚未在物理机执行任何进程清理**。P1.3/P1.4 的实机门禁仍未通过。
+- **2026-10-10 18:57 +08:00**：**第一轮 Phase 1 实机验收窗口已结束，旧生产 Dispatcher 已恢复**。切换前 GitHub 无在途 workflow_dispatch，备份了旧配置/状态；切换期间使用单 Worker + 外部进程清理关闭。8P [Run 38043726171](https://github.com/depeng1994/torchtitan-npu/actions/runs/38043726171)：Muon 5 steps/TB/Exit 0，因结束 wall 失败被错误上报 FAIL；AdamW PASS，确认严格串行；修复结束通知不再改写训练退出码。8P [Run 38044923848](https://github.com/depeng1994/torchtitan-npu/actions/runs/38044923848)：Muon 5 steps/TB/GitHub PASS；AdamW 进程被 SIGKILL（rc=137），设备释放检查不确定而报告 INFRA_ERROR 并记录隔离，尚未查明 kill 原因。16P [Run 38046480324](https://github.com/depeng1994/torchtitan-npu/actions/runs/38046480324)：原子选取 A3-3 0–7 + A3-4 8–15、双机启动和 dp_shard=16/ep=16 Mesh 完成，但 HCCL 报 `Communication_Error_Bind_IP_Port (EI0020)`，地址 `192.168.3.186:16666` 绑定失败，未完成5步。失败后 GitHub 无在途任务，两个执行容器未见本次训练 Rank；V2 隔离记录留存，未手工删除。旧 Agent 在旧工作区重新启动（源码 SHA `2a0427c`，生产配置逐文件比对无变化），经核对只有一个旧进程且无测试分支授权环境变量；模型仓测试分支临时 Workflow 许可已撤销回 master-only。Lite [Draft PR #1](https://github.com/depeng1994/lite-actions/pull/1)、模型 [Draft PR #28](https://github.com/depeng1994/torchtitan-npu/pull/28) 保持 Draft、未合并。**P1.2 双 PASS、P1.3 全部分组、P1.4 16P/异常恢复均未达到正式 Gate；下次窗口须先定位 rc137 与 HCCL 16666，再经预检实机回归。**
