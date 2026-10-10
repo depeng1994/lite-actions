@@ -114,9 +114,19 @@ def run_and_report(case: dict, run: dict, *, root: Path) -> None:
         report = pending["report"]
     else:
         try:
-            execution = execute(case, run, root=root,
-                                lock_root=root / "state/device-locks",
-                                resource_wait_seconds=900)
+            if "resources" in case:
+                from ci_core.dispatch import prepare_profile
+                from ci_core.scheduler import claim_dynamic
+                _, profile = prepare_profile(case, run)
+                with claim_dynamic(root, case, ascend_env=profile["ascend_env"],
+                                   timeout=900) as runtime_case:
+                    execution = execute(runtime_case, run, root=root,
+                                        lock_root=root / "state/device-locks",
+                                        pre_reserved=True)
+            else:
+                execution = execute(case, run, root=root,
+                                    lock_root=root / "state/device-locks",
+                                    resource_wait_seconds=900)
             output = execution.log
             report = make_report(case, run, execution.exit_code, execution.tail, execution.log)
         except Exception as exc:

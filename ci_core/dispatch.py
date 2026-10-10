@@ -5,6 +5,7 @@ This module does not speak GitHub and never kills unknown processes.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import nullcontext
 from pathlib import Path
 import collections
 import datetime as dt
@@ -37,6 +38,7 @@ class Execution:
     exit_code: int
     tail: list[str]
     log: Path
+    release_verified: bool = True
 
 
 def _local_run_time(run: dict) -> dt.datetime:
@@ -50,9 +52,16 @@ def _local_run_time(run: dict) -> dt.datetime:
 def task_dir(run: dict, root: Path) -> Path:
     """Keep globally unique run ID in dispatcher logs/state for correlation."""
     local = _local_run_time(run)
+    suffix = ""
+    if "_ci_test_id" in run:
+        from ci_core.registry import SELECTOR
+        test_id = run["_ci_test_id"]
+        if not isinstance(test_id, str) or not SELECTOR.fullmatch(test_id):
+            raise ValueError("invalid V2 task Test ID")
+        suffix = f"_test-{test_id}"
     return root / "logs/runs" / (
         f"{local:%Y-%m-%d_%H-%M-%S}_run-{int(run['id'])}"
-        f"_attempt-{int(run.get('run_attempt', 1))}"
+        f"_attempt-{int(run.get('run_attempt', 1))}{suffix}"
     )
 
 
@@ -76,6 +85,12 @@ def remote_task_name(run: dict) -> str:
         raise ValueError("GitHub run_attempt must be a positive integer")
     local = _local_run_time(run)
     suffix = f"_attempt-{attempt}" if attempt > 1 else ""
+    if "_ci_test_id" in run:
+        from ci_core.registry import SELECTOR
+        test_id = run["_ci_test_id"]
+        if not isinstance(test_id, str) or not SELECTOR.fullmatch(test_id):
+            raise ValueError("invalid V2 test ID")
+        suffix += f"_test-{test_id}"
     return f"{local:%Y-%m-%d_%H-%M-%S}_run_{name}_{number}{suffix}"
 
 
@@ -105,14 +120,19 @@ def selected_processes(output: str, devices: list[int], *, indexing: str = "card
 
 def prepare_profile(case:dict,run:dict)->tuple[str,dict]:
     """Resolve suite before locking/staging and freeze the expanded plan."""
-    allocation=case['allocation']
-    if '_ci_request' not in run:raise ValueError('CI request artifact required')
+    allocation = case.get("allocation", [])
+    if "_ci_request" not in run: raise ValueError("CI request artifact required")
     selections=parse_request(run['_ci_request'],run)
     with tempfile.TemporaryDirectory(prefix='lite-ci-validated-model-') as temp:
         from ci_core.ssh_runner import model_archive
         archive=model_archive(run['head_sha'],Path(temp))
-        expanded=resolve_request(archive,selections,nodes=len(allocation),
-            ngpu=len(allocation[0]['devices']),max_cases=1 if case['name']=='a5-64p' else 2)
+        if case.get("resources"):
+            nodes = case["resources"]["nodes"]
+            ngpu = case["resources"]["devices_per_node"]
+        else:
+            nodes, ngpu = len(allocation), len(allocation[0]["devices"])
+        expanded = resolve_request(archive, selections, nodes=nodes,
+            ngpu=ngpu, max_cases=1 if case["name"]=="a5-64p" else 4)
     run['_ci_expanded_cases']=expanded
     # Preflight sources the toolkit selected by the model test, never a
     # hardcoded deployment value from Lite Actions.
@@ -129,10 +149,18 @@ def remote_preflight(case: dict, pools: dict, *, ascend_env: str | None = None) 
     if indexing not in ("card", "card-die"):
         raise ValueError("NPU process index mode must be configured")
     for request in case["allocation"]:
-        host = by_host[request["host_id"]]["ssh"]
-        setup = ascend_env
-        command = ((f"source {shlex.quote(setup)} >/dev/null 2>&1 && " if setup else "")
-                   + "npu-smi info")
+        node = by_host[request["host_id"]]
+        # Occupancy is a physical-host property.  Use the same host namespace
+        # as PID classification/reclamation instead of the execution container,
+        # whose npu-smi visibility depends on its CANN/runtime environment.
+        targets = node.get("broadcast_ssh", [])
+        if isinstance(targets, list) and targets and isinstance(targets[0], str) and targets[0]:
+            host = targets[0]
+        else:
+            host = node.get("ssh")
+        if not isinstance(host, str) or not host:
+            raise ValueError("NPU preflight host SSH is not configured")
+        command = "npu-smi info"
         proc = subprocess.run(
             ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
              host, "bash -lc " + shlex.quote(command)],
@@ -167,9 +195,12 @@ def summarize(log: Path, rc: int) -> list[str]:
 
 
 def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None = None,
-            resource_wait_seconds: int = 600) -> Execution:
+            resource_wait_seconds: int = 600, pre_reserved: bool = False) -> Execution:
     if not case.get("enabled"):
         raise ValueError("Disabled pipeline cannot run on real hardware")
+    if (run.get("_ci_cancel_event") is not None
+            and run["_ci_cancel_event"].is_set()):
+        raise InterruptedError("CI Run already cancelled; refusing to launch")
     kind = case["runner"]["kind"]
     log_dir = task_dir(run, root)
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -198,12 +229,22 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
                     "--run-attempt", str(run.get("run_attempt", 1))]
         else:
             cmd += ["--test-case", test_id]
+        if case.get("resources"):
+            from ci_core.scheduler import validate_allocation
+            pools_for_assignment = json.loads((root / "config/pools.json").read_text())
+            validate_allocation(case, pools_for_assignment, case.get("allocation", []))
+            alloc_path = log_dir / "allocation.json"
+            alloc_path.write_text(json.dumps({"allocation": case["allocation"]}) + "\n")
+            cmd += ["--allocation-file", str(alloc_path)]
     else:
         raise ValueError(f"unknown trusted runner: {kind}")
     pools = json.loads((root / "config/pools.json").read_text())
     lock_root = lock_root or root / "state/device-locks"
-    with wait_reserve(lock_root, case.get("allocation", []),
-                      timeout=resource_wait_seconds):
+    lease = (nullcontext() if pre_reserved else
+             wait_reserve(lock_root, case.get("allocation", []),
+                          timeout=resource_wait_seconds))
+    release_verified = True
+    with lease:
         remote_preflight(case, pools, ascend_env=setup)
         announced = bool(case.get("allocation"))
         with logfile.open("w", encoding="utf-8") as stream:
@@ -220,16 +261,36 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
                 )
                 try:
                     case_count = len(run.get("_ci_expanded_cases", [])) or 1
-                    rc = proc.wait(timeout=case["timeout_seconds"] * case_count)
-                except subprocess.TimeoutExpired:
+                    budget = case["timeout_seconds"] * case_count
+                    deadline = time.monotonic() + budget
+                    cancel = run.get("_ci_cancel_event")
+                    while True:
+                        if proc.poll() is not None:
+                            rc = proc.returncode
+                            break
+                        if cancel is not None and cancel.is_set():
+                            raise InterruptedError("GitHub Run cancelled")
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise subprocess.TimeoutExpired(cmd, budget)
+                        try:
+                            rc = proc.wait(timeout=min(5.0, remaining))
+                            break
+                        except subprocess.TimeoutExpired:
+                            continue
+                except (subprocess.TimeoutExpired, InterruptedError) as exc:
+                    # Only the locally spawned SSH runner's own session.
                     os.killpg(proc.pid, signal.SIGTERM)
                     try:
                         proc.wait(timeout=60)
                     except subprocess.TimeoutExpired:
                         os.killpg(proc.pid, signal.SIGKILL)
                         proc.wait()
-                    stream.write("\nERROR: dispatcher timeout; check remote child cleanup\n")
-                    rc = 124
+                    cancelled = isinstance(exc, InterruptedError)
+                    stream.write("\nERROR: dispatcher " +
+                                 ("cancelled" if cancelled else "timeout") +
+                                 "; checking remote child cleanup\n")
+                    rc = 130 if cancelled else 124
             except Exception as exc:
                 stream.write(f"\nERROR: {type(exc).__name__}: {str(exc)[:240]}\n")
                 logging.exception("CI dispatcher failure run=%s", run["id"])
@@ -251,12 +312,16 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
                     try:
                         errors = broadcast_job(case, pools, run, phase)
                         if errors:
-                            logging.error("CI %s wall failed: %s",phase,errors)
-                            rc = rc or 125
+                            # End/uncertain broadcast is best-effort: notification
+                            # transport failures do not invalidate confirmed
+                            # training exit, TensorBoard, or NPU release.
+                            # BEGIN remains mandatory and blocks launch.
+                            logging.warning("CI %s wall delivery incomplete: %s",
+                                            phase, errors)
                     except Exception:
-                        logging.exception("CI exit wall failed")
-                        rc = rc or 125
+                        logging.exception("CI exit wall failed (non-fatal alert)")
                     if not idle:
+                        release_verified = False
                         stream.write("\nERROR: NPU resource release unverified; "
                                      "remote processes may remain; operator action needed\n")
                         rc = rc or 125
@@ -274,4 +339,4 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
             excerpt.append(f"Dispatcher log collection failed: {type(exc).__name__}")
             if rc == 0:
                 rc = 125
-    return Execution(rc, excerpt[:20], logfile)
+    return Execution(rc, excerpt[:20], logfile, release_verified)

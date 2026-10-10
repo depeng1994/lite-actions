@@ -26,6 +26,22 @@ class DispatchTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             dispatch.selected_processes("failed", [0])
 
+    def test_remote_preflight_uses_host_namespace_and_detects_selected_group(self):
+        root=Path(__file__).resolve().parents[1]
+        pools=json.loads((root/"config/pools.json").read_text())
+        case={"pool":"a3-shared","allocation":[{
+            "host_id":"a3-4","devices":list(range(8,16))}]}
+        output=("Process id in container\n"
+                "| 4       0                 | 4567      | external     |\n")
+        completed=dispatch.subprocess.CompletedProcess([],0,stdout=output,stderr="")
+        with patch.object(dispatch.subprocess,"run",return_value=completed) as run:
+            with self.assertRaisesRegex(RuntimeError,"chip 8: pid 4567"):
+                dispatch.remote_preflight(case,pools,ascend_env="/container/cann/set_env.sh")
+        argv=run.call_args.args[0]
+        self.assertIn("a3-4-relay",argv)
+        self.assertNotIn("a3-4-docker-relay",argv)
+        self.assertNotIn("source",argv[-1])
+
     def test_result_log_selection(self):
         with tempfile.TemporaryDirectory() as td:
             log=Path(td)/"pipeline.log"

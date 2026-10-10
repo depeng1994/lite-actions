@@ -57,8 +57,7 @@ class ResourceTests(unittest.TestCase):
         cfg = load_config(root)
         a5 = cfg["a5-64p"]
         self.assertFalse(a5["enabled"])
-        self.assertEqual(len(a5["allocation"]), 8)
-        self.assertEqual(sum(len(n["devices"]) for n in a5["allocation"]), 64)
+        self.assertEqual(a5["resources"], {"nodes": 8, "devices_per_node": 8})
 
     def test_pipeline_ids_unique(self):
         cfg = load_config(Path(__file__).resolve().parents[1])

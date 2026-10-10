@@ -5,6 +5,7 @@ import urllib.error
 import io
 import zipfile
 import os
+from pathlib import Path
 import subprocess
 import urllib.parse
 import urllib.request
@@ -69,6 +70,11 @@ class GitHubClient:
             "/actions/runs?event=workflow_dispatch&status=in_progress&per_page=100")
         return data.get("workflow_runs", [])
 
+    def workflow_status(self, run_id: int) -> dict:
+        if type(run_id) is not int or run_id < 1:
+            raise ValueError("invalid GitHub workflow run identity")
+        return self.request("GET", f"/actions/runs/{run_id}")
+
     def ci_request(self, run: dict) -> dict | None:
         """Retrieve a short structured artifact uploaded by this Actions run.
 
@@ -124,8 +130,19 @@ class GitHubClient:
             if info.file_size > 32768:
                 raise ValueError("CI request JSON too large")
             request_data = json.loads(archive.read(info))
-        from ci_core.registry import parse_request
-        parse_request(request_data, run)
+        if request_data.get("schema") == 2:
+            from ci_core.protocol_v2 import parse_plan
+            # Pipeline authorization is resolved from the trusted workflow path.
+            from ci_core.config import load_config
+            configs = load_config(Path(__file__).resolve().parents[1])
+            matching = [spec for spec in configs.values()
+                        if run.get("path") == ".github/workflows/" + spec["workflow"]]
+            if len(matching) != 1:
+                raise ValueError("unrecognized V2 workflow path")
+            parse_plan(request_data, run, matching[0]["pipeline_id"])
+        else:
+            from ci_core.registry import parse_request
+            parse_request(request_data, run)
         return request_data
 
     def commit_comments(self, sha: str) -> list[dict]:

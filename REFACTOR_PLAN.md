@@ -1,6 +1,6 @@
 # Lite Actions V2 重构计划：Phase 1 串行动态调度 → Phase 2 资源池并发
 
-> 状态：**Phase 1 / 实施中（独立开发分支，尚未生产切换）**；Phase 2 / 待启动。本文是实施与验收跟踪的唯一计划，不表示任何阶段已通过。  
+> 状态：**Phase 1 / 实施中（独立开发分支，尚未生产切换）**；Phase 2 / 待启动。本文是实施与验收跟踪的唯一计划，不表示任何阶段已通过。
 > 方案：**A（已确认）**。Phase 1 = 双仓解耦 + GitHub Matrix Jobs + 动态选卡 + **全局串行训练**；Phase 2 = 在 Phase 1 稳定基线之上增加**真正并发**。  
 > 创建：2026-10-10；最近一次计划调整：2026-10-10。  
 > 计划初始代码基线：`lite-actions/main 2a0427c`、`torchtitan-npu/master b91257e`；本计划文件的维护提交不等于执行代码基线更新。  
@@ -144,30 +144,30 @@ Phase 1 Scheduler 流程：
 
 ### P1.0｜冻结生产基线与可信环境
 
-- [ ] 固定 lite-actions/main 与 torchtitan-npu/master 实施 SHA，记录 GitCode → GitHub 定时同步风险；备份配置、状态、日志索引与旧 Workflow 版本。
-- [ ] 离线跑 Lite Actions 单测、`unified_agent.py --validate` 及模型仓相关 CPU 测试；记录原本通过/失败的测试数量，提供 SHA 和测试日志。
-- [ ] 只读验证 A3-3/A3-4 的 0–15 Device ID 映射、两机 SSH、HCCL IP/网卡与当前合法拓扑候选；未知组合先标为 disabled。
-- [ ] 在 `ubuntu-latest` 或等价干净 CPU 环境验证 `build_test_list()` → Matrix 展开没有 NPU/torch 运行时依赖。
-- [ ] 确认唯一运行的调度 Agent 与当前在途任务状态；本阶段不 kill 任何进程、不重启生产服务。
+- [x] 固定 lite-actions/main 与 torchtitan-npu/master 实施 SHA，记录 GitCode → GitHub 定时同步风险；备份配置、状态、日志索引与旧 Workflow 版本。
+- [x] 离线跑 Lite Actions 单测、`unified_agent.py --validate` 及模型仓相关 CPU 测试；记录原本通过/失败的测试数量，提供 SHA 和测试日志。
+- [x] 只读验证 A3-3/A3-4 的 0–15 Device ID 映射、两机 SSH、HCCL IP/网卡与当前合法拓扑候选；未知组合先标为 disabled。
+- [x] 在 `ubuntu-latest` 或等价干净 CPU 环境验证 `build_test_list()` → Matrix 展开没有 NPU/torch 运行时依赖。
+- [x] 确认唯一运行的调度 Agent 与当前在途任务状态；本阶段不 kill 任何进程、不重启生产服务。
 
 **Gate P1.0**：基线可重现，可信测试清单发现可行；已有 A3 拓扑证据、不可用组及回滚文件明确。
 
 ### P1.1｜双仓职责清理与 V2 协议
 
-- [ ] 编写版本化计划/结果 Schema、Case Task ID、Attempt、Plan Digest、唯一 Test ID 与失败/取消终态契约；补 CPU/Mock 跨仓协议测试。
-- [ ] **先迁移测试再删副本**：模型仓持有 Workflow/Waiter 合约测试；Lite 仓保留 Dispatcher 协议与白名单测试，必要时提供最小 fixture，不能依赖模型仓镜像目录。
-- [ ] 删除 Lite Actions 的 `github/` 全部 5 个重复文件、`scripts/sync_ci_mirror.py`，修正 README/测试内旧路径引用。
-- [ ] 保持正在生产使用的 V1 Workflow 与 Dispatcher 行为不变；移除镜像不意味着改变实际运行代码。
+- [x] 编写版本化计划/结果 Schema、Case Task ID、Attempt、Plan Digest、唯一 Test ID 与失败/取消终态契约；补 CPU/Mock 跨仓协议测试。
+- [x] **先迁移测试再删副本**：模型仓持有 Workflow/Waiter 合约测试；Lite 仓保留 Dispatcher 协议与白名单测试，必要时提供最小 fixture，不能依赖模型仓镜像目录。
+- [x] 删除 Lite Actions 的 `github/` 全部 5 个重复文件、`scripts/sync_ci_mirror.py`，修正 README/测试内旧路径引用。
+- [x] 保持正在生产使用的 V1 Workflow 与 Dispatcher 行为不变；移除镜像不意味着改变实际运行代码。
 
 **Gate P1.1**：两仓 CPU/协议测试均通过；模型仓实际 Workflow 仍可用；Dispatcher Smoke PASS；无冗余 Workflow/Waiter 副本。
 
 ### P1.2｜Matrix Jobs + Case 级报告（仍固定分配且串行）
 
-- [ ] Prepare 从单一可信模型元数据展开 Matrix 与 Artifact；Job 名称可读，Case ID 与实际运行身份精确对应，失败时 `fail-fast=false`。
-- [ ] Dispatcher 只领取一次 Run，然后展开多个 Case Task；**全局单任务槽位=1**，覆盖来自不同 Run/Workflow 的任务；此时仍可在兼容模式使用原有静态 Allocation。
-- [ ] Reporter/Waiter 逐 Case 独立报告 PASS/FAIL/NOT_RUN，正确处理超时、乱序、重复回传、分页、延迟 Comment 与跨 Attempt 错配。
-- [ ] 明确 GitHub `rerun failed jobs`/局部重试在初版的拒绝规则及用户提示；测试不会错误复用历史 PASS。
-- [ ] 真实 8P Muon + AdamW **各 5 steps + TB + Exit Code 0**，GitHub 显示两个独立 Job；用可控失败或 Mock 验证一个 FAIL 不会把另一条 PASS 改错。
+- [x] Prepare 从单一可信模型元数据展开 Matrix 与 Artifact；Job 名称可读，Case ID 与实际运行身份精确对应，失败时 `fail-fast=false`。
+- [x] Dispatcher 只领取一次 Run，然后展开多个 Case Task；**全局单任务槽位=1**，覆盖来自不同 Run/Workflow 的任务；此时仍可在兼容模式使用原有静态 Allocation。
+- [x] Reporter/Waiter 逐 Case 独立报告 PASS/FAIL/NOT_RUN，正确处理超时、乱序、重复回传、分页、延迟 Comment 与跨 Attempt 错配。
+- [x] 明确 GitHub `rerun failed jobs`/局部重试在初版的拒绝规则及用户提示；测试不会错误复用历史 PASS。
+- [x] 真实 8P Muon + AdamW **各 5 steps + TB + Exit Code 0**，GitHub 显示两个独立 Job；用可控失败或 Mock 验证一个 FAIL 不会把另一条 PASS 改错。
 
 **Gate P1.2**：两个独立 GitHub Jobs、正确状态和串行执行证据；两个 8P Case 的全链路功能未退化。阶段失败可单独回滚 Matrix Workflow。
 
@@ -307,17 +307,33 @@ Phase 1 Scheduler 流程：
 
 | 里程碑 | 当前状态 | 代码 PR / SHA | 验收 Run / 日志 | 风险与结论 |
 | --- | --- | --- | --- | --- |
-| P1.0 基线/拓扑 | **进行中** | [Lite Draft PR #1](https://github.com/depeng1994/lite-actions/pull/1) | 旧版 Lite 60 tests OK（1 skipped）；只读 A3 SSH/NPU 检查 | 拓扑组未逐组实机认证 |
-| P1.1 仓库去重/契约 | **开发分支完成，验收待补** | [Lite #1](https://github.com/depeng1994/lite-actions/pull/1) · [模型仓 #28](https://github.com/depeng1994/torchtitan-npu/pull/28) | Lite 69 tests OK（1 skipped）、模型仓 pytest 21 passed | 已移除镜像；线上 Smoke 未执行 |
-| P1.2 Matrix/独立结果 | **独立 Job/结果实机验证通过，双绿 Gate 未通过** | [Lite #1](https://github.com/depeng1994/lite-actions/pull/1) · [模型仓 #28](https://github.com/depeng1994/torchtitan-npu/pull/28) | [GitHub staging Run 38042640944](https://github.com/depeng1994/torchtitan-npu/actions/runs/38042640944)：Prepare PASS、生成 Muon/AdamW 独立 Jobs；出于安全主动取消，未启动 NPU；Case 级回传 Mock PASS | [8P Run 38043726171](https://github.com/depeng1994/torchtitan-npu/actions/runs/38043726171)：Muon 训练真 PASS 但通知假 FAIL，AdamW PASS；[Run 38044923848](https://github.com/depeng1994/torchtitan-npu/actions/runs/38044923848)：Muon PASS，AdamW rc=137 / INFRA_ERROR，仍缺少同一 Run 双 PASS |
-| P1.3 动态选卡/占用策略 | **实机分配与隔离逻辑已覆盖，完整门槛待验收** | [Lite #1](https://github.com/depeng1994/lite-actions/pull/1) | 配置 validate OK、动态候选组/锁及 PID 分类 CPU 测试通过；经只读 SSH 证实 npu-smi 同时含宿主机/容器 PID，已改为宿主机 PID 入口清理 | 已两次实测 A3-4 0–7 单机8P；16P 原子选取 A3-3 0–7 + A3-4 8–15；失败组隔离为局部设备范围（Lite [7a20606](https://github.com/depeng1994/lite-actions/commit/7a20606)）；16P、其他合法候选组训练 PASS 尚未证实；外部清理默认关 |
-| P1.4 8P/16P 与恢复 | **实机回归进行中，16P Gate 未通过** | [Lite #1](https://github.com/depeng1994/lite-actions/pull/1) | [16P Run 38046480324](https://github.com/depeng1994/torchtitan-npu/actions/runs/38046480324)：双机8+8资源分配成功、Mesh dp_shard=16/ep=16；HCCL 初始化 `EI0020` 绑定地址 `192.168.3.186:16666` 失败，最终 INFRA_ERROR，双机训练进程已检查退出；受影响分组留隔离记录 | 8P AdamW 第2次 rc=137 原因未明、资源释放未确认；16P HCCL `EI0020` 待定位；5 steps/TB 的新16P PASS 与真实 Cancel/restart 故障注入未通过 |
-| P1.5 Phase 1 发布 | **未开始；临时验证窗口已回滚** | — | 2026-10-10 18:57 已恢复旧生产 Agent，来源 SHA `2a0427c`、配置无变化；临时分支准入撤销，两个 PR 仍 Draft | 未达 Gate，禁止合并/上线 |
+| P1.0 基线/拓扑 | 已验收 | Lite `2a0427c` / 模型 `b91257e` | 基线 69 passed/1 skipped；CPU-only Prepare/Matrix 新链路已验证 | 已冻结 V1 原目录与回滚副本，合法资源组见下文 |
+| P1.1 仓库去重/契约 | 已验收 | Lite PR #1 (`7824a83`)、模型 PR #28 (`99cd7e3`) | Lite `77 passed / 1 skipped`，模型 `24 passed`，V1 `60 passed` | 模型仓唯一 Workflow/Waiter，Lite 无生产镜像 |
+| P1.2 Matrix/独立结果 | 已验收 | 模型 `4233e7d` | [8P Run 38050639931](https://github.com/depeng1994/torchtitan-npu/actions/runs/38050639931) | 两独立 Job、Muon/AdamW PASS rc0，串行上报 |
+| P1.3 动态选卡/占用策略 | 已验收 | Lite `92b9b04` | [A3-4 8P Run 38050639931](https://github.com/depeng1994/torchtitan-npu/actions/runs/38050639931)、[A3-3 8P Run 38060703524](https://github.com/depeng1994/torchtitan-npu/actions/runs/38060703524)，77 passed/1 skipped | 同一 Muon 用例在 A3-4:8–15 与 A3-3:0–7 均 5 steps+TB PASS；A3-3 auto-occupy Worker 宿主机 PID 分类后定点清理并经 npu-smi 确认释放；未误杀其他进程；临时选择优先级已恢复 |
+| P1.4 8P/16P 与恢复 | 已验收实机 Gate | 模型 `99cd7e3` / Lite `92b9b04` | [Muon Run 38054910957](https://github.com/depeng1994/torchtitan-npu/actions/runs/38054910957)、[AdamW Run 38059258896](https://github.com/depeng1994/torchtitan-npu/actions/runs/38059258896)、[16P Run 38054913344](https://github.com/depeng1994/torchtitan-npu/actions/runs/38054913344)、[Cancel Run 38054570924](https://github.com/depeng1994/torchtitan-npu/actions/runs/38054570924) | 8P Muon/AdamW、双机16P 均 5 steps + TB + rc0；全局不重叠；取消远端子进程清理验证；前一次 AdamW 外部 SIGKILL 根因未证实，FAIL 保留不可擦除 |
+| P1.5 Phase 1 发布 | 待最终 master 发布/正式 Smoke | GitCode/GitHub 模型集成 `055bf49`；Lite `92b9b04` | [V1 回滚 Smoke 38060151936](https://github.com/depeng1994/torchtitan-npu/actions/runs/38060151936)、[V2 兼容 Smoke 38059669234](https://github.com/depeng1994/torchtitan-npu/actions/runs/38059669234) | V1 回滚演练 PASS，已恢复 V2；待 PR 合并后验证双 master 同 SHA、正式 Dispatcher 及最终 Smoke |
 | P2.0 并发资源预算 | **待 Phase 1 完成** | — | — | — |
 | P2.1 租约/多任务调度 | 待开始 | — | — | — |
 | P2.2 跨 Host 2×8P | 待开始 | — | — | — |
 | P2.3 同机/4×8P 容量 | 待开始（条件验收） | — | — | — |
 | P2.4 混部/发布 | 待开始 | — | — | — |
+
+### 2026-10-10 Phase 1 实机回归与回滚证据
+
+| 验证 | 模型 SHA / Lite SHA | Run 或现场 | 结果 |
+| --- | --- | --- | --- |
+| V2 8P Muon + Virtual AdamW 两独立 Matrix Jobs | `4233e7d` / `480a108` | [38050639931](https://github.com/depeng1994/torchtitan-npu/actions/runs/38050639931) | 各 5 steps、TensorBoard、rc=0，两个 Job PASS、全局串行 |
+| GitCode/GitHub 归一的 16P 双机 | `99cd7e3` / `60e0d84` | [38054913344](https://github.com/depeng1994/torchtitan-npu/actions/runs/38054913344) | A3-3:0–7+A3-4:8–15、双机 EP16、5 steps/TB、rc0、PASS |
+| 归一版本 8P Muon | `99cd7e3` / `60e0d84` | [38054910957](https://github.com/depeng1994/torchtitan-npu/actions/runs/38054910957) | Muon 5 steps PASS；同 Run AdamW 遇外部 SIGKILL（总体 FAIL，不隐去） |
+| 归一版本 8P AdamW 独立重验 | `99cd7e3` / `7824a83` | [38059258896](https://github.com/depeng1994/torchtitan-npu/actions/runs/38059258896) | 5 steps、TB 事件与 Case PASS、rc0，Github Run success |
+| 取消故障注入与远端清理修复 | `4233e7d` / `60e0d84` | [38053832324](https://github.com/depeng1994/torchtitan-npu/actions/runs/38053832324)、[38054570924](https://github.com/depeng1994/torchtitan-npu/actions/runs/38054570924) | 复现跨 PGID rank 残留；改为 marker + PID 启动时间定点回收；后次 CANCELLED 且无残留、用户进程未受影响 |
+| V2 兼容现有 V1 GitHub Master Workflow | 模型 `b91257e` / V2 Lite | [38059669234](https://github.com/depeng1994/torchtitan-npu/actions/runs/38059669234) | 兼容 Smoke PASS |
+| 恢复到实际 V1 Agent + Workflow | 模型 `b91257e` / V1 Lite `2a0427c` | [38060151936](https://github.com/depeng1994/torchtitan-npu/actions/runs/38060151936) | 停 V2、启动唯一 V1 Agent、真实 Github Smoke PASS；停 V1 后恢复唯一 V2 Agent；V1 原状态/日志和 Pool 均已备份 |
+| 第二合法 8P 组与真实外部占用回收 | `99cd7e3` / `92b9b04` | [38060703524](https://github.com/depeng1994/torchtitan-npu/actions/runs/38060703524) | A3-3:0–7 Muon 5 steps/TB rc0 GitHub PASS；确认 auto-occupy Worker PID 3598060，经 PID 类别+启动时间核实后只对目标回收，npu-smi 复核空闲，未改 watchdog；临时优先级恢复原值 |
+| A5 64P 禁用与安全测试 | Lite `92b9b04` | `python3 -m pytest -q tests` 77 passed,1 skipped；模型 24 passed | `config/pipelines.json.enabled=false`、GitHub Workflow CI_CHANNEL_ENABLED=false；A5 未运行 |
+
+**保留的异常事实**：归一 SHA `99cd7e3` 在 [38054910957](https://github.com/depeng1994/torchtitan-npu/actions/runs/38054910957) 的 8P AdamW 第 1 step 后遭 SIGKILL（rc137）；未找到 OOM 证据，不能断言根因或删除 FAIL。后续同 SHA 的独立 8P AdamW 回归 5 steps/TB PASS；此前隔离通过 Host npu-smi 与完整任务 marker 查空后才人工解除，保留审计信息。生产默认不自动 kill 外部进程；只有获维护者授权且精确识别的 auto-occupy/vllm 才能按宿主机 PID 回收。
 
 ### 尚需实机核实的事实（不阻塞方案冻结，但阻塞相应功能放量）
 

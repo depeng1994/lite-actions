@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 import logging
 from logging.handlers import RotatingFileHandler
 import os
@@ -15,13 +16,14 @@ from ci_core.config import load_config
 from ci_core.github import GitHubClient, authorization
 from ci_core.job_state import JobState
 from ci_core.reporting import NAMES, job_key, run_and_report
+from ci_core.v2_dispatch import run_and_report_v2
 from ci_core.registry import workflow_label
 
 ROOT = Path(__file__).resolve().parent
 LOG = ROOT / "logs" / "system" / "unified-agent.log"
 OWNER = "depeng1994"
 BRANCHES = set(filter(None, os.environ.get("A3_CI_ALLOWED_BRANCHES", "master").split(",")))
-MAX_WORKERS = 2
+MAX_WORKERS = 1  # Phase 1: one training Case across ALL workflows
 INTERVAL = int(os.environ.get("A3_CI_POLL_SECONDS", "60"))
 STATUSES = {case: labels[0] for case, labels in NAMES.items()}
 LEGACY_STATUSES = {case: labels[1] for case, labels in NAMES.items() if len(labels) > 1}
@@ -58,7 +60,9 @@ def main():
     if args.validate:
         print("Configured CI channels (validation passed):")
         for name, case in sorted(cases.items()):
-            chips = sum(len(n["devices"]) for n in case.get("allocation", []))
+            chips = (sum(len(n["devices"]) for n in case["allocation"])
+                     if "allocation" in case else
+                     case["resources"]["nodes"] * case["resources"]["devices_per_node"])
             status = "ENABLED" if case["enabled"] else "DISABLED"
             print(f"  {name}: {status} | {case['workflow']} | "
                   f"pool={case['pool']} | devices={chips} | "
@@ -76,13 +80,22 @@ def main():
     inflight = {}
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         while True:
-            for key, job in list(inflight.items()):
+            for key, (job, cancel_event, run_id) in list(inflight.items()):
                 if job.done():
                     try:
                         job.result()
                     except Exception:
                         logging.exception("dispatcher crashed for run %s", key)
                     del inflight[key]
+                else:
+                    # Confirm with the exact run ID (do not infer cancellation
+                    # from a paginated/stale in-progress list).
+                    try:
+                        current = client.workflow_status(run_id)
+                        if current.get("status") == "completed":
+                            cancel_event.set()
+                    except Exception:
+                        logging.warning("GitHub Run status unavailable for %s", run_id)
             try:
                 for run in client.running_workflows():
                     filename = (run.get("path") or "").rsplit("/", 1)[-1]
@@ -101,18 +114,31 @@ def main():
                     if key in inflight:
                         continue
                     past = state.read().get(key, {})
-                    if past.get("phase") in ("reported", "running"):
+                    # V2 task state prevents duplicate execution; allow
+                    # safe pending-report retry after a network interruption.
+                    if past.get("phase") == "reported":
+                        continue
+                    if (past.get("phase") == "running"
+                            and run.get("_ci_request", {}).get("schema") != 2):
+                        continue
+                    if past.get("phase") == "blocked_recovery":
                         continue
                     if past.get("phase") != "pending_report":
                         state.update(key, phase="running", case=case["name"],
                                      sha=run["head_sha"])
-                    inflight[key] = executor.submit(run_and_report, case, run, root=ROOT)
+                    handler = (run_and_report_v2 if
+                               run.get("_ci_request", {}).get("schema") == 2
+                               else run_and_report)
+                    cancel_event = Event()
+                    run["_ci_cancel_event"] = cancel_event
+                    inflight[key] = (executor.submit(handler, case, run, root=ROOT),
+                                     cancel_event, run["id"])
             except Exception:
                 logging.exception("poll failed")
             if args.once:
                 break
             time.sleep(INTERVAL)
-        for job in inflight.values():
+        for job, _, _ in inflight.values():
             job.result()
 
 

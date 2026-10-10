@@ -38,7 +38,10 @@ class BroadcastTests(unittest.TestCase):
         def remote(argv, **kwargs):
             calls.append((argv[-2], argv[-1], kwargs["input"]))
             return subprocess.CompletedProcess(argv,0,"","")
-        self.assertEqual(broadcast_job(cases["a3-16p"],pools,RUN,"begin",
+        allocated={**cases["a3-16p"],"allocation":[
+            {"host_id":"a3-3","devices":list(range(8))},
+            {"host_id":"a3-4","devices":list(range(8,16))}]}
+        self.assertEqual(broadcast_job(allocated,pools,RUN,"begin",
                                        executor=remote),[])
         self.assertEqual([x[0] for x in calls],
                          ["a3-3-relay","a3-3-docker-relay",
@@ -53,7 +56,8 @@ class BroadcastTests(unittest.TestCase):
         pools=json.loads((root/"config/pools.json").read_text())
         def remote(argv, **kwargs):
             return subprocess.CompletedProcess(argv,1 if argv[-2]=="a3-4-relay" else 0,"","")
-        self.assertEqual(broadcast_job(spec,pools,RUN,"begin",executor=remote),
+        runtime={**spec,"allocation":[{"host_id":"a3-4","devices":list(range(8))}]}
+        self.assertEqual(broadcast_job(runtime,pools,RUN,"begin",executor=remote),
                          ["a3-4-relay"])
 
     def test_begin_then_end_while_device_lock_held(self):
@@ -89,6 +93,7 @@ class BroadcastTests(unittest.TestCase):
                     self_outer.assertEqual(argv[argv.index("--stamp")+1],
                         "2026-10-09_09-13-28_run-37868722207_attempt-1")
                     kwargs["stdout"].write("TRAINED\n")
+                def poll(self): return None
                 def wait(self, **kwargs): return 0
             with patch.object(dispatch,"prepare_profile",return_value=("dsv4_flash_a3_16p_example",{"ascend_env":"/path/set_env.sh"})), \
                  patch.object(dispatch,"remote_preflight") as preflight, \
@@ -101,6 +106,52 @@ class BroadcastTests(unittest.TestCase):
             self.assertEqual(events,["begin","end"])
             self.assertEqual(preflight.call_count,2)
             self.assertIn("TRAINED",result.log.read_text())
+
+    def test_end_wall_failure_does_not_relabel_verified_training_as_failed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            (root/"config").mkdir()
+            (root/"config/pools.json").write_text('{"test":{"type":"ascend-a3","nodes":[]}}')
+            case={"name":"test-ci","runner":{"kind":"ssh"},"allocation":[
+                {"host_id":"a3-4","devices":[0]}],"pool":"test",
+                "enabled":True,"timeout_seconds":10}
+            events=[]
+            def wall(*args):
+                events.append(args[-1])
+                return ["a3-4-relay"] if args[-1]=="end" else []
+            class Runner:
+                def __init__(self,argv,**kwargs):kwargs["stdout"].write("CASE_RESULT approved PASS 0\n")
+                def poll(self):return None
+                def wait(self,**kwargs):return 0
+            with patch.object(dispatch,"prepare_profile",
+                              return_value=("approved",{"ascend_env":"/path/set_env.sh"})), \
+                 patch.object(dispatch,"remote_preflight"), \
+                 patch.object(dispatch,"broadcast_job",side_effect=wall), \
+                 patch.object(dispatch.subprocess,"Popen",Runner), \
+                 patch.object(dispatch,"metadata",
+                              return_value={"host":"a3-4-docker-relay",
+                                            "path":"/mnt/share/ci_tests/fake/run.log"}), \
+                 patch.object(dispatch,"select_remote",return_value=["step5 PASS"]):
+                execution=dispatch.execute(case,RUN,root=root)
+            self.assertEqual(execution.exit_code,0)
+            self.assertTrue(execution.release_verified)
+            self.assertEqual(events,["begin","end"])
+
+    def test_retry_transient_host_wall_only_before_training(self):
+        cfg=Path(__file__).resolve().parents[1]
+        case={**load_config(cfg)["a3-8p"],"allocation":[{"host_id":"a3-4",
+                                                         "devices":list(range(8))}]}
+        pools=json.loads((cfg/"config/pools.json").read_text())
+        attempts=[]
+        def remote(argv,**kwargs):
+            attempts.append(argv[-2])
+            return subprocess.CompletedProcess(argv, 255 if len(attempts)==1 else 0,
+                                               "", "")
+        with patch("ci_core.broadcast.time.sleep") as pause:
+            self.assertEqual(broadcast_job(case,pools,RUN,"begin",executor=remote),[])
+        self.assertEqual(attempts,["a3-4-relay","a3-4-relay",
+                                    "a3-4-docker-relay"])
+        pause.assert_called_once_with(2)
 
     def test_release_not_verified_warns_instead_of_falsely_free(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -119,6 +170,7 @@ class BroadcastTests(unittest.TestCase):
                 return []
             class Runner:
                 def __init__(self, argv, **kwargs): pass
+                def poll(self): return None
                 def wait(self, **kwargs): return 0
             with patch.object(dispatch,"prepare_profile",return_value=("dsv4_flash_a3_16p_example",{"ascend_env":"/path/set_env.sh"})), \
                  patch.object(dispatch,"remote_preflight",side_effect=preflight), \

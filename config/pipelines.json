@@ -14,180 +14,43 @@
   "a3-8p": {
     "workflow": "a3-8p-lite-actions.yml",
     "pool": "a3-shared",
-    "allocation": [
-      {
-        "host_id": "a3-4",
-        "devices": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ]
-      }
-    ],
     "timeout_seconds": 7500,
     "runner": {
       "kind": "ssh"
     },
     "enabled": true,
-    "pipeline_id": "a3-8p"
+    "pipeline_id": "a3-8p",
+    "resources": {
+      "nodes": 1,
+      "devices_per_node": 8
+    }
   },
   "a3-16p": {
     "workflow": "a3-16p-lite-actions.yml",
     "pool": "a3-shared",
-    "allocation": [
-      {
-        "host_id": "a3-3",
-        "devices": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ]
-      },
-      {
-        "host_id": "a3-4",
-        "devices": [
-          8,
-          9,
-          10,
-          11,
-          12,
-          13,
-          14,
-          15
-        ]
-      }
-    ],
     "timeout_seconds": 7500,
     "runner": {
       "kind": "ssh"
     },
     "enabled": true,
-    "pipeline_id": "a3-16p"
+    "pipeline_id": "a3-16p",
+    "resources": {
+      "nodes": 2,
+      "devices_per_node": 8
+    }
   },
   "a5-64p": {
     "workflow": "a5-64p-lite-actions.yml",
     "pool": "a5-64p-lab",
-    "allocation": [
-      {
-        "host_id": "a5-01",
-        "devices": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ]
-      },
-      {
-        "host_id": "a5-02",
-        "devices": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ]
-      },
-      {
-        "host_id": "a5-03",
-        "devices": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ]
-      },
-      {
-        "host_id": "a5-04",
-        "devices": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ]
-      },
-      {
-        "host_id": "a5-05",
-        "devices": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ]
-      },
-      {
-        "host_id": "a5-06",
-        "devices": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ]
-      },
-      {
-        "host_id": "a5-07",
-        "devices": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ]
-      },
-      {
-        "host_id": "a5-08",
-        "devices": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ]
-      }
-    ],
     "timeout_seconds": 14400,
     "runner": {
       "kind": "ssh"
     },
     "enabled": false,
-    "pipeline_id": "a5-64p"
+    "pipeline_id": "a5-64p",
+    "resources": {
+      "nodes": 8,
+      "devices_per_node": 8
+    }
   }
 }

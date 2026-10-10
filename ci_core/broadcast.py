@@ -8,6 +8,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import subprocess
+import time
 import unicodedata
 
 
@@ -73,21 +74,31 @@ def broadcast_job(case: dict, pools: dict, run: dict, phase: str,
         if not destinations:
             raise ValueError(f"no host broadcast SSH configured for {allocated['host_id']}")
         for n, target in enumerate(dict.fromkeys(destinations)):
-            try:
-                finished = executor(
-                    ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-                     "-o", "ServerAliveInterval=10", target, "wall -n"],
-                    input=msg, text=True, capture_output=True, timeout=22,
-                    check=False,
-                )
-                if finished.returncode:
-                    raise RuntimeError(f"wall exited {finished.returncode}")
-                logging.info("CI %s wall delivered run=%s target=%s",
-                             phase, run["id"], target)
-            except (subprocess.SubprocessError, OSError, RuntimeError) as exc:
-                logging.warning("CI %s wall failed run=%s target=%s: %s",
-                                phase, run["id"], target, type(exc).__name__)
-                # First target is the physical host, where the users log in.
-                if n == 0:
-                    failures.append(target)
+            # Host wall on A3 may intermittently reject SSH at key exchange.
+            # Retry ONLY pre-start host notice; exit notice is advisory and
+            # should not change a verified training/test result.
+            retries = 3 if n == 0 and phase == "begin" else 1
+            delivered = False
+            for attempt in range(retries):
+                try:
+                    finished = executor(
+                        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+                         "-o", "ServerAliveInterval=10", target, "wall -n"],
+                        input=msg, text=True, capture_output=True, timeout=22,
+                        check=False,
+                    )
+                    if finished.returncode:
+                        raise RuntimeError(f"wall exited {finished.returncode}")
+                    delivered = True
+                    logging.info("CI %s wall delivered run=%s target=%s",
+                                 phase, run["id"], target)
+                    break
+                except (subprocess.SubprocessError, OSError, RuntimeError) as exc:
+                    logging.warning("CI %s wall attempt=%s/%s failed run=%s target=%s: %s",
+                                    phase, attempt + 1, retries, run["id"],
+                                    target, type(exc).__name__)
+                    if attempt + 1 < retries:
+                        time.sleep(2)
+            if not delivered and n == 0:
+                failures.append(target)
     return failures

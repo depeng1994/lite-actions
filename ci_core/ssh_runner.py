@@ -148,21 +148,75 @@ def remote_command(node: dict, nodes: list[dict], runner: dict, dest: str,
 
 
 def cancel(node: dict, dest: str, stamp: str) -> None:
-    """Terminate only a verified job-owned process group, never unknown PIDs."""
-    code = (
-        "import os,pathlib,signal,sys\n"
-        "folder=pathlib.Path(sys.argv[1]); marker=sys.argv[2]\n"
-        "pid=int((folder/'job.pgid').read_text().strip())\n"
-        "if pid <= 1: raise SystemExit('invalid pgid')\n"
-        "try: environ=pathlib.Path(f'/proc/{pid}/environ').read_bytes()\n"
-        "except FileNotFoundError: raise SystemExit(0)\n"
-        "if b'LITE_CI_JOB_ID='+marker.encode()+b'\\x00' not in environ: "
-        "raise SystemExit('refuse unrelated process')\n"
-        "if os.getpgid(pid)!=pid: raise SystemExit('not group leader')\n"
-        "os.killpg(pid,signal.SIGTERM)\n"
-    )
+    """Stop all verified processes owned by this exact CI job.
+
+    Torchrun's ranks can create independent process groups; killing only the
+    saved launcher PGID leaves active NPU ranks.  Match the unique inherited
+    LITE_CI_JOB_ID in /proc, record PID start times, and signal each PID only
+    after an identity recheck. Never match an unrelated command line.
+    """
+    code = """\
+import os
+from pathlib import Path
+import signal
+import sys
+import time
+
+folder = Path(sys.argv[1])
+marker = sys.argv[2]
+leader = int((folder / 'job.pgid').read_text().strip())
+if leader <= 1:
+    raise SystemExit('invalid recorded job pid')
+tag = b'LITE_CI_JOB_ID=' + marker.encode()
+
+def identity(pid):
     try:
-        ssh(node["ssh"], f"python3 -c {q(code)} {q(dest)} {q(stamp)}", timeout=30)
+        env = Path(f'/proc/{pid}/environ').read_bytes()
+        if tag not in env.split(b'\\x00'):
+            return None
+        # Field 22 is process starttime; remove the '(comm)' part first.
+        data = Path(f'/proc/{pid}/stat').read_text().rsplit(') ', 1)[1].split()
+        return data[19]
+    except (FileNotFoundError, ProcessLookupError, PermissionError):
+        return None
+
+# Never act on a reused launcher PID or any unverified foreign process.
+if Path(f'/proc/{leader}').exists() and identity(leader) is None:
+    raise SystemExit('refuse reused/foreign launcher PID')
+owned = {}
+for entry in os.scandir('/proc'):
+    if entry.name.isdecimal():
+        pid = int(entry.name)
+        start = identity(pid)
+        if start is not None:
+            owned[pid] = start
+
+for pid, start in owned.items():
+    if identity(pid) == start:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+
+for _ in range(12):
+    if not any(identity(pid) == start for pid, start in owned.items()):
+        break
+    time.sleep(1)
+
+for pid, start in owned.items():
+    if identity(pid) == start:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+time.sleep(1)
+left = [pid for pid, start in owned.items() if identity(pid) == start]
+if left:
+    raise SystemExit('owned process cleanup unverified: ' + str(left))
+"""
+    try:
+        ssh(node["ssh"], f"python3 -c {q(code)} {q(dest)} {q(stamp)}", timeout=35)
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
         print(f"CLEANUP_UNVERIFIED: {node['host_id']} {type(exc).__name__}", flush=True)
 
@@ -291,10 +345,23 @@ def main() -> int:
     parser.add_argument("--stamp", required=True)
     parser.add_argument("--remote-dir", required=True,
                         help="Human-readable remote task directory")
+    parser.add_argument("--allocation-file", help="Trusted dispatcher allocation JSON")
     args = parser.parse_args()
     case = load_config(ROOT).get(args.case)
     if not case or not case["enabled"] or case["runner"]["kind"] != "ssh":
         raise ValueError("unsupported or disabled SSH pipeline")
+    if "resources" in case:
+        if not args.allocation_file:
+            raise ValueError("dynamic CI requires runtime allocation")
+        from ci_core.scheduler import validate_allocation
+        runtime = json.loads(Path(args.allocation_file).read_text())
+        if set(runtime) != {"allocation"}:
+            raise ValueError("unrecognized allocation document")
+        validate_allocation(case, json.loads((ROOT / "config/pools.json").read_text()),
+                            runtime["allocation"])
+        case = {**case, "allocation": runtime["allocation"]}
+    elif args.allocation_file:
+        raise ValueError("unexpected dynamic allocation for static CI")
     if args.request_file:
         if args.test_case or not args.run_id or not args.run_attempt:
             raise ValueError("manifest dispatch requires run_id and attempt, not test-case")
