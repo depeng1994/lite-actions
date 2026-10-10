@@ -73,7 +73,7 @@ flowchart LR
 
 **数据路径**：执行机保留完整 `run.log`；调度机 Python 通过 SSH 仅读取最后 128 KiB 原始日志，再统一筛选性能指标或异常上下文（最多 20 行，每行最多 180 字符）。`ci_core/reporting.py` 在调度机生成结果 JSON 并调用 GitHub REST API，**执行机无 Token，Pull Agent 只负责发现与提交任务，无任何 AI Agent API 调用**。
 
-**V2 Phase 1** 由 Dispatcher 统一限制全局 **1 个训练 Case**，即使 GitHub Matrix Waiter 并列展示也不会并行占卡；V1 仅作为受控回滚版本保留。`wall -n` 只广播到**执行机宿主机和训练容器**，不广播调度机。
+**V2 Phase 1** 使用两层跨进程防线：OS 用户级 Agent 单例锁防止重复 Dispatcher 同时轮询/写状态，全局训练槽锁覆盖完整动态 Case 分配与执行；设备锁继续做细粒度资源保护。因此 GitHub Matrix Waiter 可并列展示，但任何时刻至多 **1 个训练 Case**。V1 仅作为受控回滚版本保留。`wall -n` 只广播到**执行机宿主机和训练容器**，不广播调度机。
 
 ### 1.3 职责边界：测试用例与调度配置分别维护
 
@@ -105,7 +105,7 @@ flowchart LR
 | `Dispatcher-Smoke` | `a3-smoke` | 调度机本地 `npu-smi` 连通性 PoC | 可用；不是 2P 训练 |
 | `A3-8p-CI-Example` | `a3-8p` | 已验证的 A3-3 / A3-4 合法 8P 组动态选卡，Muon + AdamW Eager 5 steps | **V2 两个独立 Matrix Jobs，5 steps/TB 实机通过** |
 | `A3-16p-CI-Example` | `a3-16p` | A3-3 + A3-4：EP16，Eager 5 steps | **统一 SSH Runner + nightly 用例已实机通过 5 steps** |
-| `A5-64p-CI`（尚未部署 Workflow） | `a5-64p` | A5 8 台 × 每台 8P | **通用 SSH 执行器已配置；暂未启用，待实机验收** |
+| `A5-64p-CI`（Workflow 已定义，通道禁用） | `a5-64p` | A5 8 台 × 每台 8P | **通用 SSH 执行器已配置；`enabled=false` 且 Workflow admission 禁用，待实机验收** |
 
 **V2 代码归属**：模型仓 `.github/` 是唯一 Workflow/Waiter 定义；本仓不再维护镜像。发布前验证 GitCode/GitHub `master` 的同 SHA 和 Workflow 白名单。独立 Case Job 的回归证据与取消演练记录见 [Phase 1 计划台账](REFACTOR_PLAN.md)。
 

@@ -12,7 +12,7 @@ GitHub 正式生产准入为 master + workflow_dispatch + depeng1994。特性分
 
 操作前需分别核验：GitHub 没有 in_progress/queued 的相关 Workflow；调度机 state/unified-jobs.json 没有 running/blocked_recovery 或尚未处理的 quarantine；两台 A3 宿主机 npu-smi 与本系统任务 marker；SSH/网络正常；确认一个 Agent 实例及其确切 PID、工作目录、代码 SHA。
 
-**生产唯一 Agent** 不应跨两个工作目录同时运行；单目录 flock 不能保护另一个目录。切换时先备份两仓 SHA、Workflow、生产 config/state 与必要日志索引，关闭旧 Agent（仅发送准确 PID 的 SIGTERM），等其退出后才能拉起另一 Agent。运行中的任务不得热迁移、覆盖 state 或删除锁文件。
+**生产唯一 Agent** 仍是运维要求。自 2026-10-11 自审修复版起，V2 使用 OS 用户级、与 worktree 无关的 Agent 单例 flock，并另有同范围的全局训练槽 flock；默认位于 `/tmp/lite-actions-<uid>/`，只有明确运维需要才可通过 `LITE_ACTIONS_AGENT_LOCK` / `LITE_ACTIONS_GLOBAL_SLOT_LOCK` 指向同一绝对路径，禁止不同工作目录配置不同锁路径。旧 V1 不持有这些新锁，因此版本切换仍必须先备份两仓 SHA、Workflow、生产 config/state 与必要日志索引，关闭旧 Agent（仅发送准确 PID 的 SIGTERM），等其退出后才能拉起另一 Agent。运行中的任务不得热迁移、覆盖 state 或删除锁文件。
 
 正式启动仅允许 master，外部自动清理默认关闭：A3_CI_ALLOWED_BRANCHES=master、A3_CI_RECLAIM_EXTERNAL_PROCESSES=0。先运行 python3 -m pytest -q tests 与 python3 unified_agent.py --validate，再启动 ./run-unified-agent.sh 并检查日志与唯一 PID。
 
@@ -20,7 +20,7 @@ GitHub 正式生产准入为 master + workflow_dispatch + depeng1994。特性分
 
 已核实单机 8P：A3-3 的 0–7；A3-4 的 0–7 和 8–15。A3-3 的 8–15 尚未验证，不启用。已核实跨机 16P：A3-3 0–7 + A3-4 8–15，两机各 8P。禁止在生产设置 A3_CI_ALLOW_EXPERIMENTAL_TOPOLOGY=1。
 
-Dispatcher 必须先获取整组设备锁，再从对应宿主机只读检查 npu-smi 与进程；跨机不得保留半套锁。候选全部不可用时有界等待或报告容量不足，不得杀普通用户任务。可信 auto-occupy/vllm 只允许对严格核实宿主机 PID、UID、启动时间、类别和租约的进程按 PID 操作；默认不开启自动回收，禁止 pkill -f、killall、全机清理。A5-64P 持续 enabled=false，未经资产路径、网卡与 HCCL 真实验收不得启用。
+Dispatcher 必须先持有全局训练槽，再原子获取整组设备锁，并从对应宿主机只读检查 npu-smi 与进程；跨机不得保留半套锁。候选全部不可用时有界等待或报告容量不足，不得杀普通用户任务。可信 auto-occupy/vllm 只允许对严格核实宿主机 PID、UID、启动时间、类别和租约的进程按 PID 操作；默认不开启自动回收，禁止 pkill -f、killall、全机清理。A5-64P 持续 enabled=false，未经资产路径、网卡与 HCCL 真实验收不得启用。
 
 ## 4. 取消、异常恢复与 Quarantine
 
