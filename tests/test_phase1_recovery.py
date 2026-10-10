@@ -101,6 +101,26 @@ class RecoveryTests(unittest.TestCase):
             execute.assert_not_called()
             self.assertEqual(FakeGitHub.published[0]["status"],"CANCELLED")
 
+    def test_external_host_pid_cleanup_never_uses_docker_namespace(self):
+        from types import SimpleNamespace
+        pool=json.loads((ROOT/"config/pools.json").read_text())
+        case={**load_config(ROOT)["a3-8p"],
+              "allocation":[{"host_id":"a3-3","devices":[6]}]}
+        calls=[]
+        def fake_ssh(host, command, **kwargs):
+            calls.append((host,command))
+            self.assertEqual(host,"a3-3-relay")
+            if command=="npu-smi info":
+                return SimpleNamespace(returncode=0,
+                    stdout="Process id in container\n| 3  0 | 2345 | dummy |\n")
+            return SimpleNamespace(returncode=1,stdout="REFUSED not approved class")
+        with patch.object(occupancy,"ssh",side_effect=fake_ssh):
+            self.assertFalse(occupancy.reclaim_candidate(case,pool,ascend_env=None))
+        self.assertEqual(len(calls),2)
+        self.assertTrue(all(host=="a3-3-relay" for host,_ in calls))
+        self.assertIn("2345",calls[1][1])
+        self.assertNotIn("a3-3-docker-relay",str(calls))
+
     def test_remote_reclamation_script_is_pid_scoped_and_syntax_valid(self):
         ast.parse(occupancy._REMOTE_TERMINATE)
         self.assertIn("SIGTERM",occupancy._REMOTE_TERMINATE)

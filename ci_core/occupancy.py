@@ -1,7 +1,8 @@
-"""Verified PID-only reclamation for operator-approved auto-occupy/vllm.
+"""Verified host-PID reclamation for operator-approved auto-occupy/vllm.
 
-Never issue a blanket pkill/killall. Remote PID namespace must match npu-smi's
-'Process id in container' on the selected SSH execution container.
+The A3 npu-smi first PID column is a HOST namespace PID. The optional
+'Process id in container' column must NEVER be used as host PID.
+Always use the separate HOST SSH entry, not the execution Docker shell.
 """
 from __future__ import annotations
 
@@ -115,10 +116,16 @@ def reclaim_candidate(case: dict, pools: dict, *, ascend_env: str | None) -> boo
     any_cleared = False
     for assigned in case["allocation"]:
         node = nodes[assigned["host_id"]]
-        host = node["ssh"]
-        setup = ("source " + shlex.quote(ascend_env) + " >/dev/null 2>&1 && "
-                 if ascend_env else "")
-        info = ssh(host, setup + "npu-smi info", timeout=45, check=True)
+        # First broadcast target is the verified physical HOST shell. The
+        # container /proc PID namespace may have the same PID numerically but
+        # refer to an unrelated process; NEVER run host PID termination there.
+        targets = node.get("broadcast_ssh", [])
+        if not isinstance(targets, list) or not targets:
+            raise ValueError("host SSH must be explicitly configured")
+        host = targets[0]
+        if not isinstance(host, str) or not host or host == node.get("ssh"):
+            raise ValueError("host PID cleanup cannot use Docker SSH")
+        info = ssh(host, "npu-smi info", timeout=45, check=True)
         for pid in selected_pids(info.stdout, assigned["devices"], indexing=mode):
             try:
                 outcome = ssh(host, "python3 -c " + shlex.quote(_REMOTE_TERMINATE)
