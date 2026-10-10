@@ -1,95 +1,85 @@
-# Lite Actions V2 重构实施计划
+# Lite Actions V2 重构计划：Phase 1 串行动态调度 → Phase 2 资源池并发
 
-> 状态：**PLAN APPROVED FOR IMPLEMENTATION DESIGN / 尚未开始代码重构**  
-> 计划创建：2026-10-10  
-> 代码基线（创建计划前）：[lite-actions/main `2a0427c`](https://github.com/depeng1994/lite-actions/commit/2a0427ca21fb18e31543480906163492f7a2cfd7)、[torchtitan-npu/master `b91257e`](https://github.com/depeng1994/torchtitan-npu/commit/b91257ebb5e9e01f4f76944d523a46c15a740bb0)  
-> 本文只定义目标、设计契约、实施步骤与验收门槛；**创建本文不代表代码已经实现或通过验证**。所有实际执行结果必须补录 Run 链接、Commit SHA、测试记录。
+> 状态：**Phase 1 / 待实施**；Phase 2 / 待启动。本文是实施与验收跟踪的唯一计划，不表示任何阶段已通过。  
+> 方案：**A（已确认）**。Phase 1 = 双仓解耦 + GitHub Matrix Jobs + 动态选卡 + **全局串行训练**；Phase 2 = 在 Phase 1 稳定基线之上增加**真正并发**。  
+> 创建：2026-10-10；最近一次计划调整：2026-10-10。  
+> 计划初始代码基线：`lite-actions/main 2a0427c`、`torchtitan-npu/master b91257e`；本计划文件的维护提交不等于执行代码基线更新。  
+> 关键证据：[8P 双 Case PASS（历史）](https://github.com/depeng1994/torchtitan-npu/actions/runs/38034002241) · [16P PASS（历史）](https://github.com/depeng1994/torchtitan-npu/actions/runs/37942444656) · [Dispatcher Smoke（历史）](https://github.com/depeng1994/torchtitan-npu/actions/runs/38025794748)。历史结果不可代替重构后的回归。
 
-## 0. 总目标与边界
+## 0. 两阶段目标与最终交付边界
 
-### 0.1 目标
+| 维度 | Phase 1：基础架构与串行动态调度（**本轮实施**） | Phase 2：动态资源池并发（**第二轮实施**） |
+| --- | --- | --- |
+| 重构定位 | 架构闭环、正确性、兼容与可回退 | 并发吞吐、隔离、公平性与容量 |
+| `lite-actions/github/` 镜像 | **删除**：模型仓是 Workflow/Waiter 唯一来源 | 不恢复镜像 |
+| 测试定义 | `OverrideDefinitions/build_test_list()` 唯一模型测试来源 | 沿用 |
+| GitHub 展示 | **动态 Matrix：每个 Test Case 独立 Job、独立 PASS/FAIL** | 沿用并允许真正同时 Running |
+| 资源定义 | Pool 管理设备；Pipeline 声明池/通道允许的拓扑，不绑定固定 Host/Device | 沿用并添加 Host 级预算与端口租约 |
+| 设备选择 | 根据合法拓扑、外部进程与可用设备**动态选卡**；8P/16P 均支持 | 多个 Case 可同时获得互不重叠的动态分配 |
+| 调度执行 | **全局任意时刻最多 1 个执行中的训练 Case**（所有 Workflow/Run/Host 共享） | 根据租约、拓扑与 Host 预算并发；逐档从 2 到条件性的 4×8P |
+| 队列 | 多 Case、多 Run 可以排队；前一 Case 完整退出并确认资源安全后再执行下一个 | 全局共享队列，支持资源饥饿防护与碎片化处理 |
+| 外部占用策略 | 可信 `auto-occupy` / `vllm` 可按 PID 定点清理；其他用户进程等释放 | 同一策略，额外防止误伤其他并发 CI 任务 |
+| 失败、超时、取消 | **必须具备**本任务进程清理/结果终态/脏设备隔离，不能推迟到 Phase 2 | 加强为多任务隔离、Agent 崩溃恢复与并发故障注入 |
+| 通信端口 | 维持单训练任务运行；保留模型仓当前端口语义，验证不会被外部占用冲突 | 同 Host 多训练任务必须具有端口租约和实际生效的运行时覆写 |
+| 8P / 16P | 两条 8P 5 steps + TensorBoard、1 条新链路 16P 5 steps + TensorBoard 必须通过 | 8P 并发、8P/16P 混部验证；16P 并发兼容不退化 |
+| A5 64P | 继续禁用；仅离线配置/安全校验 | 继续禁用；上线另立专项验收 |
+| 发布策略 | 完成后可以**独立上线**、保留动态选卡但串行 | 满足容量与隔离门槛后按 Host 分批放量 |
 
-将现有「静态 allocation + 以 Workflow Run 为单位顺序执行 + 单个 GitHub Job 汇总」升级为：
+**不变的总体原则**：GitHub Actions 只负责安全入口、Matrix/Checks、等待；调度机 Python 领取任务、动态分配并通过 SSH 执行；执行机不持有 GitHub Token、不调用 AI Agent API；完整训练日志留内网，GitHub 最多返回经过筛选的 20 行诊断。**不**引入 Self-hosted Runner/Kubernetes，不开放不可信 PR/Fork 的任意代码，不自动启用 A5。
 
-1. **资源池与业务请求解耦**：`config/pools.json` 管理真实主机、物理 Device ID、SSH、HCCL 网络与经验证的拓扑；`config/pipelines.json` 只声明池/可授权的资源规格，不再长期绑定特定主机与 Device ID。
-2. **拓扑感知动态调度**：Dispatcher 根据每个可信 Test Case 的 `ngpu/nnodes`，结合合法拓扑、实际外部占用与本系统设备租约，原子分配 1～N 个节点的设备；设备不足排队；目标设备被外部占用时，已核实的 `auto-occupy` / `vllm` 可定点清理，普通用户进程须等待释放，严禁无差别抢占。
-3. **Test Case 作为独立调度单元**：相同 GitHub Workflow Run 中的 Muon/AdamW 等 Case 可以并发；不同 Run 同样由一个全局 Dispatcher 仲裁。单机 8P、多机 16P 都必须支持。
-4. **GitHub Matrix Jobs**：一个 Case 对应一个原生 GitHub Job 和独立 PASS/FAIL/NOT_RUN 语义；GitHub 不执行实际 NPU 训练，只负责安全请求、等待和 Checks 展示。
-5. **代码单一所有权**：TorchTitan-NPU 维护 Workflow、Prepare/Waiter、`OverrideDefinitions/build_test_list()` 与用例环境；Lite Actions 维护调度器、资源池、执行器、回传实现。移除 Lite Actions 的 `github/` 镜像及同步脚本。
-6. **不回归既有能力**：保留已跑通的 A3 8P Muon/AdamW、16P 路线、固定 SHA、TensorBoard 校验、最小权限、调度机统一日志摘取、20 行有界结果回传及物理资源占用防护。
+**重要区分**：Phase 1 的“Matrix 并行生成多个 GitHub Job”不等于“多个训练 Case 并行运行”。即使 GitHub 中多个 Waiter Job 看起来同时处于 in-progress，**调度机全局训练槽位仍严格为 1**。`strategy.max-parallel=1` 只限制某一个 Matrix 的等待 Job，**不足以实现跨 Workflow/Run 的全局串行**；必须由 Dispatcher 统一保证。
 
-### 0.2 明确不做（V2 范围之外）
+## 1. 两仓职责及现状审查
 
-- **不**引入 Kubernetes、ARC、GitHub Self-hosted Runner、额外常驻 AI Agent 或模型 API。
-- **不**开放不可信 PR/Fork 自动执行；V2 延续已授权用户、已授权仓库及可信 `master` SHA 的 `workflow_dispatch`。未来 PR 自动检查另立安全评审任务；在 `master` 执行的 Matrix Job **不会自动显示在未合并 PR 的 SHA 上**。
-- **不**无差别 kill 外部进程。维护者授权在资源争用时，对目标 NPU 上已确认的 `auto-occupy` 或 `vllm` 进程按 PID 定点清理；其他用户的训练/调试/交互进程必须等待释放。进程类型、PID 映射、归属不明则不得 kill。
-- **不**开启 A5 64P；保留 `enabled: false`，仅允许离线校验配置。不得把示例路径、未验证 HCCL IP 当作实际验收。
-- **不**修改模型业务语义、训练 steps、Muon/AdamW 优化器选择、Virtual Optimizer、CANN/HF/Checkpoint 路径归属；这些仍由模型仓测试定义负责。
-- **不**把完整训练日志或内部资产搬到 GitHub；输出仍为脱敏且有界的诊断与测试状态。
-- **不**在本计划提交时启动任何实机测试、重启调度机或变更生产配置。
+### 1.1 单一事实来源
 
-### 0.3 术语与指标
-
-- **Physical Device**：`(host_id, device_id)` 是全局唯一的物理调度键，需与 `npu-smi` 的 `card-die` 映射核准。
-- **Allocation Group**：同一 Host 上经确认的合法设备组合，不是简单取任意连续 8 个 ID。
-- **Lease**：一次 Case 实际持有的设备、端口、Host 预算及进程归属；状态可追踪，释放须有证据。
-- **Task ID**：`repository + workflow_run_id + attempt + pipeline_id + test_id`；同一 Run 禁止重复 Test ID。
-- **理论上限**：A3-3 与 A3-4 各 16 Device，最多 **4 × 单机 8P**；这是待实机证明的上限，**不是当前可保证容量**。当前 `a3_8p_tests` 只有两条不同 Case；如需四任务压力测试，使用多个受信任 Run 或新增有业务意义的合法用例，禁止伪造 PASS。
-- **稳态验收**：至少证明无设备重叠、独立训练/校验、正确回传、端口隔离、无残留进程；如 Host RAM/IO/HCCL 无法支持同机双 8P，必须回退至每 Host 最大 1 个 8P，并明确报告实际上限为 2，而非伪称 4。
-
-## 1. 已核查现状 / 必须修复的耦合
-
-| 已有实现 | 问题与目标 |
+| 仓库 | 正式所有权 |
 | --- | --- |
-| `config/pools.json` 已声明 A3-3/A3-4 每机 16 Device，`process_indexing=card-die` | 缺少真实可并发运行的拓扑组、Host 内存/端口隔离验收记录 |
-| `config/pipelines.json` 的 `allocation` 绑定固定 Host/Device | 改为只表达池与需求/通道授权；调度结果是动态运行时数据 |
-| `ci_core/resources.py` 的 `fcntl.flock` / `reserve()` 已支持按设备键原子非阻塞加锁 | **复用锁原语**，在上层增加拓扑选择、全局队列、资源账本、健康隔离和重试 |
-| `ci_core/dispatch.py` 的 `wait_reserve(allocation)`、`remote_preflight()` | 根据动态租约执行；增加外部占用进程分类：确认的 `auto-occupy` / `vllm` 定点清理、普通用户进程等待、未知类别 fail-closed；清理后重检 |
-| `unified_agent.py` 的 `MAX_WORKERS=2`、Run 级 `inflight/state` | 改为 Run 领取与 Case 调度分离；配置有界 Workers，不能仅把常量改成 4 |
-| `ci_core/ssh_runner.py` 当前逐 Case 顺序、PID 标记/远程路径主要随 Run 生成 | 改为每 Case 唯一的工作目录、PGID、Checkpoint、环境、端口和结果；支持动态 Device IDs |
-| `ci_core/reporting.py` 的 `case_summary()` 已解析 `CASE_RESULT` | 复用解析语义，改为 Case 级及时上报、独立失败、幂等重试，并保留汇总诊断 |
-| `ci_core/job_state.py` 当前 Run 级 JSON 读改写 | 增加 Case 级持久化、原子写、恢复与版本化；防多线程/多进程写丢失 |
-| `ci_core/broadcast.py` 依赖固定 `allocation`，`end` 文案声称环境资源已全部释放 | 按实际租约广播，绝不能在同一 Host 还有其他 Job 时误报“全机空闲” |
-| `ci_core/logs.py` 路径白名单、20 行/128 KiB 上限 | 支持 Case 独立目录，继续保证白名单与上传预算 |
-| `ci_core/registry.py` 的 `resolve_request(nodes, ngpu)` 对照静态 allocation | 改为按 Case 自身 `nnodes/ngpu` 验证，并对照通道允许的资源等级/池 |
-| `.github/workflows/*` 只有一个等待 Job；Workflow 级并发组可能把不同 Run 串行化 | 动态 Matrix、`fail-fast: false`、每 Run 唯一并发组；跨 Run 互斥完全由 Dispatcher 控制 |
-| `lite-actions/github/` 有 4 个 Workflow + 1 个 Waiter 与模型仓 Blob SHA 一致 | 删除副本，删除 `scripts/sync_ci_mirror.py`；迁移 `test_workflow_contract.py` / `test_waiter.py` 依赖 |
-| `run-unified-agent.sh` 只有 `flock` 单实例保护，无开机自动恢复 | 保留单实例；对重启/恢复提供运行手册和可验证恢复流程，是否引入 systemd 单列后续决策 |
+| `depeng1994/torchtitan-npu`，以及 GitCode 上游主源 | `.github/workflows/`、`.github/scripts/lite_actions/{prepare_request,wait_result}.py`、模型测试 `tests/integration_tests/nightly_all_models_test/` 和 `OverrideDefinitions.env_vars` |
+| `depeng1994/lite-actions` | `config/{pools,pipelines}.json`、`ci_core/`、`unified_agent.py`、资源仲裁/SSH/状态/报告、协议测试 |
+| GitHub ↔ 调度机接口 | **版本化**任务清单/结果协议；固定 `repo + run_id + attempt + sha + pipeline + test_id`，不靠显示名称作为执行身份 |
 
-**基线证据**：8P [Run 38034002241](https://github.com/depeng1994/torchtitan-npu/actions/runs/38034002241) Muon/AdamW 双 PASS；16P [Run 37942444656](https://github.com/depeng1994/torchtitan-npu/actions/runs/37942444656) 历史 PASS；Dispatcher Smoke [Run 38025794748](https://github.com/depeng1994/torchtitan-npu/actions/runs/38025794748) PASS。这些仅代表当时提交；动态调度上线前必须重跑受影响路径。
+- 模型仓独占 `ASCEND_SET_ENV_PATH`、`HF_ASSETS_PATH`、`CKPT_INIT_LOAD_PATH`、`CONFIG`、优化器、steps 与模型专属变量；不能把它们改成 Lite Actions 的第二套配置。
+- Pool 是设备及网络的唯一权威配置；Pipeline 仅描述允许使用哪个 Pool、需要的节点/每节点设备数量、超时及开关。任务真实 `nnodes/ngpu` 来自模型仓可信 Case，必须与 Pipeline 授权规格相符。
+- `lite-actions/github/` 当前 4 个 Workflow + 1 个 Waiter 是镜像副本；删除前先迁移 `tests/test_workflow_contract.py` / `tests/test_waiter.py` 的依赖，再删除 `scripts/sync_ci_mirror.py`。Lite Actions 可保留小型、固定版本的**协议 fixture**，但不能再复制生产 Workflow。
+- 模型仓 `master` 目前可能被 GitCode 定时强制同步覆盖：切换生产 Workflow 前必须确认 GitCode 主源已经收录对应变更及同步顺序。
 
-## 2. V2 职责与核心契约（设计冻结项）
+### 1.2 源码已核对的技术耦合
 
-### 2.1 仓库与单一事实来源
+| 现状 | Phase 1 改造 | Phase 2 扩展 |
+| --- | --- | --- |
+| `pipelines.json` 固定 `allocation` | 改为资源规格；单任务动态产生 Allocation | 同时产生多份 Allocation |
+| `resources.py` 通过 `fcntl.flock` 锁定 `(host_id, device_id)` | 复用互斥原语；增加候选组搜索、释放确认、持久化串行任务状态 | 同一 Pool 复合租约、Host 预算、锁冲突公平排队 |
+| `unified_agent.py` `MAX_WORKERS=2`，Run 级领取 | 一个 Run 展开多个 Case Task；**全局 active training slot = 1**；Run/Case 双层幂等 | 多 Worker 训练，仍由全局 Scheduler 仲裁 |
+| `ssh_runner.py` 一个 Run 中顺序遍历所有 Case | 一个 Case 一个执行单元；动态 Host/Device、独立目录/PID/结果 | 多 Case 真正同时执行；端口及 Host 资源隔离 |
+| `reporting.py` 聚合式 `case_summary()` | 逐 Case 完成即上报；Matrix Waiter 独立结束 | 多 Case 并发上报，增加事务一致性与限流 |
+| `job_state.py` Run 级 JSON | Task/Attempt 持久化、写入原子性、崩溃恢复/未知资源隔离 | 多线程/进程并发状态一致性 |
+| `dispatch.py`、`broadcast.py`、`logs.py` 假定固定 allocation 和单目录 | 全链路读取运行时 Allocation、按本次任务设备/日志广播与取日志 | 同 Host 多任务不可误报“全机空闲”或串日志 |
+| 16P 配置目前设置了固定 `MASTER_PORT` 和 `HCCL_IF_BASE_PORT` | **不改变已通过的单任务模型行为**，检查是否与外部占用冲突 | 同 Host 并发时必须提供模型授权的动态端口机制 |
 
-- **TorchTitan-NPU**：`.github/workflows/`、`.github/scripts/lite_actions/{prepare_request,wait_result}.py`、`tests/integration_tests/nightly_all_models_test/`；唯一的 Workflow/测试源。CPU Runner 应可从可信提交的 `build_test_list()` 生成轻量化测试计划，不再从手写第二份 Registry JSON 读取。
-- **Lite Actions**：`config/{pools,pipelines}.json`、`ci_core/`、`unified_agent.py`、执行日志/资源状态；不再存储 Workflow/Waiter 镜像。
-- **跨仓契约**：定义版本化 `plan.json`、`case-result` Schema；固定输入输出，不靠字符串匹配 Job 标题推断测试身份。Lite 仓保留最小静态协议 Fixture，不复制生产 YAML。
-- **可信边界**：模型仓 `OverrideDefinitions.env_vars` 独占 CANN、HF、Checkpoint、optimizer/config 等用例环境；Dispatcher 仅负责运行时拓扑/设备/进程/端口等资源绑定。若环境项与运行时端口冲突，须在模型仓声明明确的端口分配策略，不能无声覆盖固定模型值。
+## 2. 设计契约（Phase 1 必须建立、Phase 2 必须复用）
 
-### 2.2 Workflow Plan / Matrix 数据模型
+### 2.1 测试计划与 GitHub Matrix
 
-一次可信 `workflow_dispatch`：
+1. `prepare` 校验 Actor/仓库/分支/Workflow、选择数上限和固定 SHA，读取模型仓可信 `build_test_list()`，将 Suite 展开为唯一 Test ID。**先用 ubuntu-latest CPU Runner 验证能否无 NPU 依赖运行元数据检查**；若失败，优先拆出仅使用标准库的元数据层，禁止在 Lite Actions 再维护一份用例注册表。
+2. 从**同一份已展开计划**生成 GitHub Matrix Job 列表与身份绑定的 Artifact（`repo/run_id/attempt/sha/pipeline/cases/plan_digest/schema_version`），排序确定、拒绝重复用例和未经授权的资源规模。
+3. GitHub Matrix 每项只有一个受信任 Test ID，独立 Job、`fail-fast: false`，只运行 `ubuntu-latest` Waiter。Waiter 永远不执行训练，仅接收**该 Case 对应**的 PASS/FAIL 等终态。现有 `master + workflow_dispatch + depeng1994` 白名单保持不变。
+4. Dispatcher **每个 Run 仅领取一次**、核对 Artifact 与 SHA 后展开 Case Task；不能因为两个 Matrix Jobs 分别等待就将同一训练重复触发。Case Task 唯一 ID = `repository/run_id/attempt/pipeline/test_id`。
+5. 第一个 Case 完成即可单独上报并结束其 Job，无需等另一个 Case；剩余 Case 根据 Phase 1 的全局串行槽位依次运行。失败时 `fail-fast=false`，确保符合计划的其他 Case 仍可执行或明确报告 NOT_RUN，而不是无声跳过。
+6. **重跑策略**：Phase 1 首先只支持重新触发**完整 Workflow** 生成新 Run；对于 GitHub 原生 `re-run failed jobs` / 局部重跑等无相应新 Attempt Artifact 的情形必须 fail-closed，并在 Job 中解释原因；不得读取旧 Attempt PASS 冒充新结果。局部重跑支持需另行评审并更新契约。
 
-1. `prepare` 检查 actor、repo、ref、case 选择与数量，获取确切 `head_sha`，调用**仅使用标准库可执行**的模型仓测试目录发现入口展开 `suite`；输出稳定排序、唯一 `test_id` 的测试计划。经源码检查，`OverrideDefinitions` 当前定义为标准库 `dataclass`，但仍须实测在 `ubuntu-latest` 上不依赖 NPU/torch。若不能独立执行，先拆出无运行时依赖的元数据模块，**不得**在 Lite 仓复制用例定义。
-2. `prepare` 输出 GitHub Matrix JSON，同时上传绑定 `repo/run_id/attempt/head_sha/pipeline/test_ids` 的请求 Artifact（建议 Schema V2，包含 `plan_digest`）。Matrix 与 Artifact **必须由同一测试计划对象生成**，并进行一致性校验。
-3. 每个 Matrix Job 只接受固定 `test_id`，运行原生 `ubuntu-latest` Waiter；不触碰 NPU。建议展示名 `A3-8P / Muon`、`A3-8P / AdamW`，`strategy.fail-fast=false`。
-4. Dispatcher 只领取一次可信 Run，验证 Artifact 身份/Commit SHA/计划摘要，再展开为多个唯一 Case Task；绝不可因多个 Matrix Jobs 而下载/执行同一用例多次。
-5. 初始授权边界继续是 `workflow_dispatch + depeng1994 + repo 白名单 + master`。仅白名单扩大后才可讨论 PR SHA 执行，不把“显示在 PR Checks”当作 V2 已实现能力。
-6. 明确 `rerun all`、`rerun failed jobs`、`rerun one job` 的 `run_attempt` 规则：首次 V2 **只保证重新完整运行一个 Workflow Run**；单 Job/失败 Job 局部重跑必须检测到缺少对应 attempt 的可信 Artifact 后安全失败，并提示使用完整重跑；后续若支持部分重跑，要先设计计划重新签发、Case 身份和证据合并，禁止复用旧 PASS 冒充新 Attempt。
+### 2.2 动态资源选择与全局串行
 
-**默认 V2 数量策略**：每个 A3-8P Run 最多 4 个唯一 Case（当前实际只有 2 个），16P 最多 2 个，A5 仍为 1 且禁用；总体 Worker、并发 Host 容量由 Dispatcher 配置决定。不要将 `Matrix max-parallel=4` 当成全局 NPU 容量限制。
+`pools.json` 保留真实 `host_id`、SSH、`node_ip`、网卡、`device_ids`、`process_indexing`；增加**经实机核查的合法分组/拓扑**信息，默认只启用既有成功证据支持的组合。注意 A3 的 `card-die` 与物理设备映射，不要认为任意 8 个逻辑 ID 都能组成合法 8P。
 
-### 2.3 Pipeline 需求 / Pool 供给
+`pipelines.json` 从固定 `allocation` 变更为授权规格，例如：
 
-建议 V2 `pipelines.json`（形态示例，非现在的运行配置）：
-
-```json
+~~~json
 {
   "a3-8p": {
     "workflow": "a3-8p-lite-actions.yml",
     "pool": "a3-shared",
-    "resources": {"nodes": 1, "devices_per_node": 8, "distinct_hosts": true},
+    "resources": {"nodes": 1, "devices_per_node": 8},
     "runner": {"kind": "ssh"},
     "timeout_seconds": 7500,
     "enabled": true,
@@ -98,224 +88,247 @@
   "a3-16p": {
     "workflow": "a3-16p-lite-actions.yml",
     "pool": "a3-shared",
-    "resources": {"nodes": 2, "devices_per_node": 8, "distinct_hosts": true},
+    "resources": {"nodes": 2, "devices_per_node": 8},
     "runner": {"kind": "ssh"},
     "timeout_seconds": 7500,
     "enabled": true,
     "pipeline_id": "a3-16p"
   }
 }
-```
+~~~
 
-- `resources` 是通道允许的资源形态/授权边界；实际 `nnodes/ngpu` 必须取自模型仓用例，并与资源授权一致，**不能由 GitHub 输入任意资源规模**。
-- `pools.json` 的 `device_ids` 继续是合法全集；新增可选的 `allocation_groups`/拓扑约束及 Host 容量上限、禁用设备、运行时端口策略。
-- A3 每台 16 Device，**先以历史可工作的具体组合为已知起点**；其他 8P 分组、同机两组并发以及不同 Host 的不同 16P 配对，都须通过拓扑与实机测试才能标记 `verified`。不要把 `[0..7]` 与 `[8..15]` 直接推断为全部合法组合。
-- 多机 Case 必须分配到 **不同 Host**；不能用单机的两个 8P 组伪装 16P 双节点。
-- A5 `node_ip` 未核实，整池禁用；配置 Schema 可校验但不得有隐式启用路径。
-- 测试用例里的 `MASTER_PORT`、`HCCL_IF_BASE_PORT` 目前存在固定值，**这是同机并发的明确冲突风险**。在保持模型环境归属前提下，引入模型可声明的“需动态分配端口”契约；调度器统一租约分配端口/范围并仅通过显式允许的运行时覆写注入。未支持动态端口的 Case 必须按端口冲突域互斥，不得并发。
+以上仅为目标 Schema 示例，**不是运行中配置**。单个 Test Case 的 `ngpu=8, nnodes=2` 指两个不同 Host，每 Host 8 张，不得用同机两个 8P 分组凑成 16P。
 
-### 2.4 Scheduler / Lease / 并发策略
+Phase 1 Scheduler 流程：
 
-- Scheduler 采用 **Topology-aware First Fit + Age/Fairness**：依据候选 Host/合法组、需求和设备锁挑选；先找到满足全部节点的集合，再一次性获取设备锁与 Host/端口预算，失败释放已经获得的部分资源，不长期占用部分设备等待另一个 Host。
-- 保留当前 `resources.py` 文件锁原语（排序获取、冲突回滚），增加 Task/Lease 层：`task_id`、分配设备、Host、端口、开始/心跳/退出证据、状态和版本化持久化。跨线程/进程状态写必须原子，重启需可恢复。
-- **外部占用进程分类**：获得候选租约后，逐 Host 根据 `npu-smi card-die` 确定**实际占用该候选 Device 的 PID**，在正确的宿主机/容器 PID 命名空间核对 `/proc/<pid>/cmdline`、进程父子关系、UID 和启动时间；不能仅凭模糊进程名称或单一数字 PID 作出清理决定。解析异常时 **fail-closed**。
-- **可清理类别（用户明确授权）**：仅限被确认占用目标设备的 `auto-occupy` 或 `vllm` 进程；vLLM Worker 必须通过进程树确认。只对核实的 PID 发送 `SIGTERM`，等待退出；如未退出且再次核对 PID/启动时间一致，才可单 PID `SIGKILL`。禁止 `pkill -f`、`killall` 或按模糊名称全机清理，不处理看门狗。绝不能清理另一个活跃 Lite Actions 租约持有的进程、PID 1 或关键系统服务。
-- **需等待类别**：其他用户的训练、调试、交互式等进程，以及类别不明或 PID 复用/映射不明的进程，不予 kill。调度器先尝试其他已验证的空闲设备组；否则释放候选资源锁、进入有界等待队列，直到用户自行释放或资源等待超时。不能将“资源忙”误报为模型训练失败或 PASS。
-- **清理后验证和保护**：每次定点清理都记录 Host/Device/PID、分类证据、启动时间、信号、退出状态和审计时间；再次执行 `npu-smi` 并确认空闲后才能运行任务。自动重生的占用进程最多进行有限次数的定点重试，重复重生后排队/隔离，不循环 kill、不处理看门狗。进程身份发生变化立即停止清理。
-- **未知残留**：锁释放 / Agent 崩溃并不证明训练进程退出。对于曾被任务占用而清理未确认的设备标记为 `QUARANTINED`，即便文件锁可重取也不调度；只可经验证进程组归属、清理和空闲确认后解封。
-- **Host 预算**：除芯片数外设置可配置 `max_jobs_per_host`（**默认 1**）；同机双 8P 须完成 CPU RAM/Host-backed AdamW optimizer、IO、HCCL/端口的实机压力测试后，才允许提升为 2。两台 A3 的 4 并发是**实验目标**，不是上线默认。
-- **公平性**：资源不足进入有界队列，按等待时长/跨机大任务进行防饥饿调度。不得因一直抢到单机空闲组而使等待的 16P 长期无机会执行；增加最大等待时间和明确失败原因。
-- **取消/超时**：必须关联 GitHub Run/Case 状态并停止该任务拥有的进程组，校验远端真正退出；运行中的 GitHub Job 被取消或超时，不得任由 SSH 训练无限继续。不得影响同 Host 的其他并发任务。
-- **输出隔离**：Run/Attempt/Test ID 唯一远端目录、Checkpoint/日志/TensorBoard、PID/PGID、任务标记及端口；禁止覆盖上一尝试产物。原有 `SAFE_PATH` 白名单相应更新并维持严格路径校验。
-- **广播语义**：按 Case 占用设备广播；当前同 Host 存在其他租约时，单任务结束不能宣称“整机资源全部释放”，可显示本任务结束及仍在运行的其他 CI 状态；广播失败的处理策略须保留现有安全门槛。
-- **并发执行**：运行中的 Run 可展开多个 Task；跨 Run 全局共享同一池。单实例 Agent 不变，Worker 数有限、有背压，任务入队/出队幂等。
+~~~text
+已授权 Case → QUEUED → 等待全局唯一训练槽位
+→ 获取可信模型用例 nnodes/ngpu → 枚举“已验证合法”设备组/多机组合
+→ 原子获取整组设备锁 → 通过 npu-smi/Host 只读检查外部占用
+→ 必要时按授权类别定点清理 + 再次核验 / 改选组合 / 等待
+→ STAGING → RUNNING → VERIFYING → 进程与设备释放确认
+→ REPORTING → PASS / FAIL / NOT_RUN / TIMED_OUT / INFRA_ERROR
+→ 释放全局训练槽位，再运行下一个 Case
+~~~
 
-### 2.5 GitHub 状态与传输契约
+- 阶段一**同一时刻只有一个 Case 处于 STAGING/RUNNING/VERIFYING/释放清理环节**；GitHub 同时提交多少个 Run 都不能突破此条件。
+- 候选组不足或存在普通用户进程时，优先寻找其他合法组；全部不可用则进入有界等待，等待期间不长期占用部分设备锁，不主动停止其他用户进程；排队/资源超时要与模型训练失败区分。
+- 原子锁必须一次获得全套单机/多机设备；获取部分锁失败则释放。锁定后再检查外部占用；进程表格式不认识或无法确认清理效果时 fail-closed。
+- 即使是串行任务，仍需**独立 Task 状态与设备污损隔离**：Agent 重启导致文件锁释放不等于远端训练已结束；必须检查远端标识/进程/设备后才可复用。
+- 16P 新链路必须重新做 5 steps + TensorBoard 实机回归（历史通过不代替动态选卡验证）。
 
-- 每个 Case 具有独立的 `QUEUED → ALLOCATING → RUNNING → VERIFYING → REPORTING → PASS/FAIL`，并有 `NOT_RUN/CANCELLED/TIMED_OUT/INFRA_ERROR` 终态。终态不可从 FAIL 改成 PASS，除非属于新的 Attempt。
-- 第一版继续用**调度机 Python → GitHub REST Commit Comment**、Waiter 消费的出站通信机制；结果必须绑定 `repo/run_id/attempt/sha/pipeline/test_id` 与传输协议版本。结果不匹配一律拒绝。
-- Reporter 在 **每个 Case 完成时** 发出结果而非整 Run 完成；GitHub Matrix Waiter 分别完成，互不阻塞。缺失结果/失败/超时明确非零退出，绝不以其他 Case PASS 推断成功。
-- 每个 Case 结果幂等（同 Task 同 Attempt 不重复写；异常重试可重放并核验 payload）；API 分页、短暂故障、429/403、迟到的 Comment、轮询初始时间窗口和多 Run 共享 SHA 均纳入测试。
-- 保留最多 20 行脱敏摘要、原始日志留执行机、有界读取/POST 大小约束；Case 数增多时测量 GitHub API 调用频率及 GitHub-hosted Waiter 并发占用。**不得把含 Token、SSH 地址或内部敏感路径的训练日志原样回传。**
-- V2 原生 Matrix Job 的成功/失败由 Waiter 退出码控制；**不需要 GitHub App / Checks REST API** 即可获得独立 Job。对 PR 未合并 SHA 的 Checks 与合并门禁不属于本次承诺。
+### 2.3 外部设备占用策略（维护者已确认，Phase 1 实现）
 
-### 2.6 切换与兼容策略
+| 占用分类 | 执行策略 |
+| --- | --- |
+| 可信的 `auto-occupy` 进程 | 允许按**已核实 PID**定点终止，重检 NPU 后继续 |
+| 可信的 `vllm` 进程或确认属于该服务的 Worker | 允许按**已核实 PID**定点终止，重检 NPU 后继续 |
+| 其他用户训练、调试、交互式进程 | **不 Kill**；优先改选合法空闲设备组，否则等待用户自行释放 |
+| 不明 PID、宿主机/容器映射不清、进程已变更、其他 Lite Actions 活跃任务 | **不可 Kill**；等待/隔离，禁止误杀 |
 
-- 新旧协议 **V1/V2 并行兼容一段迁移期**：先上线能识别 V2 但默认仍用 V1 的 Dispatcher，再切换模型仓 Workflow；不能先把生产 Workflow 改成 V2 却让旧 Agent 无法识别。
-- 每条 Pipeline 增加可回滚的 `protocol_version` / `scheduler_mode` 控制，默认 `v1/static`，经过分阶段验收后再单独开启 `v2/dynamic`；回退不复用未清理的任务或设备。
-- **已有进行中 Run 不热迁移**：仅在所有任务结束、设备释放确认后停机切换；切换失败恢复原代码和原配置/Workflow。
-- GitHub 模型仓当前 `master` 受 GitCode 强制镜像影响：上游 GitCode 收录新 Workflow 前，不得把仅存在 GitHub 镜像上的 V2 视为持久上线；需确认 GitCode 主源、GitHub 镜像的版本与推送顺序。
-- 从 Lite Actions 移除 `github/` 的同时，将 `tests/test_workflow_contract.py`、`tests/test_waiter.py` 移至合理归属或改为静态协议 Fixture，最后删除 `scripts/sync_ci_mirror.py`，避免直接删除导致现有单测失败。
+实现要求：`npu-smi` 关联目标 Device/PID，再核对正确 PID 命名空间的 `/proc/<pid>/cmdline`、进程树、UID、启动时间和本系统租约；不能仅按模糊进程名作出清理决定。按目标 PID 发送 SIGTERM，限时未退出且复核 PID/启动时间相同后才可 SIGKILL；禁止 `pkill -f`、`killall` 和全机扫杀。**不处理看门狗**；若进程自动重生，有限重试后排队/隔离，不无限 kill。必须记录清理证据，并在重新执行 `npu-smi` 证明可用之后才启动训练。
 
-## 3. 分阶段落地（每阶段必须记录可核验证据）
+**阶段划分提示**：可清理外部进程是**第一阶段选卡策略的一部分**；**多个并发 CI 任务互不影响**则是第二阶段新增验收，不影响第一阶段先交付。
 
-> 进展标记：`[ ]` 未开始；`[~]` 进行中（手动更新）；`[x]` 完成并有证据。不得仅凭代码合并标记“实机通过”。  
-> **每阶段必填记录**：实施 Commit/PR、单测结果、Actions Run、实机 Host/设备范围（公开文档仅写脱敏别名）、失败/回退结论及验收人。
+### 2.4 状态、日志、失败安全与回滚
 
-### M0｜冻结基线、检查表与演练环境
+- Case 终态只能由绑定 `repo/run_id/attempt/sha/pipeline/test_id` 的结果确定；当前 Commit Comment + GitHub Waiter 方案可延用并改为每 Case 一条结果，保留单条有界 JSON、最多 20 行脱敏日志；不要让新 Matrix Job 在等其他 Case 时被误判 PASS。
+- 明确设备分配、SSH 传输、退出码、TensorBoard、清理/释放和 GitHub 上报的对应关系。进程退出不等于设备已释放；设备未确认空闲时标记 QUARANTINED，不可派发后续 Case。
+- GitHub Job Cancel / Run Cancel / Waiter 超时：Dispatcher 必须停止本次任务所属进程组、保留异常证据；如果清理不确定，隔离相关设备并阻止后续派发。不能把用户主动取消误报为训练 PASS。取消轮询与运行中清理必须进入 Phase 1 验收。
+- Phase 1 的失败安全保障可以保持**单一调度实例 + 单活动 Case**、已有 `fcntl.flock`、有界任务状态持久化；**不提前引入**多任务端口租约、同机 Host RAM 算法及多执行进程之间的复杂公平性。
+- Phase 1 / Phase 2 均需要新旧版本的受控切换：**先部署向后兼容的 Dispatcher，再启用模型仓新 Workflow**，旧 Run 不热迁移。若 GitCode 主源未收录 V2 Workflow，不能将 GitHub 镜像版本标记为稳定上线。
 
-- [ ] 固定两个仓的实施起点 SHA，确认调度机没有未完成任务，备份 `config`、任务状态与日志索引；禁止随意清空 `state/`。
-- [ ] 离线跑 Lite Actions 全部单测、`unified_agent.py --validate`、模型仓相关 CPU 测试；记录 PASS 数量和现有已知失败。
-- [ ] 核对 GitHub/GitCode 同步计划、默认分支允许范围、部署唯一 Agent、真实路径/权限与回滚手册。
-- [ ] 验证 A3 当前 `npu-smi` 的 0..15 Device ID 到物理卡/Die 的对应关系，建立**脱敏**的已验证/未验证拓扑表；M0 仅只读核对，不清理任何进程；进程清理待 M3 通过模拟测试后才启用。
-- [ ] 在模型仓 CPU-only `ubuntu-latest` 原型验证无需 NPU 能否从 `build_test_list()` 导出 Matrix JSON。
+## 3. Phase 1 实施计划（本轮开发与验收）
 
-**Gate M0**：两仓基线可重现；旧 8P/16P 证据保存；测试列表发现路径可行；所有未证实的拓扑和同机 2 Job 标为禁用。任何一项不满足，只补环境和方案，不切生产链路。
+> **Phase 1 的 Definition of Done**：仓库去重、Matrix 两个独立 Job、动态 8P/16P 选卡、**任何时刻至多一个训练 Case**、外部占用策略、安全取消/恢复、8P/16P 5 steps 实机 PASS、A5 继续禁用、可回滚。**不得要求 2 或 4 个 Case 并发才能交付 Phase 1**。
 
-### M1｜清理双仓重复代码和稳定契约
+### P1.0｜冻结生产基线与可信环境
 
-- [ ] 规范 V2 plan/result JSON Schema、任务 ID、Attempt 与幂等规则，新增跨仓协议样例和版本兼容单测。
-- [ ] 将 Workflow/Waiter 的测试移到模型仓或最小 Fixture/可选跨仓契约测试，保证 Lite 仓 CPU 单测无需依赖另一仓工作树。
-- [ ] 删除 Lite Actions 的 `github/` 全部 5 个重复文件及 `scripts/sync_ci_mirror.py`；刷新 README 的唯一源码说明。
-- [ ] Dispatcher 暂保持旧 V1 执行路径不变；不得因为清理镜像而改变远端启动参数。
+- [ ] 固定 lite-actions/main 与 torchtitan-npu/master 实施 SHA，记录 GitCode → GitHub 定时同步风险；备份配置、状态、日志索引与旧 Workflow 版本。
+- [ ] 离线跑 Lite Actions 单测、`unified_agent.py --validate` 及模型仓相关 CPU 测试；记录原本通过/失败的测试数量，提供 SHA 和测试日志。
+- [ ] 只读验证 A3-3/A3-4 的 0–15 Device ID 映射、两机 SSH、HCCL IP/网卡与当前合法拓扑候选；未知组合先标为 disabled。
+- [ ] 在 `ubuntu-latest` 或等价干净 CPU 环境验证 `build_test_list()` → Matrix 展开没有 NPU/torch 运行时依赖。
+- [ ] 确认唯一运行的调度 Agent 与当前在途任务状态；本阶段不 kill 任何进程、不重启生产服务。
 
-**Gate M1**：Lite 单测全通过；模型仓 Workflow/Waiter 合约测试通过；GitHub 上实际 Workflow 未被删除；旧 Dispatcher Smoke 仍通过。若不通过，恢复镜像/单测修改即可回滚，不涉及 NPU 资源。
+**Gate P1.0**：基线可重现，可信测试清单发现可行；已有 A3 拓扑证据、不可用组及回滚文件明确。
 
-### M2｜V2 Plan + Case 级结果协议（先不开放并发）
+### P1.1｜双仓职责清理与 V2 协议
 
-- [ ] Prepare 由固定 SHA 可信模型用例展开 Matrix 和带 Digest 的 Artifact；校验顺序、空/重复 Case、资源越权与环境来源。
-- [ ] Dispatcher 增加 V2 Plan 领取、Case Task ID、幂等持久化；旧 V1 仍可执行。
-- [ ] Reporter/Waiter 实现单 Case 结果匹配和及时回传；覆盖 PASS/FAIL/NOT_RUN/超时/乱序/迟到/分页/权限失败/重复结果。
-- [ ] 将 8P Workflow 切成动态 Matrix，但暂时 `max-parallel=1`，Dispatcher 使用原静态 allocation 串行跑；明确局部 rerun fail-closed 行为。
-- [ ] 验证两个不同 Case 即使其中一个失败，`fail-fast=false` 也不会跳过另一个；单个 Case 不得跨 Attempt 取旧结果。
+- [ ] 编写版本化计划/结果 Schema、Case Task ID、Attempt、Plan Digest、唯一 Test ID 与失败/取消终态契约；补 CPU/Mock 跨仓协议测试。
+- [ ] **先迁移测试再删副本**：模型仓持有 Workflow/Waiter 合约测试；Lite 仓保留 Dispatcher 协议与白名单测试，必要时提供最小 fixture，不能依赖模型仓镜像目录。
+- [ ] 删除 Lite Actions 的 `github/` 全部 5 个重复文件、`scripts/sync_ci_mirror.py`，修正 README/测试内旧路径引用。
+- [ ] 保持正在生产使用的 V1 Workflow 与 Dispatcher 行为不变；移除镜像不意味着改变实际运行代码。
 
-**Gate M2**：本地 Mock/CPU 测试全通过；GitHub 独立 Muon/AdamW Job 均能产生**可信独立状态**；8P 基线双 PASS（5 steps + TensorBoard + 退出码）；仍然未启用动态选卡/同机并发。若实机不通过，回退模型仓 Workflow 到 V1。
+**Gate P1.1**：两仓 CPU/协议测试均通过；模型仓实际 Workflow 仍可用；Dispatcher Smoke PASS；无冗余 Workflow/Waiter 副本。
 
-### M3｜动态选卡（限定已验证拓扑、单任务执行）
+### P1.2｜Matrix Jobs + Case 级报告（仍固定分配且串行）
 
-- [ ] `pools.json` 引入经验证的合法拓扑组和可用状态，`pipelines.json` 用 `resources` 替换静态 `allocation`；保留迁移兼容读取与强 Schema 校验。
-- [ ] Scheduler 将 Case `nnodes/ngpu` 与通道授权和 Pool 匹配，原子选取**完整** Allocation；外部占用调用分类策略（`auto-occupy` / `vllm` 可定点清理，普通用户进程等待），优先改选空闲合法组。
-- [ ] 动态 Allocation 全链路传给 `remote_preflight`、`broadcast_job`、SSH stage/launch/verify/cleanup、`ASCEND_RT_VISIBLE_DEVICES`，不得复用静态设备号。
-- [ ] 离线测试：正常分配、所有设备占用、`auto-occupy`/`vllm`/普通用户进程分类、PID 复用和容器 PID 映射、模糊命令、活跃 CI 租约保护、自动重生与清理失败、错误映射、两个 Host 配对、单 Host 不得冒充多节点、部分锁失败释放、Host 断联、候选碎片化。
-- [ ] 真实 8P 测试先选择**历史已验证**的 A3-4 设备组，再分批验证其他候选组；逐组确认当地 Rank 映射、设备利用率和清理状态。
+- [ ] Prepare 从单一可信模型元数据展开 Matrix 与 Artifact；Job 名称可读，Case ID 与实际运行身份精确对应，失败时 `fail-fast=false`。
+- [ ] Dispatcher 只领取一次 Run，然后展开多个 Case Task；**全局单任务槽位=1**，覆盖来自不同 Run/Workflow 的任务；此时仍可在兼容模式使用原有静态 Allocation。
+- [ ] Reporter/Waiter 逐 Case 独立报告 PASS/FAIL/NOT_RUN，正确处理超时、乱序、重复回传、分页、延迟 Comment 与跨 Attempt 错配。
+- [ ] 明确 GitHub `rerun failed jobs`/局部重试在初版的拒绝规则及用户提示；测试不会错误复用历史 PASS。
+- [ ] 真实 8P Muon + AdamW **各 5 steps + TB + Exit Code 0**，GitHub 显示两个独立 Job；用可控失败或 Mock 验证一个 FAIL 不会把另一条 PASS 改错。
 
-**Gate M3**：同一 8P Case 在不少于两个**已确认合法**的设备组成功执行，并且输出/退出行为与基线一致；仅定点清理已核实的 `auto-occupy` / `vllm`，普通用户进程保留并可正常等待/改选；清理后重检；未验证的新组禁用。V2 资源模式逐通道可回退为静态配置。
+**Gate P1.2**：两个独立 GitHub Jobs、正确状态和串行执行证据；两个 8P Case 的全链路功能未退化。阶段失败可单独回滚 Matrix Workflow。
 
-### M4｜任务隔离、故障恢复与多任务调度安全
+### P1.3｜动态选卡 + 可授权外部进程定点清理（全局仍串行）
 
-- [ ] 增加 Device/Host/端口复合租约，Case 独立 PID/PGID、目录、Checkpoint、TensorBoard；校验 `ASCEND_RT_VISIBLE_DEVICES` 与本地 Rank。
-- [ ] 为脚本所用 `MASTER_PORT`、`HCCL_IF_BASE_PORT` 等实现显式“运行时动态端口”策略；不支持动态端口的 Case 维持冲突域互斥，不能硬并发。
-- [ ] Host 默认 1 Job；加入内存/IO/端口 Host 预算与 `max_jobs_per_host` 可控配置；Task Queue 与 Worker 有界。
-- [ ] 落实取消/超时/SSH 失联、部分节点失败、Agent 重启、远端残留、上报失败重试、设备隔离和解封路径。
-- [ ] 更正广播：只有对应设备经过实际验证后才报告“本任务释放”，同 Host 其他租约运行时不发“全机空闲”。
-- [ ] CPU/故障注入：并发 50+ 逻辑请求、资源争用、占用分类与 PID 清理（含 PID 复用、权限不足、自动重生、进程树映射）、时序随机化、kill Agent、断 GitHub API、断一端 SSH、取消一个 Job；证明不重复训练、不重复锁卡、不误杀普通用户或其他 Job、不错误 PASS。
+- [ ] Pool 登记经验证的合法组；Pipeline 从 `allocation` 改为声明资源规格（`nodes/devices_per_node`），模型用例规格与授权边界严格相符；Legacy Schema 可回退。
+- [ ] Scheduler 在 A3-3/A3-4 的已验证候选组中动态选卡，支持 1×8P 和 2 Host×8P；单个 Case 所有 Host/Device 原子锁定，不占半套多机资源。
+- [ ] 动态 Allocation 贯穿 preflight、广播、SSH、可见设备、TensorBoard/日志、清理和结果归档；不再由 Pipeline 固定 Device ID。
+- [ ] 实现 M3 前已确认的外部占用分类策略：`auto-occupy`/`vllm` 可信 PID 定点清理、普通用户进程等待/换组、未知 PID 禁止终止；清理后必须重检。
+- [ ] CPU 故障注入：PID 重用、宿主机/容器 PID 映射、误识别、权限不足、进程自动重生、外部占用、原子锁回滚、候选不可用、不同 Host 配对。
+- [ ] 实机验证：同一 8P Case 能在**至少两个已实机验证的合法分组**运行（可以在不同 Host）；不允许通过新增未验证设备组制造“动态选卡成功”。
 
-**Gate M4**：在**未允许同机双 Job**的保守容量下，多 Run 同时提交仍能排队、串行安全完成；取消和中断后残留被清理或隔离，未验证清理一律禁止复用设备。Gate 未通过不得打开 `max_jobs_per_host=2`。
+**Gate P1.3**：动态选卡成功、全局仍只有一个训练进程组/Case；用户进程从未被清理；授权进程定点清理并重检通过；所有未验证的资源组保持禁用。
 
-### M5｜真实 Matrix 并发 / A3 容量逐档验证
+### P1.4｜串行故障恢复、8P/16P 回归
 
-- [ ] `strategy.fail-fast=false`，GitHub 每 Run `max-parallel` 受控，Workflow 并发组改成不阻挡独立 Run；Dispatcher 为**全局**唯一资源仲裁。
-- [ ] **2 × 8P（跨 Host）**：A3-3、A3-4 各 1 个并发，连续完成 5 steps/TensorBoard，验证独立 PASS、时间重叠、互不抢设备。
-- [ ] **同 Host 2 × 8P**：先确认第二个设备组单独可用，再实测同 Host 两任务并发。分别检查两进程组、Host-backed AdamW 内存峰值、HCCL 端口、带宽、数据与 IO；若有 OOM/冲突，保持每 Host 1 Job，不发布满载能力。
-- [ ] **4 × 8P（两机满载）**：仅在两台 Host 均通过同机并发后，安排多个可信 Run（当前套件只有两个唯一 8P Case）完成四任务同一时段运行；逐一核对真实 5 steps、TensorBoard、Exit Code、设备归属、清理、GitHub 独立 Jobs。不得仅看 Workflow Success。
-- [ ] 混部排队与公平性：4×8P 满载时提交 16P 排队、2×8P 退出后的完整资源配对、重试和无饥饿；并发在 `MAX_WORKERS`、Queue、GitHub hosted Waiter 成本和超时预算内。
-- [ ] 统计单机串行/双机并发/四任务并发的实际耗时、CPU 内存峰值、失败率；有数据才更新默认 Host 配额。
+- [ ] Case 独立 `task_id`、目录/日志/Checkpoint/PID/PGID，持久化 `QUEUED/ALLOCATING/RUNNING/VERIFYING/REPORTING/terminal` 状态；跨 Run 排队且不重放已经完成的任务。
+- [ ] 处理 GitHub 取消、远端超时、SSH 失联、Agent 重启、GitHub API 故障；区分可安全回收/必须隔离的设备，不能抢占他人进程。
+- [ ] Phase 1 取消/重启故障注入：证明任何异常时下一 Case **只会在上一 Case 完成清理且设备可确认复用之后**启动。
+- [ ] 用新动态调度的 8P Muon 和 AdamW 分别跑通 5 steps + TensorBoard；对照以前的优化器、4K、CANN 路径与最后 CLI 参数，禁止改变训练业务语义。
+- [ ] 用新动态调度的**双机 16P 重新跑通 5 steps + TensorBoard**，检查每 Host 8P、EP16、NODE_IPS、HCCL、Rank/端口、设备释放；不能用以前的 Run 代替。
+- [ ] A5 保持 `enabled=false`，验证无有效 HCCL IP/资产路径时 fail-closed，不做 A5 实机。
+  
+**Gate P1.4**：8P 双 Case + 16P 新链路成功；取消/异常不误杀外部用户、不假 PASS、不导致脏设备复用；A5 仍禁用。
 
-**Gate M5**：能够证实的容量才启用。最小成功标准是 **两 Host 各 1 个 8P 并发**；四任务是附加硬件容量门槛，如果不通过，功能依然可按受验证的容量上线，但计划必须明确“4 并发未实现”、保留风险与原因。
+### P1.5｜Phase 1 完整回归、生产灰度与交付
 
-### M6｜16P 跨机回归与 A5 禁用校验
+- [ ] 两仓全量单测、协议测试、调度 Smoke、8P、16P 的实际 Run/Commit/设备日志证据齐备。
+- [ ] 检查所有 Workflow 对 `master` 的授权限制，确保 GitHub Matrix 显示独立 Job；**不要宣称已支持未合并 PR 的 Checks**。
+- [ ] 先让 Dispatcher 支持旧/新协议；待两仓版本核准、调度机无任务后，切换模型仓 V2 Workflow；确保 GitCode 主源同步计划不会覆盖 GitHub。
+- [ ] 回滚演练：停收新单 → 等待或清理自身任务 → 确认设备释放 → 切回 V1 Workflow/配置/Agent → Dispatcher Smoke 验证；不热回滚。
+- [ ] 更新两仓 README、Phase 1 运维/取消/恢复手册、`REFACTOR_PLAN.md` 实际进度与证据；记录哪些拓扑已验收、哪些设备未启用。
+- [ ] **冻结 Phase 1 发布版本**；Phase 2 另开开发分支、不要在 Phase 1 验收过程中临时增加并发功能。
 
-- [ ] 动态分配两个不同 Host 的合法 8P 组，验证每机 `NGPU=8`、`NNODES=2`、EP=16、HCCL 小网地址/网卡、端口与全局 Rank 映射。
-- [ ] 至少一次 **A3 16P、5 steps、TensorBoard 和完整 GPU/NPU 清理** 的新链路实机回归，并核对两个 Node 日志及 GitHub Case PASS；上一轮的历史 PASS 不足以替代本次调度器变更的验证。
-- [ ] 测试多机分配失败不占半个集群；一端断联时任务整体失败且其余端训练可安全回收或隔离；16P 与剩余单机任务不得设备重叠。
-- [ ] A5 64P 仅验证 Schema、禁用通道、资源需求解析和 `node_ip` 缺失的 fail-closed；**不得调度任何真实 A5 训练**。
+**Gate P1.5（Phase 1 正式 Done）**：Case Matrix 独立检查 + 动态 8P/16P + 全局串行安全 + 外部进程政策 + 可回退，具备可复现实机证据；**无需并发通过**。
 
-**Gate M6**：新链路 16P 实机通过；A5 始终 disabled；资源隔离与多机清理失败场景均满足安全门槛。
+## 4. Phase 2 实施计划（Phase 1 完成后才启动）
 
-### M7｜联调验收、文档收敛和生产切换
+> **进入条件**：Phase 1 已冻结并验收；独立创建 Phase 2 开发分支和新基线。Phase 2 只扩展并发/容量，不重新设计 Matrix/测试协议，也不恢复重复代码。
 
-- [ ] 两仓 CPU 单测、Workflow 语法/Matrix 解析测试、端到端 Dispatcher Smoke 均通过。
-- [ ] 在基线快照上验收 V1 回退操作：停止接新单、等当前任务退出、核对设备空闲、恢复 V1 Workflow/调度配置后能成功完成 Smoke。
-- [ ] 按证据表汇总每个 Case：GitHub Run URL、实际代码 SHA、实际分配 Host/Device（公开文档脱敏）、训练 steps、TensorBoard、退出码、回传与资源回收状态。
-- [ ] 检查两个仓的最终 README（部署/运行/排队/问题处理/目录结构）、取消和恢复 Runbook；删除过期镜像描述，保留协议 Fixture。
-- [ ] GitCode 主源合入/同步方案核实后，先将 Dispatcher 的 V2 兼容代码部署到调度机，后切模型仓 Workflow；确认切换过程中无在途任务、无 GitCode 强制同步覆盖。
-- [ ] 在 Lite Actions `main` + 模型仓 `master` 留存验收 Commit/Run 证据，并视合入策略通过 PR Review，而不是绕开 Review 直接放量。
+### P2.0｜并发可行性与资源预算
 
-**Gate M7**：V2/旧路可切换；最终容量宣传与实际证据一致；两个仓的版本和工作区状态可复现；安全审计和文档完成。
+- [ ] 复查 A3-3/A3-4 的 8P 分组及两机合计 32 Device 的真实对应关系；`[0..7]` 与 `[8..15]` 仅在**实机证明**后才同时启用。
+- [ ] 测量 8P Muon/AdamW Virtual Optimizer 的 Host RAM、CPU、IO、网络/HCCL、Checkpoint 资源峰值；默认 `max_jobs_per_host=1`，有证据再允许 2。
+- [ ] 确认模型仓现有固定 `MASTER_PORT`、`HCCL_IF_BASE_PORT`、rendezvous 端口是否支持运行时覆写及并发端口范围管理；无隔离能力则禁止同 Host 双任务。
 
-## 4. 必测矩阵（最小验收集合）
+**Gate P2.0**：每 Host 可用 8P 分组、端口和资源容量均有测量；不满足时明确降低并发容量，不硬开 4 Job。
 
-| 测试编号 | 测试类型 | 场景 | 预期结果 |
+### P2.1｜全局资源租约及多任务调度
+
+- [ ] 将全局训练槽位从 1 改为按 Pool/Host/设备容量配置的有界 Worker；**仍由单一全局 Scheduler** 负责跨 Run/Workflow 决策。
+- [ ] 扩展原子设备锁为 Device + Host 预算 + 端口复合租约；多机任务不得预占一半设备等待其他 Host。
+- [ ] 对并发任务分别维护独立的进程组/PGID、Checkpoint、日志、TensorBoard、端口、取消信号与租约；清理自己不能影响其他运行中的 Case。
+- [ ] 实现等待队列优先级和防饥饿机制，避免持续 8P 小任务挤占 16P 多机任务；未知残留设备维持隔离。
+- [ ] 校正广播文案：一份 Case 退出时不能宣称“整机已完全空闲”，其他租约保持不受影响。
+
+**Gate P2.1**：至少 50 个模拟任务下无重复分配、无资源锁泄漏、无跨任务 PID/端口冲突；取消/失联一个任务不影响同 Host 其他任务。
+
+### P2.2｜跨 Host 2×8P 并发（首个实机门槛）
+
+- [ ] A3-3、A3-4 各分配 1 个 8P Case，确保训练时间真实重叠，5 steps/TB/Exit Code/Case Job 全部独立正确。
+- [ ] 验证同时有多个 GitHub Run 时 `max-parallel` 与 Dispatcher 全局调度不冲突；GitHub Waiter 只有状态功能，不会执行重复训练。
+- [ ] 外部用户进程占卡时继续等待/改选；真实并发下确认设备锁、任务隔离、失败/取消清理。
+
+**Gate P2.2**：两 Host 各一个 8P 的**真实并发**完全通过。满足该门槛可以按 2 并发上限灰度上线；不能因尚未达到 4 并发否定已有功能。
+
+### P2.3｜同机双 8P、三至四任务容量验证（有条件）
+
+- [ ] 单独验证第二个 8P 分组，再在同一 Host 上真实启动 2×8P，检测 Host RAM（特别是 AdamW 虚拟优化器）、CPU、IO、HCCL、端口与性能；失败退回该 Host `max_jobs_per_host=1`。
+- [ ] 两机合计 3×8P 验证；通过后才执行 4×8P 满载并发（32 Device）；当前模型仓 Suite 只有两个唯一 8P Case，必要时使用**多个可信 Run** 构造四任务，而不是伪造新的测试用例。
+- [ ] 4×8P 验收需逐 Case 提供 5 steps、TensorBoard、Exit Code、GitHub Check、真实设备分配、运行时间重叠、外部进程与残留清理证据；不只是四个绿灯。
+- [ ] 统计串行/2 并发/4 并发的总吞吐、Host 内存峰值、OOM/HCCL 失败情况。硬件条件不足时明确宣告**2 并发上限**，不得承诺 4 并发。
+
+**Gate P2.3**：能证实的并发档位才启用；4×8P 属**条件性容量目标**，不是“不达 4 就全部失败”的上线门槛。
+
+### P2.4｜8P/16P 混部、容错、运维与发布
+
+- [ ] 16P 请求必须一次拿到两个不同 Host 的合法 8P 组；与单机 8P 混合运行时不重叠、不过度保留设备、不产生饥饿。
+- [ ] 真实 16P 动态链路在并发调度开启后的回归至少一次，核对跨机 Rank/HCCL 和资源完整释放；一端失败时不会终止其他任务的独立设备进程。
+- [ ] 故障注入：一 Job Cancel、SSH 断联、Agent 崩溃、PID 复用、租约残留、GitHub API 限流、普通用户占用与外部可清理进程自动重生；无误杀/假 PASS/越权资源分配。
+- [ ] 完整回滚到 Phase 1 全局串行模式，验证不热切换不遗留脏设备；最终更新 README、测试/运行日志证据与计划状态。
+- [ ] A5 继续禁用，64P 与多机拓扑扩展另列后续版本。
+
+**Gate P2.4（Phase 2 正式 Done）**：2×8P 跨 Host 实机并发 + 16P 混部安全 + 取消/故障隔离 + 可退回 Phase 1；4×8P 能否开放由单独容量实测决定。
+
+## 5. 全量验收测试矩阵
+
+| ID | 阶段 | 测试 | 通过条件 |
 | --- | --- | --- | --- |
-| T01 | CPU | 可信 Suite 展开、Matrix/Artifact Digest 一致 | 相同 SHA/Case 唯一；无重复/越权 |
-| T02 | CPU | 外部 actor、其他分支、不可信 PR、任意 Shell 输入 | 全部拒绝，不启动 SSH |
-| T03 | CPU | Matrix Job 与 Plan 不一致、Attempt 不同、晚到旧 Comment | 拒绝旧/伪造结果 |
-| T04 | CPU | 4 个逻辑 8P Task 获取互斥锁 | 绝不重复占同一设备 |
-| T05 | CPU | 16P 原子锁，第二 Host 不足 | 不留部分占用；重排队 |
-| T06 | CPU + 受控实机 | `npu-smi` 外部占用：`auto-occupy`、`vllm`、普通用户进程、未知类别或 PID 复用 | 仅前两类经身份确认可按 PID 清理并重检；普通用户进程等待/改选；未知禁止 kill；留审计记录 |
-| T07 | CPU | 崩溃后锁自动释放但远端 PID 仍存在 | 不重新分配脏设备 |
-| T08 | CPU | GitHub Job Cancel、超时、SSH/HCCL 失败 | 终态正确、清理自己的进程或隔离 |
-| T09 | CPU | 并发上报、GitHub 重试/限流/分页、晚到旧结果 | 幂等、单 Case 正确、不超上传预算 |
-| T10 | CPU | 同 Host 2 Job 的广播、日志路径、端口冲突 | 不误报全机空闲、不覆盖、不串用端口 |
-| T11 | Actions | Dispatcher Smoke | PASS |
-| T12 | A3 实机 | 8P Muon、AdamW 分别独立 Matrix Job | 各 5 steps + TB + 两个 Job 独立 PASS |
-| T13 | A3 实机 | 两 Host 各 1 个 8P 并发 | 真实并发，独立 PASS |
-| T14 | A3 实机 | 同 Host 两个 8P（条件门槛） | 若通过可升配额；若失败保守禁用 |
-| T15 | A3 实机 | 四个 8P 并发（条件门槛） | 四个 Job 完整可核验，否则标为未通过 |
-| T16 | A3 实机 | 双机 16P / 5 steps / TB | 新动态链路 PASS、两机清理完成 |
-| T17 | 配置/CPU | A5 64P disabled、缺失有效拓扑 | 永不进行真实训练 |
-| T18 | 切换 | V2 → V1 回滚 | 不重复跑、不留远端残留、Smoke PASS |
+| F01 | P1 | CPU-only Suite → Matrix/Artifact | 同一可信 SHA 的计划唯一、稳定，Digest 一致 |
+| F02 | P1 | 不可信 actor/ref/repo/任意模块/未知用例 | Fail-closed，不执行 SSH |
+| F03 | P1 | 两 Case Job/同一 Run 领取 | 仅生成两个唯一 Task，分别独立结果，没有重复训练 |
+| F04 | P1 | 跨 Run/Workflow 同时提交 | **任意时刻最多 1 个真实训练 Case**；其余排队 |
+| F05 | P1 | Test ID/Run/Attempt/SHA 错配、乱序/延迟 Comment | 不会读到其他 Case 或其他尝试的结果 |
+| F06 | P1 | 动态 8P / 16P 原子锁定、候选不足 | 只选已核实拓扑，原子占用，部分失败无资源泄漏 |
+| F07 | P1 | 外部 `auto-occupy` / `vllm` vs 普通用户进程 | 只清理可信前两类、按 PID、留证据、重检；普通用户等待/改选 |
+| F08 | P1 | PID 复用/命名空间歧义/进程重生 | 不误杀；有限重试，必要时隔离 |
+| F09 | P1 | GitHub Cancel、超时、SSH 异常、Agent 重启 | 仅清理本 Case，未知残留隔离，不错误 PASS/继续占卡 |
+| F10 | P1 | A3 8P Muon、AdamW | 各 5 steps + TensorBoard + 独立 GitHub Job PASS |
+| F11 | P1 | A3 16P 双机 | 新动态选卡、EP16、两机 5 steps + TB、释放确认 |
+| F12 | P1 | A5 配置 | disabled，未核实 HCCL/资源时绝不执行 |
+| F13 | P1 | 删除镜像与回退 | Lite 仓无重复 Workflow/Waiter，测试通过，V1 Smoke 可恢复 |
+| C01 | P2 | 50+ 模拟任务并发竞争 | 不双重分配，无锁/租约泄漏与其他 Task 误清理 |
+| C02 | P2 | 跨 Host 两个 8P Job | 真实重叠、双 PASS、两台设备释放 |
+| C03 | P2 | 同机两个 8P Job | 资源预算/端口隔离成功，才允许 Host 配额提升 |
+| C04 | P2 | 三至四个 8P Job | 条件容量达标，4 Case 各有训练/Check/隔离证据 |
+| C05 | P2 | 8P/16P 混部 | 双机原子分配、队列公平、错误隔离 |
+| C06 | P2 | 单任务故障、Agent 崩溃、API 限流 | 其他任务不受影响，恢复安全，回退到串行可行 |
 
-测试失败不应直接“重跑到绿”：先记录失败原因及原始 Run、检查是否硬件占用/程序错误；仅允许按上述明确策略清理被确认的 `auto-occupy` / `vllm` 争用进程，不得清理普通用户或身份不明的进程。
+所有证据记录 **Commit SHA、Run URL、Host/分配 Device（对外脱敏）、Steps、TB、Exit Code、最终 Job 状态、清理结果**。某个 Case 曾经成功不代表最新改动成功；不以连续“重跑到绿”代替错误定位。
 
-## 5. 风险台账（上线阻断项）
+## 6. 风险控制与发布顺序
 
-| 风险 | 严重性 | 控制措施 / 必须通过的门槛 |
+| 关键风险 | Phase 1 控制 | Phase 2 补充 |
 | --- | --- | --- |
-| 32 Device 逻辑容量与实际物理拓扑不匹配 | 高 | 实机核对 Device→Card/Die→Rank、合法 8P 组；未验证组禁用 |
-| 错误识别 `auto-occupy` / `vllm` 导致误杀用户进程 | 高 | 核对 PID、命令、父子关系、启动时间、命名空间与 CI 租约；仅目标设备单 PID 清理；无法确认则等待；记录审计 |
-| 同机双 8P 的 Host RAM、AdamW swap、IO 压力 | 高 | `max_jobs_per_host=1` 起步，测峰值后才提升，失败退回 1 |
-| 多任务 HCCL/Master 固定端口冲突 | 高 | 动态端口租约与显式模型契约；无端口隔离就不并发 |
-| 16P 部分节点拿到卡、另一节点资源不足 | 高 | 原子全量租约，失败不占半套资源 |
-| GitHub Cancel 后远端训练继续跑 | 高 | Run/Job 状态关联、拥有者校验、取消与超时收敛 |
-| 调度机崩溃导致 File Lock 消失、孤儿进程还在 | 高 | 状态账本、重启对账、未知设备隔离、只清理本任务 |
-| 多线程更新单 JSON 导致状态丢失 | 高 | 原子写、序列化/锁、重启恢复测试 |
-| Commit Comment 错配、过期/重复 PASS | 高 | SHA/Run/Attempt/Test ID 全字段验签式一致性检查与幂等 |
-| GitHub `rerun failed jobs` 没有新 Attempt Artifact | 中高 | 初版拒绝局部重跑，需完整 Run；后续可单独实现 |
-| 同 Host 并发广播误报“资源全释放” | 中高 | 以 Host 租约计数、设备范围为准 |
-| Matrix 扩大 GitHub-hosted Runner 等待成本 | 中 | 有界并发/等待/超时、统计占用、必要时单独优化传输；不牺牲身份安全 |
-| GitCode 定时同步覆盖 GitHub Workflow | 高 | 主源先合入/镜像链路演练，先部署兼容 Agent 再切 Workflow |
-| 删除 `github/` 镜像导致单测导入失败 | 中 | 先迁移测试，再删除镜像，CPU Gate |
-| A5 误启用/未验证 IP | 高 | 禁用双重门禁（配置 + Workflow），仅 CPU 测试 |
-| V2 改写训练模型 env_vars / 优化器语义 | 高 | 模型仓仍为唯一所有者，比较最终 argv/env 与已通过基线 |
+| Matrix 不等于并发；多个 Workflow 造成意外并发 | Dispatcher 全局 active slot=1；跨 Run 强制串行 | 槽位扩为全局、可计量租约 |
+| 设备物理 ID / `card-die` / HCCL 拓扑不一致 | 已验证的分组白名单；单机/多机原子选卡 | 同 Host 两组可并发需额外实机证据 |
+| 外部占用处理误杀 | 指定 `auto-occupy` / `vllm` 的目标 PID 定点清理；普通用户等待；确认 PID 启动时间与命名空间 | 并发租约所有者/进程组保护 |
+| 取消或崩溃后释放文件锁但训练仍运行 | 清理证据、任务状态账本、QUARANTINED | 同 Host 多任务间独立隔离/恢复 |
+| 同机端口/Host 内存冲突 | 全局串行，不修改模型已通过的端口配置 | 端口租约、Host 内存/IO/CPU 预算 |
+| GitHub Matrix Waiter 产生旧 PASS / 假 PASS | 每 Case/Attempt 严格绑定，V1/V2 兼容期测试 | 并发分页/限流/超时压力测试 |
+| GitHub 局部重跑缺乏新的 Artifact | Phase 1 明确拒绝局部重跑，提示完整启动新 Workflow | 若需支持，另立设计门槛 |
+| GitCode 定时覆盖新的 GitHub Workflow | 核对主源先后顺序，先部署兼容 Dispatcher，再切 Workflow | 维持与 Phase 1 一致的策略 |
+| A5 未实际验收却被启用 | 配置与 Workflow 双重禁用、无 HCCL IP 直接拒绝 | 仍保持禁用 |
 
-**停机/回退条件**：任何越权执行、错卡/重复占卡、误杀未经授权类别的外部进程或其他活跃 CI Task、假 PASS、未知残留重新分配、跨 Host HCCL 错配、GitCode 覆盖或模型语义漂移，均立即停止新增任务并回退对应 Pipeline；保留日志和运行状态做根因分析。
+**阻断/回滚触发条件**：越权执行、错误分配/设备重叠、误杀普通用户或其他 CI Task、旧 PASS 冒充新成功、未知远端残留被重用、16P HCCL 错配、GitCode 覆盖、模型优化器/环境语义漂移。一旦出现，暂停领取新任务、保留状态与日志，禁止在远端仍运行时热切换或清空 `state/`。
 
-## 6. 上线顺序 / 验收记账模板
+**先后顺序**：
 
-- **合入顺序**：Lite Actions 先合入向后兼容的协议/调度实现（V2 默认关闭）→ 模型仓再合入 Matrix/Plan/Waiter（必须先有兼容 Agent）→ 逐个 Pipeline 灰度 → 全量确认 → 清除 V1 过渡代码。涉及 GitCode 同步前必须验证不会覆盖模型仓 Workflow。
-- **回滚顺序**：停止领取新任务 → 取消或等待本系统在途任务 → 验证设备、PGID、端口和远端目录状态 → 恢复旧 Workflow 与旧调度配置/Agent → Dispatcher Smoke → 恢复接单。**禁止运行时热回滚**。
-- **发布策略**：调度机实际在跑的 Agent 版本、GitHub Workflow 版本、模型测试 SHA 要有可审计对应；模型仓 PR 合并本身不是“生产部署完成”。
+1. Phase 1：Lite Actions 先支持 V2 但默认旧模式；模型仓随后合入 Prepare/Matrix/Waiter；静态串行验证后启用动态选卡；8P/16P 新链路通过，再完成 Phase 1 发布。
+2. Phase 2：以 Phase 1 的成功代码为不可变基线，逐档放开并发；**默认 max_jobs_per_host=1**，实测允许后才增至 2。
+3. 回滚：停止接单 → 等待/安全清理本系统在途任务 → 检查远端进程、设备、端口和日志 → 恢复上一阶段配置/代码 → Smoke 验证 → 恢复接单。
 
-每个里程碑完成后在本计划下更新一条记录：
+## 7. 进度跟踪与阶段验收台账
 
-| 里程碑 | 状态 | 实现提交 / PR | 测试与 Run 证据 | 结论 / 遗留风险 |
+**更新规则**：任务用 `[ ]` / `[~]` / `[x]` 标记；里程碑只有在满足对应 Gate 且证据已记录时才允许标记 Done。每次更新必须附实施 SHA / PR、测试日志/Run URL、未解决风险；**不得将修改计划的 Commit 当成代码验收证据**。
+
+| 里程碑 | 当前状态 | 代码 PR / SHA | 验收 Run / 日志 | 风险与结论 |
 | --- | --- | --- | --- | --- |
-| M0 基线 | 待执行 | — | — | — |
-| M1 去重与契约 | 待执行 | — | — | — |
-| M2 Matrix 单任务 | 待执行 | — | — | — |
-| M3 动态选卡 | 待执行 | — | — | — |
-| M4 并发安全 | 待执行 | — | — | — |
-| M5 8P 并发容量 | 待执行 | — | — | — |
-| M6 16P / A5 | 待执行 | — | — | — |
-| M7 切换与收口 | 待执行 | — | — | — |
+| P1.0 基线/拓扑 | 待开始 | — | — | — |
+| P1.1 仓库去重/契约 | 待开始 | — | — | — |
+| P1.2 Matrix/独立结果 | 待开始 | — | — | — |
+| P1.3 动态选卡/占用策略 | 待开始 | — | — | — |
+| P1.4 8P/16P 与恢复 | 待开始 | — | — | — |
+| P1.5 Phase 1 发布 | 待开始 | — | — | — |
+| P2.0 并发资源预算 | **待 Phase 1 完成** | — | — | — |
+| P2.1 租约/多任务调度 | 待开始 | — | — | — |
+| P2.2 跨 Host 2×8P | 待开始 | — | — | — |
+| P2.3 同机/4×8P 容量 | 待开始（条件验收） | — | — | — |
+| P2.4 混部/发布 | 待开始 | — | — | — |
 
-## 7. 实施前必须明确的现场事实（不会改变安全默认值）
+### 尚需实机核实的事实（不阻塞方案冻结，但阻塞相应功能放量）
 
-这些是**硬件和环境验收数据**，不是架构设计中的自由发挥项。无法核实时继续采用保守默认并禁止对应能力：
+- A3-3/A3-4 每机 16 个逻辑 Device 是否可独立组成两个合法 8P 组；P1 只启用已确认组。
+- `auto-occupy` / `vllm` 在宿主机与训练容器里的真实 PID 映射、进程树及重生行为；未核实类别不得执行 kill。
+- 16P 动态候选组合的 HCCL IP/网卡、Device→Rank 映射；P1 至少通过一组新动态配置。
+- 同 Host 两个 8P 的 Host 内存峰值（特别是 AdamW Virtual Optimizer）、HCCL/torchrun 端口与 IO；**仅 Phase 2** 开启同机双任务。
+- GitCode → GitHub 主源与强制同步的切换窗口，未妥善处理时不标记生产发布完成。
 
-1. A3-3/A3-4 的 16 个逻辑 Device ID 是否均对应可独立分配的 NPU 计算单元；`[0..7]` 和 `[8..15]` 是否可分别独立完成单机 8P。
-2. 同 Host 两个 DeepSeek-V4 Flash 8P（尤其一个使用 AdamW Virtual Optimizer）是否有足够 Host RAM、I/O 与 HCCL 隔离；**未验收时每 Host 只运行 1 Job**。
-3. CANN/HCCL 固定端口、torchrun rendezvous 端口及多进程环境变量的真实生效链路；未隔离就不放行同 Host 双 Job。
-4. 16P 的不同设备组组合是否均受支持；**只允许逐组验证后扩容**，至少复现当前已知的双机组合。
-5. GitCode 主仓能否在本次重构发布前收录对应 Workflow；否则禁止将 GitHub 镜像版本标记为已稳定上线。
-6. 在 A3-3/A3-4 上核对 `npu-smi` 的 PID 与宿主机/容器 `/proc` 的映射，以及 `auto-occupy` / `vllm` 的真实命令和父子关系。无法验证的进程保持不可清理。
+### 变更记录
 
-最终交付标准：**两个仓库职责清楚、Matrix Case 独立可观测、动态调度不会抢卡、至少 2 个 8P 跨 Host 并发实机通过、16P 新链路通过、A5 禁用、旧路可回退**。**4×8P** 作为有条件的容量扩展，只有实测通过才宣称支持。
-
----
-
-### 进展记录
-
-- **2026-10-10**：完成两仓源码与风险设计复审；创建本重构计划；尚未改动运行代码/Workflow/资源配置，尚未执行实机验收。
-- **2026-10-10**：按维护者反馈更新资源争用策略：`auto-occupy` / `vllm` 可按 PID 定点清理，普通用户进程等待释放；新增分类核实、防误杀、重生处理及清理后重检的验收要求。仅更新计划，未操作进程。
+- **2026-10-10**：原始单阶段重构计划建立，核查已有两仓源码与历史 8P/16P 验收。
+- **2026-10-10**：依维护者要求：`auto-occupy`、`vllm` 可按 PID 定点清理；普通用户进程等待释放，并增加防误杀/重检门槛。
+- **2026-10-10**：维护者确认**方案 A**：Phase 1 完成 Matrix + 动态选卡但**不并发**；Phase 2 再做多任务并发。重新编排 P1.0–P1.5、P2.0–P2.4 的目标、门槛、测试矩阵、发布与回滚；**仅更新计划，未改运行代码、未触发训练、未结束进程**。
