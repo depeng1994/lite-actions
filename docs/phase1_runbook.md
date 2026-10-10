@@ -22,6 +22,14 @@ GitHub 正式生产准入为 master + workflow_dispatch + depeng1994。特性分
 
 Dispatcher 必须先持有全局训练槽，再原子获取整组设备锁，并从对应宿主机只读检查 npu-smi 与进程；跨机不得保留半套锁。候选全部不可用时有界等待或报告容量不足，不得杀普通用户任务。可信 auto-occupy/vllm 只允许对严格核实宿主机 PID、UID、启动时间、类别和租约的进程按 PID 操作；默认不开启自动回收，禁止 pkill -f、killall、全机清理。A5-64P 持续 enabled=false，未经资产路径、网卡与 HCCL 真实验收不得启用。
 
+## 3.1 A3 Docker Overlay 满盘的缓存预检
+
+A3-4 宿主 /data 是 Docker Overlay 的底层磁盘；实际曾出现 /data 100%、容器 df -h / 剩余 0 字节、而 Hugging Face datasets.load_dataset() 报 Not enough disk space。**SSH relay 复通不代表磁盘空间恢复**。禁止为了通过 CI 清理其他用户的 /data 文件或扩大 docker prune 范围。
+
+模型仓 A3 8P/16P OverrideDefinitions.env_vars 显式设置 HF_HOME=/mnt/share/ci_tests/.lite-actions-hf-cache、HF_DATASETS_CACHE=/mnt/share/ci_tests/.lite-actions-hf-cache/datasets；仓库外需保证此目录可写且剩余空间充足。两节点使用相同 NFS 路径，依赖 Hugging Face 自身缓存锁；该目录不用于大模型 checkpoint 或优化器 swap。部署前分别核对两机容器中的 datasets.config.HF_DATASETS_CACHE、df -h /mnt/share 与宿主 df -h /data；**NFS 也满或路径不可写时必须阻断，而非回退到 root Overlay**。
+
+相关修复：模型 [PR #29](https://github.com/depeng1994/torchtitan-npu/pull/29)、GitHub master SHA 546b655。正式 8P/16P 实机结果及尚待合并的 GitCode [MR #985](https://gitcode.com/cann/torchtitan-npu/merge_requests/985) 见 REFACTOR_PLAN.md；GitCode 主源未合并前，Sync Upstream 保持禁用。
+
 ## 4. 取消、异常恢复与 Quarantine
 
 1. GitHub Cancel 后，Dispatcher 只能终止本次任务。SSH Runner 以本次唯一 LITE_CI_JOB_ID 精确比对 /proc/PID/environ，记录 PID starttime，对 torchrun 和**脱离原 PGID 的所有同标识 rank** 逐 PID 先 TERM、限时后身份未变才 KILL。不能只 kill 启动器进程组，也不能仅凭进程名误杀。
