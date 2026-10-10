@@ -149,10 +149,18 @@ def remote_preflight(case: dict, pools: dict, *, ascend_env: str | None = None) 
     if indexing not in ("card", "card-die"):
         raise ValueError("NPU process index mode must be configured")
     for request in case["allocation"]:
-        host = by_host[request["host_id"]]["ssh"]
-        setup = ascend_env
-        command = ((f"source {shlex.quote(setup)} >/dev/null 2>&1 && " if setup else "")
-                   + "npu-smi info")
+        node = by_host[request["host_id"]]
+        # Occupancy is a physical-host property.  Use the same host namespace
+        # as PID classification/reclamation instead of the execution container,
+        # whose npu-smi visibility depends on its CANN/runtime environment.
+        targets = node.get("broadcast_ssh", [])
+        if isinstance(targets, list) and targets and isinstance(targets[0], str) and targets[0]:
+            host = targets[0]
+        else:
+            host = node.get("ssh")
+        if not isinstance(host, str) or not host:
+            raise ValueError("NPU preflight host SSH is not configured")
+        command = "npu-smi info"
         proc = subprocess.run(
             ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
              host, "bash -lc " + shlex.quote(command)],
