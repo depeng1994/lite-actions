@@ -267,16 +267,21 @@ python3 scripts/preflight_pool.py --pool a5-64p-lab --npu
 
 **模型及运行时资产归用例所有。** 在 `OverrideDefinitions.env_vars` 中维护：`ASCEND_SET_ENV_PATH`（CANN 的 `set_env.sh`）、`HF_ASSETS_PATH`（tokenizer/model assets）、`CKPT_INIT_LOAD_PATH`（初始权重目录），以及需要的 `CONFIG`、`OPTIMIZER_OVERRIDES` 和模型专用端口等。调度机从请求绑定的 **Commit SHA** 实际 `build_test_list()` 解析这些值、校验绝对路径及保留变量、经 SSH 在执行机先 source CANN 再 export 对应用例环境。只有设备分配和机器拓扑（如 `node_ip` 的 HCCL 小网地址）属于 Lite Actions `pools.json/pipelines.json`。动态生成的 `CKPT_SAVE_LOAD_PATH` 由通用 SSH Runner 设成当次 case 输出目录，不应写死在模型用例里。
 
-示例（在模型仓 `a3_8p_tests.py` 中；A5 应填写自己的真实环境，当前未知而保持禁用）：
+示例（仅展示模型用例的环境归属；A5 路径尚未核实，因此保持禁用）：
 
 ```python
-ASSET_ENV = {
-    "ASCEND_SET_ENV_PATH": "/mnt/share/Ascend/20260805101249091/ascend-toolkit/latest/set_env.sh",
-    "HF_ASSETS_PATH": "/mnt/share/models/DeepSeek-V4-Flash-bf16",
-    "CKPT_INIT_LOAD_PATH": "/mnt/share/dsv4_ckpt_8rank",
-}
-# OverrideDefinitions(..., env_vars=ASSET_ENV, ...)
+OverrideDefinitions(
+    test_name="dsv4_flash_a3_8p_example",
+    # ...
+    env_vars={
+        "ASCEND_SET_ENV_PATH": "/mnt/share/Ascend/20260805101249091/ascend-toolkit/latest/set_env.sh",
+        "HF_ASSETS_PATH": "/mnt/share/models/DeepSeek-V4-Flash-bf16",
+        "CKPT_INIT_LOAD_PATH": "/mnt/share/dsv4_ckpt_8rank",
+    },
+)
 ```
+
+每条 case 分别声明自己的 `env_vars`，Lite Actions 不维护复用的模型环境字典。
 
 A5 仍须核实网络连通性与上述环境后方可启用。
 
@@ -292,7 +297,7 @@ GitHub `workflow_dispatch.inputs.test_cases` 为有界 JSON 数组，只允许�
 [{"suite":"a3_8p_tests"}]
 ```
 
-第二种会展开成 **Muon 和 AdamW 两个语义不同的 8P Eager case**（各 5 steps），而不是用 5/3 steps 制造重复测试。具体优化器、`override_args`、TensorBoard 预期均由模型仓对应的 `OverrideDefinitions` 决定。AdamW 在共享 Shell 既有 `OPTIMIZER_OVERRIDES=""` 开关上关闭 Muon swap，保留完整 NPU 算子 imports；Muon 保留默认 swap。16P 的非默认 Flash CONFIG、AdamW swap 关闭、CANN/HF/Checkpoint 资产路径及训练端口同样由模型 case 的 `env_vars` 提供；只有设备号、SSH 入口和 HCCL 小网拓扑属于调度机。
+第二种会展开成 **Muon 和 AdamW 两个语义不同的 8P Eager case**（各 5 steps），而不是用 5/3 steps 制造重复测试。具体优化器、`override_args`、TensorBoard 预期均由模型仓对应的 `OverrideDefinitions` 决定。当前 8P AdamW 在自身 `env_vars` 中选择 `OPTIMIZER_OVERRIDES="torchtitan_npu.override.common.optimizer.virtual"`，在保持 4K 序列长度的同时使用 Host-backed Virtual Optimizer，而不是早期的空值覆盖；Muon 保留默认 swap。**Lite Actions 对具体优化器实现和值没有固定假设**，只读取并透传受信任模型源码给出的环境。16P 的非默认 Flash CONFIG、AdamW swap 关闭、CANN/HF/Checkpoint 资产路径及训练端口同样由模型 case 的 `env_vars` 提供；只有设备号、SSH 入口和 HCCL 小网拓扑属于调度机。
 
 ```bash
 gh workflow run a3-8p-lite-actions.yml --ref master \
