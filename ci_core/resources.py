@@ -28,7 +28,7 @@ class AgentAlreadyRunning(RuntimeError):
 def agent_lock_path() -> Path:
     configured = os.environ.get("LITE_ACTIONS_AGENT_LOCK")
     path = (Path(configured).expanduser() if configured else
-            Path("/tmp") / f"lite-actions-{os.getuid()}" /
+            Path.home() / ".cache" / "lite-actions" /
             "phase1-agent.lock")
     if not path.is_absolute():
         raise ValueError("LITE_ACTIONS_AGENT_LOCK must be absolute")
@@ -39,7 +39,7 @@ def global_slot_path() -> Path:
     """One lock path shared by all Lite Actions worktrees for this OS user."""
     configured = os.environ.get("LITE_ACTIONS_GLOBAL_SLOT_LOCK")
     path = (Path(configured).expanduser() if configured else
-            Path("/tmp") / f"lite-actions-{os.getuid()}" /
+            Path.home() / ".cache" / "lite-actions" /
             "phase1-global-training.lock")
     if not path.is_absolute():
         raise ValueError("LITE_ACTIONS_GLOBAL_SLOT_LOCK must be absolute")

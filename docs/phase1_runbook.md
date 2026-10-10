@@ -12,7 +12,7 @@ GitHub 正式生产准入为 master + workflow_dispatch + depeng1994。特性分
 
 操作前需分别核验：GitHub 没有 in_progress/queued 的相关 Workflow；调度机 state/unified-jobs.json 没有 running/blocked_recovery 或尚未处理的 quarantine；两台 A3 宿主机 npu-smi 与本系统任务 marker；SSH/网络正常；确认一个 Agent 实例及其确切 PID、工作目录、代码 SHA。
 
-**生产唯一 Agent** 仍是运维要求。自 2026-10-11 自审修复版起，V2 使用 OS 用户级、与 worktree 无关的 Agent 单例 flock，并另有同范围的全局训练槽 flock；默认位于 `/tmp/lite-actions-<uid>/`，只有明确运维需要才可通过 `LITE_ACTIONS_AGENT_LOCK` / `LITE_ACTIONS_GLOBAL_SLOT_LOCK` 指向同一绝对路径，禁止不同工作目录配置不同锁路径。旧 V1 不持有这些新锁，因此版本切换仍必须先备份两仓 SHA、Workflow、生产 config/state 与必要日志索引，关闭旧 Agent（仅发送准确 PID 的 SIGTERM），等其退出后才能拉起另一 Agent。运行中的任务不得热迁移、覆盖 state 或删除锁文件。
+**生产唯一 Agent** 仍是运维要求。自 2026-10-11 自审修复版起，V2 使用 OS 用户级、与 worktree 无关的 Agent 单例 flock，并另有同范围的全局训练槽 flock；默认位于当前运行账号的 `~/.cache/lite-actions/`，只有明确运维需要才可通过 `LITE_ACTIONS_AGENT_LOCK` / `LITE_ACTIONS_GLOBAL_SLOT_LOCK` 指向同一绝对路径，禁止不同工作目录配置不同锁路径。旧 V1 不持有这些新锁，因此版本切换仍必须先备份两仓 SHA、Workflow、生产 config/state 与必要日志索引，关闭旧 Agent（仅发送准确 PID 的 SIGTERM），等其退出后才能拉起另一 Agent。运行中的任务不得热迁移、覆盖 state 或删除锁文件。
 
 正式启动仅允许 master，外部自动清理默认关闭：A3_CI_ALLOWED_BRANCHES=master、A3_CI_RECLAIM_EXTERNAL_PROCESSES=0。先运行 python3 -m pytest -q tests 与 python3 unified_agent.py --validate，再启动 ./run-unified-agent.sh 并检查日志与唯一 PID。
 
