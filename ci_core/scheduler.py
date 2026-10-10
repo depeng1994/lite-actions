@@ -89,6 +89,9 @@ def claim_dynamic(root: Path, case: dict, *, ascend_env: str | None,
                 raise UnsafeResourceState("prior Case release requires reconciliation")
         blocked = []
         for allocation in possibilities:
+            # ResourceBusy from a running task is not a device-lock conflict.
+            # Never swallow execution failures and retry that training Case.
+            entered_execution = False
             try:
                 with reserve(root / "state/device-locks", allocation):
                     runtime = {**case, "allocation": allocation}
@@ -102,9 +105,12 @@ def claim_dynamic(root: Path, case: dict, *, ascend_env: str | None,
                     if canceled is not None and canceled():
                         raise ResourcesUnavailable("GitHub Run canceled after allocation")
                     logging.info("allocated Case %s: %s", case["name"], allocation)
+                    entered_execution = True
                     yield runtime
                     return
             except ResourceBusy:
+                if entered_execution:
+                    raise
                 blocked.append((allocation, "leased"))
                 continue
         # Prefer genuinely idle legal groups before reclaiming auto/vllm.

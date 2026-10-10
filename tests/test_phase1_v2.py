@@ -70,6 +70,20 @@ class V2Tests(unittest.TestCase):
                 self.assertEqual(preflight.call_count,2)
                 reclaim.assert_not_called()
 
+    def test_case_execution_resource_busy_not_retried(self):
+        from ci_core.resources import ResourceBusy
+        case=load_config(ROOT)["a3-8p"]
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            (root/"config").mkdir()
+            (root/"config/pools.json").write_text(
+                (ROOT/"config/pools.json").read_text())
+            with patch.object(scheduler,"remote_preflight") as preflight:
+                with self.assertRaisesRegex(ResourceBusy,"from execution"):
+                    with scheduler.claim_dynamic(root,case,ascend_env=None,timeout=0.1):
+                        raise ResourceBusy("from execution")
+                self.assertEqual(preflight.call_count,1)
+
     def test_phase1_global_worker_is_serial(self):
         self.assertEqual(unified_agent.MAX_WORKERS,1)
 
