@@ -267,26 +267,28 @@ python3 scripts/preflight_pool.py --pool a5-64p-lab --npu
 
 部署环境（CANN `ascend_env`、`hf_assets_path`、`ckpt_init_path`、HCCL 节点 IP）配置在 Lite Actions 的 `config/pipelines.json`/`config/pools.json`。A5 在这些参数和 SSH 连通性核实前始终禁用，不能报告为 Success。
 
-### Step 4 · 用 Workflow Input 选择 test ID 或完整 suite
+### Step 4 · Workflow 只选择真实 test ID 或 suite
 
-`workflow_dispatch.inputs.test_cases` 采用 JSON 数组，包含以下两种互斥选择：
+GitHub `workflow_dispatch.inputs.test_cases` 为有界 JSON 数组，只允许下列两种选择，不再接受 `params/STEPS`、Python module 路径或任意 CLI/Shell 命令：
 
 ```json
-[{"test_id":"dsv4_flash_a3_8p_example","params":{}}]
+[{"test_id":"dsv4_flash_a3_8p_adamw"}]
 ```
 
 ```json
-[{"suite":"a3_8p_tests","params":{}}]
+[{"suite":"a3_8p_tests"}]
 ```
 
-第二种会展开为两个真实 8P 用例（默认 5/3 steps），不是只执行第一个。参数目前仅允许 `STEPS`，范围 1–1000，经测试 builder 转为安全 CLI；不能改 `NODE_IPS`、SSH/HCCL、GPU 可见性或注入自定义 Shell。上传的 Artifact 绑定 GitHub `run_id/attempt/sha`，调度器由可信 SHA 中的 Python 定义发现用例，检查唯一性、disabled 和实际资源拓扑，**按展开后的实际条数**限制 A3 ≤ 2、A5 ≤ 1。
+第二种会展开成 **Muon 和 AdamW 两个语义不同的 8P Eager case**（各 5 steps），而不是用 5/3 steps 制造重复测试。具体优化器、`override_args`、TensorBoard 预期均由模型仓对应的 `OverrideDefinitions` 决定。AdamW 在共享 Shell 既有 `OPTIMIZER_OVERRIDES=""` 开关上关闭 Muon swap，保留完整 NPU 算子 imports；Muon 保留默认 swap。16P 的非默认 Flash CONFIG 和 AdamW swap 关闭同样由模型 case 提供，CANN/HF/Checkpoint/HCCL 路径属于调度端机器环境。
 
 ```bash
 gh workflow run a3-8p-lite-actions.yml --ref refactor/unified-a3-a5-ci \
-  -f 'test_cases=[{"suite":"a3_8p_tests","params":{}}]'
+  -f 'test_cases=[{"suite":"a3_8p_tests"}]'
 ```
 
-流程：`Inputs` → `.github/scripts/lite_actions/prepare_request.py` → GitHub Artifact → Lite Actions Agent → pinned-SHA 测试定义/资源校验 → SSH Runner 逐 case 训练/校验 → 逐项 `PASS/FAIL/NOT_RUN` 有界汇总 → Commit Comment → `.github/scripts/lite_actions/wait_result.py` 输出明细并决定整体 Job 结果。一个 Run 持有锁，前项训练失败只有在清理后 NPU 空闲已验证才能执行后项；无法验证则 fail-closed。总共 ≤2 case 并维持 300 分钟的 Workflow Job/16800 秒 Waiter 预算。
+链路为 GitHub Inputs → `.github/scripts/lite_actions/prepare_request.py` → 身份绑定的 Artifact (`run_id/attempt/sha`) → 调度机从已授权 SHA 的 `build_test_list()` 解析 ID/suite → 校验拓扑与**展开后 case 数量**（A3 ≤ 2；A5 ≤ 1）→ 通用 SSH Runner 串行训练、TensorBoard 校验、NPU 空闲检查 → 逐项 `PASS/FAIL/NOT_RUN` Commit Comment → GitHub Waiter 汇总。调度端真实超时以 `config/pipelines.json` 为准，而不是 testcase 中对多机不生效的另一份 `timeout`。继续保持 300 分钟 GitHub Job / 16800 秒 Waiter 预算。
+
+**验收边界：** 既有 Run 38013603734 的两个 8P case 是原来的 5/3 steps 组合，并未验证新 Muon/AdamW 组合；本轮 CPU 参数合约测试不能替代真实训练。A5 继续禁用。新版 Workflow 文件仍须通过后续默认分支合入注册才能按正式文件名直接触发。
 
 ### Step 5 · Lite Actions 专属 Workflow/脚本边界
 

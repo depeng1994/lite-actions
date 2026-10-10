@@ -1,7 +1,7 @@
-"""Resolve a GitHub-selected test only against a pinned model-repo registry.
+"""Resolve GitHub test selectors against trusted OverrideDefinitions at a fixed SHA.
 
-GitHub Actions inputs are transferred via a bounded run/attempt/SHA-bound
-Artifact, and the model's pinned commit registry authorizes selected modules.
+Inputs arrive in a run/attempt/SHA-bound Artifact. Model code defines the
+cases; deployment/runtime resource configuration stays with Lite Actions.
 """
 from __future__ import annotations
 
@@ -56,16 +56,12 @@ def parse_request(data: dict, run: dict) -> list[dict]:
     cases=data["cases"]
     if not isinstance(cases,list) or not 1<=len(cases)<=12:raise ValueError("invalid CI request case count")
     for item in cases:
-        if not isinstance(item,dict) or len(item)!=2 or "params" not in item or (('test_id' in item)==('suite' in item)):
-            raise ValueError("invalid CI case format")
-        name=item.get('test_id',item.get('suite'))
-        if not isinstance(name,str) or not SELECTOR.fullmatch(name):raise ValueError("invalid CI test ID/suite")
-        params=item['params']
-        if not isinstance(params,dict) or set(params)-{'STEPS'}:raise ValueError("unapproved CI parameter")
-        if 'STEPS' in params:
-            v=params['STEPS']
-            if not isinstance(v,str) or not v.isdecimal() or not 1<=int(v)<=1000:
-                raise ValueError("STEPS must be 1..1000")
+        if (not isinstance(item, dict) or len(item) != 1
+                or (('test_id' in item) == ('suite' in item))):
+            raise ValueError("invalid CI case selector format")
+        name = item.get('test_id', item.get('suite'))
+        if not isinstance(name, str) or not SELECTOR.fullmatch(name):
+            raise ValueError("invalid CI test ID/suite")
     return cases
 
 
@@ -86,8 +82,6 @@ def inspect_archive(archive:Path, selection:dict)->list[dict]:
         argv=[sys.executable,'-m','tests.integration_tests.tools.lite_actions.entrypoint','inspect']
         argv+=['--suite',selection['suite']] if 'suite' in selection else ['--test-id',selection['test_id']]
         env={**os.environ,'PYTHONPATH':str(folder)}
-        if 'STEPS' in selection['params']:env['LITE_TEST_STEPS']=selection['params']['STEPS']
-        else:env.pop('LITE_TEST_STEPS',None)
         proc=subprocess.run(argv,cwd=folder,env=env,capture_output=True,text=True,timeout=45)
         if proc.returncode or not proc.stdout.strip():
             raise ValueError('untrusted/missing CI definition: '+proc.stderr[-220:])
@@ -97,7 +91,7 @@ def inspect_archive(archive:Path, selection:dict)->list[dict]:
 
 
 def resolve_request(archive:Path, selections:list[dict],*,nodes:int,ngpu:int,
-                    max_cases:int,per_case_budget:int=14400)->list[dict]:
+                    max_cases:int)->list[dict]:
     expanded=[]
     seen=set()
     for item in selections:
@@ -107,10 +101,7 @@ def resolve_request(archive:Path, selections:list[dict],*,nodes:int,ngpu:int,
                 raise ValueError('duplicate/invalid/disabled selected test')
             if (found.get('nnodes'),found.get('ngpu'))!=(nodes,ngpu):
                 raise ValueError('requested test topology does not match NPU allocation')
-            if (type(found.get('timeout')) is not int or found['timeout']<=0
-                    or found['timeout']>per_case_budget):
-                raise ValueError('model test timeout exceeds channel budget')
             seen.add(name)
-            expanded.append({'test_id':name,'params':item['params']})
+            expanded.append({'test_id':name})
     if len(expanded)>max_cases:raise ValueError('expanded suite exceeds channel/Waiter budget')
     return expanded

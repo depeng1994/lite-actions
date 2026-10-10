@@ -121,7 +121,6 @@ def remote_command(node: dict, nodes: list[dict], runner: dict, dest: str,
     env["HF_ASSETS_PATH"] = runner["hf_assets_path"]
     env["CKPT_INIT_LOAD_PATH"] = runner["ckpt_init_path"]
     env["CKPT_SAVE_LOAD_PATH"] = dest + "/checkpoints"
-    env["LITE_TEST_STEPS"] = runner.get("case_params",{}).get("STEPS","") or "5"
     setup = f"source {q(runner['ascend_env'])} >/dev/null 2>&1 && "
     # PID file enables bounded cancellation. Python on the dispatcher always
     # validates job identity before killing its *own* remote process group.
@@ -178,7 +177,7 @@ def verify(nodes: list[dict], runner: dict, base: str, timeout: int, test_case: 
     dest = base + "/node0"
     exports = {**runner["env_vars"], "HF_ASSETS_PATH": runner["hf_assets_path"],
                "CKPT_INIT_LOAD_PATH": runner["ckpt_init_path"],
-               "LITE_TEST_STEPS":runner.get('case_params',{}).get('STEPS','5')}
+               }
     exported = " ".join(f"{key}={q(value)}" for key, value in exports.items())
     command = (f"cd {q(dest+'/repo')} && "
                + f"source {q(runner['ascend_env'])} >/dev/null 2>&1 && "
@@ -193,8 +192,7 @@ def verify(nodes: list[dict], runner: dict, base: str, timeout: int, test_case: 
 
 
 def run(case: dict, sha: str, stamp: str, *, test_case: str,
-        remote_dir: str | None = None, root: Path = ROOT,
-        params: dict | None = None) -> int:
+        remote_dir: str | None = None, root: Path = ROOT) -> int:
     # stamp is the internal immutable GitHub run identity used for safe process
     # termination; remote_dir is only the operator-facing folder name.
     remote_dir = remote_dir if remote_dir is not None else stamp
@@ -206,12 +204,10 @@ def run(case: dict, sha: str, stamp: str, *, test_case: str,
     base = f"{DEST_ROOT}/{remote_dir}"
     with tempfile.TemporaryDirectory(prefix="lite-ci-stage-") as tmp:
         archive = model_archive(sha, Path(tmp))
-        matches=resolve_request(archive,[{'test_id':test_case,'params':params or {}}],
-                               nodes=len(nodes),ngpu=len(nodes[0]['devices']),max_cases=1,
-                               per_case_budget=case['timeout_seconds']-120)
+        matches=resolve_request(archive,[{'test_id':test_case}],
+                               nodes=len(nodes),ngpu=len(nodes[0]['devices']),max_cases=1)
         if len(matches)!=1:raise ValueError('case selection changed')
-        runner={**case['runner'],'mode':'single' if len(nodes)==1 else 'distributed',
-                'case_params':params or {}}
+        runner={**case['runner'],'mode':'single' if len(nodes)==1 else 'distributed'}
         dirs = {}
         with ThreadPoolExecutor(max_workers=len(nodes)) as executor:
             futures = {executor.submit(stage, node, base, archive, sha): node for node in nodes}
@@ -317,7 +313,7 @@ def main() -> int:
             print(f"CASE_START {index+1}/{len(items)} {item['test_id']}",flush=True)
             try:
                 rc=run(case,args.sha,args.stamp,test_case=item['test_id'],
-                       params=item['params'],remote_dir=dirname)
+                       remote_dir=dirname)
             except Exception as exc:
                 print(f"CASE_EXCEPTION {item['test_id']} {type(exc).__name__}",flush=True)
                 rc=125

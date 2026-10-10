@@ -12,7 +12,7 @@ from ci_core.registry import parse_request,resolve_request
 from tests.test_ssh_runner import TEST_8P
 
 RUN={"id":12345,"run_attempt":1,"head_sha":"a"*40}
-CASE={"test_id":TEST_8P, "params":{"STEPS":"3"}}
+CASE={"test_id":TEST_8P}
 REQ={"schema":1,"run_id":12345,"attempt":1,"sha":"a"*40,"cases":[CASE]}
 
 class RequestTests(unittest.TestCase):
@@ -21,15 +21,16 @@ class RequestTests(unittest.TestCase):
         for key,value in (("run_id",99),("attempt",2),("sha","b"*40)):
             with self.subTest(key=key),self.assertRaises(ValueError):
                 parse_request({**REQ,key:value},RUN)
-        with self.assertRaisesRegex(ValueError,"case format"):
+        with self.assertRaisesRegex(ValueError,"selector format"):
             parse_request({**REQ,"cases":[{**CASE,"path":"../../bin/sh"}]},RUN)
         with self.assertRaisesRegex(ValueError,"test ID"):
             parse_request({**REQ,"cases":[{**CASE,"test_id":"../../bin/sh"}]},RUN)
 
-    def test_reject_unapproved_parameters(self):
-        for bad in ({'NODE_IPS':'bad'},{'EP':'32'},{'STEPS':'0'},{'STEPS':'x'}):
-            with self.assertRaises(ValueError):
-                parse_request({**REQ,'cases':[{'test_id':TEST_8P,'params':bad}]},RUN)
+    def test_reject_all_parameter_fields_even_when_empty(self):
+        for extra in ({'params':{}},{'params':{'STEPS':'5'}},
+                      {'STEPS':'5'},{'path':'evil.py'}):
+            with self.subTest(extra=extra), self.assertRaisesRegex(ValueError,'format'):
+                parse_request({**REQ,'cases':[{'test_id':TEST_8P,**extra}]},RUN)
 
     def test_missing_artifact_remains_pending(self):
         c=GitHubClient("TOKEN")

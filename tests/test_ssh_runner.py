@@ -43,20 +43,17 @@ class SharedSshRunnerTests(unittest.TestCase):
 
     def test_suite_expansion_topology_budget_and_selector_is_fail_closed(self):
         with patch('ci_core.registry.inspect_archive',return_value=[
-            {'test_id':TEST_8P,'nnodes':1,'ngpu':8,'timeout':7200},
-            {'test_id':'dsv4_flash_a3_8p_multicase','nnodes':1,'ngpu':8,'timeout':7200}
+            {'test_id':TEST_8P,'nnodes':1,'ngpu':8},
+            {'test_id':'dsv4_flash_a3_8p_adamw','nnodes':1,'ngpu':8}
         ]):
-            s=[{'suite':'a3_8p_tests','params':{}}]
+            s=[{'suite':'a3_8p_tests'}]
             rows=resolve_request(Path('/unused'),s,nodes=1,ngpu=8,max_cases=2)
             self.assertEqual(len(rows),2)
             with self.assertRaisesRegex(ValueError,'topology'):
                 resolve_request(Path('/unused'),s,nodes=2,ngpu=8,max_cases=2)
             with self.assertRaisesRegex(ValueError,'budget'):
                 resolve_request(Path('/unused'),s,nodes=1,ngpu=8,max_cases=1)
-            with self.assertRaisesRegex(ValueError,'timeout'):
-                resolve_request(Path('/unused'),s,nodes=1,ngpu=8,max_cases=2,
-                                per_case_budget=7000)
-        req={'schema':1,'run_id':42,'attempt':1,'sha':'a'*40,'cases':[{'suite':'a3_8p_tests','params':{}}]}
+        req={'schema':1,'run_id':42,'attempt':1,'sha':'a'*40,'cases':[{'suite':'a3_8p_tests'}]}
         self.assertEqual(parse_request(req,{'id':42,'run_attempt':1,'head_sha':'a'*40})[0]['suite'],'a3_8p_tests')
 
     def test_unknown_hccl_address_blocks_a5_before_training(self):
@@ -110,8 +107,8 @@ class SharedSshRunnerTests(unittest.TestCase):
         from unittest.mock import patch
         request={"schema":1,"run_id":1234,"attempt":1,"sha":"a"*40,
                  "cases":[
-                    {"test_id":TEST_8P,"params":{}},
-                    {"test_id":"dsv4_flash_a3_8p_multicase","params":{}},
+                    {"test_id":TEST_8P},
+                    {"test_id":"dsv4_flash_a3_8p_adamw"},
                  ]}
         with tempfile.TemporaryDirectory() as td:
             manifest=Path(td)/"request.json"
@@ -126,7 +123,7 @@ class SharedSshRunnerTests(unittest.TestCase):
                 self.assertEqual(execute.call_count,2)
                 self.assertEqual(execute.call_args_list[0].kwargs["remote_dir"],
                                  "job-123_case-01_"+TEST_8P)
-                self.assertEqual(execute.call_args_list[1].kwargs["test_case"],"dsv4_flash_a3_8p_multicase")
+                self.assertEqual(execute.call_args_list[1].kwargs["test_case"],"dsv4_flash_a3_8p_adamw")
             with patch.object(sys,"argv",args), patch.object(ssh_runner,"run",side_effect=[0,1]) as execute, \
                  patch('ci_core.dispatch.remote_preflight'):
                 self.assertEqual(ssh_runner.main(),1)
