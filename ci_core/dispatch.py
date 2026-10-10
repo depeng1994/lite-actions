@@ -20,7 +20,7 @@ import json
 from ci_core.resources import wait_reserve
 from ci_core.broadcast import broadcast_job
 from ci_core.logs import metadata, select_remote
-from ci_core.registry import selected_test, workflow_label, load_profile, parse_request
+from ci_core.registry import workflow_label, parse_request, resolve_request
 import logging
 import time
 
@@ -103,29 +103,18 @@ def selected_processes(output: str, devices: list[int], *, indexing: str = "card
     return processes
 
 
-def prepare_profile(case: dict, run: dict) -> tuple[str, dict]:
-    """Read test-owned CANN/asset settings from the selected GitHub Commit SHA."""
-    from ci_core.ssh_runner import model_archive
-    allocation = case["allocation"]
-    with tempfile.TemporaryDirectory(prefix="lite-ci-model-profile-") as tmp:
-        archive = model_archive(run["head_sha"], Path(tmp))
-        if "_ci_request" not in run:
-            # Backwards-compatible local test helper. Production agent never
-            # dispatches SSH without a validated run-bound request artifact.
-            test_id = selected_test(run)
-            return test_id, load_profile(archive, test_id, nodes=len(allocation),
-                                         ngpu=len(allocation[0]["devices"]))
-        cases = parse_request(run["_ci_request"], run)
-        max_cases = 1 if case["name"] == "a5-64p" else 2
-        if len(cases) > max_cases:
-            raise ValueError("test count exceeds resource/Waiter timeout budget")
-        profiles = [load_profile(archive, item["test_id"], nodes=len(allocation),
-                                 ngpu=len(allocation[0]["devices"]),
-                                 params=item["params"])
-                    for item in cases]
-        if len({p["ascend_env"] for p in profiles}) != 1:
-            raise ValueError("tests in the same CI run must share the CANN setup")
-        return cases[0]["test_id"], profiles[0]
+def prepare_profile(case:dict,run:dict)->tuple[str,dict]:
+    """Resolve suite before locking/staging and freeze the expanded plan."""
+    allocation=case['allocation']
+    if '_ci_request' not in run:raise ValueError('CI request artifact required')
+    selections=parse_request(run['_ci_request'],run)
+    with tempfile.TemporaryDirectory(prefix='lite-ci-validated-model-') as temp:
+        from ci_core.ssh_runner import model_archive
+        archive=model_archive(run['head_sha'],Path(temp))
+        expanded=resolve_request(archive,selections,nodes=len(allocation),
+            ngpu=len(allocation[0]['devices']),max_cases=1 if case['name']=='a5-64p' else 2)
+    run['_ci_expanded_cases']=expanded
+    return expanded[0]['test_id'],case['runner']
 
 
 def remote_preflight(case: dict, pools: dict, *, ascend_env: str | None = None) -> None:
@@ -196,9 +185,10 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
                "--case", case["name"], "--sha", run["head_sha"],
                "--stamp", log_dir.name, "--remote-dir", remote_task_name(run)]
         if "_ci_request" in run:
-            # Already validated against the GitHub Run and the model commit.
+            # The manifest below is resolved/validated by the dispatcher.
             manifest = log_dir / "ci-request.json"
-            manifest.write_text(json.dumps(run["_ci_request"], separators=(",", ":")) + "\n")
+            request={**run["_ci_request"],"cases":run["_ci_expanded_cases"]}
+            manifest.write_text(json.dumps(request, separators=(",", ":")) + "\n")
             cmd += ["--request-file", str(manifest), "--run-id", str(run["id"]),
                     "--run-attempt", str(run.get("run_attempt", 1))]
         else:
@@ -224,7 +214,7 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
                     start_new_session=True,
                 )
                 try:
-                    case_count = len(run.get("_ci_request", {}).get("cases", [])) or 1
+                    case_count = len(run.get("_ci_expanded_cases", [])) or 1
                     rc = proc.wait(timeout=case["timeout_seconds"] * case_count)
                 except subprocess.TimeoutExpired:
                     os.killpg(proc.pid, signal.SIGTERM)

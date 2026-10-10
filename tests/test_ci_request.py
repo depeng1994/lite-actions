@@ -8,8 +8,8 @@ import unittest
 import zipfile
 from unittest.mock import patch
 from ci_core.github import GitHubClient
-from ci_core.registry import parse_request,load_profile
-from tests.test_ssh_runner import archive_with,DEFAULT,TEST_8P
+from ci_core.registry import parse_request,resolve_request
+from tests.test_ssh_runner import TEST_8P
 
 RUN={"id":12345,"run_attempt":1,"head_sha":"a"*40}
 CASE={"test_id":TEST_8P, "params":{"STEPS":"3"}}
@@ -26,14 +26,10 @@ class RequestTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,"test ID"):
             parse_request({**REQ,"cases":[{**CASE,"test_id":"../../bin/sh"}]},RUN)
 
-    def test_profile_derives_module_from_registry_and_checks_params(self):
-        with tempfile.TemporaryDirectory() as td:
-            archive=archive_with({TEST_8P:DEFAULT},Path(td)/"model.tar.gz")
-            profile=load_profile(archive,TEST_8P,nodes=1,ngpu=8,
-                                 params=CASE["params"])
-            self.assertEqual(profile["env_vars"]["STEPS"],"3")
-            with self.assertRaisesRegex(ValueError,"not allowed"):
-                load_profile(archive,TEST_8P,nodes=1,ngpu=8,params={"NODE_IPS":"foo"})
+    def test_reject_unapproved_parameters(self):
+        for bad in ({'NODE_IPS':'bad'},{'EP':'32'},{'STEPS':'0'},{'STEPS':'x'}):
+            with self.assertRaises(ValueError):
+                parse_request({**REQ,'cases':[{'test_id':TEST_8P,'params':bad}]},RUN)
 
     def test_missing_artifact_remains_pending(self):
         c=GitHubClient("TOKEN")

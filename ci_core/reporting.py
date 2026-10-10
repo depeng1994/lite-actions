@@ -36,17 +36,37 @@ def marker(case: dict, run: dict) -> str:
     return f"{name}-RESULT {job_key(run)}"
 
 
-def make_report(case: dict, run: dict, rc: int, excerpt: list[str]) -> dict:
-    if len(excerpt) > 20 or not all(isinstance(x, str) for x in excerpt):
-        raise ValueError("invalid dispatcher excerpt")
+def case_summary(log:Path|None,run:dict)->list[dict]:
+    """Extract bounded per-test results; missing events never imply PASS."""
+    import re
+    plan=[x['test_id'] for x in run.get('_ci_expanded_cases',[])]
+    results={}
+    if log is not None and log.is_file():
+        for line in log.read_text(encoding='utf-8',errors='replace').splitlines():
+            if line.startswith('CASE_PLAN '):
+                names=line[len('CASE_PLAN '):].split(',')
+                if not plan:plan=names[:12]
+            match=re.fullmatch(r'CASE_RESULT ([a-z][a-z0-9_]{0,79}) (PASS|FAIL) (\d+)',line)
+            if match:
+                name,status,rc=match.groups()
+                if name in plan and name not in results:
+                    results[name]={'test_name':name,'status':status,'exit_code':int(rc)}
+    if not plan and '_ci_request' in run:
+        plan=[row.get('test_id',row.get('suite','unknown')) for row in run['_ci_request'].get('cases',[])][:12]
+    return [results.get(name,{'test_name':name,'status':'NOT_RUN','exit_code':None}) for name in plan]
+
+
+def make_report(case: dict, run: dict, rc: int, excerpt: list[str], log:Path|None=None) -> dict:
+    if len(excerpt)>20 or not all(isinstance(x,str) for x in excerpt):
+        raise ValueError('invalid dispatcher excerpt')
+    cases=case_summary(log,run) if case.get('runner',{}).get('kind')=='ssh' else []
+    ok=rc==0 and (not cases or all(row['status']=='PASS' and row['exit_code']==0 for row in cases))
     return {
-        "run_id": run["id"],
-        "attempt": run.get("run_attempt", 1),
-        "sha": run["head_sha"],
-        "pipeline": case["pipeline_id"],
-        "status": "PASS" if rc == 0 else "FAIL",
-        "exit_code": rc,
-        "last_20_lines": [clean(x) for x in excerpt],
+        'run_id':run['id'],'attempt':run.get('run_attempt',1),'sha':run['head_sha'],
+        'pipeline':case['pipeline_id'],'status':'PASS' if ok else 'FAIL',
+        'exit_code':rc if rc!=0 else (0 if ok else 125),
+        'cases':cases,
+        'last_20_lines':[clean(x) for x in excerpt],
     }
 
 
@@ -98,12 +118,12 @@ def run_and_report(case: dict, run: dict, *, root: Path) -> None:
                                 lock_root=root / "state/device-locks",
                                 resource_wait_seconds=900)
             output = execution.log
-            report = make_report(case, run, execution.exit_code, execution.tail)
+            report = make_report(case, run, execution.exit_code, execution.tail, execution.log)
         except Exception as exc:
             if not output.exists():
                 output.write_text(f"CI infra error: {type(exc).__name__}\n")
             report = make_report(case, run, 125,
-                                 [f"Dispatcher error: {type(exc).__name__}"])
+                                 [f"Dispatcher error: {type(exc).__name__}"],output)
         state.update(key, phase="pending_report", report=report)
     try:
         post_result(case, run, report, output, state)

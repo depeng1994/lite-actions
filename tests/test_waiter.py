@@ -23,11 +23,11 @@ class WaiterTests(unittest.TestCase):
                         "b"*40,42,1,"a3-16p"))
 
     def test_all_workflows_queue_without_cancel(self):
-        for file in ("a3-2p-ci.yml","a3-8p-ci.yml","a3-16p-ci.yml"):
+        for file in ("lite-actions-dispatcher-smoke.yml","a3-8p-lite-actions.yml","a3-16p-lite-actions.yml"):
             text=(ROOT/"github/workflows"/file).read_text()
             self.assertIn("queue: max",text)
             self.assertIn("cancel-in-progress: false",text)
-            self.assertIn(".github/scripts/ci-wait-result.py",text)
+            self.assertIn(".github/scripts/lite_actions/wait_result.py",text)
 
 
 if __name__=="__main__":

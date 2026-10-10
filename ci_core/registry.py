@@ -11,13 +11,11 @@ import re
 import tarfile
 
 SELECTOR = re.compile(r"[a-z][a-z0-9_]{0,79}\Z")
-MODULE = re.compile(r"tests\.integration_tests(?:\.[a-z][a-z0-9_]*){1,6}\Z")
 ENV_KEY = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 RESERVED = {"NODE_IPS", "NGPU", "NNODES", "ASCEND_RT_VISIBLE_DEVICES",
             "PYTHONUNBUFFERED", "LITE_CI_JOB_ID", "HF_ASSETS_PATH",
             "CKPT_INIT_LOAD_PATH", "CKPT_SAVE_LOAD_PATH", "Network_Interface",
             "PYTHONPATH", "ASCEND_SET_ENV_PATH"}
-REGISTRY = "tests/integration_tests/ci_registry.json"
 
 
 def workflow_label(run: dict) -> str:
@@ -50,82 +48,67 @@ def selected_test(run: dict) -> str:
 
 
 def parse_request(data: dict, run: dict) -> list[dict]:
-    """Validate an Actions artifact bound to one exact run, attempt and SHA."""
-    if not isinstance(data, dict) or set(data) != {"schema", "run_id", "attempt", "sha", "cases"}:
+    """Identity-bound, safe suite/ID selectors, never modules or CLI."""
+    if not isinstance(data,dict) or set(data)!={"schema","run_id","attempt","sha","cases"}:
         raise ValueError("invalid CI request schema")
-    if (data["schema"] != 1 or type(data["run_id"]) is not int
-            or type(data["attempt"]) is not int
-            or data["run_id"] != run["id"]
-            or data["attempt"] != run.get("run_attempt", 1)
-            or data["sha"] != run["head_sha"]):
+    if data["schema"]!=1 or type(data["run_id"]) is not int or type(data["attempt"]) is not int or data["run_id"]!=run["id"] or data["attempt"]!=run.get("run_attempt",1) or data["sha"]!=run["head_sha"]:
         raise ValueError("CI request/run identity mismatch")
-    cases = data["cases"]
-    if not isinstance(cases, list) or not 1 <= len(cases) <= 12:
-        raise ValueError("CI request must contain 1..12 cases")
+    cases=data["cases"]
+    if not isinstance(cases,list) or not 1<=len(cases)<=12:raise ValueError("invalid CI request case count")
     for item in cases:
-        if not isinstance(item, dict) or set(item) != {"test_id", "params"}:
+        if not isinstance(item,dict) or len(item)!=2 or "params" not in item or (('test_id' in item)==('suite' in item)):
             raise ValueError("invalid CI case format")
-        if not isinstance(item["test_id"], str) or not SELECTOR.fullmatch(item["test_id"]):
-            raise ValueError("invalid CI test ID")
-        params = item["params"]
-        if not isinstance(params, dict) or len(params) > 12 or any(
-            not isinstance(k, str) or not ENV_KEY.fullmatch(k)
-            or not isinstance(v, str) or len(v) > 120 or any(c in v for c in "\r\n\x00")
-            for k,v in params.items()
-        ):
-            raise ValueError("invalid CI case params")
+        name=item.get('test_id',item.get('suite'))
+        if not isinstance(name,str) or not SELECTOR.fullmatch(name):raise ValueError("invalid CI test ID/suite")
+        params=item['params']
+        if not isinstance(params,dict) or set(params)-{'STEPS'}:raise ValueError("unapproved CI parameter")
+        if 'STEPS' in params:
+            v=params['STEPS']
+            if not isinstance(v,str) or not v.isdecimal() or not 1<=int(v)<=1000:
+                raise ValueError("STEPS must be 1..1000")
     return cases
 
 
-def load_profile(archive: Path, test_case: str, *, nodes: int, ngpu: int,
-                 params: dict | None = None) -> dict:
-    """Read data, not executable code, from precisely the dispatched Git SHA."""
-    if not SELECTOR.fullmatch(test_case):
-        raise ValueError("unsafe CI test selector")
-    with tarfile.open(archive, "r:gz") as tar:
-        item = tar.extractfile(REGISTRY)
-        if item is None:
-            raise ValueError("model repository does not expose CI registry")
-        payload = item.read(65537)
-    if len(payload) > 65536:
-        raise ValueError("CI registry is too large")
-    items = json.loads(payload)
-    if not isinstance(items, dict) or test_case not in items:
-        raise ValueError("test_case not registered in model SHA")
-    profile = items[test_case]
-    if not isinstance(profile, dict) or not MODULE.fullmatch(profile.get("module", "")):
-        raise ValueError("invalid model-registered entrypoint")
-    if profile.get("mode") not in ("single", "distributed"):
-        raise ValueError("invalid model test mode")
-    if type(profile.get("nnodes")) is not int or type(profile.get("ngpu")) is not int:
-        raise ValueError("invalid registered test topology")
-    if (profile["nnodes"], profile["ngpu"]) != (nodes, ngpu):
-        raise ValueError("test_case resource requirements do not match this CI channel")
-    if profile["mode"] == "single" and nodes != 1:
-        raise ValueError("single-node test cannot be dispatched across nodes")
-    for key in ("ascend_env", "hf_assets_path", "ckpt_init_path"):
-        value = profile.get(key)
-        if not isinstance(value, str) or not value.startswith("/") or "\x00" in value or "\n" in value:
-            raise ValueError(f"model test {test_case} requires configured {key}")
-    env = profile.get("env_vars")
-    if not isinstance(env, dict) or any(
-        not isinstance(key, str) or not ENV_KEY.fullmatch(key)
-        or key in RESERVED or not isinstance(value, str)
-        or len(value) > 160 or any(c in value for c in "\r\n\x00")
-        for key, value in env.items()
-    ):
-        raise ValueError("invalid model-owned test environment")
-    params = params if params is not None else {}
-    if not isinstance(params, dict) or any(k not in env or k in RESERVED for k in params):
-        raise ValueError("parameters not allowed by registered model test")
-    if params:
-        for key, value in params.items():
-            if not isinstance(value, str) or len(value) > 120 or any(c in value for c in "\r\n\x00"):
-                raise ValueError("invalid registered test parameter")
-            if key == "STEPS" and (not value.isdecimal() or not 1 <= int(value) <= 1000):
-                raise ValueError("STEPS must be between 1 and 1000")
-            if key == "COMPILE_ENABLE" and value not in ("0", "1"):
-                raise ValueError("COMPILE_ENABLE must be 0 or 1")
-        profile = dict(profile)
-        profile["env_vars"] = {**env, **params}
-    return profile
+def inspect_archive(archive:Path, selection:dict)->list[dict]:
+    """Import only trusted pinned-SHA model definitions in an isolated tmpdir.
+
+    This is not a security sandbox: actor/branch/SHA authorization remains the
+    prerequisite; a Python build_test_list runs trusted repository code.
+    """
+    import os
+    import subprocess
+    import sys
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix='lite-ci-discovery-') as temp:
+        folder=Path(temp)
+        with tarfile.open(archive,'r:gz') as tar:
+            tar.extractall(folder,filter='data')
+        argv=[sys.executable,'-m','tests.integration_tests.lite_actions.tools.entrypoint','inspect']
+        argv+=['--suite',selection['suite']] if 'suite' in selection else ['--test-id',selection['test_id']]
+        env={**os.environ,'PYTHONPATH':str(folder)}
+        if 'STEPS' in selection['params']:env['LITE_TEST_STEPS']=selection['params']['STEPS']
+        else:env.pop('LITE_TEST_STEPS',None)
+        proc=subprocess.run(argv,cwd=folder,env=env,capture_output=True,text=True,timeout=45)
+        if proc.returncode or not proc.stdout.strip():
+            raise ValueError('untrusted/missing CI definition: '+proc.stderr[-220:])
+        rows=json.loads(proc.stdout.strip().splitlines()[-1])
+        if not isinstance(rows,list) or not rows:raise ValueError('empty test selection')
+        return rows
+
+
+def resolve_request(archive:Path, selections:list[dict],*,nodes:int,ngpu:int,max_cases:int)->list[dict]:
+    expanded=[]
+    seen=set()
+    for item in selections:
+        for found in inspect_archive(archive,item):
+            name=found.get('test_id')
+            if not isinstance(name,str) or not SELECTOR.fullmatch(name) or name in seen:
+                raise ValueError('duplicate/invalid/disabled selected test')
+            if (found.get('nnodes'),found.get('ngpu'))!=(nodes,ngpu):
+                raise ValueError('requested test topology does not match NPU allocation')
+            if type(found.get('timeout')) is not int or found['timeout']>14400:
+                raise ValueError('unsafe model test duration')
+            seen.add(name)
+            expanded.append({'test_id':name,'params':item['params']})
+    if len(expanded)>max_cases:raise ValueError('expanded suite exceeds channel/Waiter budget')
+    return expanded

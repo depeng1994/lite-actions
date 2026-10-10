@@ -255,99 +255,36 @@ python3 scripts/preflight_pool.py --pool a5-64p-lab --npu
 
 此处的 `pipeline_id` 仅供 GitHub Waiter 识别**CI 通道**，不是具体测试用例名称。启用 A5 前须补齐 8 台 HCCL IP，验证 SSH/NPU 进程映射和模型资产路径；最后才设置 `enabled=true`。
 
-### Step 3 · 在 torchtitan-npu 注册 Integration Test 和环境
+### Step 3 · 在模型仓定义 Nightly 用例（不建立 Registry JSON）
 
-模型仓 `tests/integration_tests/ci_registry.json` 是**用例注册表**，其三个初始用例分别由 `nightly_all_models_test/a3_8p_tests.py`、`a3_16p_tests.py`、`a5_64p_tests.py` 的 `build_*_test_list()` 定义（不增加规格子目录）；同一个 CI 通道可以运行多个满足该资源规格的注册用例。例如 A5 64P 的用例条目：
+路径：`tests/integration_tests/lite_actions/nightly_all_models_test/`。按照 TorchTitan `OverrideDefinitions` 定义 `build_test_list()`，在定义中指定 `test_name`、`ngpu`、`nnodes`、`override_args` 和 `expected_steps`。多 case 可以放在同一个文件。旧的 `ci_registry.json` 已删除。Lite Actions 通过已授权 SHA 中的 `build_test_list()` 发现用例；**不能**从 GitHub 输入任意模块路径或命令。
+
+部署环境（CANN `ascend_env`、`hf_assets_path`、`ckpt_init_path`、HCCL 节点 IP）配置在 Lite Actions 的 `config/pipelines.json`/`config/pools.json`。A5 在这些参数和 SSH 连通性核实前始终禁用，不能报告为 Success。
+
+### Step 4 · 用 Workflow Input 选择 test ID 或完整 suite
+
+`workflow_dispatch.inputs.test_cases` 采用 JSON 数组，包含以下两种互斥选择：
 
 ```json
-"dsv4_pro_a5_64p": {
-  "module": "tests.integration_tests.nightly_all_models_test.a5_64p_tests",
-  "mode": "distributed",
-  "nnodes": 8,
-  "ngpu": 8,
-  "ascend_env": "",
-  "hf_assets_path": "",
-  "ckpt_init_path": "",
-  "env_vars": {"STEPS": "5", "COMPILE_ENABLE": "0"}
-}
+[{"test_id":"dsv4_flash_a3_8p_example","params":{}}]
 ```
 
-**这三个空字符串是待部署值，不是有效环境配置**。由用例维护者将 `ascend_env`（CANN set_env.sh）、`hf_assets_path`（Tokenizer/模型目录）和 `ckpt_init_path`（初始权重目录）填写为实际执行机可访问的绝对路径；新执行器会在任务执行前校验并在所有节点复用。A3 的三个路径已有可参考的已知配置，同样已从调度机 `pools.json` 移至模型仓。不同机器如需不同路径，应先统一挂载或在模型仓扩展按节点读取的环境档案，不能在调度拓扑里登记模型路径。
-
-具体训练入口及 EP/DP 参数仍在模型仓的 `examples/` 和 `tests/integration_tests/nightly_all_models_test/*_tests.py`。`ci_entrypoint.py` 根据受信任 Commit SHA 的 `ci_registry.json` 解析用例，单机或分布式执行均使用同一个 Lite Actions SSH 引擎。
-
-### Step 4 · 使用 GitHub Actions 原生 Inputs + Artifact API 传递用例及参数
-
-**Workflow 的名称固定**（如 `A3-8p-CI-Example`），不再将 `test_case` 或其他参数拼入 `run-name` / Job 标题。参考 TorchTitan 上游 GitHub Actions 的测试矩阵与 Workflow 输入方式，Lite Actions 因调度机处于内网、没有 Github-hosted Runner 的直接内网入口，增加了一个**标准 GitHub Actions Artifact 交接步骤**。
-
-模型仓 `.github/workflows/a3-8p-ci.yml` 的主要结构为：
-
-```yaml
-name: A3-8p-CI-Example
-run-name: "${{ github.workflow }}"
-on:
-  workflow_dispatch:
-    inputs:
-      test_cases:
-        type: string
-        required: true
-        default: '[{"test_id":"dsv4_flash_a3_8p_example","params":{}}]'
-jobs:
-  prepare:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Validate Inputs
-        env:
-          CI_TEST_CASES: ${{ inputs.test_cases }}
-        run: python3 .github/scripts/prepare-ci-request.py
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lite-ci-request-${{ github.run_attempt }}
-          path: .ci-request/ci-request.json
-  ci:
-    needs: prepare
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: python3 .github/scripts/ci-wait-result.py --case a3-8p
+```json
+[{"suite":"a3_8p_tests","params":{}}]
 ```
 
-完整 Workflow 还包括 `permissions`、`concurrency`、actor/branch 授权校验和超时，**请直接使用仓库的正式文件，不要用上述简化示意覆盖**。
-
-**GitHub 手动运行 / REST API 提交**：在 Actions 的 Run workflow 界面填 `test_cases`，或者通过 GH CLI：
+第二种会展开为两个真实 8P 用例（默认 5/3 steps），不是只执行第一个。参数目前仅允许 `STEPS`，范围 1–1000，经测试 builder 转为安全 CLI；不能改 `NODE_IPS`、SSH/HCCL、GPU 可见性或注入自定义 Shell。上传的 Artifact 绑定 GitHub `run_id/attempt/sha`，调度器由可信 SHA 中的 Python 定义发现用例，检查唯一性、disabled 和实际资源拓扑，**按展开后的实际条数**限制 A3 ≤ 2、A5 ≤ 1。
 
 ```bash
-gh workflow run a3-8p-ci.yml --ref refactor/unified-a3-a5-ci \
-  -f 'test_cases=[{"test_id":"dsv4_flash_a3_8p_example","params":{"STEPS":"5"}}]'
+gh workflow run a3-8p-lite-actions.yml --ref refactor/unified-a3-a5-ci \
+  -f 'test_cases=[{"suite":"a3_8p_tests","params":{}}]'
 ```
 
-`test_cases` 是 A3 最多 2 个（A5 最多 1 个）注册用例组成的 **JSON 数组**。可在其中依次添加同属 8P 通道的其他注册测试：
+流程：`Inputs` → `.github/scripts/lite_actions/prepare_request.py` → GitHub Artifact → Lite Actions Agent → pinned-SHA 测试定义/资源校验 → SSH Runner 逐 case 训练/校验 → 逐项 `PASS/FAIL/NOT_RUN` 有界汇总 → Commit Comment → `.github/scripts/lite_actions/wait_result.py` 输出明细并决定整体 Job 结果。一个 Run 持有锁，前项训练失败只有在清理后 NPU 空闲已验证才能执行后项；无法验证则 fail-closed。总共 ≤2 case 并维持 300 分钟的 Workflow Job/16800 秒 Waiter 预算。
 
-```json
-[
-  {"test_id":"dsv4_flash_a3_8p_example", "params":{"STEPS":"5"}},
-  {"test_id":"dsv4_flash_a3_8p_example", "params":{"STEPS":"3"}}
-]
-```
+### Step 5 · Lite Actions 专属 Workflow/脚本边界
 
-示例的第二项用于演示两次不同参数的执行；实际多模型时换成注册表中的其他已注册 test ID。**执行顺序即数组顺序，任一用例失败则本次 Action 失败并停止后续用例**；一个 Run 对所有用例共同持有 NPU 锁，输出分别写入各用例目录。`params` 只能覆盖该 SHA 注册表的 `env_vars` 已声明参数，不能改 `NODE_IPS`、设备可见性、CANN 路径等调度/安全配置。
-
-调度机每轮通过 GitHub `GET /actions/runs` 查询可信任务，再通过 `GET /actions/runs/{run_id}/artifacts` 和 `GET /actions/artifacts/{id}/zip` 获取该 Run 上传的 JSON 清单。清单绑定 Run ID、attempt 和 Commit SHA；调度机用该精确 SHA 下的 `ci_registry.json` 校验每个 `test_id + params` 的合法性和拓扑兼容性，再交给通用 SSH Runner 顺序执行。不再从 Run 的 `name` / `display_title` 解析参数，也不会把输入拼成可执行 Shell 命令。GitHub Artifact 签名下载链接使用不附带 GitHub Token 的独立请求。
-
-调用链：`workflow_dispatch(test_cases)` → `prepare Job 生成 ci-request.json` → `upload-artifact` → `调度机 GitHub REST 读取` → `固定 SHA 注册表校验` → `统一 SSH Runner` → `主节点 TensorBoard 校验` → `调度机 GitHub 回传` → `Waiter 判定 Job Success/Failure`。
-
-**Waiter** 统一为模型仓 `.github/scripts/ci-wait-result.py` 和 Lite Actions 维护副本 `github/ci_wait_result.py`；与 A3/A5 无关。A3 `process_indexing=card-die` 和 A5 `process_indexing=card` 属于调度机物理资源，CANN 环境、Tokenizer、Checkpoint、训练步数和模型参数属于模型仓注册用例。
-
-**维护源**：模型仓 `torchtitan-npu/.github/{workflows,scripts}` 是唯一可被 GitHub 执行的权威实现；本仓 `github/` 是只读测试/部署镜像，不能独立发布。修改后执行 `python3 scripts/sync_ci_mirror.py --model-repo ../torchtitan-npu-ci-refactor` 生成镜像，再用 `--check` 检查字节级一致。`a3-2p-ci.yml` 保留历史 Workflow 文件名，但展示为 **Dispatcher-Smoke**（本地 `npu-smi` 探测，非两卡训练）。新的 8P/16P Action 最多串行两个测试，Waiter 16800 秒、Job 上限 300 分钟，A5 被禁用时 Prepare Job 失败，不会产生误报 Success。
-
-**部署注意**：本协议要求模型仓 Workflow 已包含 `prepare`/Artifact 步骤，再启动新版调度 Agent；不能只修改一侧。上一个版本将用例 ID 放到 `run-name` 的做法仅作为历史兼容，不再用于新任务选用例。
-
-### Step 5 · 为新增的独立 64P 通道部署 GitHub Workflow
-
-如果需要**独立的 `A5-64p-CI` 按钮**，才在模型仓增加 `.github/workflows/a5-64p-ci.yml`。可参考 lite-actions 的 `github/workflows/a3-16p-ci.yml`，分别设置独立 `name`、`workflow_dispatch`、`concurrency.queue: max`、受信任 actor/branch、超时，以及 Waiter 的固定 `--case a5-64p`。
-
-**独立通道仍需保持三处协议一致**：`config/pipelines.json` 的 `workflow` / `pipeline_id`、`ci_core/reporting.py` 的名称白名单、`github/ci_wait_result.py` 的 `PIPELINES`。当新的 A5 Workflow 与 Waiter 测试、代码审查完成后，将维护副本合入 `torchtitan-npu`（GitCode 上游主仓），再通过 `Sync Upstream` 同步到 GitHub；**只修改 lite-actions 副本，GitHub 不会自动出现新 Action**。正式启用前不要发布可触发但无人接单的 Workflow。
+模型仓 `.github/` 是唯一可部署源码；本仓 `github/` 仅是只读镜像。运行 `python3 scripts/sync_ci_mirror.py --model-repo ../torchtitan-npu-ci-refactor [--check]` 完成镜像同步及字节级一致性检查。Workflow 文件名分别是 `a3-8p-lite-actions.yml`、`a3-16p-lite-actions.yml`、`a5-64p-lite-actions.yml`、`lite-actions-dispatcher-smoke.yml`，显示名仍为原来 A3 8P/16P 的用户可读名称；后者仅本地检查 `npu-smi`，不是 2P 训练。
 
 ### Step 6 · 分阶段验证并正式启用
 
@@ -355,30 +292,9 @@ gh workflow run a3-8p-ci.yml --ref refactor/unified-a3-a5-ci \
 
 如果 SSH、A5 占用解析、跨节点启动或模型测试任一环节没有通过，就维持 `a5-64p` 为**禁用**，不得为了出现在 Actions 页面上提前启用。
 
-## 5. 日常新增 torchtitan-npu Integration Test 用例（通常不用修改 Lite Actions）
+## 5. 日常新增测试用例
 
-**Step 1 · 在模型仓定义测试及判定标准**
-
-对常规**单机**用例，在 `tests/integration_tests/` 对应模型文件增加 `OverrideDefinitions`，设置 `test_name`、`ngpu`、`train_script`、`env_vars`、`train_args`、`expected_steps`、`timeout` 及必要的 loss/TensorBoard 校验；Examples 保存可独立运行的合理默认值。对于**多机**用例，单机 `run_tests.py` 的资源池不能跨主机分配，必须使用明确的多节点 `launch` / `verify` 入口（参照既有 A3 16P 的思路，再泛化至 N 节点）。
-
-**Step 2 · 将测试注册到模型仓 CI 清单，验证后从 GitHub 选择 test ID**
-
-普通用例应由模型仓 `run_tests.py` 的 suite 构造函数（`_TEST_SUITES_FUNCTION`）包含，能通过 `--test_suite` / `--test_name` 选择；例如已准备完整**单机** NPU 环境时，可从模型仓根目录执行：
-
-```bash
-python3 -m tests.integration_tests.run_tests /tmp/my-integration-test \
-  --test_suite deepseek_v4 --test_name dsv4_my_new_8p_test --ngpu 8
-```
-
-以上为单机测试命令模板；实际名称必须存在于对应 suite。对于跨节点测试，多机用例通过 `nightly_all_models_test/runner.py` 适配 `launch` 与 `verify`，且能在独立测试环境最小步数跑通。然后在模型仓 `tests/integration_tests/ci_registry.json` 注册新的 `test ID`、模块、拓扑和 `env_vars` / CANN / Tokenizer / 权重路径；提交模型仓后，从 GitHub Workflow 的 `test_cases` 输入框提交包含路径、注册 ID、覆盖参数的 JSON 数组。调度器会核对该 Commit SHA 的注册表及资源匹配才执行，**不需要在 Lite Actions 的 `pipelines.json` 加入测试名，也不会透传任意 Shell 命令**。
-
-**Step 3 · 判断要不要改调度层**
-
-- **复用已有 Workflow、资源与 runner**：只提交模型仓测试代码/入口；Lite Actions **零改动**。
-- **同一 CI 通道换机器/卡数**：仅改 `pools.json` 和必要的 `pipelines.json` 资源映射，确保执行器支持对应拓扑。
-- **新建独立按钮/资源通道**：按第 4 节更新受信任 Workflow、pipeline_id、Waiter 协议及资源分配；新增同规模测试不需要新增通道。
-
-每次按 `python3 -m unittest discover -s tests` 和 `python3 unified_agent.py --validate` 检查调度侧变更；模型仓新增用例还必须跑它自己对应的单元测试/Integration Test，不能用调度机静态测试代替真实模型验证。
+只需将新的 `OverrideDefinitions` 放进模型仓相应的 `build_test_list()`，不用修改 Lite Actions `pipelines.json` 测试注册；新增物理通道或部署环境才修改调度资源配置。手工使用 `python3 -m tests.integration_tests.lite_actions.tools.entrypoint inspect --suite a3_8p_tests` 查看一组测试定义。真实 NPU 训练统一通过 GitHub/Lite Actions 调度；本地 CPU 单测只能验证协议和 argv，不等于训练验收。
 
 ## 6. 验收参考、排障与限制
 

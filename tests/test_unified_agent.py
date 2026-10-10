@@ -17,7 +17,7 @@ class AgentTests(unittest.TestCase):
                 "created_at":"2026-10-09T01:00:00Z","event":"workflow_dispatch",
                 "status":"in_progress","head_branch":"master",
                 "actor":{"login":"depeng1994"},
-                "path":".github/workflows/a3-8p-ci.yml","name":"A3-8p-CI-Example",
+                "path":".github/workflows/a3-8p-lite-actions.yml","name":"A3-8p-CI-Example",
                 "display_title":"A3-8p-CI-Example | test=dsv4_flash_a3_8p_example"}
 
     def test_valid_dispatch(self):
@@ -50,7 +50,7 @@ class AgentTests(unittest.TestCase):
 
     def test_wrong_path_denied(self):
         run=self.base_run()
-        run["path"]=".github/workflows/a3-16p-ci.yml"
+        run["path"]=".github/workflows/a3-16p-lite-actions.yml"
         self.assertFalse(agent.eligible(run,self.cases["a3-8p"]))
 
     def test_a5_cannot_be_submitted(self):

@@ -12,11 +12,11 @@ import sys
 
 HERE = Path(__file__).resolve().parents[1]
 FILES = (
-    ('.github/scripts/ci-wait-result.py','github/ci_wait_result.py'),
-    ('.github/workflows/a3-2p-ci.yml','github/workflows/a3-2p-ci.yml'),
-    ('.github/workflows/a3-8p-ci.yml','github/workflows/a3-8p-ci.yml'),
-    ('.github/workflows/a3-16p-ci.yml','github/workflows/a3-16p-ci.yml'),
-    ('.github/workflows/a5-64p-ci.yml','github/workflows/a5-64p-ci.yml'),
+    ('.github/scripts/lite_actions/wait_result.py','github/ci_wait_result.py'),
+    ('.github/workflows/lite-actions-dispatcher-smoke.yml','github/workflows/lite-actions-dispatcher-smoke.yml'),
+    ('.github/workflows/a3-8p-lite-actions.yml','github/workflows/a3-8p-lite-actions.yml'),
+    ('.github/workflows/a3-16p-lite-actions.yml','github/workflows/a3-16p-lite-actions.yml'),
+    ('.github/workflows/a5-64p-lite-actions.yml','github/workflows/a5-64p-lite-actions.yml'),
 )
 
 

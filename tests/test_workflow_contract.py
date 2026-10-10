@@ -38,7 +38,7 @@ class WorkflowContractTests(unittest.TestCase):
         for case_id in ("a3-8p", "a3-16p", "a5-64p"):
             with self.subTest(case_id=case_id):
                 case = config[case_id]
-                self.assertEqual(case["runner"], {"kind": "ssh"})
+                self.assertEqual(case["runner"]["kind"], "ssh")
                 yaml = (BASE / "github/workflows" / case["workflow"]).read_text()
                 self.assertIn('test_cases:', yaml)
                 self.assertIn('run-name:', yaml)
@@ -65,9 +65,9 @@ class WorkflowContractTests(unittest.TestCase):
                 budget=int(match.group(1))
                 self.assertGreaterEqual(budget,config[name]["timeout_seconds"]*max_cases+1000)
                 self.assertLess(budget,300*60)
-        a5=(BASE/"github/workflows/a5-64p-ci.yml").read_text()
+        a5=(BASE/"github/workflows/a5-64p-lite-actions.yml").read_text()
         self.assertIn('CI_CHANNEL_ENABLED: "false"',a5)
-        for name in ("a3-8p-ci.yml","a3-16p-ci.yml"):
+        for name in ("a3-8p-lite-actions.yml","a3-16p-lite-actions.yml"):
             self.assertIn('CI_CHANNEL_ENABLED: "true"',(BASE/"github/workflows"/name).read_text())
 
     def test_github_custom_run_name_matches_case_and_marker(self):
@@ -76,7 +76,7 @@ class WorkflowContractTests(unittest.TestCase):
         run=dict(id=37939445270,head_branch="refactor/unified-a3-a5-ci",
                  event="workflow_dispatch",status="in_progress",head_sha="a"*40,
                  run_number=10,run_attempt=1,actor={"login":"depeng1994"},
-                 display_title=text,name=text,path=".github/workflows/a3-8p-ci.yml")
+                 display_title=text,name=text,path=".github/workflows/a3-8p-lite-actions.yml")
         from unittest.mock import patch
         with patch.object(unified_agent, "BRANCHES", {"refactor/unified-a3-a5-ci"}):
             self.assertTrue(unified_agent.eligible(run,case))

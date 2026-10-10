@@ -19,7 +19,7 @@ import sys
 import tempfile
 
 from ci_core.config import load_config
-from ci_core.registry import load_profile, SELECTOR, parse_request
+from ci_core.registry import inspect_archive, SELECTOR, parse_request, resolve_request
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO = "git@github.com:depeng1994/torchtitan-npu.git"
@@ -104,8 +104,8 @@ def remote_command(node: dict, nodes: list[dict], runner: dict, dest: str,
                    stamp: str, timeout: int, test_case: str) -> str:
     """Remote job owns its own process group; its complete log stays remote."""
     # Generic, fixed model-owned entrypoint; never interpolate GitHub modules.
-    entry = ("python3 -u -m tests.integration_tests.ci_entrypoint launch "
-             + q(test_case) + " " + q(dest + "/output"))
+    entry = ("python3 -u -m tests.integration_tests.lite_actions.tools.entrypoint launch --test-id "
+             + q(test_case) + " --output-dir " + q(dest + "/output"))
     env = {
         "NODE_IPS": ",".join(x["node_ip"] for x in nodes),
         "NGPU": str(len(node["devices"])),
@@ -121,6 +121,7 @@ def remote_command(node: dict, nodes: list[dict], runner: dict, dest: str,
     env["HF_ASSETS_PATH"] = runner["hf_assets_path"]
     env["CKPT_INIT_LOAD_PATH"] = runner["ckpt_init_path"]
     env["CKPT_SAVE_LOAD_PATH"] = dest + "/checkpoints"
+    env["LITE_TEST_STEPS"] = runner.get("case_params",{}).get("STEPS","") or "5"
     setup = f"source {q(runner['ascend_env'])} >/dev/null 2>&1 && "
     # PID file enables bounded cancellation. Python on the dispatcher always
     # validates job identity before killing its *own* remote process group.
@@ -176,13 +177,14 @@ def verify(nodes: list[dict], runner: dict, base: str, timeout: int, test_case: 
     node = nodes[0]
     dest = base + "/node0"
     exports = {**runner["env_vars"], "HF_ASSETS_PATH": runner["hf_assets_path"],
-               "CKPT_INIT_LOAD_PATH": runner["ckpt_init_path"]}
+               "CKPT_INIT_LOAD_PATH": runner["ckpt_init_path"],
+               "LITE_TEST_STEPS":runner.get('case_params',{}).get('STEPS','5')}
     exported = " ".join(f"{key}={q(value)}" for key, value in exports.items())
     command = (f"cd {q(dest+'/repo')} && "
                + f"source {q(runner['ascend_env'])} >/dev/null 2>&1 && "
                + f"export {exported} && "
                + f"export PYTHONPATH=\"$PWD:${{PYTHONPATH:-}}\" && "
-               + f"python3 -u -m tests.integration_tests.ci_entrypoint verify {q(test_case)} {q(dest+'/output')} > {q(dest+'/verify.log')} 2>&1; "
+               + f"python3 -u -m tests.integration_tests.lite_actions.tools.entrypoint verify --test-id {q(test_case)} --output-dir {q(dest+'/output')} > {q(dest+'/verify.log')} 2>&1; "
                + f"rc=$?; if test $rc -ne 0; then cat {q(dest+'/verify.log')} >> {q(dest+'/run.log')}; fi; exit $rc")
     try:
         return ssh(node["ssh"], command, timeout=timeout, check=False).returncode
@@ -204,8 +206,11 @@ def run(case: dict, sha: str, stamp: str, *, test_case: str,
     base = f"{DEST_ROOT}/{remote_dir}"
     with tempfile.TemporaryDirectory(prefix="lite-ci-stage-") as tmp:
         archive = model_archive(sha, Path(tmp))
-        runner = load_profile(archive, test_case, nodes=len(nodes), ngpu=len(nodes[0]["devices"]),
-                              params=params)
+        matches=resolve_request(archive,[{'test_id':test_case,'params':params or {}}],
+                               nodes=len(nodes),ngpu=len(nodes[0]['devices']),max_cases=1)
+        if len(matches)!=1:raise ValueError('case selection changed')
+        runner={**case['runner'],'mode':'single' if len(nodes)==1 else 'distributed',
+                'case_params':params or {}}
         dirs = {}
         with ThreadPoolExecutor(max_workers=len(nodes)) as executor:
             futures = {executor.submit(stage, node, base, archive, sha): node for node in nodes}
@@ -304,17 +309,29 @@ def main() -> int:
         max_cases = 1 if case["name"] == "a5-64p" else 2
         if len(items) > max_cases:
             raise ValueError("CI request exceeds per-channel runtime budget")
-        for index, item in enumerate(items):
-            dirname = args.remote_dir if len(items) == 1 else (
-                f"{args.remote_dir}_case-{index+1:02d}_{item['test_id']}")
-            print(f"CASE_START {index+1}/{len(items)}: {item['test_id']}", flush=True)
-            rc = run(case, args.sha, args.stamp, test_case=item["test_id"],
-                     params=item["params"],
-                     remote_dir=dirname)
-            print(f"CASE_END {index+1}/{len(items)}: {item['test_id']} rc={rc}", flush=True)
-            if rc != 0:
-                return rc
-        return 0
+        print("CASE_PLAN " + ",".join(x['test_id'] for x in items),flush=True)
+        overall=0
+        for index,item in enumerate(items):
+            dirname=args.remote_dir if len(items)==1 else f"{args.remote_dir}_case-{index+1:02d}_{item['test_id']}"
+            print(f"CASE_START {index+1}/{len(items)} {item['test_id']}",flush=True)
+            try:
+                rc=run(case,args.sha,args.stamp,test_case=item['test_id'],
+                       params=item['params'],remote_dir=dirname)
+            except Exception as exc:
+                print(f"CASE_EXCEPTION {item['test_id']} {type(exc).__name__}",flush=True)
+                rc=125
+            print(f"CASE_RESULT {item['test_id']} {'PASS' if rc==0 else 'FAIL'} {rc}",flush=True)
+            if rc!=0:
+                overall=1
+                # Never start sibling ranks if prior cleanup is uncertain.
+                from ci_core.dispatch import remote_preflight
+                pools=json.loads((ROOT/'config/pools.json').read_text())
+                try:remote_preflight(case,pools,ascend_env=case['runner']['ascend_env'])
+                except Exception:
+                    for remaining in items[index+1:]:print(f"CASE_NOT_RUN {remaining['test_id']}",flush=True)
+                    print('CASE_ABORT cleanup unverified',flush=True)
+                    return 125
+        return overall
     if not args.test_case or not SELECTOR.fullmatch(args.test_case):
         raise ValueError("missing registered CI test")
     return run(case, args.sha, args.stamp, test_case=args.test_case,

@@ -1,6 +1,6 @@
 {
   "a3-smoke": {
-    "workflow": "a3-2p-ci.yml",
+    "workflow": "lite-actions-dispatcher-smoke.yml",
     "pool": "local-smoke",
     "allocation": [],
     "timeout_seconds": 90,
@@ -12,81 +12,195 @@
     "pipeline_id": "npu-smi"
   },
   "a3-8p": {
-    "workflow": "a3-8p-ci.yml",
+    "workflow": "a3-8p-lite-actions.yml",
     "pool": "a3-shared",
     "allocation": [
       {
         "host_id": "a3-4",
-        "devices": [0, 1, 2, 3, 4, 5, 6, 7]
+        "devices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ]
       }
     ],
     "timeout_seconds": 7500,
     "runner": {
-      "kind": "ssh"
+      "kind": "ssh",
+      "ascend_env": "/mnt/share/Ascend/20260805101249091/ascend-toolkit/latest/set_env.sh",
+      "hf_assets_path": "/mnt/share/models/DeepSeek-V4-Flash-bf16",
+      "ckpt_init_path": "/mnt/share/dsv4_ckpt_8rank",
+      "env_vars": {}
     },
     "enabled": true,
     "pipeline_id": "a3-8p"
   },
   "a3-16p": {
-    "workflow": "a3-16p-ci.yml",
+    "workflow": "a3-16p-lite-actions.yml",
     "pool": "a3-shared",
     "allocation": [
       {
         "host_id": "a3-3",
-        "devices": [0, 1, 2, 3, 4, 5, 6, 7]
+        "devices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ]
       },
       {
         "host_id": "a3-4",
-        "devices": [8, 9, 10, 11, 12, 13, 14, 15]
+        "devices": [
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ]
       }
     ],
     "timeout_seconds": 7500,
     "runner": {
-      "kind": "ssh"
+      "kind": "ssh",
+      "ascend_env": "/mnt/share/Ascend/20260805101249091/ascend-toolkit/latest/set_env.sh",
+      "hf_assets_path": "/mnt/share/models/DeepSeek-V4-Flash-bf16",
+      "ckpt_init_path": "/mnt/share/dsv4_ckpt_8rank",
+      "env_vars": {
+        "MASTER_PORT": "6316",
+        "HCCL_IF_BASE_PORT": "30160"
+      }
     },
     "enabled": true,
     "pipeline_id": "a3-16p"
   },
   "a5-64p": {
-    "workflow": "a5-64p-ci.yml",
+    "workflow": "a5-64p-lite-actions.yml",
     "pool": "a5-64p-lab",
     "allocation": [
       {
         "host_id": "a5-01",
-        "devices": [0, 1, 2, 3, 4, 5, 6, 7]
+        "devices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ]
       },
       {
         "host_id": "a5-02",
-        "devices": [0, 1, 2, 3, 4, 5, 6, 7]
+        "devices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ]
       },
       {
         "host_id": "a5-03",
-        "devices": [0, 1, 2, 3, 4, 5, 6, 7]
+        "devices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ]
       },
       {
         "host_id": "a5-04",
-        "devices": [0, 1, 2, 3, 4, 5, 6, 7]
+        "devices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ]
       },
       {
         "host_id": "a5-05",
-        "devices": [0, 1, 2, 3, 4, 5, 6, 7]
+        "devices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ]
       },
       {
         "host_id": "a5-06",
-        "devices": [0, 1, 2, 3, 4, 5, 6, 7]
+        "devices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ]
       },
       {
         "host_id": "a5-07",
-        "devices": [0, 1, 2, 3, 4, 5, 6, 7]
+        "devices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ]
       },
       {
         "host_id": "a5-08",
-        "devices": [0, 1, 2, 3, 4, 5, 6, 7]
+        "devices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ]
       }
     ],
     "timeout_seconds": 14400,
     "runner": {
-      "kind": "ssh"
+      "kind": "ssh",
+      "ascend_env": "",
+      "hf_assets_path": "",
+      "ckpt_init_path": "",
+      "env_vars": {}
     },
     "enabled": false,
     "pipeline_id": "a5-64p"

@@ -37,7 +37,7 @@ class A5OnboardingTests(unittest.TestCase):
             cases = json.loads((ROOT / "config/pipelines.json").read_text())
             cases["a5-64p"]["enabled"] = True
             (root / "config/pipelines.json").write_text(json.dumps(cases))
-            with self.assertRaisesRegex(ValueError, "verified HCCL node_ip"):
+            with self.assertRaisesRegex(ValueError, "unconfigured deployment|verified HCCL node_ip"):
                 load_config(root)
 
     def test_preflight_never_executes_training_and_does_not_auto_accept_keys(self):

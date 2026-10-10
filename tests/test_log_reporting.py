@@ -58,6 +58,24 @@ class TestDispatcherReporting(unittest.TestCase):
                 "path":"/mnt/share/ci_tests/valid/run.log",
             })
 
+    def test_per_case_report_success_failure_and_unverified_cleanup(self):
+        run={**self.run,'_ci_expanded_cases':[{'test_id':'case_a'},{'test_id':'case_b'}]}
+        case={**self.case,'runner':{'kind':'ssh'}}
+        with tempfile.TemporaryDirectory() as td:
+            log=Path(td)/'pipeline.log'
+            log.write_text('CASE_PLAN case_a,case_b\nCASE_RESULT case_a PASS 0\nCASE_RESULT case_b PASS 0\n')
+            ok=reporting.make_report(case,run,0,[],log)
+            self.assertEqual(ok['status'],'PASS')
+            self.assertEqual([x['status'] for x in ok['cases']],['PASS','PASS'])
+            log.write_text('CASE_PLAN case_a,case_b\nCASE_RESULT case_a FAIL 1\nCASE_NOT_RUN case_b\n')
+            blocked=reporting.make_report(case,run,125,[],log)
+            self.assertEqual(blocked['status'],'FAIL')
+            self.assertEqual([x['status'] for x in blocked['cases']],['FAIL','NOT_RUN'])
+            log.write_text('CASE_PLAN case_a,case_b\nCASE_RESULT case_a FAIL 1\nCASE_RESULT case_b PASS 0\n')
+            mixed=reporting.make_report(case,run,1,[],log)
+            self.assertEqual([x['status'] for x in mixed['cases']],['FAIL','PASS'])
+            self.assertEqual(mixed['status'],'FAIL')
+
     def test_python_reporter_posts_without_agent_code(self):
         with tempfile.TemporaryDirectory() as tmp:
             base=Path(tmp)
