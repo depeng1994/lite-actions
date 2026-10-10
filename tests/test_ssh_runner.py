@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from ci_core.config import load_config
 from ci_core import ssh_runner
-from ci_core.registry import selected_test, parse_request, resolve_request
+from ci_core.registry import selected_test, parse_request, resolve_request, _discovery_tar_filter
 
 ROOT = Path(__file__).resolve().parents[1]
 STAMP = "2026-10-09_17-43-56_run-37913151439_attempt-1"
@@ -98,6 +98,19 @@ class SharedSshRunnerTests(unittest.TestCase):
                       {'CONFIG': 'unexpected\nnew line'}):
             with self.subTest(extra=extra), self.assertRaises(ValueError):
                 validate_case_environment({**ASSET_ENV, **extra})
+
+    def test_discovery_archive_skips_links_and_keeps_path_traversal_guard(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            regular=tarfile.TarInfo("tests/example.py")
+            self.assertIsNotNone(_discovery_tar_filter(regular,str(root)))
+            for kind in (tarfile.SYMTYPE,tarfile.LNKTYPE):
+                link=tarfile.TarInfo(".claude/CLAUDE.md")
+                link.type=kind; link.linkname="../.agents/AGENTS.md"
+                self.assertIsNone(_discovery_tar_filter(link,str(root)))
+            escape=tarfile.TarInfo("../escape.py")
+            with self.assertRaises(tarfile.FilterError):
+                _discovery_tar_filter(escape,str(root))
 
     def test_real_model_archive_resolves_8p_suite_owned_environment(self):
         model = ROOT.parent / 'torchtitan-npu-ci-refactor'

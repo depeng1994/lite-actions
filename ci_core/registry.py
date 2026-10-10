@@ -88,6 +88,18 @@ def parse_request(data: dict, run: dict) -> list[dict]:
     return cases
 
 
+def _discovery_tar_filter(member: tarfile.TarInfo, path: str):
+    """Strict extraction filter for metadata discovery.
+
+    Model metadata inspection does not need repository symlinks/hardlinks.
+    Drop all links and retain Python data_filter protections for ordinary
+    files/directories, including absolute paths and path traversal.
+    """
+    if member.issym() or member.islnk():
+        return None
+    return tarfile.data_filter(member, path)
+
+
 def inspect_archive(archive:Path, selection:dict)->list[dict]:
     """Import only trusted pinned-SHA model definitions in an isolated tmpdir.
 
@@ -101,7 +113,7 @@ def inspect_archive(archive:Path, selection:dict)->list[dict]:
     with tempfile.TemporaryDirectory(prefix='lite-ci-discovery-') as temp:
         folder=Path(temp)
         with tarfile.open(archive,'r:gz') as tar:
-            tar.extractall(folder,filter='data')
+            tar.extractall(folder,filter=_discovery_tar_filter)
         argv=[sys.executable,'-m','tests.integration_tests.tools.lite_actions.entrypoint','inspect']
         argv+=['--suite',selection['suite']] if 'suite' in selection else ['--test-id',selection['test_id']]
         env={**os.environ,'PYTHONPATH':str(folder)}
