@@ -41,7 +41,12 @@ def candidates(case: dict, pools: dict) -> list[list[dict]]:
         return [[group] for group in eligible]
     # Do not guess that an arbitrary pair of individually valid groups is a
     # verified distributed topology. Multi-node combinations are allowlisted.
-    known = pool.get("verified_multinode_allocations", [])
+    known = list(pool.get("verified_multinode_allocations", []))
+    # Explicit, operator-only experimental route: must NEVER be reported as
+    # verified until the two-node real 5-step/TB test has succeeded. Do not
+    # enable this flag on production. All normal device/lease checks still apply.
+    if os.environ.get("A3_CI_ALLOW_EXPERIMENTAL_TOPOLOGY", "0") == "1":
+        known += pool.get("experimental_multinode_allocations", [])
     allowed_groups = {(g["host_id"], tuple(g["devices"])) for g in eligible}
     result = []
     for bundle in known:

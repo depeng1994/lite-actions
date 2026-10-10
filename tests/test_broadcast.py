@@ -137,6 +137,22 @@ class BroadcastTests(unittest.TestCase):
             self.assertTrue(execution.release_verified)
             self.assertEqual(events,["begin","end"])
 
+    def test_retry_transient_host_wall_only_before_training(self):
+        cfg=Path(__file__).resolve().parents[1]
+        case={**load_config(cfg)["a3-8p"],"allocation":[{"host_id":"a3-4",
+                                                         "devices":list(range(8))}]}
+        pools=json.loads((cfg/"config/pools.json").read_text())
+        attempts=[]
+        def remote(argv,**kwargs):
+            attempts.append(argv[-2])
+            return subprocess.CompletedProcess(argv, 255 if len(attempts)==1 else 0,
+                                               "", "")
+        with patch("ci_core.broadcast.time.sleep") as pause:
+            self.assertEqual(broadcast_job(case,pools,RUN,"begin",executor=remote),[])
+        self.assertEqual(attempts,["a3-4-relay","a3-4-relay",
+                                    "a3-4-docker-relay"])
+        pause.assert_called_once_with(2)
+
     def test_release_not_verified_warns_instead_of_falsely_free(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)

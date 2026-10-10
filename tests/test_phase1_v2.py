@@ -52,6 +52,19 @@ class V2Tests(unittest.TestCase):
         self.assertEqual(len(multi),1)
         self.assertEqual({g["host_id"] for g in multi[0]},{"a3-3","a3-4"})
 
+    def test_experimental_multinode_requires_explicit_opt_in(self):
+        pools=json.loads((ROOT/"config/pools.json").read_text())
+        case=load_config(ROOT)["a3-16p"]
+        verified=pools["a3-shared"]["verified_multinode_allocations"]
+        trial=pools["a3-shared"]["experimental_multinode_allocations"][0]
+        with patch.dict("os.environ", {"A3_CI_ALLOW_EXPERIMENTAL_TOPOLOGY":"0"}):
+            self.assertEqual(scheduler.candidates(case,pools),verified)
+            with self.assertRaises(ValueError):
+                scheduler.validate_allocation(case,pools,trial)
+        with patch.dict("os.environ", {"A3_CI_ALLOW_EXPERIMENTAL_TOPOLOGY":"1"}):
+            self.assertEqual(scheduler.candidates(case,pools),verified+[trial])
+            scheduler.validate_allocation(case,pools,trial)
+
     def test_dynamic_lock_and_preflight_selects_unoccupied_second_group(self):
         config=load_config(ROOT)
         pools=json.loads((ROOT/"config/pools.json").read_text())
