@@ -110,6 +110,8 @@ def run_and_report(case: dict, run: dict, *, root: Path) -> None:
     output = task_dir(run, root) / "pipeline.log"
     output.parent.mkdir(parents=True, exist_ok=True)
     pending = state.read().get(key, {})
+    if pending.get("phase") == "queued":
+        state.update(key, phase="running")
     if pending.get("phase") == "pending_report":
         report = pending["report"]
     else:

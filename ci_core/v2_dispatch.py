@@ -72,6 +72,9 @@ def run_and_report_v2(case: dict, run: dict, *, root: Path) -> None:
         raise ValueError("V2 plan exceeds channel case limit")
     state = JobState(root)
     client = GitHubClient(authorization())
+    run_key = f"{run['id']}:{run.get('run_attempt', 1)}"
+    if state.read().get(run_key, {}).get("phase") == "queued":
+        state.update(run_key, phase="running")
     for item in items:
         test_id = item["test_id"]
         key = task_key(run, test_id)
