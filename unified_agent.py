@@ -126,7 +126,7 @@ def main():
                         if past.get("phase") == "blocked_recovery":
                             continue
                         if past.get("phase") != "pending_report":
-                            state.update(key, phase="running", case=case["name"],
+                            state.update(key, phase="queued", case=case["name"],
                                          sha=run["head_sha"])
                         handler = (run_and_report_v2 if
                                    run.get("_ci_request", {}).get("schema") == 2

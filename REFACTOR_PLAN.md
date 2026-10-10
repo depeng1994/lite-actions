@@ -1,6 +1,6 @@
 # Lite Actions V2 重构计划：Phase 1 串行动态调度 → Phase 2 资源池并发
 
-> 状态：**Phase 1 / 实施中（独立开发分支，尚未生产切换）**；Phase 2 / 待启动。本文是实施与验收跟踪的唯一计划，不表示任何阶段已通过。
+> 状态：**Phase 1 GitHub 双仓已合并并生产部署；GitCode 主源保护分支合并与最新正式 Run 的实机验收仍受阻**。未解除发布阻断前，不宣称 P1.5 完成。Phase 2 / 待启动。
 > 方案：**A（已确认）**。Phase 1 = 双仓解耦 + GitHub Matrix Jobs + 动态选卡 + **全局串行训练**；Phase 2 = 在 Phase 1 稳定基线之上增加**真正并发**。  
 > 创建：2026-10-10；最近一次计划调整：2026-10-10。  
 > 计划初始代码基线：`lite-actions/main 2a0427c`、`torchtitan-npu/master b91257e`；本计划文件的维护提交不等于执行代码基线更新。  
@@ -312,7 +312,7 @@ Phase 1 Scheduler 流程：
 | P1.2 Matrix/独立结果 | 已验收 | 模型 `4233e7d` | [8P Run 38050639931](https://github.com/depeng1994/torchtitan-npu/actions/runs/38050639931) | 两独立 Job、Muon/AdamW PASS rc0，串行上报 |
 | P1.3 动态选卡/占用策略 | 已验收 | Lite `92b9b04` | [A3-4 8P Run 38050639931](https://github.com/depeng1994/torchtitan-npu/actions/runs/38050639931)、[A3-3 8P Run 38060703524](https://github.com/depeng1994/torchtitan-npu/actions/runs/38060703524)，77 passed/1 skipped | 同一 Muon 用例在 A3-4:8–15 与 A3-3:0–7 均 5 steps+TB PASS；A3-3 auto-occupy Worker 宿主机 PID 分类后定点清理并经 npu-smi 确认释放；未误杀其他进程；临时选择优先级已恢复 |
 | P1.4 8P/16P 与恢复 | 已验收实机 Gate | 模型 `99cd7e3` / Lite `92b9b04` | [Muon Run 38054910957](https://github.com/depeng1994/torchtitan-npu/actions/runs/38054910957)、[AdamW Run 38059258896](https://github.com/depeng1994/torchtitan-npu/actions/runs/38059258896)、[16P Run 38054913344](https://github.com/depeng1994/torchtitan-npu/actions/runs/38054913344)、[Cancel Run 38054570924](https://github.com/depeng1994/torchtitan-npu/actions/runs/38054570924) | 8P Muon/AdamW、双机16P 均 5 steps + TB + rc0；全局不重叠；取消远端子进程清理验证；前一次 AdamW 外部 SIGKILL 根因未证实，FAIL 保留不可擦除 |
-| P1.5 Phase 1 发布 | **调度侧已发布；模型 V2 主线待合并** | Lite `main` merge `2c086e2`；模型 Draft PR #28 自审后 `3bb3924`；Lite 自审安全修复 `9c8423d` 待受控部署 | [V1 回滚 Smoke 38060151936](https://github.com/depeng1994/torchtitan-npu/actions/runs/38060151936)、[V2 兼容 Smoke 38059669234](https://github.com/depeng1994/torchtitan-npu/actions/runs/38059669234)、[生产 V2 Dispatcher / V1 协议 Smoke 38061822173](https://github.com/depeng1994/torchtitan-npu/actions/runs/38061822173) | Lite PR #1 已合入并切到生产 V2 Dispatcher；Run 38061822173 基于模型 `master` `b91257e` 成功。模型侧 V2 Matrix 仍在 Draft PR #28，故不得标记“双 master 正式发布完成”；自审安全修复仅有 CPU/进程级证据，生产部署需受控停收/重启，不热切换 |
+| P1.5 Phase 1 发布 | **GitHub/调度机已切换；GitCode 与最新硬件 Gate 待收口** | Lite `main` `6439945`（待纳入排队修复 `db0b001`），模型 GitHub `master` `2fe2623`；GitCode `master` `2994912` | [生产升级后 Smoke 38082877830](https://github.com/depeng1994/torchtitan-npu/actions/runs/38082877830) PASS；[正式 16P 38082962268](https://github.com/depeng1994/torchtitan-npu/actions/runs/38082962268) INFRA_ERROR；[8P 38082959566](https://github.com/depeng1994/torchtitan-npu/actions/runs/38082959566) 未分配设备后 CANCELLED | GitCode `master` 受保护，不可直接 push；分支 `release/lite-actions-v2-phase1-master-sync` 已推送，待管理员合并 MR；Sync Upstream 已禁用以防覆盖。4 个 SSH relay 端口无监听，实机回归需恢复后重跑；排队误写 running 已在 `db0b001` 修复并做 CPU 单测，待正式部署。不能标记 P1.5 Done |
 | P2.0 并发资源预算 | **待 Phase 1 完成** | — | — | — |
 | P2.1 租约/多任务调度 | 待开始 | — | — | — |
 | P2.2 跨 Host 2×8P | 待开始 | — | — | — |
@@ -345,6 +345,14 @@ Phase 1 Scheduler 流程：
 | A5 | `enabled=false`，模型 Workflow admission=false | 未经验证不会执行 | **无** A5 实机通过证据 |
 
 自审后仍遵守“不热部署”规则：`9c8423d` 合入源码不等于生产进程已加载该代码。上线该安全修复必须在无在途任务且设备释放已验证后，按 runbook 停止旧 Agent、更新代码、启动唯一 Agent，再做 Smoke；本次自审未清理任何外部进程、未修改生产 Pool/白名单。
+
+### 2026-10-11 正式发布尾项（阻断未解除）
+
+- GitHub 模型仓 `master=2fe2623`，Lite Actions `main=6439945` 已进入生产，生产 Agent 使用 `A3_CI_ALLOWED_BRANCHES=master`、`A3_CI_RECLAIM_EXTERNAL_PROCESSES=0`，无未完成历史 Case、无 quarantine。受控升级后 [Smoke 38082877830](https://github.com/depeng1994/torchtitan-npu/actions/runs/38082877830) 成功，Lite 配置校验与 CPU 回归 84 passed。
+- GitCode `master=2994912` 是模型 GitHub `2fe2623` 的祖先，合并是纯快进；但 GitCode 服务器保护分支拒绝直接 push，已推送完全相同 SHA 的 `release/lite-actions-v2-phase1-master-sync` 分支，必须使用受保护分支 MR 并由有合并权限的维护者操作。合并前不得启用定时 Sync Upstream；已检查该 Workflow 当前 `disabled_manually`。
+- 正式 [16P Run 38082962268](https://github.com/depeng1994/torchtitan-npu/actions/runs/38082962268) 在资源检查前 fail-closed、无 NPU 分配；[8P Run 38082959566](https://github.com/depeng1994/torchtitan-npu/actions/runs/38082959566) 也无 NPU 分配，因 4 个宿主机/容器 relay 端口均 Connection refused，被维护者主动取消，两个 Case 最终 CANCELLED。不能当成模型回归结果。
+- 新发现：全局一个 executor worker 的前提下，未进入执行的另一 Run 被轮询器提前标记 `running`，触发 scheduler 的历史孤儿保护误判。修复 `db0b001`：Admission 标记 `queued`，仅在 handler 真的获 Worker 时改 `running`，含两 Run CPU 回归；正式部署前须确保无在途 Case、保留回退备份，部署后重新 Smoke。
+- **解除 Gate 顺序**：完成 GitCode 正规 MR 合并并比对双 `master` 同 SHA → 恢复受控 Sync Upstream → 恢复 4 路 relay，确认所有执行机的主机 PID/NPU 和安全预检 → 以发布后 SHA 重跑单机 8P Muon/AdamW、双机16P 5 steps/TB 及全局串行 → 更新最终验收台账并冻结 P1.5。Phase 2 不得提前启动。
 
 ### 尚需实机核实的事实（不阻塞方案冻结，但阻塞相应功能放量）
 

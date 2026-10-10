@@ -66,5 +66,50 @@ class AgentTests(unittest.TestCase):
             "A3-8p-CI-Example-RESULT 39100291:1\n"))
 
 
+    def test_two_workflows_are_queued_until_executor_starts_them(self):
+        """A queued Future must not masquerade as a crashed training Case."""
+        from contextlib import nullcontext
+        from tempfile import TemporaryDirectory
+        from unittest.mock import patch
+        from ci_core.job_state import JobState
+
+        class Future:
+            def result(self):
+                return None
+        class StubExecutor:
+            def __init__(self, max_workers):
+                self.max_workers=max_workers
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                return False
+            def submit(self, fn, *args, **kwargs):
+                return Future()
+        class StubGitHub:
+            def __init__(self, *_):
+                pass
+            def running_workflows(self):
+                first=self_run()
+                second={**first,"id":39100292,"run_number":10}
+                return [first,second]
+            def ci_request(self, run):
+                return {"schema":2}
+
+        self_run=self.base_run
+        with TemporaryDirectory() as td:
+            root=Path(td)
+            with patch.object(agent,"ROOT",root), patch.object(agent,"LOG",root/"logs/system/agent.log"), \
+                 patch.object(agent,"load_config",return_value=self.cases), \
+                 patch.object(agent,"single_agent",return_value=nullcontext()), \
+                 patch.object(agent,"GitHubClient",StubGitHub), \
+                 patch.object(agent,"authorization",return_value="stub"), \
+                 patch.object(agent,"ThreadPoolExecutor",StubExecutor), \
+                 patch("sys.argv",["unified_agent.py","--once"]):
+                agent.main()
+            state=JobState(root).read()
+            self.assertEqual(state["39100291:1"]["phase"],"queued")
+            self.assertEqual(state["39100292:1"]["phase"],"queued")
+
+
 if __name__=="__main__":
     unittest.main()
