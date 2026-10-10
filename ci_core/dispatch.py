@@ -5,6 +5,7 @@ This module does not speak GitHub and never kills unknown processes.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import nullcontext
 from pathlib import Path
 import collections
 import datetime as dt
@@ -50,9 +51,16 @@ def _local_run_time(run: dict) -> dt.datetime:
 def task_dir(run: dict, root: Path) -> Path:
     """Keep globally unique run ID in dispatcher logs/state for correlation."""
     local = _local_run_time(run)
+    suffix = ""
+    if "_ci_test_id" in run:
+        from ci_core.registry import SELECTOR
+        test_id = run["_ci_test_id"]
+        if not isinstance(test_id, str) or not SELECTOR.fullmatch(test_id):
+            raise ValueError("invalid V2 task Test ID")
+        suffix = f"_test-{test_id}"
     return root / "logs/runs" / (
         f"{local:%Y-%m-%d_%H-%M-%S}_run-{int(run['id'])}"
-        f"_attempt-{int(run.get('run_attempt', 1))}"
+        f"_attempt-{int(run.get('run_attempt', 1))}{suffix}"
     )
 
 
@@ -76,6 +84,12 @@ def remote_task_name(run: dict) -> str:
         raise ValueError("GitHub run_attempt must be a positive integer")
     local = _local_run_time(run)
     suffix = f"_attempt-{attempt}" if attempt > 1 else ""
+    if "_ci_test_id" in run:
+        from ci_core.registry import SELECTOR
+        test_id = run["_ci_test_id"]
+        if not isinstance(test_id, str) or not SELECTOR.fullmatch(test_id):
+            raise ValueError("invalid V2 test ID")
+        suffix += f"_test-{test_id}"
     return f"{local:%Y-%m-%d_%H-%M-%S}_run_{name}_{number}{suffix}"
 
 
@@ -105,14 +119,19 @@ def selected_processes(output: str, devices: list[int], *, indexing: str = "card
 
 def prepare_profile(case:dict,run:dict)->tuple[str,dict]:
     """Resolve suite before locking/staging and freeze the expanded plan."""
-    allocation=case['allocation']
-    if '_ci_request' not in run:raise ValueError('CI request artifact required')
+    allocation = case.get("allocation", [])
+    if "_ci_request" not in run: raise ValueError("CI request artifact required")
     selections=parse_request(run['_ci_request'],run)
     with tempfile.TemporaryDirectory(prefix='lite-ci-validated-model-') as temp:
         from ci_core.ssh_runner import model_archive
         archive=model_archive(run['head_sha'],Path(temp))
-        expanded=resolve_request(archive,selections,nodes=len(allocation),
-            ngpu=len(allocation[0]['devices']),max_cases=1 if case['name']=='a5-64p' else 2)
+        if case.get("resources"):
+            nodes = case["resources"]["nodes"]
+            ngpu = case["resources"]["devices_per_node"]
+        else:
+            nodes, ngpu = len(allocation), len(allocation[0]["devices"])
+        expanded = resolve_request(archive, selections, nodes=nodes,
+            ngpu=ngpu, max_cases=1 if case["name"]=="a5-64p" else 4)
     run['_ci_expanded_cases']=expanded
     # Preflight sources the toolkit selected by the model test, never a
     # hardcoded deployment value from Lite Actions.
@@ -167,7 +186,7 @@ def summarize(log: Path, rc: int) -> list[str]:
 
 
 def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None = None,
-            resource_wait_seconds: int = 600) -> Execution:
+            resource_wait_seconds: int = 600, pre_reserved: bool = False) -> Execution:
     if not case.get("enabled"):
         raise ValueError("Disabled pipeline cannot run on real hardware")
     kind = case["runner"]["kind"]
@@ -198,12 +217,21 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
                     "--run-attempt", str(run.get("run_attempt", 1))]
         else:
             cmd += ["--test-case", test_id]
+        if case.get("resources"):
+            from ci_core.scheduler import validate_allocation
+            pools_for_assignment = json.loads((root / "config/pools.json").read_text())
+            validate_allocation(case, pools_for_assignment, case.get("allocation", []))
+            alloc_path = log_dir / "allocation.json"
+            alloc_path.write_text(json.dumps({"allocation": case["allocation"]}) + "\n")
+            cmd += ["--allocation-file", str(alloc_path)]
     else:
         raise ValueError(f"unknown trusted runner: {kind}")
     pools = json.loads((root / "config/pools.json").read_text())
     lock_root = lock_root or root / "state/device-locks"
-    with wait_reserve(lock_root, case.get("allocation", []),
-                      timeout=resource_wait_seconds):
+    lease = (nullcontext() if pre_reserved else
+             wait_reserve(lock_root, case.get("allocation", []),
+                          timeout=resource_wait_seconds))
+    with lease:
         remote_preflight(case, pools, ascend_env=setup)
         announced = bool(case.get("allocation"))
         with logfile.open("w", encoding="utf-8") as stream:

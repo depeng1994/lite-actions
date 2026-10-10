@@ -1,0 +1,117 @@
+"""Verified PID-only reclamation for operator-approved auto-occupy/vllm.
+
+Never issue a blanket pkill/killall. Remote PID namespace must match npu-smi's
+'Process id in container' on the selected SSH execution container.
+"""
+from __future__ import annotations
+
+import logging
+import re
+import shlex
+
+from ci_core.dispatch import CHIP_PROCESS
+from ci_core.ssh_runner import ssh
+
+
+def selected_pids(output: str, devices: list[int], *, indexing: str) -> list[int]:
+    if "Process id in container" not in output:
+        raise ValueError("NPU process table missing")
+    if indexing not in {"card", "card-die"}:
+        raise ValueError("unrecognized indexing mode")
+    selected = set(devices)
+    pids = set()
+    for line in output.split("Process id in container")[-1].splitlines():
+        match = CHIP_PROCESS.match(line)
+        if match:
+            card, die, pid = map(int, match.groups())
+            chip = card * 2 + die if indexing == "card-die" else card
+            if chip in selected:
+                if pid <= 1:
+                    raise ValueError("invalid external process PID")
+                pids.add(pid)
+        elif re.match(r"^\|\s*\d+\s+\d+\s*\|", line):
+            raise ValueError("NPU process row not recognized")
+    if len(pids) > 64:
+        raise ValueError("too many PID occupants to classify")
+    return sorted(pids)
+
+
+# Every remote operation re-reads PID/starttime and refuses an unknown process.
+# No watchdog/service stop/restart; each PID is addressed independently.
+_REMOTE_TERMINATE = r"""
+import os,re,signal,sys,time
+pid=int(sys.argv[1])
+if pid<=1 or pid==os.getpid(): raise SystemExit('REFUSED protected PID')
+def proc(pid):
+    folder=f'/proc/{pid}'
+    try:
+        stat=open(folder+'/stat').read().rsplit(')',1)[1].split()
+        cmd=open(folder+'/cmdline','rb').read().replace(b'\0',b' ').decode('utf-8','replace')
+        return (stat[19],int(stat[1]),cmd)
+    except (FileNotFoundError,PermissionError,ValueError,IndexError):
+        return None
+def classify(pid):
+    seen=set()
+    for depth in range(6):
+        if pid in seen or pid<=1: break
+        seen.add(pid)
+        value=proc(pid)
+        if value is None: break
+        cmd=value[2].lower()
+        if re.search(r'(?:^|[/\s._-])auto[-_]occupy(?:[/\s._-]|$)',cmd):
+            return 'auto-occupy'
+        if re.search(r'(?:^|[/\s._-])vllm(?:[/\s._-]|$)',cmd):
+            return 'vllm'
+        pid=value[1]
+    return None
+before=proc(pid)
+if before is None:
+    raise SystemExit('REFUSED disappeared or unreadable')
+category=classify(pid)
+if category not in ('auto-occupy','vllm'):
+    raise SystemExit('REFUSED not approved class')
+# Detect PID reuse even between discovery and this kill.
+if proc(pid)!=before: raise SystemExit('REFUSED changed process')
+os.kill(pid,signal.SIGTERM)
+for _ in range(20):
+    time.sleep(.15)
+    value=proc(pid)
+    if value is None or value[0]!=before[0]:
+        print('CLEARED '+category)
+        raise SystemExit(0)
+# PID-specific escalation only after repeating all identity checks.
+if proc(pid)!=before or classify(pid)!=category:
+    raise SystemExit('REFUSED changed before escalation')
+os.kill(pid,signal.SIGKILL)
+print('SIGNALLED '+category)
+"""
+
+
+def reclaim_candidate(case: dict, pools: dict, *, ascend_env: str | None) -> bool:
+    pool = pools[case["pool"]]
+    mode = pool["process_indexing"]
+    nodes = {n["host_id"]: n for n in pool["nodes"]}
+    any_cleared = False
+    for assigned in case["allocation"]:
+        node = nodes[assigned["host_id"]]
+        host = node["ssh"]
+        setup = ("source " + shlex.quote(ascend_env) + " >/dev/null 2>&1 && "
+                 if ascend_env else "")
+        info = ssh(host, setup + "npu-smi info", timeout=45, check=True)
+        for pid in selected_pids(info.stdout, assigned["devices"], indexing=mode):
+            try:
+                outcome = ssh(host, "python3 -c " + shlex.quote(_REMOTE_TERMINATE)
+                              + " " + str(pid), timeout=20, check=False)
+            except Exception as exc:
+                logging.warning("external occupancy PID %d inspection failed: %s",
+                                pid, type(exc).__name__)
+                continue
+            if outcome.returncode == 0 and (
+                    "CLEARED " in outcome.stdout or "SIGNALLED " in outcome.stdout):
+                logging.warning("reclaimed approved NPU occupant host=%s pid=%d status=%s",
+                                assigned["host_id"], pid, outcome.stdout.strip())
+                any_cleared = True
+            else:
+                logging.info("retained external occupant host=%s pid=%d (not approved)",
+                             assigned["host_id"], pid)
+    return any_cleared

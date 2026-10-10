@@ -24,7 +24,7 @@ class A5OnboardingTests(unittest.TestCase):
         self.assertEqual(case["pool"], "a5-64p-lab")
         self.assertFalse(case["enabled"])
         self.assertEqual(case["runner"]["kind"], "ssh")
-        self.assertEqual(sum(len(item["devices"]) for item in case["allocation"]), 64)
+        self.assertEqual(case["resources"], {"nodes": 8, "devices_per_node": 8})
 
     def test_a5_cannot_enable_before_assets_are_configured(self):
         from tempfile import TemporaryDirectory
@@ -37,7 +37,7 @@ class A5OnboardingTests(unittest.TestCase):
             cases = json.loads((ROOT / "config/pipelines.json").read_text())
             cases["a5-64p"]["enabled"] = True
             (root / "config/pipelines.json").write_text(json.dumps(cases))
-            with self.assertRaisesRegex(ValueError, "unconfigured deployment|verified HCCL node_ip"):
+            with self.assertRaisesRegex(ValueError, "no verified topology|HCCL node_ip"):
                 load_config(root)
 
     def test_preflight_never_executes_training_and_does_not_auto_accept_keys(self):

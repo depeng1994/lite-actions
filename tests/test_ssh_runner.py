@@ -23,6 +23,17 @@ TEST_64P = "dsv4_pro_a5_64p"
 ASSET_ENV={"ASCEND_SET_ENV_PATH":"/opt/ascend/set_env.sh",
            "HF_ASSETS_PATH":"/models/flash", "CKPT_INIT_LOAD_PATH":"/weights"}
 DEFAULT={"env_vars":ASSET_ENV,"mode":"single"}
+STATIC = {
+    "a3-8p": [{"host_id": "a3-4", "devices": list(range(8))}],
+    "a3-16p": [{"host_id": "a3-3", "devices": list(range(8))},
+               {"host_id": "a3-4", "devices": list(range(8, 16))}],
+    "a5-64p": [{"host_id": f"a5-{i:02d}", "devices": list(range(8))}
+               for i in range(1, 9)],
+}
+
+def runtime(case: dict) -> dict:
+    return {**case, "allocation": STATIC[case["name"]]}
+
 
 
 class SharedSshRunnerTests(unittest.TestCase):
@@ -60,7 +71,7 @@ class SharedSshRunnerTests(unittest.TestCase):
     def test_model_owned_environment_is_forwarded_without_any_pipeline_asset_fields(self):
         for name in ('a3-8p', 'a3-16p', 'a5-64p'):
             self.assertEqual(self.cases[name]['runner'], {'kind': 'ssh'})
-        nodes = ssh_runner.allocations(self.cases['a3-8p'], self.pools)
+        nodes = ssh_runner.allocations(runtime(self.cases['a3-8p']), self.pools)
         profile = {'kind': 'ssh', 'mode': 'single', 'env_vars': {
             **ASSET_ENV, 'OPTIMIZER_OVERRIDES': ''}}
         dest = '/mnt/share/ci_tests/example/node0'
@@ -118,7 +129,7 @@ class SharedSshRunnerTests(unittest.TestCase):
     def test_unknown_hccl_address_blocks_a5_before_training(self):
         self.assertFalse(self.cases["a5-64p"]["enabled"])
         with self.assertRaisesRegex(ValueError, "missing SSH/HCCL"):
-            ssh_runner.allocations(self.cases["a5-64p"], self.pools)
+            ssh_runner.allocations(runtime(self.cases["a5-64p"]), self.pools)
 
     def test_a3_and_a5_share_same_hardware_independent_ssh_runner(self):
         import copy
@@ -129,7 +140,7 @@ class SharedSshRunnerTests(unittest.TestCase):
             with self.subTest(case=key):
                 c = self.cases[key]
                 self.assertEqual(c["runner"]["kind"], "ssh")
-                selected = ssh_runner.allocations(c,pools)
+                selected = ssh_runner.allocations(runtime(c),pools)
                 self.assertEqual(len(selected),nodes)
                 profile = {**DEFAULT, **c['runner'], "nnodes":nodes, "mode":"distributed" if nodes>1 else "single"}
                 for node in selected:
@@ -144,7 +155,7 @@ class SharedSshRunnerTests(unittest.TestCase):
 
     def test_dir_override_changes_remote_path_not_process_identity(self):
         profile = {**DEFAULT, **self.cases['a3-8p']['runner']}
-        selected = ssh_runner.allocations(self.cases["a3-8p"],self.pools)
+        selected = ssh_runner.allocations(runtime(self.cases["a3-8p"]),self.pools)
         dest="/mnt/share/ci_tests/2026-10-09_run_A3-8p-CI-Example_4/node0"
         cmd=ssh_runner.remote_command(selected[0],selected,profile,dest,STAMP,90,TEST_8P)
         self.assertIn(dest,cmd)
@@ -158,7 +169,7 @@ class SharedSshRunnerTests(unittest.TestCase):
              patch.object(ssh_runner,'resolve_request',side_effect=ValueError('unknown test')), \
              patch.object(ssh_runner,'stage') as stage:
             with self.assertRaisesRegex(ValueError,'unknown test'):
-                ssh_runner.run(self.cases['a3-8p'],'a'*40,STAMP,test_case=TEST_8P)
+                ssh_runner.run(runtime(self.cases['a3-8p']),'a'*40,STAMP,test_case=TEST_8P)
             stage.assert_not_called()
 
     def test_manifest_executes_multiple_cases_sequentially(self):
@@ -172,10 +183,13 @@ class SharedSshRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             manifest=Path(td)/"request.json"
             manifest.write_text(json.dumps(request))
+            allocation=Path(td)/"allocation.json"
+            allocation.write_text(json.dumps({"allocation": STATIC["a3-8p"]}))
             args=["runner","--case","a3-8p","--sha","a"*40,
                   "--stamp",STAMP,"--remote-dir","job-123",
                   "--run-id","1234","--run-attempt","1",
-                  "--request-file",str(manifest)]
+                  "--request-file",str(manifest),
+                  "--allocation-file",str(allocation)]
             with patch.object(sys,"argv",args), patch.object(ssh_runner,"run",return_value=0) as execute, \
                  patch('ci_core.dispatch.remote_preflight'), \
                  patch.object(ssh_runner,'model_archive',return_value=Path('/unused')), \

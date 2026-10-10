@@ -38,7 +38,10 @@ class BroadcastTests(unittest.TestCase):
         def remote(argv, **kwargs):
             calls.append((argv[-2], argv[-1], kwargs["input"]))
             return subprocess.CompletedProcess(argv,0,"","")
-        self.assertEqual(broadcast_job(cases["a3-16p"],pools,RUN,"begin",
+        allocated={**cases["a3-16p"],"allocation":[
+            {"host_id":"a3-3","devices":list(range(8))},
+            {"host_id":"a3-4","devices":list(range(8,16))}]}
+        self.assertEqual(broadcast_job(allocated,pools,RUN,"begin",
                                        executor=remote),[])
         self.assertEqual([x[0] for x in calls],
                          ["a3-3-relay","a3-3-docker-relay",
@@ -53,7 +56,8 @@ class BroadcastTests(unittest.TestCase):
         pools=json.loads((root/"config/pools.json").read_text())
         def remote(argv, **kwargs):
             return subprocess.CompletedProcess(argv,1 if argv[-2]=="a3-4-relay" else 0,"","")
-        self.assertEqual(broadcast_job(spec,pools,RUN,"begin",executor=remote),
+        runtime={**spec,"allocation":[{"host_id":"a3-4","devices":list(range(8))}]}
+        self.assertEqual(broadcast_job(runtime,pools,RUN,"begin",executor=remote),
                          ["a3-4-relay"])
 
     def test_begin_then_end_while_device_lock_held(self):

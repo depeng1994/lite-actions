@@ -291,10 +291,23 @@ def main() -> int:
     parser.add_argument("--stamp", required=True)
     parser.add_argument("--remote-dir", required=True,
                         help="Human-readable remote task directory")
+    parser.add_argument("--allocation-file", help="Trusted dispatcher allocation JSON")
     args = parser.parse_args()
     case = load_config(ROOT).get(args.case)
     if not case or not case["enabled"] or case["runner"]["kind"] != "ssh":
         raise ValueError("unsupported or disabled SSH pipeline")
+    if "resources" in case:
+        if not args.allocation_file:
+            raise ValueError("dynamic CI requires runtime allocation")
+        from ci_core.scheduler import validate_allocation
+        runtime = json.loads(Path(args.allocation_file).read_text())
+        if set(runtime) != {"allocation"}:
+            raise ValueError("unrecognized allocation document")
+        validate_allocation(case, json.loads((ROOT / "config/pools.json").read_text()),
+                            runtime["allocation"])
+        case = {**case, "allocation": runtime["allocation"]}
+    elif args.allocation_file:
+        raise ValueError("unexpected dynamic allocation for static CI")
     if args.request_file:
         if args.test_case or not args.run_id or not args.run_attempt:
             raise ValueError("manifest dispatch requires run_id and attempt, not test-case")

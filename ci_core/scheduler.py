@@ -1,0 +1,112 @@
+"""Phase 1 topology-aware allocation, with one global active training slot.
+
+Reuses existing file locks. Only explicitly verified groups are eligible.
+No partial distributed allocation is ever retained while waiting.
+"""
+from __future__ import annotations
+
+from contextlib import contextmanager
+import itertools
+import json
+import logging
+from pathlib import Path
+import time
+
+from ci_core.resources import ResourceBusy, reserve, resource_keys
+from ci_core.dispatch import remote_preflight
+
+
+class ResourcesUnavailable(RuntimeError):
+    pass
+
+
+def candidates(case: dict, pools: dict) -> list[list[dict]]:
+    spec = case["resources"]
+    nodes, ngpu = spec["nodes"], spec["devices_per_node"]
+    if nodes < 1 or ngpu < 1:
+        raise ValueError("invalid requested topology")
+    pool = pools[case["pool"]]
+    eligible = []
+    for host in sorted(pool["nodes"], key=lambda node: (node.get("priority", 0),
+                                                         node["host_id"])):
+        for group in host.get("allocation_groups", []):
+            devices = group["devices"]
+            if group.get("verified") and len(devices) == ngpu:
+                eligible.append({"host_id": host["host_id"], "devices": list(devices)})
+    if nodes == 1:
+        return [[group] for group in eligible]
+    # Do not guess that an arbitrary pair of individually valid groups is a
+    # verified distributed topology. Multi-node combinations are allowlisted.
+    known = pool.get("verified_multinode_allocations", [])
+    allowed_groups = {(g["host_id"], tuple(g["devices"])) for g in eligible}
+    result = []
+    for bundle in known:
+        if (len(bundle) == nodes
+                and len({g["host_id"] for g in bundle}) == nodes
+                and all(len(g["devices"]) == ngpu
+                        and (g["host_id"], tuple(g["devices"])) in allowed_groups
+                        for g in bundle)):
+            result.append([{"host_id": g["host_id"], "devices": list(g["devices"])}
+                           for g in bundle])
+    return result
+
+
+def validate_allocation(case: dict, pools: dict, allocation: list[dict]) -> None:
+    expected = resource_keys(allocation)
+    if not expected or not any(resource_keys(item) == expected
+                               for item in candidates(case, pools)):
+        raise ValueError("allocation outside verified topology or pool")
+
+
+@contextmanager
+def claim_dynamic(root: Path, case: dict, *, ascend_env: str | None,
+                  timeout: float = 900, sleep: float = 3.0):
+    """Choose an entire verified candidate, lock, preflight, then hold to exit.
+
+    Candidate probing never blocks a partial device set. After normal expiry,
+    callers distinguish resource timeout from model/test failures.
+    """
+    pools = json.loads((root / "config/pools.json").read_text())
+    possibilities = candidates(case, pools)
+    if not possibilities:
+        raise ValueError("no VERIFIED candidate supports this topology")
+    deadline = time.monotonic() + timeout
+    already_reclaimed = False
+    while True:
+        blocked = []
+        for allocation in possibilities:
+            try:
+                with reserve(root / "state/device-locks", allocation):
+                    runtime = {**case, "allocation": allocation}
+                    try:
+                        remote_preflight(runtime, pools, ascend_env=ascend_env)
+                    except Exception as exc:
+                        # Formatting ambiguity and process ownership are both
+                        # fail-closed: never run on an unverified occupied set.
+                        blocked.append((allocation, type(exc).__name__))
+                        continue
+                    logging.info("allocated Case %s: %s", case["name"], allocation)
+                    yield runtime
+                    return
+            except ResourceBusy:
+                blocked.append((allocation, "leased"))
+                continue
+        # Prefer genuinely idle legal groups before reclaiming auto/vllm.
+        # Only one bounded reclaim pass per task to avoid a watchdog kill-loop.
+        if not already_reclaimed:
+            from ci_core.occupancy import reclaim_candidate
+            for allocation, reason in blocked:
+                if reason == "leased":
+                    continue
+                try:
+                    runtime = {**case, "allocation": allocation}
+                    if reclaim_candidate(runtime, pools, ascend_env=ascend_env):
+                        logging.warning("reclaimed trusted external occupying task: %s", allocation)
+                        break
+                except Exception as exc:
+                    logging.warning("reclaim candidate rejected: %s", type(exc).__name__)
+            already_reclaimed = True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ResourcesUnavailable("waited for verified NPU capacity; still busy")
+        time.sleep(min(sleep, remaining))
