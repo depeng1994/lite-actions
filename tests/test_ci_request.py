@@ -66,4 +66,19 @@ class RequestTests(unittest.TestCase):
             self.assertEqual(c.ci_request(RUN),REQ)
             self.assertIn("SECRET_TOKEN",holder.request.headers.get("Authorization",""))
 
+    def test_commit_comment_lookup_is_bounded_and_paginated(self):
+        c=GitHubClient("TOKEN")
+        page1=[{"id": i} for i in range(100)]
+        page2=[{"id": 100}]
+        with patch.object(c,"request",side_effect=[page1,page2]) as request:
+            comments=c.commit_comments("a"*40)
+        self.assertEqual(len(comments),101)
+        self.assertIn("page=1",request.call_args_list[0].args[1])
+        self.assertIn("page=2",request.call_args_list[1].args[1])
+
+        c=GitHubClient("TOKEN")
+        with patch.object(c,"request",side_effect=[[{}]*100]*4):
+            with self.assertRaisesRegex(RuntimeError,"too many commit comments"):
+                c.commit_comments("a"*40)
+
 if __name__=="__main__":unittest.main()

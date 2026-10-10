@@ -4,7 +4,9 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from ci_core.resources import reserve, ResourceBusy
+from ci_core.resources import (AgentAlreadyRunning, GlobalSlotBusy,
+                               agent_lock_path, global_slot_path, reserve,
+                               ResourceBusy, single_agent, wait_global_slot)
 from ci_core.config import load_config
 
 
@@ -24,6 +26,18 @@ def other_process(lockdir, allocation, out):
         out.put("busy")
 
 
+def hold_global_slot(lockfile, ready, release):
+    with wait_global_slot(Path(lockfile), timeout=2, interval=0.01):
+        ready.set()
+        release.wait(2)
+
+
+def hold_agent_lock(lockfile, ready, release):
+    with single_agent(Path(lockfile)):
+        ready.set()
+        release.wait(2)
+
+
 class ResourceTests(unittest.TestCase):
     def test_disjoint_8p_16p_can_coexist(self):
         with tempfile.TemporaryDirectory() as td:
@@ -40,6 +54,57 @@ class ResourceTests(unittest.TestCase):
                 self.assertEqual(q.get(timeout=5), "busy")
                 p.join(timeout=5)
                 self.assertEqual(p.exitcode, 0)
+
+    def test_agent_singleton_excludes_other_process(self):
+        with tempfile.TemporaryDirectory() as td:
+            lockfile = Path(td) / "agent.lock"
+            ready = mp.Event()
+            release = mp.Event()
+            p = mp.Process(target=hold_agent_lock,
+                           args=(str(lockfile), ready, release))
+            p.start()
+            try:
+                self.assertTrue(ready.wait(timeout=5))
+                with self.assertRaises(AgentAlreadyRunning):
+                    with single_agent(lockfile):
+                        pass
+            finally:
+                release.set()
+                p.join(timeout=5)
+                if p.is_alive():
+                    p.terminate()
+                    p.join(timeout=5)
+            self.assertEqual(p.exitcode, 0)
+            with single_agent(lockfile):
+                pass
+
+    def test_global_lock_defaults_are_worktree_independent(self):
+        for path in (agent_lock_path(), global_slot_path()):
+            self.assertTrue(path.is_absolute())
+            self.assertNotIn("review-lite-phase1-audit", str(path))
+
+    def test_global_training_slot_excludes_other_process(self):
+        with tempfile.TemporaryDirectory() as td:
+            lockfile = Path(td) / "global-training.lock"
+            ready = mp.Event()
+            release = mp.Event()
+            p = mp.Process(target=hold_global_slot,
+                           args=(str(lockfile), ready, release))
+            p.start()
+            try:
+                self.assertTrue(ready.wait(timeout=5))
+                with self.assertRaises(GlobalSlotBusy):
+                    with wait_global_slot(lockfile, timeout=0.05, interval=0.01):
+                        pass
+            finally:
+                release.set()
+                p.join(timeout=5)
+                if p.is_alive():
+                    p.terminate()
+                    p.join(timeout=5)
+            self.assertEqual(p.exitcode, 0)
+            with wait_global_slot(lockfile, timeout=0.2, interval=0.01):
+                pass
 
     def test_failed_acquisition_releases_partial_leases(self):
         with tempfile.TemporaryDirectory() as td:

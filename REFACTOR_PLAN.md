@@ -187,20 +187,20 @@ Phase 1 Scheduler 流程：
 - [ ] Case 独立 `task_id`、目录/日志/Checkpoint/PID/PGID，持久化 `QUEUED/ALLOCATING/RUNNING/VERIFYING/REPORTING/terminal` 状态；跨 Run 排队且不重放已经完成的任务。
 - [ ] 处理 GitHub 取消、远端超时、SSH 失联、Agent 重启、GitHub API 故障；区分可安全回收/必须隔离的设备，不能抢占他人进程。
 - [ ] Phase 1 取消/重启故障注入：证明任何异常时下一 Case **只会在上一 Case 完成清理且设备可确认复用之后**启动。
-- [ ] 用新动态调度的 8P Muon 和 AdamW 分别跑通 5 steps + TensorBoard；对照以前的优化器、4K、CANN 路径与最后 CLI 参数，禁止改变训练业务语义。
-- [ ] 用新动态调度的**双机 16P 重新跑通 5 steps + TensorBoard**，检查每 Host 8P、EP16、NODE_IPS、HCCL、Rank/端口、设备释放；不能用以前的 Run 代替。
-- [ ] A5 保持 `enabled=false`，验证无有效 HCCL IP/资产路径时 fail-closed，不做 A5 实机。
+- [x] 用新动态调度的 8P Muon 和 AdamW 分别跑通 5 steps + TensorBoard；对照以前的优化器、4K、CANN 路径与最后 CLI 参数，禁止改变训练业务语义。证据：38054910957 / 38059258896。
+- [x] 用新动态调度的**双机 16P 重新跑通 5 steps + TensorBoard**，检查每 Host 8P、EP16、NODE_IPS、HCCL、Rank/端口、设备释放；不能用以前的 Run 代替。证据：38054913344。
+- [x] A5 保持 `enabled=false`，并由模型 Workflow `CI_CHANNEL_ENABLED=false` 双重 fail-closed；不做 A5 实机。
   
 **Gate P1.4**：8P 双 Case + 16P 新链路成功；取消/异常不误杀外部用户、不假 PASS、不导致脏设备复用；A5 仍禁用。
 
 ### P1.5｜Phase 1 完整回归、生产灰度与交付
 
-- [ ] 两仓全量单测、协议测试、调度 Smoke、8P、16P 的实际 Run/Commit/设备日志证据齐备。
-- [ ] 检查所有 Workflow 对 `master` 的授权限制，确保 GitHub Matrix 显示独立 Job；**不要宣称已支持未合并 PR 的 Checks**。
-- [ ] 先让 Dispatcher 支持旧/新协议；待两仓版本核准、调度机无任务后，切换模型仓 V2 Workflow；确保 GitCode 主源同步计划不会覆盖 GitHub。
-- [ ] 回滚演练：停收新单 → 等待或清理自身任务 → 确认设备释放 → 切回 V1 Workflow/配置/Agent → Dispatcher Smoke 验证；不热回滚。
-- [ ] 更新两仓 README、Phase 1 运维/取消/恢复手册、`REFACTOR_PLAN.md` 实际进度与证据；记录哪些拓扑已验收、哪些设备未启用。
-- [ ] **冻结 Phase 1 发布版本**；Phase 2 另开开发分支、不要在 Phase 1 验收过程中临时增加并发功能。
+- [~] Lite 全量测试、自审协议/进程测试、调度 Smoke、8P、16P 的 Run/Commit 证据已齐；模型侧本次自审跑目标测试 25 passed，未把目标测试冒充整个仓库全量测试。
+- [x] 已检查 A3 V2 Workflow 对 `master` 的授权限制，且历史 Run 38050639931 证明 GitHub Matrix 独立 Job；**不宣称已支持未合并 PR 的 Checks**。
+- [~] Dispatcher 已支持旧/新协议并已生产兼容 Smoke；模型仓 V2 Workflow 仍在 Draft PR #28，GitCode/GitHub 主源正式切换仍待完成。
+- [x] 回滚演练：停收新单 → 确认设备释放 → 切回 V1 Agent/Workflow → Smoke PASS → 恢复 V2；证据 38060151936，不热回滚。
+- [x] 两仓 README、Phase 1 运维/取消/恢复手册及 `REFACTOR_PLAN.md` 已按 2026-10-11 自审刷新，并明确 CPU / 控制面 Smoke / NPU 实机证据层级。
+- [ ] **冻结 Phase 1 最终发布版本**；须先完成模型 V2 主线合并，并将 Lite 自审安全修复受控部署/Smoke。Phase 2 不得提前开启并发。
 
 **Gate P1.5（Phase 1 正式 Done）**：Case Matrix 独立检查 + 动态 8P/16P + 全局串行安全 + 外部进程政策 + 可回退，具备可复现实机证据；**无需并发通过**。
 
@@ -312,7 +312,7 @@ Phase 1 Scheduler 流程：
 | P1.2 Matrix/独立结果 | 已验收 | 模型 `4233e7d` | [8P Run 38050639931](https://github.com/depeng1994/torchtitan-npu/actions/runs/38050639931) | 两独立 Job、Muon/AdamW PASS rc0，串行上报 |
 | P1.3 动态选卡/占用策略 | 已验收 | Lite `92b9b04` | [A3-4 8P Run 38050639931](https://github.com/depeng1994/torchtitan-npu/actions/runs/38050639931)、[A3-3 8P Run 38060703524](https://github.com/depeng1994/torchtitan-npu/actions/runs/38060703524)，77 passed/1 skipped | 同一 Muon 用例在 A3-4:8–15 与 A3-3:0–7 均 5 steps+TB PASS；A3-3 auto-occupy Worker 宿主机 PID 分类后定点清理并经 npu-smi 确认释放；未误杀其他进程；临时选择优先级已恢复 |
 | P1.4 8P/16P 与恢复 | 已验收实机 Gate | 模型 `99cd7e3` / Lite `92b9b04` | [Muon Run 38054910957](https://github.com/depeng1994/torchtitan-npu/actions/runs/38054910957)、[AdamW Run 38059258896](https://github.com/depeng1994/torchtitan-npu/actions/runs/38059258896)、[16P Run 38054913344](https://github.com/depeng1994/torchtitan-npu/actions/runs/38054913344)、[Cancel Run 38054570924](https://github.com/depeng1994/torchtitan-npu/actions/runs/38054570924) | 8P Muon/AdamW、双机16P 均 5 steps + TB + rc0；全局不重叠；取消远端子进程清理验证；前一次 AdamW 外部 SIGKILL 根因未证实，FAIL 保留不可擦除 |
-| P1.5 Phase 1 发布 | 待最终 master 发布/正式 Smoke | GitCode/GitHub 模型集成 `055bf49`；Lite `92b9b04` | [V1 回滚 Smoke 38060151936](https://github.com/depeng1994/torchtitan-npu/actions/runs/38060151936)、[V2 兼容 Smoke 38059669234](https://github.com/depeng1994/torchtitan-npu/actions/runs/38059669234) | V1 回滚演练 PASS，已恢复 V2；待 PR 合并后验证双 master 同 SHA、正式 Dispatcher 及最终 Smoke |
+| P1.5 Phase 1 发布 | **调度侧已发布；模型 V2 主线待合并** | Lite `main` merge `2c086e2`；模型 Draft PR #28 自审后 `3bb3924`；Lite 自审安全修复 `9c8423d` 待受控部署 | [V1 回滚 Smoke 38060151936](https://github.com/depeng1994/torchtitan-npu/actions/runs/38060151936)、[V2 兼容 Smoke 38059669234](https://github.com/depeng1994/torchtitan-npu/actions/runs/38059669234)、[生产 V2 Dispatcher / V1 协议 Smoke 38061822173](https://github.com/depeng1994/torchtitan-npu/actions/runs/38061822173) | Lite PR #1 已合入并切到生产 V2 Dispatcher；Run 38061822173 基于模型 `master` `b91257e` 成功。模型侧 V2 Matrix 仍在 Draft PR #28，故不得标记“双 master 正式发布完成”；自审安全修复仅有 CPU/进程级证据，生产部署需受控停收/重启，不热切换 |
 | P2.0 并发资源预算 | **待 Phase 1 完成** | — | — | — |
 | P2.1 租约/多任务调度 | 待开始 | — | — | — |
 | P2.2 跨 Host 2×8P | 待开始 | — | — | — |
@@ -335,11 +335,22 @@ Phase 1 Scheduler 流程：
 
 **保留的异常事实**：归一 SHA `99cd7e3` 在 [38054910957](https://github.com/depeng1994/torchtitan-npu/actions/runs/38054910957) 的 8P AdamW 第 1 step 后遭 SIGKILL（rc137）；未找到 OOM 证据，不能断言根因或删除 FAIL。后续同 SHA 的独立 8P AdamW 回归 5 steps/TB PASS；此前隔离通过 Host npu-smi 与完整任务 marker 查空后才人工解除，保留审计信息。生产默认不自动 kill 外部进程；只有获维护者授权且精确识别的 auto-occupy/vllm 才能按宿主机 PID 回收。
 
+### 2026-10-11 Phase 1 独立自审证据分层
+
+| 证据层级 | 版本 / 证据 | 能证明什么 | 不能证明什么 |
+| --- | --- | --- | --- |
+| CPU/进程级回归 | Lite `9c8423d`: `python3 -m pytest -q tests` **84 passed**；模型 `3bb3924`: 目标 pytest **25 passed** | V1 崩溃状态 fail-closed、Agent 单例/全局训练槽的真实跨进程互斥、评论分页幂等、A5 Workflow 禁用契约及 V2 协议 | 不证明新 Lite SHA 已跑过真实 NPU 训练 |
+| 生产控制面 Smoke | [38061822173](https://github.com/depeng1994/torchtitan-npu/actions/runs/38061822173)，模型 `master` `b91257e` + 已发布 Lite V2 Dispatcher | PR #1 合并后的生产 Dispatcher 能兼容 V1 master Workflow 并完成 GitHub 端到端 Smoke | 不是 8P/16P NPU 训练，也不覆盖随后 `9c8423d` 自审修复 |
+| A3 实机训练历史证据 | 8P [38050639931](https://github.com/depeng1994/torchtitan-npu/actions/runs/38050639931)、AdamW [38059258896](https://github.com/depeng1994/torchtitan-npu/actions/runs/38059258896)、16P [38054913344](https://github.com/depeng1994/torchtitan-npu/actions/runs/38054913344)、取消 [38054570924](https://github.com/depeng1994/torchtitan-npu/actions/runs/38054570924) | V2 Matrix、真实 5-step/TB、动态 8P/16P 与取消清理在对应历史 SHA 上通过 | 不是 `9c8423d` / `3bb3924` 的新实机证据 |
+| A5 | `enabled=false`，模型 Workflow admission=false | 未经验证不会执行 | **无** A5 实机通过证据 |
+
+自审后仍遵守“不热部署”规则：`9c8423d` 合入源码不等于生产进程已加载该代码。上线该安全修复必须在无在途任务且设备释放已验证后，按 runbook 停止旧 Agent、更新代码、启动唯一 Agent，再做 Smoke；本次自审未清理任何外部进程、未修改生产 Pool/白名单。
+
 ### 尚需实机核实的事实（不阻塞方案冻结，但阻塞相应功能放量）
 
-- A3-3/A3-4 每机 16 个逻辑 Device 是否可独立组成两个合法 8P 组；P1 只启用已确认组。
+- A3-3 的 8–15 仍未实机验收为合法 8P 组；A3-3 0–7、A3-4 0–7/8–15 已有 P1 证据。P1 只启用已确认组，同 Host 双任务容量仍属于 Phase 2。
 - `auto-occupy` / `vllm` 在宿主机与训练容器里的真实 PID 映射、进程树及重生行为；未核实类别不得执行 kill。
-- 16P 动态候选组合的 HCCL IP/网卡、Device→Rank 映射；P1 至少通过一组新动态配置。
+- 已验收的 16P 组合 A3-3 0–7 + A3-4 8–15 已通过 HCCL/Rank 实机；其他实验组合、网卡或地址变化仍须重新实机验收，不能外推。
 - 同 Host 两个 8P 的 Host 内存峰值（特别是 AdamW Virtual Optimizer）、HCCL/torchrun 端口与 IO；**仅 Phase 2** 开启同机双任务。
 - GitCode → GitHub 主源与强制同步的切换窗口，未妥善处理时不标记生产发布完成。
 
