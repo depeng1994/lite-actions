@@ -306,7 +306,7 @@ gh workflow run a3-8p-lite-actions.yml --ref master \
 
 链路为 GitHub Inputs → `.github/scripts/lite_actions/prepare_request.py` → 身份绑定的 Artifact (`run_id/attempt/sha`) → 调度机从已授权 SHA 的 `build_test_list()` 解析 ID/suite → 校验拓扑与**展开后 case 数量**（A3 ≤ 2；A5 ≤ 1）→ 通用 SSH Runner 串行训练、TensorBoard 校验、NPU 空闲检查 → 逐项 `PASS/FAIL/NOT_RUN` Commit Comment → GitHub Waiter 汇总。调度端真实超时以 `config/pipelines.json` 为准，而不是 testcase 中对多机不生效的另一份 `timeout`。继续保持 300 分钟 GitHub Job / 16800 秒 Waiter 预算。
 
-**验收边界：** [Run 38024403411](https://github.com/depeng1994/torchtitan-npu/actions/runs/38024403411) 已实测 Muon/AdamW 两个 8P case：Muon 5 steps PASS，AdamW 在第 2 步后 FSDP AllGather 阶段 NPU OOM，整条 Action FAIL。当前 `master` 的新回归尚待确认；A5 继续禁用。正式 Workflow 已合入 GitHub `master`，可通过正式文件名触发，不需重复旧文件。
+**最新实机验收：** [Run 38034002241](https://github.com/depeng1994/torchtitan-npu/actions/runs/38034002241) 基于模型仓 `master` 的 `1dafd49`，Muon 5 steps / AdamW + Virtual Optimizer 4K 5 steps **双 PASS**、每项 Exit Code 0、TensorBoard 5 steps、Commit Comment 两项 PASS，完整 GitHub Job **Success**。早期 [Run 38024403411](https://github.com/depeng1994/torchtitan-npu/actions/runs/38024403411) 的无 Virtual AdamW 曾在反向 FSDP AllGather OOM，已经被本次新的单次 Eager 冒烟验证覆盖，但不代表 Inductor 或长期稳定性通过。16P 本轮依维护者要求沿用此前验收、不再重复跑；A5 仍禁用、未实机验收。正式 Workflow 已进入 GitHub `master`。
 
 ### Step 5 · Lite Actions 专属 Workflow/脚本边界
 
