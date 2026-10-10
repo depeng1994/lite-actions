@@ -234,7 +234,7 @@ python3 scripts/preflight_pool.py --pool a5-64p-lab --npu
 
 ```json
 "a5-64p": {
-  "workflow": "a5-64p-ci.yml",
+  "workflow": "a5-64p-lite-actions.yml",
   "pool": "a5-64p-lab",
   "allocation": [
     {"host_id": "a5-01", "devices": [0,1,2,3,4,5,6,7]},
@@ -246,7 +246,13 @@ python3 scripts/preflight_pool.py --pool a5-64p-lab --npu
     {"host_id": "a5-07", "devices": [0,1,2,3,4,5,6,7]},
     {"host_id": "a5-08", "devices": [0,1,2,3,4,5,6,7]}
   ],
-  "runner": {"kind": "ssh"},
+  "runner": {
+    "kind": "ssh",
+    "ascend_env": "",
+    "hf_assets_path": "",
+    "ckpt_init_path": "",
+    "env_vars": {}
+  },
   "timeout_seconds": 14400,
   "pipeline_id": "a5-64p",
   "enabled": false
@@ -257,7 +263,7 @@ python3 scripts/preflight_pool.py --pool a5-64p-lab --npu
 
 ### Step 3 · 在模型仓定义 Nightly 用例（不建立 Registry JSON）
 
-路径：`tests/integration_tests/lite_actions/nightly_all_models_test/`。按照 TorchTitan `OverrideDefinitions` 定义 `build_test_list()`，在定义中指定 `test_name`、`ngpu`、`nnodes`、`override_args` 和 `expected_steps`。多 case 可以放在同一个文件。旧的 `ci_registry.json` 已删除。Lite Actions 通过已授权 SHA 中的 `build_test_list()` 发现用例；**不能**从 GitHub 输入任意模块路径或命令。
+路径：`tests/integration_tests/nightly_all_models_test/`。按照 TorchTitan `OverrideDefinitions` 定义 `build_test_list()`，在定义中指定 `test_name`、`ngpu`、`nnodes`、`override_args` 和 `expected_steps`。多 case 可以放在同一个文件。旧的 `ci_registry.json` 已删除。Lite Actions 通过已授权 SHA 中的 `build_test_list()` 发现用例；**不能**从 GitHub 输入任意模块路径或命令。
 
 部署环境（CANN `ascend_env`、`hf_assets_path`、`ckpt_init_path`、HCCL 节点 IP）配置在 Lite Actions 的 `config/pipelines.json`/`config/pools.json`。A5 在这些参数和 SSH 连通性核实前始终禁用，不能报告为 Success。
 
@@ -294,7 +300,7 @@ gh workflow run a3-8p-lite-actions.yml --ref refactor/unified-a3-a5-ci \
 
 ## 5. 日常新增测试用例
 
-只需将新的 `OverrideDefinitions` 放进模型仓相应的 `build_test_list()`，不用修改 Lite Actions `pipelines.json` 测试注册；新增物理通道或部署环境才修改调度资源配置。手工使用 `python3 -m tests.integration_tests.lite_actions.tools.entrypoint inspect --suite a3_8p_tests` 查看一组测试定义。真实 NPU 训练统一通过 GitHub/Lite Actions 调度；本地 CPU 单测只能验证协议和 argv，不等于训练验收。
+只需将新的 `OverrideDefinitions` 放进模型仓相应的 `build_test_list()`，不用修改 Lite Actions `pipelines.json` 测试注册；新增物理通道或部署环境才修改调度资源配置。手工使用 `python3 -m tests.integration_tests.tools.lite_actions.entrypoint inspect --suite a3_8p_tests` 查看一组测试定义。真实 NPU 训练统一通过 GitHub/Lite Actions 调度；本地 CPU 单测只能验证协议和 argv，不等于训练验收。
 
 ## 6. 验收参考、排障与限制
 

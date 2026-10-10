@@ -112,7 +112,8 @@ def prepare_profile(case:dict,run:dict)->tuple[str,dict]:
         from ci_core.ssh_runner import model_archive
         archive=model_archive(run['head_sha'],Path(temp))
         expanded=resolve_request(archive,selections,nodes=len(allocation),
-            ngpu=len(allocation[0]['devices']),max_cases=1 if case['name']=='a5-64p' else 2)
+            ngpu=len(allocation[0]['devices']),max_cases=1 if case['name']=='a5-64p' else 2,
+            per_case_budget=case['timeout_seconds']-120)
     run['_ci_expanded_cases']=expanded
     return expanded[0]['test_id'],case['runner']
 

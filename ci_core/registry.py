@@ -83,7 +83,7 @@ def inspect_archive(archive:Path, selection:dict)->list[dict]:
         folder=Path(temp)
         with tarfile.open(archive,'r:gz') as tar:
             tar.extractall(folder,filter='data')
-        argv=[sys.executable,'-m','tests.integration_tests.lite_actions.tools.entrypoint','inspect']
+        argv=[sys.executable,'-m','tests.integration_tests.tools.lite_actions.entrypoint','inspect']
         argv+=['--suite',selection['suite']] if 'suite' in selection else ['--test-id',selection['test_id']]
         env={**os.environ,'PYTHONPATH':str(folder)}
         if 'STEPS' in selection['params']:env['LITE_TEST_STEPS']=selection['params']['STEPS']
@@ -96,7 +96,8 @@ def inspect_archive(archive:Path, selection:dict)->list[dict]:
         return rows
 
 
-def resolve_request(archive:Path, selections:list[dict],*,nodes:int,ngpu:int,max_cases:int)->list[dict]:
+def resolve_request(archive:Path, selections:list[dict],*,nodes:int,ngpu:int,
+                    max_cases:int,per_case_budget:int=14400)->list[dict]:
     expanded=[]
     seen=set()
     for item in selections:
@@ -106,8 +107,9 @@ def resolve_request(archive:Path, selections:list[dict],*,nodes:int,ngpu:int,max
                 raise ValueError('duplicate/invalid/disabled selected test')
             if (found.get('nnodes'),found.get('ngpu'))!=(nodes,ngpu):
                 raise ValueError('requested test topology does not match NPU allocation')
-            if type(found.get('timeout')) is not int or found['timeout']>14400:
-                raise ValueError('unsafe model test duration')
+            if (type(found.get('timeout')) is not int or found['timeout']<=0
+                    or found['timeout']>per_case_budget):
+                raise ValueError('model test timeout exceeds channel budget')
             seen.add(name)
             expanded.append({'test_id':name,'params':item['params']})
     if len(expanded)>max_cases:raise ValueError('expanded suite exceeds channel/Waiter budget')

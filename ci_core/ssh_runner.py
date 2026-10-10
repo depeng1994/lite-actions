@@ -104,7 +104,7 @@ def remote_command(node: dict, nodes: list[dict], runner: dict, dest: str,
                    stamp: str, timeout: int, test_case: str) -> str:
     """Remote job owns its own process group; its complete log stays remote."""
     # Generic, fixed model-owned entrypoint; never interpolate GitHub modules.
-    entry = ("python3 -u -m tests.integration_tests.lite_actions.tools.entrypoint launch --test-id "
+    entry = ("python3 -u -m tests.integration_tests.tools.lite_actions.entrypoint launch --test-id "
              + q(test_case) + " --output-dir " + q(dest + "/output"))
     env = {
         "NODE_IPS": ",".join(x["node_ip"] for x in nodes),
@@ -184,7 +184,7 @@ def verify(nodes: list[dict], runner: dict, base: str, timeout: int, test_case: 
                + f"source {q(runner['ascend_env'])} >/dev/null 2>&1 && "
                + f"export {exported} && "
                + f"export PYTHONPATH=\"$PWD:${{PYTHONPATH:-}}\" && "
-               + f"python3 -u -m tests.integration_tests.lite_actions.tools.entrypoint verify --test-id {q(test_case)} --output-dir {q(dest+'/output')} > {q(dest+'/verify.log')} 2>&1; "
+               + f"python3 -u -m tests.integration_tests.tools.lite_actions.entrypoint verify --test-id {q(test_case)} --output-dir {q(dest+'/output')} > {q(dest+'/verify.log')} 2>&1; "
                + f"rc=$?; if test $rc -ne 0; then cat {q(dest+'/verify.log')} >> {q(dest+'/run.log')}; fi; exit $rc")
     try:
         return ssh(node["ssh"], command, timeout=timeout, check=False).returncode
@@ -207,7 +207,8 @@ def run(case: dict, sha: str, stamp: str, *, test_case: str,
     with tempfile.TemporaryDirectory(prefix="lite-ci-stage-") as tmp:
         archive = model_archive(sha, Path(tmp))
         matches=resolve_request(archive,[{'test_id':test_case,'params':params or {}}],
-                               nodes=len(nodes),ngpu=len(nodes[0]['devices']),max_cases=1)
+                               nodes=len(nodes),ngpu=len(nodes[0]['devices']),max_cases=1,
+                               per_case_budget=case['timeout_seconds']-120)
         if len(matches)!=1:raise ValueError('case selection changed')
         runner={**case['runner'],'mode':'single' if len(nodes)==1 else 'distributed',
                 'case_params':params or {}}
@@ -323,12 +324,17 @@ def main() -> int:
             print(f"CASE_RESULT {item['test_id']} {'PASS' if rc==0 else 'FAIL'} {rc}",flush=True)
             if rc!=0:
                 overall=1
-                # Never start sibling ranks if prior cleanup is uncertain.
+            if index+1 < len(items):
+                # Even a successful Python exit does not prove the model's NPU
+                # child processes are gone. Require an idle preflight before
+                # each next test under the same resource lease.
                 from ci_core.dispatch import remote_preflight
                 pools=json.loads((ROOT/'config/pools.json').read_text())
-                try:remote_preflight(case,pools,ascend_env=case['runner']['ascend_env'])
+                try:
+                    remote_preflight(case,pools,ascend_env=case['runner']['ascend_env'])
                 except Exception:
-                    for remaining in items[index+1:]:print(f"CASE_NOT_RUN {remaining['test_id']}",flush=True)
+                    for remaining in items[index+1:]:
+                        print(f"CASE_NOT_RUN {remaining['test_id']}",flush=True)
                     print('CASE_ABORT cleanup unverified',flush=True)
                     return 125
         return overall

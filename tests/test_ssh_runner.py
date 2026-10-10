@@ -53,6 +53,9 @@ class SharedSshRunnerTests(unittest.TestCase):
                 resolve_request(Path('/unused'),s,nodes=2,ngpu=8,max_cases=2)
             with self.assertRaisesRegex(ValueError,'budget'):
                 resolve_request(Path('/unused'),s,nodes=1,ngpu=8,max_cases=1)
+            with self.assertRaisesRegex(ValueError,'timeout'):
+                resolve_request(Path('/unused'),s,nodes=1,ngpu=8,max_cases=2,
+                                per_case_budget=7000)
         req={'schema':1,'run_id':42,'attempt':1,'sha':'a'*40,'cases':[{'suite':'a3_8p_tests','params':{}}]}
         self.assertEqual(parse_request(req,{'id':42,'run_attempt':1,'head_sha':'a'*40})[0]['suite'],'a3_8p_tests')
 
@@ -77,7 +80,7 @@ class SharedSshRunnerTests(unittest.TestCase):
                     path=f"/mnt/share/ci_tests/job/node{node['position']}"
                     script=ssh_runner.remote_command(node,selected,profile,path,STAMP,90,test)
                     self.assertEqual(subprocess.run(["bash","-n","-c",script],capture_output=True).returncode,0)
-                    self.assertIn("lite_actions.tools.entrypoint launch", script)
+                    self.assertIn("tools.lite_actions.entrypoint launch", script)
                     self.assertIn("LITE_CI_JOB_ID",script)
                     self.assertIn("NGPU=8",script)
                     self.assertIn("ASCEND_SET_ENV_PATH",script)
@@ -117,7 +120,8 @@ class SharedSshRunnerTests(unittest.TestCase):
                   "--stamp",STAMP,"--remote-dir","job-123",
                   "--run-id","1234","--run-attempt","1",
                   "--request-file",str(manifest)]
-            with patch.object(sys,"argv",args), patch.object(ssh_runner,"run",return_value=0) as execute:
+            with patch.object(sys,"argv",args), patch.object(ssh_runner,"run",return_value=0) as execute, \
+                 patch('ci_core.dispatch.remote_preflight'):
                 self.assertEqual(ssh_runner.main(),0)
                 self.assertEqual(execute.call_count,2)
                 self.assertEqual(execute.call_args_list[0].kwargs["remote_dir"],
@@ -127,6 +131,12 @@ class SharedSshRunnerTests(unittest.TestCase):
                  patch('ci_core.dispatch.remote_preflight'):
                 self.assertEqual(ssh_runner.main(),1)
                 self.assertEqual(execute.call_count,2)
+            # Successful training is also required to release devices before
+            # next case; a successful process exit alone is insufficient.
+            with patch.object(sys,"argv",args), patch.object(ssh_runner,"run",side_effect=[0,0]) as execute, \
+                 patch('ci_core.dispatch.remote_preflight',side_effect=RuntimeError('busy')):
+                self.assertEqual(ssh_runner.main(),125)
+                self.assertEqual(execute.call_count,1)
             with patch.object(sys,"argv",args), patch.object(ssh_runner,"run",side_effect=[1,0]) as execute, \
                  patch('ci_core.dispatch.remote_preflight',side_effect=RuntimeError('busy')):
                 self.assertEqual(ssh_runner.main(),125)
@@ -138,10 +148,10 @@ class SharedSshRunnerTests(unittest.TestCase):
         import time
         with tempfile.TemporaryDirectory() as td:
             d=Path(td)
-            (d/'repo/tests/integration_tests/lite_actions/tools').mkdir(parents=True)
+            (d/'repo/tests/integration_tests/tools/lite_actions').mkdir(parents=True)
             (d/'repo/tests/__init__.py').touch()
             (d/'repo/tests/integration_tests/__init__.py').touch()
-            (d/'repo/tests/integration_tests/lite_actions/tools/entrypoint.py').write_text(
+            (d/'repo/tests/integration_tests/tools/lite_actions/entrypoint.py').write_text(
                 'import time; time.sleep(30)\n')
             (d/'set_env.sh').write_text('export FAKE_TOOLKIT_ENV=1\n')
             local_profile={**DEFAULT,'ascend_env':str(d/'set_env.sh')}
