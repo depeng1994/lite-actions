@@ -174,5 +174,43 @@ class RecoveryTests(unittest.TestCase):
         self.assertIsNone(classify(["python3","train.py","--arg","auto-occupy"]))
 
 
+    def test_cancel_terminates_detached_job_ranks_without_touching_foreign_pid(self):
+        """Real /proc cancellation: detached children are not in launcher PGID."""
+        import os
+        import subprocess
+        import time
+        from ci_core import ssh_runner
+        marker = "phase1-unit-unique-marker"
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            def spawn(job):
+                env = {**os.environ, "LITE_CI_JOB_ID": job}
+                return subprocess.Popen(["sleep", "60"], env=env,
+                                        start_new_session=True)
+            launcher = spawn(marker)
+            rank = spawn(marker)
+            foreign = spawn("other-run-never-touch")
+            (folder / "job.pgid").write_text(str(launcher.pid) + "\n")
+            try:
+                time.sleep(0.2)
+                def local_ssh(host, cmd, **kwargs):
+                    result = subprocess.run(["bash", "-lc", cmd],
+                                            capture_output=True, text=True,
+                                            timeout=kwargs.get("timeout", 35))
+                    if result.returncode:
+                        raise RuntimeError(result.stderr + result.stdout)
+                    return result
+                with patch.object(ssh_runner, "ssh", side_effect=local_ssh):
+                    ssh_runner.cancel({"host_id": "mock", "ssh": "mock"}, str(folder), marker)
+                self.assertIsNotNone(launcher.poll())
+                self.assertIsNotNone(rank.poll())
+                self.assertIsNone(foreign.poll())
+            finally:
+                for proc in (launcher, rank, foreign):
+                    if proc.poll() is None:
+                        proc.kill()
+                    proc.wait(timeout=5)
+
+
 if __name__ == "__main__":
     unittest.main()
