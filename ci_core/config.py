@@ -38,18 +38,10 @@ def load_config(root: Path) -> dict:
             runner = spec["runner"]
             if not allocation:
                 raise ValueError("SSH execution must allocate devices")
-            # Only machine/runtime environment belongs here. Test definitions
-            # and topology come from the pinned model SHA's OverrideDefinitions.
-            if set(runner) != {"kind","ascend_env","hf_assets_path","ckpt_init_path","env_vars"}:
-                raise ValueError("SSH pipeline environment keys invalid")
-            for key in ("ascend_env","hf_assets_path","ckpt_init_path"):
-                value=runner[key]
-                if not isinstance(value,str) or (spec.get("enabled") and not value.startswith("/")):
-                    raise ValueError(f"unconfigured deployment {key}")
-            if not isinstance(runner['env_vars'],dict) or any(
-                not re.fullmatch(r'[A-Z][A-Z0-9_]*',k) or not isinstance(v,str)
-                for k,v in runner['env_vars'].items()):
-                raise ValueError("invalid deployment environment")
+            # Stable dispatcher: no model/toolkit/asset paths or case-specific
+            # environment overrides may be configured in this repository.
+            if set(runner) != {"kind"}:
+                raise ValueError("SSH pipeline runner must be generic (kind only)")
             for node in allocation:
                 host = hosts[node["host_id"]]
                 if not isinstance(host.get("ssh"), str) or not host["ssh"]:

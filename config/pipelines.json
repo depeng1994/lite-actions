@@ -31,11 +31,7 @@
     ],
     "timeout_seconds": 7500,
     "runner": {
-      "kind": "ssh",
-      "ascend_env": "/mnt/share/Ascend/20260805101249091/ascend-toolkit/latest/set_env.sh",
-      "hf_assets_path": "/mnt/share/models/DeepSeek-V4-Flash-bf16",
-      "ckpt_init_path": "/mnt/share/dsv4_ckpt_8rank",
-      "env_vars": {}
+      "kind": "ssh"
     },
     "enabled": true,
     "pipeline_id": "a3-8p"
@@ -73,14 +69,7 @@
     ],
     "timeout_seconds": 7500,
     "runner": {
-      "kind": "ssh",
-      "ascend_env": "/mnt/share/Ascend/20260805101249091/ascend-toolkit/latest/set_env.sh",
-      "hf_assets_path": "/mnt/share/models/DeepSeek-V4-Flash-bf16",
-      "ckpt_init_path": "/mnt/share/dsv4_ckpt_8rank",
-      "env_vars": {
-        "MASTER_PORT": "6316",
-        "HCCL_IF_BASE_PORT": "30160"
-      }
+      "kind": "ssh"
     },
     "enabled": true,
     "pipeline_id": "a3-16p"
@@ -196,11 +185,7 @@
     ],
     "timeout_seconds": 14400,
     "runner": {
-      "kind": "ssh",
-      "ascend_env": "",
-      "hf_assets_path": "",
-      "ckpt_init_path": "",
-      "env_vars": {}
+      "kind": "ssh"
     },
     "enabled": false,
     "pipeline_id": "a5-64p"

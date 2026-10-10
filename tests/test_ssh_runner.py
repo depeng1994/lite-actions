@@ -20,8 +20,9 @@ STAMP = "2026-10-09_17-43-56_run-37913151439_attempt-1"
 TEST_8P = "dsv4_flash_a3_8p_example"
 TEST_16P = "dsv4_flash_a3_16p_example"
 TEST_64P = "dsv4_pro_a5_64p"
-DEFAULT={"ascend_env":"/opt/ascend/set_env.sh","hf_assets_path":"/models/flash",
-         "ckpt_init_path":"/weights","env_vars":{},"mode":"single"}
+ASSET_ENV={"ASCEND_SET_ENV_PATH":"/opt/ascend/set_env.sh",
+           "HF_ASSETS_PATH":"/models/flash", "CKPT_INIT_LOAD_PATH":"/weights"}
+DEFAULT={"env_vars":ASSET_ENV,"mode":"single"}
 
 
 class SharedSshRunnerTests(unittest.TestCase):
@@ -43,8 +44,8 @@ class SharedSshRunnerTests(unittest.TestCase):
 
     def test_suite_expansion_topology_budget_and_selector_is_fail_closed(self):
         with patch('ci_core.registry.inspect_archive',return_value=[
-            {'test_id':TEST_8P,'nnodes':1,'ngpu':8},
-            {'test_id':'dsv4_flash_a3_8p_adamw','nnodes':1,'ngpu':8}
+            {'test_id':TEST_8P,'nnodes':1,'ngpu':8,'env_vars':ASSET_ENV},
+            {'test_id':'dsv4_flash_a3_8p_adamw','nnodes':1,'ngpu':8,'env_vars':{**ASSET_ENV,'OPTIMIZER_OVERRIDES':''}}
         ]):
             s=[{'suite':'a3_8p_tests'}]
             rows=resolve_request(Path('/unused'),s,nodes=1,ngpu=8,max_cases=2)
@@ -55,6 +56,60 @@ class SharedSshRunnerTests(unittest.TestCase):
                 resolve_request(Path('/unused'),s,nodes=1,ngpu=8,max_cases=1)
         req={'schema':1,'run_id':42,'attempt':1,'sha':'a'*40,'cases':[{'suite':'a3_8p_tests'}]}
         self.assertEqual(parse_request(req,{'id':42,'run_attempt':1,'head_sha':'a'*40})[0]['suite'],'a3_8p_tests')
+
+    def test_model_owned_environment_is_forwarded_without_any_pipeline_asset_fields(self):
+        for name in ('a3-8p', 'a3-16p', 'a5-64p'):
+            self.assertEqual(self.cases[name]['runner'], {'kind': 'ssh'})
+        nodes = ssh_runner.allocations(self.cases['a3-8p'], self.pools)
+        profile = {'kind': 'ssh', 'mode': 'single', 'env_vars': {
+            **ASSET_ENV, 'OPTIMIZER_OVERRIDES': ''}}
+        dest = '/mnt/share/ci_tests/example/node0'
+        cmd = ssh_runner.remote_command(nodes[0], nodes, profile,
+                                        dest, STAMP, 120, TEST_8P)
+        self.assertIn('source /opt/ascend/set_env.sh', cmd)
+        self.assertIn('HF_ASSETS_PATH=/models/flash', cmd)
+        self.assertIn('CKPT_INIT_LOAD_PATH=/weights', cmd)
+        self.assertIn('OPTIMIZER_OVERRIDES=', cmd)
+        self.assertIn(f'CKPT_SAVE_LOAD_PATH={dest}/checkpoints', cmd)
+        self.assertNotIn('hf_assets_path', cmd)
+        self.assertEqual(subprocess.run(['bash', '-n', '-c', cmd],
+                                        capture_output=True).returncode, 0)
+
+    def test_reserved_or_unconfigured_test_environment_rejected_before_ssh(self):
+        from ci_core.registry import validate_case_environment
+        self.assertEqual(validate_case_environment(ASSET_ENV), ASSET_ENV)
+        for extra in ({'ASCEND_RT_VISIBLE_DEVICES': '0,1'},
+                      {'CKPT_SAVE_LOAD_PATH': '/tmp/overwrite'},
+                      {'NODE_IPS': '127.0.0.1'},
+                      {'Network_Interface': 'evil'},
+                      {'HF_ASSETS_PATH': ''},
+                      {'ASCEND_SET_ENV_PATH': 'relative/set_env.sh'},
+                      {'CONFIG': 'unexpected\nnew line'}):
+            with self.subTest(extra=extra), self.assertRaises(ValueError):
+                validate_case_environment({**ASSET_ENV, **extra})
+
+    def test_real_model_archive_resolves_8p_suite_owned_environment(self):
+        model = ROOT.parent / 'torchtitan-npu-ci-refactor'
+        if not model.is_dir():
+            self.skipTest('adjacent model checkout not available')
+        with tempfile.TemporaryDirectory() as td:
+            archive = Path(td) / 'model-source.tar.gz'
+            with tarfile.open(archive, 'w:gz') as tar:
+                for item in (model/'tests/__init__.py',
+                             model/'tests/integration_tests/__init__.py'):
+                    tar.add(item, arcname=str(item.relative_to(model)))
+                for subfolder in ('tests/integration_tests/nightly_all_models_test',
+                                  'tests/integration_tests/tools'):
+                    for file in (model/subfolder).rglob('*.py'):
+                        tar.add(file, arcname=str(file.relative_to(model)))
+            found=resolve_request(archive,[{'suite':'a3_8p_tests'}],
+                                  nodes=1,ngpu=8,max_cases=2)
+            self.assertEqual([x['test_id'] for x in found],
+                ['dsv4_flash_a3_8p_example','dsv4_flash_a3_8p_adamw'])
+            for case in found:
+                self.assertTrue(case['env_vars']['ASCEND_SET_ENV_PATH'].startswith('/'))
+                self.assertTrue(case['env_vars']['HF_ASSETS_PATH'].startswith('/'))
+            self.assertEqual(found[1]['env_vars']['OPTIMIZER_OVERRIDES'], '')
 
     def test_unknown_hccl_address_blocks_a5_before_training(self):
         self.assertFalse(self.cases["a5-64p"]["enabled"])
@@ -118,24 +173,44 @@ class SharedSshRunnerTests(unittest.TestCase):
                   "--run-id","1234","--run-attempt","1",
                   "--request-file",str(manifest)]
             with patch.object(sys,"argv",args), patch.object(ssh_runner,"run",return_value=0) as execute, \
-                 patch('ci_core.dispatch.remote_preflight'):
+                 patch('ci_core.dispatch.remote_preflight'), \
+                 patch.object(ssh_runner,'model_archive',return_value=Path('/unused')), \
+                 patch('ci_core.registry.inspect_archive',side_effect=[
+                    [{'test_id':TEST_8P,'ngpu':8,'nnodes':1,'env_vars':ASSET_ENV}],
+                    [{'test_id':'dsv4_flash_a3_8p_adamw','ngpu':8,'nnodes':1,
+                       'env_vars':{**ASSET_ENV,'OPTIMIZER_OVERRIDES':''}}]]):
                 self.assertEqual(ssh_runner.main(),0)
                 self.assertEqual(execute.call_count,2)
                 self.assertEqual(execute.call_args_list[0].kwargs["remote_dir"],
                                  "job-123_case-01_"+TEST_8P)
                 self.assertEqual(execute.call_args_list[1].kwargs["test_case"],"dsv4_flash_a3_8p_adamw")
             with patch.object(sys,"argv",args), patch.object(ssh_runner,"run",side_effect=[0,1]) as execute, \
-                 patch('ci_core.dispatch.remote_preflight'):
+                 patch('ci_core.dispatch.remote_preflight'), \
+                 patch.object(ssh_runner,'model_archive',return_value=Path('/unused')), \
+                 patch('ci_core.registry.inspect_archive',side_effect=[
+                    [{'test_id':TEST_8P,'ngpu':8,'nnodes':1,'env_vars':ASSET_ENV}],
+                    [{'test_id':'dsv4_flash_a3_8p_adamw','ngpu':8,'nnodes':1,
+                       'env_vars':{**ASSET_ENV,'OPTIMIZER_OVERRIDES':''}}]]):
                 self.assertEqual(ssh_runner.main(),1)
                 self.assertEqual(execute.call_count,2)
             # Successful training is also required to release devices before
             # next case; a successful process exit alone is insufficient.
             with patch.object(sys,"argv",args), patch.object(ssh_runner,"run",side_effect=[0,0]) as execute, \
-                 patch('ci_core.dispatch.remote_preflight',side_effect=RuntimeError('busy')):
+                 patch('ci_core.dispatch.remote_preflight',side_effect=RuntimeError('busy')), \
+                 patch.object(ssh_runner,'model_archive',return_value=Path('/unused')), \
+                 patch('ci_core.registry.inspect_archive',side_effect=[
+                    [{'test_id':TEST_8P,'ngpu':8,'nnodes':1,'env_vars':ASSET_ENV}],
+                    [{'test_id':'dsv4_flash_a3_8p_adamw','ngpu':8,'nnodes':1,
+                       'env_vars':{**ASSET_ENV,'OPTIMIZER_OVERRIDES':''}}]]):
                 self.assertEqual(ssh_runner.main(),125)
                 self.assertEqual(execute.call_count,1)
             with patch.object(sys,"argv",args), patch.object(ssh_runner,"run",side_effect=[1,0]) as execute, \
-                 patch('ci_core.dispatch.remote_preflight',side_effect=RuntimeError('busy')):
+                 patch('ci_core.dispatch.remote_preflight',side_effect=RuntimeError('busy')), \
+                 patch.object(ssh_runner,'model_archive',return_value=Path('/unused')), \
+                 patch('ci_core.registry.inspect_archive',side_effect=[
+                    [{'test_id':TEST_8P,'ngpu':8,'nnodes':1,'env_vars':ASSET_ENV}],
+                    [{'test_id':'dsv4_flash_a3_8p_adamw','ngpu':8,'nnodes':1,
+                       'env_vars':{**ASSET_ENV,'OPTIMIZER_OVERRIDES':''}}]]):
                 self.assertEqual(ssh_runner.main(),125)
                 self.assertEqual(execute.call_count,1)
 
@@ -151,7 +226,8 @@ class SharedSshRunnerTests(unittest.TestCase):
             (d/'repo/tests/integration_tests/tools/lite_actions/entrypoint.py').write_text(
                 'import time; time.sleep(30)\n')
             (d/'set_env.sh').write_text('export FAKE_TOOLKIT_ENV=1\n')
-            local_profile={**DEFAULT,'ascend_env':str(d/'set_env.sh')}
+            local_profile={**DEFAULT,'env_vars':{**ASSET_ENV,
+                           'ASCEND_SET_ENV_PATH':str(d/'set_env.sh')}}
             node={'host_id':'local','node_ip':'127.0.0.1','position':0,
                   'ssh':'local','devices':[0]}
             cmd=ssh_runner.remote_command(node,[node],local_profile,

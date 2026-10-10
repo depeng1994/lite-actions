@@ -114,7 +114,9 @@ def prepare_profile(case:dict,run:dict)->tuple[str,dict]:
         expanded=resolve_request(archive,selections,nodes=len(allocation),
             ngpu=len(allocation[0]['devices']),max_cases=1 if case['name']=='a5-64p' else 2)
     run['_ci_expanded_cases']=expanded
-    return expanded[0]['test_id'],case['runner']
+    # Preflight sources the toolkit selected by the model test, never a
+    # hardcoded deployment value from Lite Actions.
+    return expanded[0]['test_id'], {'ascend_env': expanded[0]['env_vars']['ASCEND_SET_ENV_PATH']}
 
 
 def remote_preflight(case: dict, pools: dict, *, ascend_env: str | None = None) -> None:
@@ -187,7 +189,10 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
         if "_ci_request" in run:
             # The manifest below is resolved/validated by the dispatcher.
             manifest = log_dir / "ci-request.json"
-            request={**run["_ci_request"],"cases":run["_ci_expanded_cases"]}
+            # The GitHub Artifact contains selectors only; model env_vars are
+            # always re-resolved from trusted pinned source, never from input.
+            request={**run["_ci_request"],"cases":[
+                {'test_id': item['test_id']} for item in run['_ci_expanded_cases']]}
             manifest.write_text(json.dumps(request, separators=(",", ":")) + "\n")
             cmd += ["--request-file", str(manifest), "--run-id", str(run["id"]),
                     "--run-attempt", str(run.get("run_attempt", 1))]

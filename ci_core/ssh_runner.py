@@ -112,16 +112,13 @@ def remote_command(node: dict, nodes: list[dict], runner: dict, dest: str,
         "NNODES": str(len(nodes)),
         "ASCEND_RT_VISIBLE_DEVICES": ",".join(map(str, node["devices"])),
         "PYTHONUNBUFFERED": "1",
-        "ASCEND_SET_ENV_PATH": runner["ascend_env"],
         "LITE_CI_JOB_ID": stamp,
-        **runner.get("env_vars", {}),
+        **runner["env_vars"],
     }
     if node.get("network_interface"):
         env["Network_Interface"] = node["network_interface"]
-    env["HF_ASSETS_PATH"] = runner["hf_assets_path"]
-    env["CKPT_INIT_LOAD_PATH"] = runner["ckpt_init_path"]
     env["CKPT_SAVE_LOAD_PATH"] = dest + "/checkpoints"
-    setup = f"source {q(runner['ascend_env'])} >/dev/null 2>&1 && "
+    setup = f"source {q(runner['env_vars']['ASCEND_SET_ENV_PATH'])} >/dev/null 2>&1 && "
     # PID file enables bounded cancellation. Python on the dispatcher always
     # validates job identity before killing its *own* remote process group.
     exports = " ".join(f"{key}={q(value)}" for key, value in env.items())
@@ -175,12 +172,10 @@ def verify(nodes: list[dict], runner: dict, base: str, timeout: int, test_case: 
         return 0
     node = nodes[0]
     dest = base + "/node0"
-    exports = {**runner["env_vars"], "HF_ASSETS_PATH": runner["hf_assets_path"],
-               "CKPT_INIT_LOAD_PATH": runner["ckpt_init_path"],
-               }
+    exports = runner["env_vars"]
     exported = " ".join(f"{key}={q(value)}" for key, value in exports.items())
     command = (f"cd {q(dest+'/repo')} && "
-               + f"source {q(runner['ascend_env'])} >/dev/null 2>&1 && "
+               + f"source {q(runner['env_vars']['ASCEND_SET_ENV_PATH'])} >/dev/null 2>&1 && "
                + f"export {exported} && "
                + f"export PYTHONPATH=\"$PWD:${{PYTHONPATH:-}}\" && "
                + f"python3 -u -m tests.integration_tests.tools.lite_actions.entrypoint verify --test-id {q(test_case)} --output-dir {q(dest+'/output')} > {q(dest+'/verify.log')} 2>&1; "
@@ -207,7 +202,11 @@ def run(case: dict, sha: str, stamp: str, *, test_case: str,
         matches=resolve_request(archive,[{'test_id':test_case}],
                                nodes=len(nodes),ngpu=len(nodes[0]['devices']),max_cases=1)
         if len(matches)!=1:raise ValueError('case selection changed')
-        runner={**case['runner'],'mode':'single' if len(nodes)==1 else 'distributed'}
+        # These values are resolved from the pinned SHA's OverrideDefinitions.
+        # The Lite Actions JSON has no testcase-owned environment fields.
+        runner={**case['runner'],
+                'mode':'single' if len(nodes)==1 else 'distributed',
+                'env_vars':matches[0]['env_vars']}
         dirs = {}
         with ThreadPoolExecutor(max_workers=len(nodes)) as executor:
             futures = {executor.submit(stage, node, base, archive, sha): node for node in nodes}
@@ -306,6 +305,15 @@ def main() -> int:
         max_cases = 1 if case["name"] == "a5-64p" else 2
         if len(items) > max_cases:
             raise ValueError("CI request exceeds per-channel runtime budget")
+        # Resolve validated per-case environment before running. In particular,
+        # after a case exits, preflight uses its toolkit path and never a stale
+        # environment from a different suite member.
+        from ci_core.registry import resolve_request
+        with tempfile.TemporaryDirectory(prefix='lite-ci-resolve-plan-') as tmp:
+            archive=model_archive(args.sha,Path(tmp))
+            nodes=allocations(case,json.loads((ROOT/'config/pools.json').read_text()))
+            resolved=resolve_request(archive,items,nodes=len(nodes),
+                                     ngpu=len(nodes[0]['devices']),max_cases=max_cases)
         print("CASE_PLAN " + ",".join(x['test_id'] for x in items),flush=True)
         overall=0
         for index,item in enumerate(items):
@@ -327,7 +335,8 @@ def main() -> int:
                 from ci_core.dispatch import remote_preflight
                 pools=json.loads((ROOT/'config/pools.json').read_text())
                 try:
-                    remote_preflight(case,pools,ascend_env=case['runner']['ascend_env'])
+                    remote_preflight(case,pools,
+                                     ascend_env=resolved[index]['env_vars']['ASCEND_SET_ENV_PATH'])
                 except Exception:
                     for remaining in items[index+1:]:
                         print(f"CASE_NOT_RUN {remaining['test_id']}",flush=True)

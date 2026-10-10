@@ -246,26 +246,33 @@ python3 scripts/preflight_pool.py --pool a5-64p-lab --npu
     {"host_id": "a5-07", "devices": [0,1,2,3,4,5,6,7]},
     {"host_id": "a5-08", "devices": [0,1,2,3,4,5,6,7]}
   ],
-  "runner": {
-    "kind": "ssh",
-    "ascend_env": "",
-    "hf_assets_path": "",
-    "ckpt_init_path": "",
-    "env_vars": {}
-  },
+  "runner": {"kind": "ssh"},
   "timeout_seconds": 14400,
   "pipeline_id": "a5-64p",
   "enabled": false
 }
 ```
 
-此处的 `pipeline_id` 仅供 GitHub Waiter 识别**CI 通道**，不是具体测试用例名称。启用 A5 前须补齐 8 台 HCCL IP，验证 SSH/NPU 进程映射和模型资产路径；最后才设置 `enabled=true`。
+此处的 `pipeline_id` 仅供 GitHub Waiter 识别**CI 通道**，不是具体测试用例名称。`runner` 只有通用的 `kind` 字段，**不应新增 CANN、HF、Checkpoint 或 case 专属环境字段**。启用 A5 前须补齐 8 台 HCCL IP、在**模型仓用例的 `env_vars`** 中填好真实模型资产路径，并验证 SSH/NPU 进程映射；最后才设置 `enabled=true`。
 
 ### Step 3 · 在模型仓定义 Nightly 用例（不建立 Registry JSON）
 
 路径：`tests/integration_tests/nightly_all_models_test/`。按照 TorchTitan `OverrideDefinitions` 定义 `build_test_list()`，在定义中指定 `test_name`、`ngpu`、`nnodes`、`override_args` 和 `expected_steps`。多 case 可以放在同一个文件。旧的 `ci_registry.json` 已删除。Lite Actions 通过已授权 SHA 中的 `build_test_list()` 发现用例；**不能**从 GitHub 输入任意模块路径或命令。
 
-部署环境（CANN `ascend_env`、`hf_assets_path`、`ckpt_init_path`、HCCL 节点 IP）配置在 Lite Actions 的 `config/pipelines.json`/`config/pools.json`。A5 在这些参数和 SSH 连通性核实前始终禁用，不能报告为 Success。
+**模型及运行时资产归用例所有。** 在 `OverrideDefinitions.env_vars` 中维护：`ASCEND_SET_ENV_PATH`（CANN 的 `set_env.sh`）、`HF_ASSETS_PATH`（tokenizer/model assets）、`CKPT_INIT_LOAD_PATH`（初始权重目录），以及需要的 `CONFIG`、`OPTIMIZER_OVERRIDES` 和模型专用端口等。调度机从请求绑定的 **Commit SHA** 实际 `build_test_list()` 解析这些值、校验绝对路径及保留变量、经 SSH 在执行机先 source CANN 再 export 对应用例环境。只有设备分配和机器拓扑（如 `node_ip` 的 HCCL 小网地址）属于 Lite Actions `pools.json/pipelines.json`。动态生成的 `CKPT_SAVE_LOAD_PATH` 由通用 SSH Runner 设成当次 case 输出目录，不应写死在模型用例里。
+
+示例（在模型仓 `a3_8p_tests.py` 中；A5 应填写自己的真实环境，当前未知而保持禁用）：
+
+```python
+ASSET_ENV = {
+    "ASCEND_SET_ENV_PATH": "/mnt/share/Ascend/20260805101249091/ascend-toolkit/latest/set_env.sh",
+    "HF_ASSETS_PATH": "/mnt/share/models/DeepSeek-V4-Flash-bf16",
+    "CKPT_INIT_LOAD_PATH": "/mnt/share/dsv4_ckpt_8rank",
+}
+# OverrideDefinitions(..., env_vars=ASSET_ENV, ...)
+```
+
+后续更换模型、CANN 版本、训练脚本或者 tokenizer 路径，**只改模型仓的测试定义**，无需修改 Lite Actions 代码与部署 JSON。A5 仍须核实网络连通性与上述环境后方可启用。
 
 ### Step 4 · Workflow 只选择真实 test ID 或 suite
 
@@ -279,7 +286,7 @@ GitHub `workflow_dispatch.inputs.test_cases` 为有界 JSON 数组，只允许�
 [{"suite":"a3_8p_tests"}]
 ```
 
-第二种会展开成 **Muon 和 AdamW 两个语义不同的 8P Eager case**（各 5 steps），而不是用 5/3 steps 制造重复测试。具体优化器、`override_args`、TensorBoard 预期均由模型仓对应的 `OverrideDefinitions` 决定。AdamW 在共享 Shell 既有 `OPTIMIZER_OVERRIDES=""` 开关上关闭 Muon swap，保留完整 NPU 算子 imports；Muon 保留默认 swap。16P 的非默认 Flash CONFIG 和 AdamW swap 关闭同样由模型 case 提供，CANN/HF/Checkpoint/HCCL 路径属于调度端机器环境。
+第二种会展开成 **Muon 和 AdamW 两个语义不同的 8P Eager case**（各 5 steps），而不是用 5/3 steps 制造重复测试。具体优化器、`override_args`、TensorBoard 预期均由模型仓对应的 `OverrideDefinitions` 决定。AdamW 在共享 Shell 既有 `OPTIMIZER_OVERRIDES=""` 开关上关闭 Muon swap，保留完整 NPU 算子 imports；Muon 保留默认 swap。16P 的非默认 Flash CONFIG、AdamW swap 关闭、CANN/HF/Checkpoint 资产路径及训练端口同样由模型 case 的 `env_vars` 提供；只有设备号、SSH 入口和 HCCL 小网拓扑属于调度机。
 
 ```bash
 gh workflow run a3-8p-lite-actions.yml --ref refactor/unified-a3-a5-ci \
@@ -302,7 +309,7 @@ gh workflow run a3-8p-lite-actions.yml --ref refactor/unified-a3-a5-ci \
 
 ## 5. 日常新增测试用例
 
-只需将新的 `OverrideDefinitions` 放进模型仓相应的 `build_test_list()`，不用修改 Lite Actions `pipelines.json` 测试注册；新增物理通道或部署环境才修改调度资源配置。手工使用 `python3 -m tests.integration_tests.tools.lite_actions.entrypoint inspect --suite a3_8p_tests` 查看一组测试定义。真实 NPU 训练统一通过 GitHub/Lite Actions 调度；本地 CPU 单测只能验证协议和 argv，不等于训练验收。
+只需将新的 `OverrideDefinitions` 放进模型仓相应的 `build_test_list()`，并维护其 `env_vars` 中的 CANN/HF/Checkpoint 路径；不用修改 Lite Actions `pipelines.json` 测试注册或模型环境配置。只有新增物理资源通道、SSH/HCCL 网络拓扑或者资源策略需要修改 Lite Actions。手工使用 `python3 -m tests.integration_tests.tools.lite_actions.entrypoint inspect --suite a3_8p_tests` 查看一组测试定义。真实 NPU 训练统一通过 GitHub/Lite Actions 调度；本地 CPU 单测只能验证协议和 argv，不等于训练验收。
 
 ## 6. 验收参考、排障与限制
 

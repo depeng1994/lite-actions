@@ -33,6 +33,29 @@ class DispatchTests(unittest.TestCase):
                            "RESULT_LAST_20_LINES_END\nafter\n")
             self.assertEqual(dispatch.summarize(log,0),["metric1","metric2"])
 
+    def test_preflight_environment_is_derived_from_resolved_case_not_channel_config(self):
+        from ci_core import ssh_runner
+        case=load_config(Path(__file__).resolve().parents[1])['a3-8p']
+        self.assertEqual(case['runner'], {'kind':'ssh'})
+        run={'id':101,'run_attempt':1,'head_sha':'a'*40,
+             '_ci_request':{'schema':1,'run_id':101,'attempt':1,
+                            'sha':'a'*40,'cases':[{'suite':'a3_8p_tests'}]}}
+        resolved=[{'test_id':'dsv4_flash_a3_8p_example',
+                   'env_vars':{'ASCEND_SET_ENV_PATH':'/model/versioned/cann/set_env.sh',
+                               'HF_ASSETS_PATH':'/model/weights',
+                               'CKPT_INIT_LOAD_PATH':'/model/init'}},
+                  {'test_id':'dsv4_flash_a3_8p_adamw',
+                   'env_vars':{'ASCEND_SET_ENV_PATH':'/model/versioned/cann/set_env.sh',
+                               'HF_ASSETS_PATH':'/model/weights',
+                               'CKPT_INIT_LOAD_PATH':'/model/init',
+                               'OPTIMIZER_OVERRIDES':''}}]
+        with patch.object(ssh_runner,'model_archive',return_value=Path('/unused')), \
+             patch.object(dispatch,'resolve_request',return_value=resolved):
+            test_id,profile=dispatch.prepare_profile(case,run)
+        self.assertEqual(test_id,'dsv4_flash_a3_8p_example')
+        self.assertEqual(profile,{'ascend_env':'/model/versioned/cann/set_env.sh'})
+        self.assertEqual(run['_ci_expanded_cases'],resolved)
+
     def test_disabled_a5_refused_before_hardware(self):
         root=Path(__file__).resolve().parents[1]
         case=load_config(root)["a5-64p"]

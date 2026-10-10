@@ -11,11 +11,6 @@ import re
 import tarfile
 
 SELECTOR = re.compile(r"[a-z][a-z0-9_]{0,79}\Z")
-ENV_KEY = re.compile(r"[A-Z][A-Z0-9_]*\Z")
-RESERVED = {"NODE_IPS", "NGPU", "NNODES", "ASCEND_RT_VISIBLE_DEVICES",
-            "PYTHONUNBUFFERED", "LITE_CI_JOB_ID", "HF_ASSETS_PATH",
-            "CKPT_INIT_LOAD_PATH", "CKPT_SAVE_LOAD_PATH", "Network_Interface",
-            "PYTHONPATH", "ASCEND_SET_ENV_PATH"}
 
 
 def workflow_label(run: dict) -> str:
@@ -45,6 +40,34 @@ def selected_test(run: dict) -> str:
     if not SELECTOR.fullmatch(selected):
         raise ValueError("invalid legacy test ID")
     return selected
+
+
+ASSET_ENV_KEYS = ("ASCEND_SET_ENV_PATH", "HF_ASSETS_PATH", "CKPT_INIT_LOAD_PATH")
+RESERVED_RUNTIME_ENV = frozenset((
+    "NODE_IPS", "NGPU", "NNODES", "ASCEND_RT_VISIBLE_DEVICES", "LITE_CI_JOB_ID",
+    "CKPT_SAVE_LOAD_PATH", "PYTHONPATH", "PYTHONUNBUFFERED", "Network_Interface",
+))
+CASE_ENV_KEY = re.compile(r"[A-Z][A-Z0-9_]*\Z")
+
+
+def validate_case_environment(env: object) -> dict[str, str]:
+    """Validate trusted model-derived environment before SSH and preflight.
+
+    An A5 case without configured assets remains discoverable with `inspect`,
+    but cannot be executed until its real paths are defined in model source.
+    """
+    if not isinstance(env, dict):
+        raise ValueError("model test env_vars must be a dictionary")
+    for key, value in env.items():
+        if (not isinstance(key, str) or not CASE_ENV_KEY.fullmatch(key)
+                or key in RESERVED_RUNTIME_ENV or not isinstance(value, str)
+                or "\x00" in value or "\n" in value or "\r" in value):
+            raise ValueError("invalid/forbidden test-owned environment variable")
+    for key in ASSET_ENV_KEYS:
+        path = env.get(key)
+        if not isinstance(path, str) or not path.startswith("/"):
+            raise ValueError(f"model test must define an absolute {key} in env_vars")
+    return env.copy()
 
 
 def parse_request(data: dict, run: dict) -> list[dict]:
@@ -101,7 +124,8 @@ def resolve_request(archive:Path, selections:list[dict],*,nodes:int,ngpu:int,
                 raise ValueError('duplicate/invalid/disabled selected test')
             if (found.get('nnodes'),found.get('ngpu'))!=(nodes,ngpu):
                 raise ValueError('requested test topology does not match NPU allocation')
+            env_vars = validate_case_environment(found.get('env_vars'))
             seen.add(name)
-            expanded.append({'test_id':name})
+            expanded.append({'test_id': name, 'env_vars': env_vars})
     if len(expanded)>max_cases:raise ValueError('expanded suite exceeds channel/Waiter budget')
     return expanded
