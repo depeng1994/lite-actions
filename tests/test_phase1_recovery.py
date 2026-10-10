@@ -101,6 +101,33 @@ class RecoveryTests(unittest.TestCase):
                 with scheduler.claim_dynamic(root,case,ascend_env=None,timeout=0.1):
                     pass
 
+    def test_running_previous_v1_run_stops_global_serial_slot(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            (root/"config").mkdir()
+            (root/"config/pools.json").write_text((ROOT/"config/pools.json").read_text())
+            JobState(root).update("999:1", phase="running",
+                                  case="a3-8p", sha="a"*40)
+            case=load_config(ROOT)["a3-8p"]
+            with patch.object(scheduler,"remote_preflight"):
+                with self.assertRaises(scheduler.UnsafeResourceState):
+                    with scheduler.claim_dynamic(root,case,ascend_env=None,
+                                                 timeout=0.1,owner_key="1000:1"):
+                        pass
+
+    def test_current_v1_owner_state_does_not_self_block(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            (root/"config").mkdir()
+            (root/"config/pools.json").write_text((ROOT/"config/pools.json").read_text())
+            JobState(root).update("1024:1", phase="running",
+                                  case="a3-8p", sha="a"*40)
+            case=load_config(ROOT)["a3-8p"]
+            with patch.object(scheduler,"remote_preflight"):
+                with scheduler.claim_dynamic(root,case,ascend_env=None,
+                                             timeout=0.1,owner_key="1024:1") as chosen:
+                    self.assertEqual(len(chosen["allocation"]),1)
+
     def test_agent_crash_never_blindly_relaunches_case(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)

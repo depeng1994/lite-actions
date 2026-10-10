@@ -146,8 +146,17 @@ class GitHubClient:
         return request_data
 
     def commit_comments(self, sha: str) -> list[dict]:
-        data = self.request("GET", f"/commits/{sha}/comments?per_page=100")
-        return data or []
+        comments = []
+        for page in range(1, 5):
+            data = self.request(
+                "GET", f"/commits/{sha}/comments?per_page=100&page={page}") or []
+            if not isinstance(data, list):
+                raise ValueError("invalid commit comments response")
+            comments.extend(data)
+            if len(data) < 100:
+                return comments
+        raise RuntimeError(
+            "too many commit comments; cannot safely correlate prior result")
 
     def send_result(self, sha: str, body: str):
         return self.request("POST", f"/commits/{sha}/comments", {"body": body})

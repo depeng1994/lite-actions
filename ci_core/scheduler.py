@@ -12,7 +12,14 @@ import os
 from pathlib import Path
 import time
 
-from ci_core.resources import ResourceBusy, reserve, resource_keys
+from ci_core.resources import (
+    GlobalSlotBusy,
+    ResourceBusy,
+    global_slot_path,
+    reserve,
+    resource_keys,
+    wait_global_slot,
+)
 from ci_core.dispatch import remote_preflight
 
 
@@ -71,6 +78,27 @@ def validate_allocation(case: dict, pools: dict, allocation: list[dict]) -> None
 def claim_dynamic(root: Path, case: dict, *, ascend_env: str | None,
                   timeout: float = 900, sleep: float = 3.0,
                   owner_key: str | None = None, canceled=None):
+    """Hold the cross-process Phase 1 slot for the complete dynamic Case."""
+    started = time.monotonic()
+    try:
+        with wait_global_slot(global_slot_path(),
+                              timeout=timeout, interval=sleep,
+                              canceled=canceled):
+            remaining = timeout - (time.monotonic() - started)
+            if remaining <= 0:
+                raise ResourcesUnavailable("waited for global training slot")
+            with _claim_dynamic_locked(
+                    root, case, ascend_env=ascend_env, timeout=remaining,
+                    sleep=sleep, owner_key=owner_key, canceled=canceled) as runtime:
+                yield runtime
+    except GlobalSlotBusy as exc:
+        raise ResourcesUnavailable("waited for global training slot") from exc
+
+
+@contextmanager
+def _claim_dynamic_locked(root: Path, case: dict, *, ascend_env: str | None,
+                          timeout: float, sleep: float,
+                          owner_key: str | None, canceled=None):
     """Choose an entire verified candidate, lock, preflight, then hold to exit.
 
     Candidate probing never blocks a partial device set. After normal expiry,
@@ -90,10 +118,14 @@ def claim_dynamic(root: Path, case: dict, *, ascend_env: str | None,
         from ci_core.job_state import JobState
         quarantined_keys: set[tuple[str, int]] = set()
         for key, record in JobState(root).read().items():
-            if key == owner_key or key.count(":") < 2:
+            owner_run_key = (owner_key.rsplit(":", 1)[0]
+                             if owner_key and owner_key.count(":") >= 2
+                             else owner_key)
+            if key == owner_key or key == owner_run_key:
                 continue
             if record.get("phase") in ("running", "blocked_recovery"):
-                raise UnsafeResourceState("prior Case execution requires reconciliation")
+                raise UnsafeResourceState(
+                    "prior run/Case execution requires reconciliation")
             if record.get("quarantined"):
                 prior_allocation = record.get("allocation")
                 if not prior_allocation:

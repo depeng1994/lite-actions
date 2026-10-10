@@ -119,7 +119,7 @@ def run_and_report(case: dict, run: dict, *, root: Path) -> None:
                 from ci_core.scheduler import claim_dynamic
                 _, profile = prepare_profile(case, run)
                 with claim_dynamic(root, case, ascend_env=profile["ascend_env"],
-                                   timeout=900) as runtime_case:
+                                   timeout=900, owner_key=key) as runtime_case:
                     execution = execute(runtime_case, run, root=root,
                                         lock_root=root / "state/device-locks",
                                         pre_reserved=True)
