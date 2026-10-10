@@ -111,7 +111,7 @@ flowchart LR
 
 ## 3. 日常新增测试用例
 
-只需将新的 `OverrideDefinitions` 放进模型仓相应的 `build_test_list()`，并维护其 `env_vars` 中的 CANN/HF/Checkpoint 路径；不用修改 Lite Actions `pipelines.json` 测试注册或模型环境配置。只有新增物理资源通道、SSH/HCCL 网络拓扑或者资源策略需要修改 Lite Actions。手工使用 `python3 -m tests.integration_tests.tools.lite_actions.entrypoint inspect --suite a3_8p_tests` 查看一组测试定义。真实 NPU 训练统一通过 GitHub/Lite Actions 调度；本地 CPU 单测只能验证协议和 argv，不等于训练验收。具体测试入口与用例矩阵参见 [模型仓 Integration Tests README](https://github.com/depeng1994/torchtitan-npu/blob/refactor/unified-a3-a5-ci/tests/integration_tests/README.md)。
+只需将新的 `OverrideDefinitions` 放进模型仓相应的 `build_test_list()`，并维护其 `env_vars` 中的 CANN/HF/Checkpoint 路径；不用修改 Lite Actions `pipelines.json` 测试注册或模型环境配置。只有新增物理资源通道、SSH/HCCL 网络拓扑或者资源策略需要修改 Lite Actions。手工使用 `python3 -m tests.integration_tests.tools.lite_actions.entrypoint inspect --suite a3_8p_tests` 查看一组测试定义。真实 NPU 训练统一通过 GitHub/Lite Actions 调度；本地 CPU 单测只能验证协议和 argv，不等于训练验收。具体测试入口与用例矩阵参见 [模型仓 Integration Tests README](https://github.com/depeng1994/torchtitan-npu/blob/master/tests/integration_tests/README.md)。
 
 ## 4. 首次部署与日常运维（在内网调度机操作）
 
@@ -295,13 +295,13 @@ GitHub `workflow_dispatch.inputs.test_cases` 为有界 JSON 数组，只允许�
 第二种会展开成 **Muon 和 AdamW 两个语义不同的 8P Eager case**（各 5 steps），而不是用 5/3 steps 制造重复测试。具体优化器、`override_args`、TensorBoard 预期均由模型仓对应的 `OverrideDefinitions` 决定。AdamW 在共享 Shell 既有 `OPTIMIZER_OVERRIDES=""` 开关上关闭 Muon swap，保留完整 NPU 算子 imports；Muon 保留默认 swap。16P 的非默认 Flash CONFIG、AdamW swap 关闭、CANN/HF/Checkpoint 资产路径及训练端口同样由模型 case 的 `env_vars` 提供；只有设备号、SSH 入口和 HCCL 小网拓扑属于调度机。
 
 ```bash
-gh workflow run a3-8p-lite-actions.yml --ref refactor/unified-a3-a5-ci \
+gh workflow run a3-8p-lite-actions.yml --ref master \
   -f 'test_cases=[{"suite":"a3_8p_tests"}]'
 ```
 
 链路为 GitHub Inputs → `.github/scripts/lite_actions/prepare_request.py` → 身份绑定的 Artifact (`run_id/attempt/sha`) → 调度机从已授权 SHA 的 `build_test_list()` 解析 ID/suite → 校验拓扑与**展开后 case 数量**（A3 ≤ 2；A5 ≤ 1）→ 通用 SSH Runner 串行训练、TensorBoard 校验、NPU 空闲检查 → 逐项 `PASS/FAIL/NOT_RUN` Commit Comment → GitHub Waiter 汇总。调度端真实超时以 `config/pipelines.json` 为准，而不是 testcase 中对多机不生效的另一份 `timeout`。继续保持 300 分钟 GitHub Job / 16800 秒 Waiter 预算。
 
-**验收边界：** 既有 Run 38013603734 的两个 8P case 是原来的 5/3 steps 组合，并未验证新 Muon/AdamW 组合；本轮 CPU 参数合约测试不能替代真实训练。A5 继续禁用。新版 Workflow 文件仍须通过后续默认分支合入注册才能按正式文件名直接触发。
+**验收边界：** [Run 38024403411](https://github.com/depeng1994/torchtitan-npu/actions/runs/38024403411) 已实测 Muon/AdamW 两个 8P case：Muon 5 steps PASS，AdamW 在第 2 步后 FSDP AllGather 阶段 NPU OOM，整条 Action FAIL。当前 `master` 的新回归尚待确认；A5 继续禁用。正式 Workflow 已合入 GitHub `master`，可通过正式文件名触发，不需重复旧文件。
 
 ### Step 5 · Lite Actions 专属 Workflow/脚本边界
 
@@ -331,3 +331,9 @@ gh workflow run a3-8p-lite-actions.yml --ref refactor/unified-a3-a5-ci \
 **日志位置**：执行机完整日志与 TensorBoard 在 `/mnt/share/ci_tests/` 下按北京时间和 Workflow `run_number` 建立的 Run 目录，多机分别保存在 `node0/`、`node1/` 等子目录；重跑通过 `_attempt-N` 避免覆盖。调度机 `logs/runs/` 按 GitHub **Run ID / attempt** 记录任务，`logs/system/` 存 Agent 日志，`state/` 存任务去重与资源锁；不要清理正在运行的任务，或公开 Token、隐私信息及完整内网日志。
 
 **已知限制**：Workflow 仍需与默认分支同步；A5 未实机验收；Agent 无开机自动拉起，资源锁无法约束外部用户，取消或崩溃后须确认远端进程已清理；GitHub Waiter 有时长上限，不用于长稳训练。测试定义归模型仓，机器和调度策略归 Lite Actions。
+
+### GitHub master / GitCode 同步说明
+
+模型仓唯一正式 Workflow：`a3-8p-lite-actions.yml`、`a3-16p-lite-actions.yml`、`a5-64p-lite-actions.yml` 和 `lite-actions-dispatcher-smoke.yml`；每个通道只维护一份 Workflow。Lite Actions `main` 是唯一调度部署分支，SSH runner 配置仅含 `{"kind":"ssh"}`；模型的 CANN/HF/Checkpoint 环境在 `OverrideDefinitions.env_vars`。
+
+GitHub `master` 的 `Sync Upstream` 每日从 GitCode 强制镜像：请将 GitHub 已合入的模型仓改动同步到 GitCode `master` 以防镜像覆盖。实机验收以 GitHub `master` 新 Run ID、单 case 状态、日志和 Commit Comment 为准。
