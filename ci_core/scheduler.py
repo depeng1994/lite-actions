@@ -88,13 +88,23 @@ def claim_dynamic(root: Path, case: dict, *, ascend_env: str | None,
         # Phase 1 is globally serial even after a dispatcher restart.
         # Unresolved prior Case training is not made safe by an unlocked flock.
         from ci_core.job_state import JobState
+        quarantined_keys: set[tuple[str, int]] = set()
         for key, record in JobState(root).read().items():
             if key == owner_key or key.count(":") < 2:
                 continue
-            if record.get("quarantined") or record.get("phase") == "running":
-                raise UnsafeResourceState("prior Case release requires reconciliation")
+            if record.get("phase") in ("running", "blocked_recovery"):
+                raise UnsafeResourceState("prior Case execution requires reconciliation")
+            if record.get("quarantined"):
+                prior_allocation = record.get("allocation")
+                if not prior_allocation:
+                    raise UnsafeResourceState("unscoped device quarantine")
+                quarantined_keys.update(resource_keys(prior_allocation))
+        usable = [allocation for allocation in possibilities
+                  if not quarantined_keys.intersection(resource_keys(allocation))]
+        if not usable:
+            raise UnsafeResourceState("all verified candidates overlap quarantined devices")
         blocked = []
-        for allocation in possibilities:
+        for allocation in usable:
             # ResourceBusy from a running task is not a device-lock conflict.
             # Never swallow execution failures and retry that training Case.
             entered_execution = False

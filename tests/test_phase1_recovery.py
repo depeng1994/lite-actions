@@ -55,10 +55,39 @@ class RecoveryTests(unittest.TestCase):
                     {"host_id": "a3-4", "devices": list(range(8))}])
             case=load_config(ROOT)["a3-8p"]
             with patch.object(scheduler,"remote_preflight") as preflight:
-                with self.assertRaises(scheduler.UnsafeResourceState):
-                    with scheduler.claim_dynamic(root, case, ascend_env=None,timeout=0.1):
-                        pass
-                preflight.assert_not_called()
+                with scheduler.claim_dynamic(root, case, ascend_env=None,timeout=0.1) as chosen:
+                    self.assertNotEqual(chosen["allocation"],
+                                        [{"host_id":"a3-4","devices":list(range(8))}])
+                self.assertEqual(preflight.call_count,1)
+
+    def test_quarantined_a3_4_first_group_allows_clean_16p_combination(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            (root/"config").mkdir()
+            (root/"config/pools.json").write_text(
+                (ROOT/"config/pools.json").read_text())
+            JobState(root).update("oldrun:1:adamw",phase="reported",
+                                  quarantined=True,
+                                  allocation=[{"host_id":"a3-4",
+                                               "devices":list(range(8))}])
+            case=load_config(ROOT)["a3-16p"]
+            with patch.object(scheduler,"remote_preflight"):
+                with scheduler.claim_dynamic(root,case,ascend_env=None,timeout=0.1) as chosen:
+                    self.assertEqual([(n["host_id"],n["devices"][0])
+                                      for n in chosen["allocation"]],
+                                     [("a3-3",0),("a3-4",8)])
+
+    def test_unscoped_quarantine_denies_16p(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            (root/"config").mkdir()
+            (root/"config/pools.json").write_text(
+                (ROOT/"config/pools.json").read_text())
+            JobState(root).update("oldrun:1:unknown",phase="reported",quarantined=True)
+            case=load_config(ROOT)["a3-16p"]
+            with self.assertRaises(scheduler.UnsafeResourceState):
+                with scheduler.claim_dynamic(root,case,ascend_env=None,timeout=0.1):
+                    pass
 
     def test_running_previous_case_stops_global_serial_slot(self):
         with tempfile.TemporaryDirectory() as td:
