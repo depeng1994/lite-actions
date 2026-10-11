@@ -124,6 +124,9 @@ def remote_command(node: dict, nodes: list[dict], runner: dict, dest: str,
             if type(port) is not int or not 1024 <= port < 65536:
                 raise ValueError("invalid dispatcher-issued rendezvous port")
             env[key] = str(port)
+            # The 8P single-node runner inherits the standard environment,
+            # whereas the 16P adapter applies LITE_CI_* after recipe defaults.
+            env["MASTER_PORT" if key == "LITE_CI_MASTER_PORT" else "HCCL_IF_BASE_PORT"] = str(port)
     env["CKPT_SAVE_LOAD_PATH"] = dest + "/checkpoints"
     setup = f"source {q(runner['env_vars']['ASCEND_SET_ENV_PATH'])} >/dev/null 2>&1 && "
     # PID file enables bounded cancellation. Python on the dispatcher always

@@ -78,8 +78,10 @@ class SharedSshRunnerTests(unittest.TestCase):
         for name in ('a3-8p', 'a3-16p', 'a5-64p'):
             self.assertEqual(self.cases[name]['runner'], {'kind': 'ssh'})
         nodes = ssh_runner.allocations(runtime(self.cases['a3-8p']), self.pools)
-        profile = {'kind': 'ssh', 'mode': 'single', 'env_vars': {
-            **ASSET_ENV, 'OPTIMIZER_OVERRIDES': ''}}
+        profile = {'kind': 'ssh', 'mode': 'single',
+                   'LITE_CI_MASTER_PORT': 16000,
+                   'LITE_CI_HCCL_IF_BASE_PORT': 20000,
+                   'env_vars': {**ASSET_ENV, 'OPTIMIZER_OVERRIDES': ''}}
         dest = '/mnt/share/ci_tests/example/node0'
         cmd = ssh_runner.remote_command(nodes[0], nodes, profile,
                                         dest, STAMP, 120, TEST_8P)
@@ -88,6 +90,8 @@ class SharedSshRunnerTests(unittest.TestCase):
         self.assertIn('CKPT_INIT_LOAD_PATH=/weights', cmd)
         self.assertIn('OPTIMIZER_OVERRIDES=', cmd)
         self.assertIn(f'CKPT_SAVE_LOAD_PATH={dest}/checkpoints', cmd)
+        self.assertIn('MASTER_PORT=16000', cmd)
+        self.assertIn('HCCL_IF_BASE_PORT=20000', cmd)
         self.assertNotIn('hf_assets_path', cmd)
         self.assertEqual(subprocess.run(['bash', '-n', '-c', cmd],
                                         capture_output=True).returncode, 0)
