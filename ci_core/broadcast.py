@@ -14,7 +14,7 @@ from ci_core.source_repo import REPO
 
 
 BEIJING = dt.timezone(dt.timedelta(hours=8))
-BORDER_WIDTH = 88
+BORDER_WIDTH = 79
 
 
 def display_width(value: str) -> int:
@@ -24,15 +24,11 @@ def display_width(value: str) -> int:
 
 
 def star_box(message: str, url: str, *, width: int = BORDER_WIDTH) -> str:
-    """Fixed terminal column width, including full-width Chinese characters."""
-    if min(width - display_width(message), width - display_width(url)) < 4:
+    """Compact left-aligned wall notice without right padding or borders."""
+    if max(display_width("* " + message), display_width("* " + url)) > width:
         raise ValueError("notification does not fit the chosen width")
-    def framed(text: str) -> str:
-        return "* " + text + " " * (width - display_width(text) - 4) + " *"
-    return "\n".join([
-        "*" * width, framed(""), framed(message), framed(url),
-        framed(""), "*" * width,
-    ]) + "\n"
+    border = "*" * width
+    return f"{border}\n* {message}\n* {url}\n\n{border}\n"
 
 
 def action_url(run: dict) -> str:
@@ -49,7 +45,7 @@ def notification(run: dict, phase: str, *, now: dt.datetime | None = None) -> st
     messages = {
         "begin": "本环境正在用于torchtitan CI验证，请勿使用！",
         "end": "本次torchtitan CI验证已结束，本任务所占NPU资源已释放！",
-        "uncertain": "本次torchtitan CI验证已退出，但NPU仍可能被占用，请勿使用！",
+        "uncertain": "本次torchtitan CI已退出，但NPU仍可能被占用，请勿使用！",
     }
     if phase not in messages:
         raise ValueError(f"invalid broadcast phase {phase}")

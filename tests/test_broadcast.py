@@ -21,14 +21,25 @@ RUN = {"id": 37868722207, "run_number": 6, "run_attempt": 1,
 class BroadcastTests(unittest.TestCase):
     def test_exact_frame_and_beijing_timestamp(self):
         when = dt.datetime(2026,10,9,2,42,0,tzinfo=dt.timezone.utc)
-        msg = notification(RUN,"begin",now=when)
-        self.assertEqual(len(msg.splitlines()),6)
-        self.assertEqual({display_width(line) for line in msg.splitlines()}, {88})
-        self.assertIn("[2026-10-09 10:42:00] 本环境正在用于torchtitan CI验证，请勿使用！",msg)
-        self.assertIn("https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/37868722207",msg)
-        self.assertTrue(msg.startswith("*"*88))
-        self.assertIn("本任务所占NPU资源已释放",notification(RUN,"end",now=when))
-        self.assertIn("NPU仍可能被占用，请勿使用",notification(RUN,"uncertain",now=when))
+        url = "https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/37868722207"
+        for phase, expected in (
+            ("begin", "本环境正在用于torchtitan CI验证，请勿使用！"),
+            ("end", "本次torchtitan CI验证已结束，本任务所占NPU资源已释放！"),
+            ("uncertain", "本次torchtitan CI已退出，但NPU仍可能被占用，请勿使用！"),
+        ):
+            with self.subTest(phase=phase):
+                msg = notification(RUN, phase, now=when)
+                self.assertEqual(
+                    msg,
+                    "*" * 79 + "\n"
+                    + "* [2026-10-09 10:42:00] " + expected + "\n"
+                    + "* " + url + "\n\n"
+                    + "*" * 79 + "\n",
+                )
+                self.assertEqual(len(msg.splitlines()), 5)
+                self.assertLessEqual(max(map(display_width, msg.splitlines())), 79)
+        with self.assertRaisesRegex(ValueError, "does not fit"):
+            star_box("very long message", url, width=20)
 
     def test_only_execution_hosts_and_containers(self):
         config=Path(__file__).resolve().parents[1]
