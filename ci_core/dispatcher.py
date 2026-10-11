@@ -1,4 +1,4 @@
-"""V2 Run admission -> sequential Case tasks -> independent GitHub results.
+"""Run admission -> sequential Case tasks -> independent GitHub results.
 
 Phase 1 safety invariant: one global dispatcher execution worker.
 """
@@ -24,7 +24,7 @@ def task_key(run: dict, test_id: str) -> str:
 
 
 def case_marker(run: dict, test_id: str) -> str:
-    return f"Lite-CI-V2-RESULT {run['id']}:{run.get('run_attempt', 1)}:{test_id}"
+    return f"Lite-CI-RESULT {run['id']}:{run.get('run_attempt', 1)}:{test_id}"
 
 
 def result_for_case(case: dict, run: dict, test_id: str, rc: int,
@@ -61,7 +61,7 @@ def post_case(client: GitHubClient, run: dict, test_id: str, report: dict) -> No
              and (item.get("body") or "").startswith(marker + "\n")]
     if prior:
         if body not in prior:
-            raise ValueError("conflicting V2 result already published")
+            raise ValueError("conflicting CI result already published")
         return
     client.send_result(run["head_sha"], body)
 
@@ -70,7 +70,7 @@ def _run_matrix_and_report(case: dict, run: dict, *, root: Path) -> None:
     items = parse_plan(run["_ci_request"], run, case["pipeline_id"])
     limit = {"a3-8p": 4, "a3-16p": 2, "a5-64p": 1}[case["name"]]
     if len(items) > limit:
-        raise ValueError("V2 plan exceeds channel case limit")
+        raise ValueError("CI plan exceeds channel case limit")
     state = JobState(root)
     client = GitHubClient(authorization())
     run_key = f"{run['id']}:{run.get('run_attempt', 1)}"
@@ -89,7 +89,7 @@ def _run_matrix_and_report(case: dict, run: dict, *, root: Path) -> None:
             state.update(key, phase="blocked_recovery", quarantined=True)
             state.update(f"{run['id']}:{run.get('run_attempt', 1)}",
                          phase="blocked_recovery", reason="unverified remote Case")
-            logging.error("unfinished V2 case needs remote recovery: %s", key)
+            logging.error("unfinished CI case needs remote recovery: %s", key)
             return
         elif (run.get("_ci_cancel_event") is not None
               and run["_ci_cancel_event"].is_set()):
@@ -143,7 +143,7 @@ def _run_matrix_and_report(case: dict, run: dict, *, root: Path) -> None:
                                          execution.tail, execution.log,
                                          infra=not execution.release_verified)
             except Exception as exc:
-                logging.exception("V2 case execution error: %s", key)
+                logging.exception("CI case execution error: %s", key)
                 # If a remote assignment existed, an exceptional path
                 # cannot safely prove the remote ranks have stopped.
                 if state.read().get(key, {}).get("allocation"):
@@ -166,12 +166,12 @@ def _run_matrix_and_report(case: dict, run: dict, *, root: Path) -> None:
         try:
             post_case(client, run, test_id, report)
         except Exception:
-            logging.exception("V2 result upload pending: %s", key)
+            logging.exception("CI result upload pending: %s", key)
             return
         state.update(key, phase="reported", result=report["status"])
-        logging.info("V2 Case reported %s %s", key, report["status"])
+        logging.info("CI Case reported %s %s", key, report["status"])
     state.update(f"{run['id']}:{run.get('run_attempt', 1)}",
-                 phase="reported", result="V2_COMPLETE",
+                 phase="reported", result="COMPLETE",
                  time=datetime.now(timezone.utc).isoformat())
 
 
@@ -220,7 +220,7 @@ def run_and_report(case: dict, run: dict, *, root: Path) -> None:
     """Only dispatcher entrypoint, routed by the authorized runner kind.
 
     A local smoke has no Matrix plan. All SSH training requires the current
-    schema-2 immutable plan. There is no legacy SSH protocol fallback.
+    schema-2 immutable plan; old SSH request formats are not accepted.
     """
     kind = case.get("runner", {}).get("kind")
     if kind == "local":

@@ -57,7 +57,7 @@ def task_dir(run: dict, root: Path) -> Path:
         from ci_core.registry import SELECTOR
         test_id = run["_ci_test_id"]
         if not isinstance(test_id, str) or not SELECTOR.fullmatch(test_id):
-            raise ValueError("invalid V2 task Test ID")
+            raise ValueError("invalid CI task Test ID")
         suffix = f"_test-{test_id}"
     return root / "logs/runs" / (
         f"{local:%Y-%m-%d_%H-%M-%S}_run-{int(run['id'])}"
@@ -89,7 +89,7 @@ def remote_task_name(run: dict) -> str:
         from ci_core.registry import SELECTOR
         test_id = run["_ci_test_id"]
         if not isinstance(test_id, str) or not SELECTOR.fullmatch(test_id):
-            raise ValueError("invalid V2 test ID")
+            raise ValueError("invalid CI test ID")
         suffix += f"_test-{test_id}"
     return f"{local:%Y-%m-%d_%H-%M-%S}_run_{name}_{number}{suffix}"
 

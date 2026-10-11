@@ -27,7 +27,6 @@ BRANCHES = set(filter(None, os.environ.get("A3_CI_ALLOWED_BRANCHES", "master").s
 MAX_WORKERS = 1  # Phase 1: one training Case across ALL workflows
 INTERVAL = int(os.environ.get("A3_CI_POLL_SECONDS", "60"))
 STATUSES = {case: labels[0] for case, labels in NAMES.items()}
-LEGACY_STATUSES = {case: labels[1] for case, labels in NAMES.items() if len(labels) > 1}
 
 
 def eligible(run: dict, case: dict) -> bool:
@@ -119,7 +118,7 @@ def main():
                         if key in inflight:
                             continue
                         past = state.read().get(key, {})
-                        # V2 task state prevents duplicate execution; allow
+                        # CI task state prevents duplicate execution; allow
                         # safe pending-report retry after a network interruption.
                         if past.get("phase") == "reported":
                             continue

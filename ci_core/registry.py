@@ -31,14 +31,14 @@ def workflow_label(run: dict) -> str:
 
 
 def selected_test(run: dict) -> str:
-    """Legacy run-name format compatibility; not used by new task dispatch."""
+    """Parse historical title selectors for log-inspection compatibility."""
     workflow_label(run)
     title = run["display_title"]
     if " | test=" not in title:
         raise ValueError("selected test is available only in request artifact")
     selected = title.split(" | test=", 1)[1]
     if not SELECTOR.fullmatch(selected):
-        raise ValueError("invalid legacy test ID")
+        raise ValueError("invalid historical test ID")
     return selected
 
 

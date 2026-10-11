@@ -1,4 +1,4 @@
-"""Validate trusted V1/V2 pipeline and physical resource pool boundaries."""
+"""Validate trusted current pipeline and physical resource pool boundaries."""
 from __future__ import annotations
 
 import json

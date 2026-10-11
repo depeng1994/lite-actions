@@ -101,7 +101,7 @@ class RecoveryTests(unittest.TestCase):
                 with scheduler.claim_dynamic(root,case,ascend_env=None,timeout=0.1):
                     pass
 
-    def test_running_previous_v1_run_stops_global_serial_slot(self):
+    def test_running_previous_run_stops_global_serial_slot(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)
             (root/"config").mkdir()
@@ -115,7 +115,7 @@ class RecoveryTests(unittest.TestCase):
                                                  timeout=0.1,owner_key="1000:1"):
                         pass
 
-    def test_current_v1_owner_state_does_not_self_block(self):
+    def test_current_owner_state_does_not_self_block(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)
             (root/"config").mkdir()

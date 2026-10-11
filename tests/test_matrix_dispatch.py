@@ -1,4 +1,4 @@
-"""V2 serial Matrix, verified topology, per-case reporting: CPU-only."""
+"""CI serial Matrix, verified topology, per-case reporting: CPU-only."""
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -35,7 +35,13 @@ RUN={"id":1092,"run_attempt":1,"run_number":3,"head_sha":SHA,
      "display_title":"A3-8p-CI-Example"}
 
 
-class V2Tests(unittest.TestCase):
+class MatrixDispatchTests(unittest.TestCase):
+    def test_result_marker_is_single_release_format(self):
+        from ci_core.dispatcher import case_marker
+        self.assertEqual(case_marker({"id": 42, "run_attempt": 1},
+                                     "dsv4_flash_a3_8p_example"),
+                         "Lite-CI-RESULT 42:1:dsv4_flash_a3_8p_example")
+
     def test_verified_groups_are_safe_and_no_unverified_a3_3_second_group(self):
         pools=json.loads((ROOT/"config/pools.json").read_text())
         config=load_config(ROOT)
@@ -110,7 +116,7 @@ class V2Tests(unittest.TestCase):
         with self.assertRaises(ValueError):
             occupancy.selected_pids("missing",[6],indexing="card-die")
 
-    def test_v2_two_cases_reported_independently_without_real_ssh(self):
+    def test_two_cases_reported_independently_without_real_ssh(self):
         original=load_config(ROOT)["a3-8p"]
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)

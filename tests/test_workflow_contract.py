@@ -42,7 +42,7 @@ class WorkflowContractTests(unittest.TestCase):
             self.assertNotIn("env_vars", spec["runner"])
         self.assertFalse(cfg["a5-64p"]["enabled"])
 
-    def test_v2_digest_and_identity_validation(self):
+    def test_matrix_digest_and_identity_validation(self):
         run = {"id": 42, "run_attempt": 1, "head_sha": "a"*40}
         plan = {"schema": 2, "repo": "depeng1994/torchtitan-npu",
                 "run_id": 42, "attempt": 1, "sha": "a"*40,
