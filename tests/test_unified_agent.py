@@ -84,8 +84,9 @@ class AgentTests(unittest.TestCase):
         from ci_core.github import GitHubClient
         source_sha = "b" * 40
         run = {**self.base_run(), "event": "pull_request",
+               "head_sha": source_sha, "head_repository": {"id": 44},
                "pull_requests": [{"number": 6, "head": {"sha": source_sha}}]}
-        pr = {"state": "open", "head": {"sha": source_sha},
+        pr = {"state": "open", "head": {"sha": source_sha, "repo": {"id": 44}},
               "base": {"ref": "master", "repo": {"full_name": "torchtitan-npu/torchtitan-npu"}}}
         client = GitHubClient("stub")
         with patch.object(client, "request", return_value=pr):
@@ -94,10 +95,21 @@ class AgentTests(unittest.TestCase):
             self.assertEqual(normalized["_ci_pr_number"], 6)
             self.assertIsNone(client.normalize_pr_run({**run, "pull_requests": [
                 {"number": 6, "head": {"sha": "c" * 40}}]}))
-            self.assertIsNone(client.normalize_pr_run({**run, "pull_requests": []}))
             self.assertIsNone(client.normalize_pr_run({**run, "pull_requests": [
                 {"number": 6, "head": {"sha": source_sha}},
                 {"number": 7, "head": {"sha": source_sha}}]}))
+
+        # GitHub may expose an empty pull_requests array for a fork PR run.
+        def response(method, path):
+            return [dict(pr, number=6)] if path.startswith("/pulls?") else pr
+        with patch.object(client, "request", side_effect=response):
+            normalized = client.normalize_pr_run({**run, "pull_requests": []})
+            self.assertEqual(normalized["_ci_pr_number"], 6)
+            self.assertEqual(normalized["head_sha"], source_sha)
+            self.assertIsNone(client.normalize_pr_run({
+                **run, "head_repository": {"id": 999}, "pull_requests": []}))
+            self.assertIsNone(client.normalize_pr_run({
+                **run, "head_sha": "c" * 40, "pull_requests": []}))
 
     def test_wrong_path_denied(self):
         run=self.base_run()
