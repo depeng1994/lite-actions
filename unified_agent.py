@@ -15,9 +15,9 @@ import time
 from ci_core.config import load_config
 from ci_core.github import GitHubClient, authorization
 from ci_core.job_state import JobState
-from ci_core.reporting import NAMES, job_key, run_and_report
+from ci_core.reporting import NAMES, job_key, run_and_report as run_v1_and_report
 from ci_core.resources import single_agent
-from ci_core.dispatcher import run_and_report
+from ci_core.dispatcher import run_and_report as run_v2_and_report
 from ci_core.registry import workflow_label
 
 ROOT = Path(__file__).resolve().parent
@@ -50,6 +50,13 @@ def eligible(run: dict, case: dict) -> bool:
             and type(run.get("run_number")) is int and run["run_number"] > 0
             and type(run.get("run_attempt", 1)) is int and run.get("run_attempt", 1) > 0
             and bool(re.fullmatch("[0-9a-f]{40}", run.get("head_sha", ""))))
+
+
+def select_run_handler(run: dict):
+    """The local smoke uses legacy reporting; SHA-bound Matrix cases use V2."""
+    if run.get("_ci_request", {}).get("schema") == 2:
+        return run_v2_and_report
+    return run_v1_and_report
 
 
 def main():
@@ -130,9 +137,7 @@ def main():
                         if past.get("phase") != "pending_report":
                             state.update(key, phase="queued", case=case["name"],
                                          sha=run["head_sha"])
-                        handler = (run_and_report if
-                                   run.get("_ci_request", {}).get("schema") == 2
-                                   else run_and_report)
+                        handler = select_run_handler(run)
                         cancel_event = Event()
                         run["_ci_cancel_event"] = cancel_event
                         inflight[key] = (executor.submit(handler, case, run, root=ROOT),
