@@ -90,6 +90,24 @@ class MatrixDispatchTests(unittest.TestCase):
                 self.assertEqual(preflight.call_count,2)
                 reclaim.assert_not_called()
 
+    def test_approved_a3_reclaim_rechecks_before_allocation(self):
+        case=load_config(ROOT)["a3-16p"]
+        pools=json.loads((ROOT/"config/pools.json").read_text())
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            (root/"config").mkdir()
+            (root/"config/pools.json").write_text(json.dumps(pools))
+            with patch.dict("os.environ", {"A3_CI_RECLAIM_EXTERNAL_PROCESSES":"1"}), \
+                 patch.object(scheduler,"remote_preflight",
+                              side_effect=[RuntimeError("occupied"), None]) as preflight, \
+                 patch("ci_core.occupancy.reclaim_candidate",return_value=True) as reclaim:
+                with scheduler.claim_dynamic(root,case,ascend_env=None,
+                                             timeout=1,sleep=.001) as runtime:
+                    self.assertEqual(runtime["allocation"],
+                                     scheduler.candidates(case,pools)[0])
+                reclaim.assert_called_once()
+                self.assertEqual(preflight.call_count,2)
+
     def test_case_execution_resource_busy_not_retried(self):
         from ci_core.resources import ResourceBusy
         case=load_config(ROOT)["a3-8p"]
