@@ -7,6 +7,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 import logging
+import os
 from pathlib import Path
 
 from ci_core.dispatch import execute, task_dir, prepare_profile
@@ -56,8 +57,9 @@ def post_case(client: GitHubClient, run: dict, test_id: str, report: dict) -> No
     body = marker + "\n" + json.dumps(report, ensure_ascii=False, separators=(",", ":"))
     if len(body.encode("utf-8")) > 6100:
         raise ValueError("case result over GitHub upload budget")
+    author = os.environ.get("A3_CI_RESULT_AUTHOR")
     prior = [item.get("body", "") for item in client.commit_comments(run["head_sha"])
-             if item.get("user", {}).get("login") == run.get("actor", {}).get("login")
+             if (not author or item.get("user", {}).get("login") == author)
              and (item.get("body") or "").startswith(marker + "\n")]
     if prior:
         if body not in prior:

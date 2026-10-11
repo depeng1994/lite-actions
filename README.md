@@ -323,12 +323,12 @@ python3 scripts/preflight_pool.py --pool a3-shared --npu
 * **历史架构演进与阶段设计备忘**：参见 [REFACTOR_PLAN.md](REFACTOR_PLAN.md)。
 
 
-### 组织仓 PR 调试准入（当前正式机制）
+### 组织仓 PR 自动 CI（当前正式机制）
 
-模型请求只接受组织仓 `torchtitan-npu/torchtitan-npu`。
-部署 Agent 时必须明确指定受信任的 GitHub 维护者登录名和当前组织仓 PR 分支，
-例如配置 `A3_CI_ALLOWED_ACTORS` 和
-`A3_CI_ALLOWED_BRANCHES=ci/lite-actions-validation`。
-调度机只接收该来源的 `workflow_dispatch`，执行严格 SHA/Artifact 校验与
-串行设备租约。个人 fork 已不再作为 Actions 调度源。
-结果评论的作者必须与触发该 Run 的授权操作者一致。
+所有面向 torchtitan-npu/torchtitan-npu:master 的 PR 通过 pull_request 自动触发组织仓 Workflow（含外部 fork）；默认测试套件由 Workflow 决定。手动 workflow_dispatch 保留部署环境 A3_CI_ALLOWED_ACTORS 和 A3_CI_ALLOWED_BRANCHES 约束。
+
+Agent 从 GitHub PR API 核对 PR 编号、目标分支及 head SHA，拒绝过期/关联异常的 Run；用 PR head SHA 校验 Artifact 并从组织仓下载该精确版本模型代码。既有 schema-2、全局串行设备租约和 NPU 释放校验保持不变。个人 fork 的 Actions 可以继续禁用。
+
+组织仓 Repository Variable LITE_CI_RESULT_ACTOR 必须设置为 Dispatcher 提交 GitHub 结果评论的真实登录名；部署端可配置 A3_CI_RESULT_AUTHOR 用于结果去重校验，不把 PR 作者身份视为结果发布者。
+
+外部 fork 仍受 GitHub 原生 Workflow 审批策略约束。执行机不持有 GitHub Token；A5 64P 保持禁用。

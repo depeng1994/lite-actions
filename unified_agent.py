@@ -42,11 +42,15 @@ def eligible(run: dict, case: dict) -> bool:
             authorized_name = workflow_label(run) in known_names
         except ValueError:
             authorized_name = False
+    manual = (run.get("event") == "workflow_dispatch"
+              and run.get("head_branch") in BRANCHES
+              and run.get("actor", {}).get("login") in ALLOWED_ACTORS)
+    pr = (run.get("event") == "pull_request"
+          and type(run.get("_ci_pr_number")) is int
+          and run["_ci_pr_number"] > 0)
     return (case["enabled"]
-            and run.get("event") == "workflow_dispatch"
+            and (manual or pr)
             and run.get("status") == "in_progress"
-            and run.get("head_branch") in BRANCHES
-            and run.get("actor", {}).get("login") in ALLOWED_ACTORS
             and run.get("path") == ".github/workflows/" + case["workflow"]
             and authorized_name
             and isinstance(run.get("id"), int)

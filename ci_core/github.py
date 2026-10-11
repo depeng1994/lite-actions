@@ -65,10 +65,42 @@ class GitHubClient:
             data = response.read()
             return json.loads(data) if data else None
 
+    def normalize_pr_run(self, run: dict) -> dict | None:
+        """Resolve an upstream PR workflow's merge SHA to its current fork head SHA.
+
+        A stale/ambiguous PR run is never dispatched to shared NPUs.
+        """
+        associated = run.get("pull_requests") or []
+        if len(associated) != 1:
+            return None
+        ref = associated[0]
+        number = ref.get("number")
+        if type(number) is not int or number < 1:
+            return None
+        pr = self.request("GET", f"/pulls/{number}")
+        if (pr.get("state") != "open"
+                or pr.get("base", {}).get("repo", {}).get("full_name") != REPO
+                or pr.get("base", {}).get("ref") != "master"):
+            return None
+        sha = pr.get("head", {}).get("sha")
+        event_sha = ref.get("head", {}).get("sha")
+        if (not isinstance(sha, str) or len(sha) != 40
+                or not isinstance(event_sha, str) or event_sha != sha):
+            return None
+        return {**run, "head_sha": sha, "_ci_pr_number": number}
+
     def running_workflows(self) -> list[dict]:
-        data = self.request("GET",
-            "/actions/runs?event=workflow_dispatch&status=in_progress&per_page=100")
-        return data.get("workflow_runs", [])
+        runs = []
+        for event in ("workflow_dispatch", "pull_request"):
+            data = self.request("GET",
+                f"/actions/runs?event={event}&status=in_progress&per_page=100")
+            for run in data.get("workflow_runs", []):
+                if event == "pull_request":
+                    run = self.normalize_pr_run(run)
+                    if run is None:
+                        continue
+                runs.append(run)
+        return runs
 
     def workflow_status(self, run_id: int) -> dict:
         if type(run_id) is not int or run_id < 1:

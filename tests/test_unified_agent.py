@@ -11,6 +11,12 @@ class AgentTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.cases=load_config(Path(agent.__file__).resolve().parent)
+        cls._allowed_backup = agent.ALLOWED_ACTORS
+        agent.ALLOWED_ACTORS = frozenset({"ci-maintainer"})
+
+    @classmethod
+    def tearDownClass(cls):
+        agent.ALLOWED_ACTORS = cls._allowed_backup
 
     def base_run(self):
         return {"id":39100291,"run_number":9,"run_attempt":1,"head_sha":"a"*40,
@@ -67,6 +73,31 @@ class AgentTests(unittest.TestCase):
         run=self.base_run()
         run["head_branch"]="untrusted-pr"
         self.assertFalse(agent.eligible(run,self.cases["a3-8p"]))
+
+    def test_pull_request_allowed_without_actor_or_branch_allowlist(self):
+        run = {**self.base_run(), "event": "pull_request", "head_branch": "feature",
+               "actor": {"login": "external-contributor"}, "_ci_pr_number": 6}
+        self.assertTrue(agent.eligible(run, self.cases["a3-8p"]))
+        self.assertFalse(agent.eligible({**run, "_ci_pr_number": None}, self.cases["a3-8p"]))
+
+    def test_github_normalizes_pr_merge_sha_to_current_head(self):
+        from ci_core.github import GitHubClient
+        source_sha = "b" * 40
+        run = {**self.base_run(), "event": "pull_request",
+               "pull_requests": [{"number": 6, "head": {"sha": source_sha}}]}
+        pr = {"state": "open", "head": {"sha": source_sha},
+              "base": {"ref": "master", "repo": {"full_name": "torchtitan-npu/torchtitan-npu"}}}
+        client = GitHubClient("stub")
+        with patch.object(client, "request", return_value=pr):
+            normalized = client.normalize_pr_run(run)
+            self.assertEqual(normalized["head_sha"], source_sha)
+            self.assertEqual(normalized["_ci_pr_number"], 6)
+            self.assertIsNone(client.normalize_pr_run({**run, "pull_requests": [
+                {"number": 6, "head": {"sha": "c" * 40}}]}))
+            self.assertIsNone(client.normalize_pr_run({**run, "pull_requests": []}))
+            self.assertIsNone(client.normalize_pr_run({**run, "pull_requests": [
+                {"number": 6, "head": {"sha": source_sha}},
+                {"number": 7, "head": {"sha": source_sha}}]}))
 
     def test_wrong_path_denied(self):
         run=self.base_run()
