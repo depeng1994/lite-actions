@@ -552,24 +552,24 @@ Phase 1 Scheduler 流程：
 
 | 里程碑 | 当前状态（2026-10-12） | 代码 / 验收证据 | 下一步 |
 | --- | --- | --- | --- |
-| P2.5-DESIGN 三种同 Node 并发 + 优先级 | **设计完成，待评审和实施** | 本节；执行代码仍是 Lite `78015f9` / 模型 `e465e79` | 维护者确认设计与安全边界 |
-| P2.5-TOPO A3-3 第二组与新 16P Bundle | **未验收** | A3-3 8–15 `verified=false`，新对角 16P 在 experimental | N01、N02 |
-| P2.5-PORT 全部 Host/NPU HCCL 端口隔离 | **未实施** | 现行仅两项端口变量与逻辑 Slot；缺少 NPU 16666 及 Range 证明 | N06、N07、N03 |
-| P2.5-QUEUE 64>16>8 统一调度准入 | **未实施** | 当前按 Run ID 入线程池 | N08、N09、N13 |
-| P2.5-NODE 同 Node 两条 8P | **未正式验收** | 已有同 Node 独立训练记录，不等于完整 Host 预算/端口 Gate | N03、N10、N11 |
-| P2.5-4x8P 两条 8P Actions × 双 Case | **新增正式验收，未执行** | 四个逻辑 8P 资源组、4 个训练 Worker、2 个独立 GitHub Run | N14；不得将同一个 Run 的两个 Matrix Job 当成两条 Actions |
-| P2.5-MIX 8P + 16P 同节点混部 | **未验收** | — | N04 |
-| P2.5-2x16 两条双机 16P | **未验收** | — | N05 |
-| P2.5-RELEASE 灰度、故障与回滚 | **未验收** | 保留稳定的跨 Host 2×8P / 独立 16P 基线 | N10–N13，按通过场景逐项启用 |
+| P2.5-DESIGN 三种同 Node 并发 + 优先级 | **设计与代码已落地** | Lite `c54c0de`，模型 `f88d50b`；配置校验通过，A5 64P disabled | 保持安全边界 |
+| P2.5-TOPO A3-3 第二组与新 16P Bundle | **PASS** | A3-3 8–15 Muon/AdamW 独立 PASS；两种对角 16P 实机及 Actions PASS | 已列入 verified |
+| P2.5-PORT Host/NPU HCCL 端口隔离 | **PASS（所验收 A3 场景）** | Host/NPU Socket Range 与 Master/HCCL Base 实际 Rank 环境验证；Slot 0/1 并发成功 | 不宣称覆盖所有 CANN 版本 |
+| P2.5-QUEUE 64>16>8 统一调度准入 | **代码及单测通过，压力 Gate 未执行** | 4 个训练 Worker + 1 个 Smoke Worker；较大资源请求优先及意图预留；64P disabled 不预留 | N08、N09、N13 故障和饥饿压力补测 |
+| P2.5-NODE 同 Node 两条 8P | **PASS** | 两机每机两组 8P 同时运行；真实 Rank/端口与 GitHub PASS | N10 故障注入后续 |
+| P2.5-4x8P 两条 8P Actions × 双 Case | **N14 PASS** | PR #6 Run `38176153053` Attempt 2 + PR #8 Run `38176477643` Attempt 1；4 Case PASS，同步抓取两机四组真实 Rank | 4 组资源均释放，无隔离记录 |
+| P2.5-MIX 8P + 16P 同节点混部 | **N04 PASS** | PR #6 8P Run `38176153053` Attempt 1 + 16P Run `38176153109` Attempt 1 | 3 Case 各自 PASS |
+| P2.5-2x16 两条双机 16P | **N05 PASS** | PR #6 Run `38176153109` Attempt 2 + PR #9 Run `38177027448` Attempt 1；重叠 CI 执行区间、互补 DeviceSet、不同 Port Slot、两者均 PASS | 资源全部释放 |
+| P2.5-RELEASE 正式切换 | **已完成上线** | 生产 Dispatcher `c54c0de`；完整 CI Smoke + 8P/16P + 新并发场景绿色 | N10–N13 压测、重启恢复、故障注入、回滚演练尚未完成 |
 
-**本轮提交范围**：仅在既有 `REFACTOR_PLAN.md` 增加详细设计和状态记录，不改执行代码、资源池、Workflow、生产 Dispatcher，不启动或取消任何 Actions。
+**台账口径**：上述 PASS 是针对明确列出的 A3 训练拓扑与 GitHub Actions Run；不能外推为 N10–N13 的故障注入、50–100 Case 饥饿/公平性压力、灾难恢复/回滚演练均已完成。A5 64P 始终禁用。
 
 ### 8.10 资源池文件精简及实现记录（2026-10-12）
 
 - `config/pools.json` 里的所有整型 `device_ids` 和 `devices` 数组单行化；短 `broadcast_ssh` 数组单行化。保持 A3/A5 Host ID、SSH、网口、所有拓扑白名单和危险进程回收权限的语义不变。不得从 `device_ids` 自动推导 `verified`。
 - 本轮增量代码（尚待实机 Gate）：最多 4 个训练 Worker / 1 个 Smoke Worker；Host 容量 `max_jobs_per_host` 使用跨进程文件锁；最多四组全 Host/设备端口 Profile，完整绑定 `MASTER_PORT`、`HCCL_IF_BASE_PORT`、`HCCL_HOST_SOCKET_PORT_RANGE`、`HCCL_NPU_SOCKET_PORT_RANGE`；`allocation.json` 包含匹配的端口 Slot/Profile，SSH 子进程二次校验，禁止退回固定端口。
-- **D0 实机证据**：A3-3 `8–15` 首次 Muon 单机 8P 探针已经真实训练 PASS，退出码 0；AdamW 单机探针仍待最终完成，此时不得视作新的 16P Bundle 验收通过。两份手工探针不属于 GitHub Actions 最终 N14 验收证据。
-- **尚未达标**：真正按资源准入的高优先级预留/安全 Backfill、N14 两条 Actions 四 Case 的共同重叠窗口、16P 新组合以及同机进程/网络故障注入。生产 Pool 的正式 `verified` 与 `max_jobs_per_host=2` 只能在对应独立实机 Gate 完成后更新。
+- **D0 实机证据**：A3-3 `8–15` Muon、AdamW 均独立 PASS；新对角 16P 及真实双 16P 并发探针 PASS。其后 N04、N05、N14 分别通过组织仓正式 GitHub Actions 验收，详见第 8.12 节。
+- **现行安全边界**：实测通过后生产 A3 Pool 才开启 `verified` 第二组及 `max_jobs_per_host=2`；优先级意图预留有自动化单测，N10–N13 专门故障注入和压力 Gate 仍未做，不误报。
 
 ### 8.11 D0 / 端口隔离的初次实机验收（2026-10-12；独立探针）
 
@@ -580,6 +580,16 @@ Phase 1 Scheduler 流程：
 | 新对角 16P：A3-3 8–15 + A3-4 0–7 | 模型验证分支 `f88d50b`，`/tmp/p25_probe_new_diagonal_16p.log` | **独立 16P PASS**，两 Node 退出码 0、Host/NPU 端口为 Slot 0 |
 | 两个双机 16P 同时训练 | 模型验证分支 `f88d50b`，`/tmp/p25_probe_legacy_16p_concurrent.log` 及上述新对角日志 | **真实并发 PASS**；既有组合占用 Slot 1（HCCL Host `24128–24191`，NPU `28128–28191`），新组合占 Slot 0（Host `24000–24063`，NPU `28000–28063`）；两者各自两 Node Exit 0，训练时间存在重叠。实际 Rank 环境核实端口 Profile |
 
-两条互补 16P 分别获得 `(a3-3, 0–7)+(a3-4, 8–15)` 与 `(a3-3, 8–15)+(a3-4, 0–7)`。以上证明新分组/新双机组合的**独立调度器探针**与 Port Slot 隔离，不等于组织仓 GitHub Actions 的最终门禁；**N03、N04、N14 的 Actions 回归仍待发布后执行**。最新代码同时修复了端口租约从 `dispatch.execute` 到 `ssh_runner.main` 的丢失问题，所有四项 PortProfile 均作为可信 `allocation.json` 传递并在子进程校验。
+两条互补 16P 分别获得 `(a3-3, 0–7)+(a3-4, 8–15)` 与 `(a3-3, 8–15)+(a3-4, 0–7)`。以上证明新分组/新双机组合的**独立调度器探针**与 Port Slot 隔离，不等于组织仓 GitHub Actions 的最终门禁；**N03、N04、N14 的 Actions 回归已于本次完成，详见第 8.12 节**。最新代码同时修复了端口租约从 `dispatch.execute` 到 `ssh_runner.main` 的丢失问题，所有四项 PortProfile 均作为可信 `allocation.json` 传递并在子进程校验。
 
 本轮资源池清理：全部 Device ID 数组和短 SSH 目标列表改为单行，`device_ids` / `verified_multinode_allocations` / `process_indexing` / 回收授权等安全字段仍保留，不引入未验证的配置模板；A3-3 第二个 8P Group 与新对角 16P 经上述实机验证后才加入 verified，正式最大 Host 并发为 2（只适用于已验证的 A3 Pool）；A5 继续禁用。
+
+### 8.12 P2.5 正式生产切换与 GitHub Actions 验收（2026-10-12）
+
+- **最终代码**：调度仓 `depeng1994/lite-actions:main` SHA `c54c0def11eafa482d046f8c90b11c15f9f0f229`，已在调度机正式运行；模型仓 `depeng1994/torchtitan-npu:master` 训练代码 SHA `f88d50b60fd8a84a29eb7fdd3b4fcb9d3e0ab0a1`（后续文档提交不改变此测试代码）。
+- **Smoke**：[Run 38176153060](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38176153060) `SUCCESS`。
+- **N04 混部**：[8P Run 38176153053 Attempt 1](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38176153053) Muon + AdamW 均 PASS；[16P Run 38176153109 Attempt 1](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38176153109) PASS；三条 Case 真实资源分配和训练区间重叠，Host 上无重叠 DeviceSet。
+- **N14 四路 8P**：[PR #6 Run 38176153053 Attempt 2](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38176153053) 与 [临时 PR #8 Run 38176477643 Attempt 1](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38176477643)，各自 Muon + AdamW、四条 Case 均 `PASS`，两个独立 GitHub Run 均 `SUCCESS`。调度机保存 `/tmp/p25_four_eight_p_live_proof.txt`：2026-10-12 05:36:47 CST 同时抓到 a3-3/a3-4 各两组训练 Rank；Slot 0 为 Master 16000 / HCCL Host 24000–24063 / NPU 28000–28063，Slot 1 为 Master 16001 / Host 24128–24191 / NPU 28128–28191。四个真实设备组分配为 a3-3 0–7/8–15、a3-4 0–7/8–15。
+- **N05 双 16P Actions**：[PR #6 Run 38176153109 Attempt 2](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38176153109) + [临时 PR #9 Run 38177027448](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38177027448)，均 `SUCCESS`、双 Node Case 都 `PASS`。Dispatcher 的 begin/end 现场日志分别为 05:40:29–05:47:01 和 05:42:50–05:49:24 CST，重叠执行区间，使用互补双机 DeviceSet/Slot 0、1。
+- **完整释放**：最终 `state/unified-jobs.json` 中上述各 Case 均 `phase=reported`/`result=PASS`；无未完成 Case、无 `quarantined` 项，GitHub 相关 Actions 均完成；A5 64P 仍未启用。
+- **后续单独验收范围**：N10–N13 的外部进程误杀保护、取消/重启崩溃恢复、50–100 模拟 Case 饥饿压力、完整回滚演练等仍保留在风险台账，不以本次训练 PASS 代替。
