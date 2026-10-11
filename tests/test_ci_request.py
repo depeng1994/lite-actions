@@ -71,7 +71,7 @@ class RequestTests(unittest.TestCase):
         with patch.object(c,"request",return_value=listing), \
              patch("ci_core.github.urllib.request.build_opener",return_value=holder), \
              patch("ci_core.github.urllib.request.urlopen",side_effect=download):
-            self.assertEqual(c.ci_request({**RUN, "path": ".github/workflows/a3-8p-lite-actions.yml"}),trusted_plan)
+            self.assertEqual(c.ci_request({**RUN, "path": ".github/workflows/a3_8p_lite_actions.yml"}),trusted_plan)
             self.assertIn("SECRET_TOKEN",holder.request.headers.get("Authorization",""))
 
     def test_commit_comment_lookup_is_bounded_and_paginated(self):

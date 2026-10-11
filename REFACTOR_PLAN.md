@@ -81,7 +81,7 @@
 ~~~json
 {
   "a3-8p": {
-    "workflow": "a3-8p-lite-actions.yml",
+    "workflow": "a3_8p_lite_actions.yml",
     "pool": "a3-shared",
     "resources": {"nodes": 1, "devices_per_node": 8},
     "runner": {"kind": "ssh"},
@@ -90,7 +90,7 @@
     "pipeline_id": "a3-8p"
   },
   "a3-16p": {
-    "workflow": "a3-16p-lite-actions.yml",
+    "workflow": "a3_16p_lite_actions.yml",
     "pool": "a3-shared",
     "resources": {"nodes": 2, "devices_per_node": 8},
     "runner": {"kind": "ssh"},

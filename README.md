@@ -279,7 +279,7 @@ ls -ltr logs/runs/ | tail -n 5
 {
   "pipelines": {
     "a3-8p": {
-      "workflow": "a3-8p-lite-actions.yml",
+      "workflow": "a3_8p_lite_actions.yml",
       "pool": "a3-shared",
       "resources": {
         "nodes": 1,

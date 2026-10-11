@@ -79,7 +79,7 @@ class WorkflowContractTests(unittest.TestCase):
                  head_sha="a"*40,head_branch="master",
                  event="workflow_dispatch",status="in_progress",
                  actor={"login":"ci-maintainer"},
-                 path=".github/workflows/a3-8p-lite-actions.yml",
+                 path=".github/workflows/a3_8p_lite_actions.yml",
                  name="A3-8p-CI-Example",display_title="A3-8p-CI-Example")
         from unittest.mock import patch
         with patch.object(unified_agent,"ALLOWED_ACTORS",frozenset({"ci-maintainer"})):

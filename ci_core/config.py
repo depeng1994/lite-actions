@@ -16,7 +16,7 @@ def load_config(root: Path) -> dict:
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", name):
             raise ValueError(f"invalid pipeline ID: {name!r}")
         workflow = spec["workflow"]
-        if (not re.fullmatch(r"[a-z0-9][a-z0-9-]+\.yml", workflow)
+        if (not re.fullmatch(r"[a-z0-9][a-z0-9_]+\.yml", workflow)
                 or workflow in workflows):
             raise ValueError("invalid or duplicate workflow")
         workflows.add(workflow)
