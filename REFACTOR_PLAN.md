@@ -4,9 +4,11 @@
 > - **日常使用、系统架构与首次部署**：请直接阅读 [README.md](README.md)；
 > - **模型测试用例编写**：请查阅模型仓 [tests/integration_tests/README.md](https://github.com/depeng1994/torchtitan-npu/blob/master/tests/integration_tests/README.md)。
 
-> 状态：**Phase 1 GitHub 双仓及生产 V2 已上线，最新 master 8P Muon/AdamW 与双机 16P 均实机通过；仅 GitCode 主源归一 Gate 尚未完成**。GitCode [MR #985](https://gitcode.com/cann/torchtitan-npu/merge_requests/985) 待具备权限的另一位维护者合并；合并前 Sync Upstream 保持禁用，P1.5 不标记 Done，Phase 2 暂不启动。
+> **现行实施状态（2026-10-12）**：本文件保留 2026-10-10/11 的 Phase 1 串行架构历史设计与验收记录；下方历史规划表并非当前运行约束。Phase 2 的 **Case 级并发、设备/端口租约、跨 Host 2×8P** 已提交并部署（Lite `78015f9` / 模型 `e465e79`），Smoke、跨 Host 8P 并发、双机 16P 已实机 PASS。**Phase 2 整体尚未 Done**：同 Host 2×8P 容量与长期稳定性、8P/16P 同时混部、故障注入及串行回滚仍待单独验收。A5 保持禁用。
+>
+> **历史基线说明**：此前 Phase 1 全局串行已完成其当时的 GitHub/生产 Gate；当时 GitCode MR #985 等主源归一工作另行跟踪，不因本轮 CI 并发验证自动宣告完成。下文 Phase 1 的串行要求是历史契约，现行资源调度行为以 [README](README.md) 为准。
 > 方案：**A（已确认）**。Phase 1 = 双仓解耦 + GitHub Matrix Jobs + 动态选卡 + **全局串行训练**；Phase 2 = 在 Phase 1 稳定基线之上增加**真正并发**。  
-> 创建：2026-10-10；最近一次计划调整：2026-10-11。
+> 创建：2026-10-10；最近一次状态更新：2026-10-12。
 > 计划初始代码基线：`lite-actions/main 2a0427c`、`torchtitan-npu/master b91257e`；本计划文件的维护提交不等于执行代码基线更新。  
 > 关键证据：[8P 双 Case PASS（历史）](https://github.com/depeng1994/torchtitan-npu/actions/runs/38034002241) · [16P PASS（历史）](https://github.com/depeng1994/torchtitan-npu/actions/runs/37942444656) · [Dispatcher Smoke（历史）](https://github.com/depeng1994/torchtitan-npu/actions/runs/38025794748)。历史结果不可代替重构后的回归。
 
@@ -317,11 +319,21 @@ Phase 1 Scheduler 流程：
 | P1.3 动态选卡/占用策略 | 已验收 | Lite `92b9b04` | [A3-4 8P Run 38050639931](https://github.com/depeng1994/torchtitan-npu/actions/runs/38050639931)、[A3-3 8P Run 38060703524](https://github.com/depeng1994/torchtitan-npu/actions/runs/38060703524)，77 passed/1 skipped | 同一 Muon 用例在 A3-4:8–15 与 A3-3:0–7 均 5 steps+TB PASS；A3-3 auto-occupy Worker 宿主机 PID 分类后定点清理并经 npu-smi 确认释放；未误杀其他进程；临时选择优先级已恢复 |
 | P1.4 8P/16P 与恢复 | 已验收实机 Gate | 模型 `99cd7e3` / Lite `92b9b04` | [Muon Run 38054910957](https://github.com/depeng1994/torchtitan-npu/actions/runs/38054910957)、[AdamW Run 38059258896](https://github.com/depeng1994/torchtitan-npu/actions/runs/38059258896)、[16P Run 38054913344](https://github.com/depeng1994/torchtitan-npu/actions/runs/38054913344)、[Cancel Run 38054570924](https://github.com/depeng1994/torchtitan-npu/actions/runs/38054570924) | 8P Muon/AdamW、双机16P 均 5 steps + TB + rc0；全局不重叠；取消远端子进程清理验证；前一次 AdamW 外部 SIGKILL 根因未证实，FAIL 保留不可擦除 |
 | P1.5 Phase 1 发布 | **GitHub / 生产调度及最新实机 Gate 完成；GitCode MR 待合并** | Final-review baseline：Lite repo `main=fbb0631` / production `68bd691`；模型 repo `master=f748ddc` / runtime-verified `546b655`；GitCode `master=2994912`，待 [MR #985](https://gitcode.com/cann/torchtitan-npu/merge_requests/985) | [正式 Smoke 38083634170](https://github.com/depeng1994/torchtitan-npu/actions/runs/38083634170) PASS；正式 [16P 38084588613](https://github.com/depeng1994/torchtitan-npu/actions/runs/38084588613)、[8P 38084585959](https://github.com/depeng1994/torchtitan-npu/actions/runs/38084585959) 全部 GitHub SUCCESS、5 steps/TB/rc0 | 四条 SSH relay 已恢复；A3-4 /data 与容器 Overlay 0B，模型 PR #29 将 HF_HOME/HF_DATASETS_CACHE 转至 /mnt/share。runtime-verified SHA 的 8P Muon、AdamW 及双机16P 全部通过，全局串行、无 quarantine。GitCode 禁止作者自合并且 token 无 MERGE 权限；Sync Upstream 暂禁用，P1.5 尚未 Done |
-| P2.0 并发资源预算 | **待 Phase 1 完成** | — | — | — |
-| P2.1 租约/多任务调度 | 待开始 | — | — | — |
-| P2.2 跨 Host 2×8P | 待开始 | — | — | — |
-| P2.3 同机/4×8P 容量 | 待开始（条件验收） | — | — | — |
-| P2.4 混部/发布 | 待开始 | — | — | — |
+| P2.0 并发资源预算 | **部分完成** | Lite `78015f9` | 3 个训练 Worker + 1 个 Smoke Worker、可用拓扑动态选组 | 已实现设备/端口租约与 Host 选择；CPU/内存/IO 峰值与容量预算仍待测 |
+| P2.1 租约/多任务调度 | **已完成当前上线范围** | Lite `8a737e8` → `78015f9` / 模型 `e465e79` | Lite 103 passed/1 skipped、模型 31 passed；跨进程设备/端口锁与 Matrix Case 独立任务 | 当前 3 训练 Worker；并发恢复/故障注入需补充，不将完整 P2.1 Gate 宣称通过 |
+| P2.2 跨 Host 2×8P | **实机验收通过** | Lite `78015f9` / 模型 `e465e79` | [8P 38147139071，Attempt 3](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38147139071) | A3-3 0–7 AdamW 与 A3-4 0–7 Muon 并发，均 5 steps、rc0、单独上报 PASS |
+| P2.3 同机/4×8P 容量 | **尚未完成容量 Gate** | — | 8P [Run 38147139071](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38147139071) 曾完成同机不同设备组 Case | 仍缺 Host 内存/IO/HCCL 压力、长期稳定与 4×8P 负载数据，不标记 Done |
+| P2.4 混部/发布 | **部分完成** | Lite `78015f9` / 模型 `e465e79` | [16P 38147139067，Attempt 2](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38147139067) PASS；[Smoke 38147139076](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38147139076) PASS | 生产已切换且 16P 双机回归通过；**8P 与 16P 同时运行、故障注入及回滚 Gate 未完成** |
+
+### 2026-10-11 并发能力真实验收（当前发布基线）
+
+| 范围 | 运行版本与证据 | 事实与结论 |
+| --- | --- | --- |
+| 两个 8P Matrix Case 跨 Host 同时训练 | Lite `78015f9` / 模型 `e465e79`，[Run 38147139071 Attempt 3](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38147139071) | 约 22:44:47 同时启动，A3-3 0–7 AdamW、A3-4 0–7 Muon；两者均 `NODE_EXIT=0`、`CASE_RESULT PASS 0`，完成时间约 22:52 |
+| 两节点 16P 完整回归 | 同版本，[Run 38147139067 Attempt 2](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38147139067) | A3-3 0–7 与 A3-4 8–15，两个 `NODE_EXIT=0`，`CASE_RESULT PASS 0` |
+| Smoke 与部署检查 | 同版本，[Run 38147139076](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38147139076) | GitHub SUCCESS，生产 Dispatcher 已切换，最终无在途 Case、无 quarantine |
+
+**验收边界**：上述为 *成功的对应 Attempt*，保留历史 `INFRA_ERROR`、`CANCELLED` 事实；跨 Host 并发和 16P 回归已通过，不能推断完成同 Host 全容量、同时混部、混合故障注入与回滚验证。本次仅文档刷新，不触发训练、不修改生产运行进程。
 
 ### 2026-10-10 Phase 1 实机回归与回滚证据
 

@@ -96,7 +96,7 @@ flowchart LR
 1. **触发任务**：开发者在 GitHub Actions 页面触发 Workflow。
 2. **云端等待**：GitHub Waiter Job 启动并等待调度结果。
 3. **主动发现**：内网调度机的 Agent 定期轮询 GitHub API，主动发现新任务。
-4. **资源加锁**：调度机检查物理卡状态，通过**两级锁机制**（全局任务串行槽位 + 设备级原子锁）锁定目标 NPU。
+4. **资源加锁与并发调度**：Dispatcher 为每个 Matrix Case 独立排队，原子申请目标节点上的物理 NPU 文件锁与通信端口租约；仅当资源不重叠时并发执行。跨节点 16P 必须同时申请成功两个节点的资源，不会持有部分资源等待。
 5. **远程执行**：调度机通过 SSH 在目标执行机上运行训练容器与脚本，执行机保留完整日志。
 6. **脱敏回传**：训练结束后，调度机通过 SSH 读取尾部关键日志（最多 20 行）和 TensorBoard 结果，调用 GitHub API 回写 Commit Comment，Waiter Job 获得终态并成功结束。
 
@@ -124,7 +124,7 @@ flowchart LR
 | Actions 通道展示名称 | 通道 ID | 硬件规格与作用 | 状态 |
 | :--- | :--- | :--- | :--- |
 | **`Dispatcher-Smoke`** | `dispatcher-smoke` | 调度机本地 `npu-smi` 连通性冒烟验证 | 可用 |
-| **`A3-8p-CI-Example`** | `a3-8p` | A3 单机 8P 动态选卡：Muon + AdamW 5 steps | **正式可用（两个独立 Job 串行执行）** |
+| **`A3-8p-CI-Example`** | `a3-8p` | A3 单机 8P 动态选卡：Muon + AdamW 5 steps | **正式可用：两独立 Matrix Case 可跨 Node 并发运行** |
 | **`A3-16p-CI-Example`** | `a3-16p` | A3 双机 16P（跨机 EP16）：Eager 5 steps | **正式可用** |
 | **`A5-64p-CI`** | `a5-64p` | A5 八机 64P（每台 8P）集群训练 | 预留模板，实机验收前保持禁用 |
 
@@ -317,30 +317,25 @@ python3 scripts/preflight_pool.py --pool a3-shared --npu
 
 ---
 
-### Phase 1 调度并发与训练串行
+### 当前调度机制：独立 Case 并发与节点资源隔离
 
-调度器使用四个 Worker：**3 个 SSH 训练 Worker** 和 **1 个本地轻量
-Smoke Worker**。不重叠的设备组/节点可并发执行，使用全进程共享的
-物理 NPU 文件锁与多宿主 rendezvous 端口租约；
-锁存储在跨工作目录共享的 `~/.cache/lite-actions/resource-leases` 下，
-可用 `LITE_ACTIONS_RESOURCE_LOCK_ROOT` 指定绝对目录；Smoke 可与训练并行完成，
-不会因训练排队而无谓占用 GitHub Waiter 时间。GitHub 轮询和
-结果上报仍由 Dispatcher Python 执行，NPU 进程回收策略不变。
-分布式训练一次性获取全部节点/端口，绝不占据部分资源等待其他节点；
-A5 仍保持禁用。共享宿主机的其他非 Lite CI 进程不受文件锁保护，
-仍必须执行 NPU preflight 和按授权范围进行回收。
+Dispatcher 使用 **4 个 Worker：3 个 SSH 训练 Worker + 1 个本地 Smoke Worker**。每个 GitHub Matrix Case 独立提交给训练队列，因而同一 Workflow 中的 Muon、AdamW 也可以同时执行；本地 Smoke 不等待训练结束。
 
-## 7. 相关参考
+- **并发准入**：在 `config/pools.json` 已验证的拓扑范围内，优先选择空闲 Host/设备组。每个 Case 原子持有 `(host_id, device_id)` 物理 NPU 文件锁；资源重叠时等待，不会抢占其他 Lite Actions 训练。
+- **跨机训练**：16P 必须一次取得两个不同 Host 的完整 8P 组；拿不到全部资源就等待，不持有部分节点资源。
+- **通信隔离**：Dispatcher 同时持有相关 Host 的 rendezvous 端口租约，并向模型启动器传递 `LITE_CI_MASTER_PORT`、`LITE_CI_HCCL_IF_BASE_PORT`；模型仓在启动多机训练时映射为 `MASTER_PORT`、`HCCL_IF_BASE_PORT`，覆盖该 Case 的固定默认值。端口租约与设备锁均持有至执行及清理完成。
+- **跨工作目录互斥**：设备和端口锁统一存放于 `~/.cache/lite-actions/resource-leases`，可用绝对路径环境变量 `LITE_ACTIONS_RESOURCE_LOCK_ROOT` 覆盖。外部未遵循 Lite Actions 锁协议的进程仍须通过 NPU preflight 检查与受控回收处理。
+- **运行边界**：这是部分 Phase 2 并发能力的正式上线，**不是**同 Node 双 8P 的全容量/稳定性验收，也不代表完成并发故障注入与回滚 Gate；A5 64P 继续禁用。
 
-* **如何编写和新增测试用例**：参见模型仓 [集成测试使用指南 (tests/integration_tests/README.md)](https://github.com/depeng1994/torchtitan-npu/blob/master/tests/integration_tests/README.md)。
-* **历史架构演进与阶段设计备忘**：参见 [REFACTOR_PLAN.md](REFACTOR_PLAN.md)。
+**生产实机证据（2026-10-11，北京时间）**：模型 SHA `e465e79`、Lite Actions `78015f9`。 [8P Run 38147139071（Attempt 3）](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38147139071)：A3-3 0–7 上 AdamW 与 A3-4 0–7 上 Muon 同时训练，两 Case 均 `PASS / exit_code=0`；[16P Run 38147139067（Attempt 2）](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38147139067)：A3-3 0–7 + A3-4 8–15 两节点 `PASS / exit_code=0`；[Smoke Run 38147139076](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38147139076)：PASS。**这些成功的 Retry/Attempt 不抹除此前失败或取消的 Attempt。**
 
+## 7. 运维补充
 
 ### A3 共享设备的受控占用回收
 
 部署入口 run-unified-agent.sh 默认设置 LITE_ACTIONS_RECLAIM_EXTERNAL_PROCESSES=1：
-当 A3 8P/16P 任务找不到空闲合法资源组时，Dispatcher 在全局串行锁内
-**优先尝试空闲卡**，仅在必要时进行一次有界资源回收。该能力仅允许在
+当 A3 8P/16P 任务找不到空闲合法资源组时，Dispatcher 在资源池授权范围内
+**优先尝试空闲卡**，仅在必要时进行一次有界资源回收；任何正在由其他 Lite Actions Case 租约占用的设备都不得回收。该能力仅允许在
 `config/pools.json` 中显式配置 `reclaim_external_processes: true` 的资源池启用；
 A5 等未批准的资源池保持关闭。
 回收前从宿主机（a3-3-relay / a3-4-relay）的 npu-smi 读取实际占卡
@@ -371,10 +366,15 @@ auto-occupy 或精确的 VLLM::Worker_TP<N>/vLLM 进程族；
 
 所有面向 torchtitan-npu/torchtitan-npu:master 的 PR 通过 pull_request 自动触发组织仓 Workflow（含外部 fork）；默认测试套件由 Workflow 决定。手动 workflow_dispatch 保留部署环境 LITE_ACTIONS_ALLOWED_ACTORS 和 LITE_ACTIONS_ALLOWED_BRANCHES 约束。
 
-Agent 从 GitHub PR API 核对 PR 编号、目标分支及 head SHA，拒绝过期/关联异常的 Run；用 PR head SHA 校验 Artifact 并从组织仓下载该精确版本模型代码。既有 schema-2、全局串行设备租约和 NPU 释放校验保持不变。个人 fork 的 Actions 可以继续禁用。
+Agent 从 GitHub PR API 核对 PR 编号、目标分支及 head SHA，拒绝过期/关联异常的 Run；用 PR head SHA 校验 Artifact 并从组织仓下载该精确版本模型代码。既有 schema-2、按物理设备/端口隔离的租约和 NPU 释放校验保持不变。个人 fork 的 Actions 可以继续禁用。
 
 组织仓 Repository Variable LITE_CI_RESULT_ACTOR 必须设置为 Dispatcher 提交 GitHub 结果评论的真实登录名；部署端可配置 LITE_ACTIONS_RESULT_AUTHOR 用于结果去重校验，不把 PR 作者身份视为结果发布者。
 
 外部 fork 仍受 GitHub 原生 Workflow 审批策略约束。执行机不持有 GitHub Token；A5 64P 保持禁用。
 
 **低流量 CI 心跳**：Dispatcher 每个 Case 在资源分配后最多向 GitHub 发送一条极短的 LCI-R 状态评论；Waiter 只从对应 commit 评论读取状态，每 60 秒在 GitHub Actions 云端日志中输出北京时间戳、Test ID 和 CI queued/running 状态。没有周期性内网状态上传；最终结果的日志摘取上限不变。
+
+## 8. 相关参考
+
+* **如何编写和新增测试用例**：参见模型仓 [集成测试使用指南 (tests/integration_tests/README.md)](https://github.com/depeng1994/torchtitan-npu/blob/master/tests/integration_tests/README.md)。
+* **历史架构演进与阶段设计备忘**：参见 [REFACTOR_PLAN.md](REFACTOR_PLAN.md)，现行资源调度行为以本 README 为准。
