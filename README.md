@@ -325,7 +325,10 @@ Dispatcher 使用 **4 个 Worker：3 个 SSH 训练 Worker + 1 个本地 Smoke W
 - **跨机训练**：16P 必须一次取得两个不同 Host 的完整 8P 组；拿不到全部资源就等待，不持有部分节点资源。
 - **通信隔离**：Dispatcher 同时持有相关 Host 的 rendezvous 端口租约，并向模型启动器传递 `LITE_CI_MASTER_PORT`、`LITE_CI_HCCL_IF_BASE_PORT`；模型仓在启动多机训练时映射为 `MASTER_PORT`、`HCCL_IF_BASE_PORT`，覆盖该 Case 的固定默认值。端口租约与设备锁均持有至执行及清理完成。
 - **跨工作目录互斥**：设备和端口锁统一存放于 `~/.cache/lite-actions/resource-leases`，可用绝对路径环境变量 `LITE_ACTIONS_RESOURCE_LOCK_ROOT` 覆盖。外部未遵循 Lite Actions 锁协议的进程仍须通过 NPU preflight 检查与受控回收处理。
+- **同机多任务目标（P2.5）**：`config/pools.json` 按 Host 明确 `max_jobs_per_host` 及经实机认证的 8P 资源组/16P Bundle。复合租约须同时包含设备、Host 并发 Slot、分布式 Host/NPU 端口完整区间；64P>16P>8P 优先准入，但 A5 disabled 时不占用任何资源。**未验收组合保持禁用**。详细设计和验收 N01–N14 见 `REFACTOR_PLAN.md` 第 8 节。
 - **运行边界**：这是部分 Phase 2 并发能力的正式上线，**不是**同 Node 双 8P 的全容量/稳定性验收，也不代表完成并发故障注入与回滚 Gate；A5 64P 继续禁用。
+
+**P2.5 新增资源组（2026-10-12）**：A3-3 8–15 经 Muon、AdamW 独立训练验证，新 16P 对角组合 `a3-3:8–15 + a3-4:0–7` 独立 PASS，并已与旧 16P 对角组合完成真实双 16P 并发探针，分别使用不同的 Host/NPU HCCL Port Slot。详见 [`REFACTOR_PLAN.md`](REFACTOR_PLAN.md) 第 8.11 节。**生产 Actions 端到端验证仍需按新 SHA 单独完成**，不能用探针结果替代绿色的 Workflow。A5 disabled 不变。
 
 **生产实机证据（2026-10-11，北京时间）**：模型 SHA `e465e79`、Lite Actions `78015f9`。 [8P Run 38147139071（Attempt 3）](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38147139071)：A3-3 0–7 上 AdamW 与 A3-4 0–7 上 Muon 同时训练，两 Case 均 `PASS / exit_code=0`；[16P Run 38147139067（Attempt 2）](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38147139067)：A3-3 0–7 + A3-4 8–15 两节点 `PASS / exit_code=0`；[Smoke Run 38147139076](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38147139076)：PASS。**这些成功的 Retry/Attempt 不抹除此前失败或取消的 Attempt。**
 

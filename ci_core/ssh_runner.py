@@ -127,6 +127,17 @@ def remote_command(node: dict, nodes: list[dict], runner: dict, dest: str,
             # The 8P single-node runner inherits the standard environment,
             # whereas the 16P adapter applies LITE_CI_* after recipe defaults.
             env["MASTER_PORT" if key == "LITE_CI_MASTER_PORT" else "HCCL_IF_BASE_PORT"] = str(port)
+    for key, hccl_key in (("LITE_CI_HCCL_HOST_PORT_RANGE", "HCCL_HOST_SOCKET_PORT_RANGE"),
+                          ("LITE_CI_HCCL_NPU_PORT_RANGE", "HCCL_NPU_SOCKET_PORT_RANGE")):
+        if key in runner:
+            value = runner[key]
+            if (not isinstance(value, str) or not re.fullmatch(r"[1-9][0-9]{3,4}-[1-9][0-9]{3,4}", value)):
+                raise ValueError("invalid dispatcher-issued HCCL port range")
+            start, end = map(int, value.split("-"))
+            if not (1024 <= start <= end <= 65535 and end-start >= 31):
+                raise ValueError("unsafe dispatcher-issued HCCL range")
+            env[key] = value
+            env[hccl_key] = value
     env["CKPT_SAVE_LOAD_PATH"] = dest + "/checkpoints"
     setup = f"source {q(runner['env_vars']['ASCEND_SET_ENV_PATH'])} >/dev/null 2>&1 && "
     # PID file enables bounded cancellation. Python on the dispatcher always
@@ -272,7 +283,9 @@ def run(case: dict, sha: str, stamp: str, *, test_case: str,
                 'mode':'single' if len(nodes)==1 else 'distributed',
                 'env_vars':matches[0]['env_vars'],
                 'LITE_CI_MASTER_PORT':case.get('master_port', 16000),
-                'LITE_CI_HCCL_IF_BASE_PORT':case.get('hccl_if_base_port', 20000)}
+                'LITE_CI_HCCL_IF_BASE_PORT':case.get('hccl_if_base_port', 20000),
+                'LITE_CI_HCCL_HOST_PORT_RANGE':case.get('hccl_host_port_range', '24000-24063'),
+                'LITE_CI_HCCL_NPU_PORT_RANGE':case.get('hccl_npu_port_range', '28000-28063')}
         dirs = {}
         with ThreadPoolExecutor(max_workers=len(nodes)) as executor:
             futures = {executor.submit(stage, node, base, archive, sha): node for node in nodes}
@@ -367,11 +380,16 @@ def main() -> int:
             raise ValueError("dynamic CI requires runtime allocation")
         from ci_core.scheduler import validate_allocation
         runtime = json.loads(Path(args.allocation_file).read_text())
-        if set(runtime) != {"allocation"}:
-            raise ValueError("unrecognized allocation document")
+        from ci_core.resources import port_profile
+        slot = runtime.get("port_slot")
+        approved = port_profile(slot)
+        if set(runtime) != {"allocation", *approved}:
+            raise ValueError("unrecognized allocation/port lease document")
+        if any(runtime.get(field) != value for field,value in approved.items()):
+            raise ValueError("untrusted allocation/port profile mismatch")
         validate_allocation(case, json.loads((ROOT / "config/pools.json").read_text()),
                             runtime["allocation"])
-        case = {**case, "allocation": runtime["allocation"]}
+        case = {**case, "allocation": runtime["allocation"], **approved}
     elif args.allocation_file:
         raise ValueError("unexpected dynamic allocation for static CI")
     if args.request_file:

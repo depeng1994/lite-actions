@@ -9,6 +9,20 @@ from ci_core.config import load_config
 
 
 class DispatchTests(unittest.TestCase):
+    def test_exact_port_profile_is_serialized_for_subprocess(self):
+        from ci_core.resources import port_profile
+        case={"allocation": [{"host_id":"a3-3","devices":list(range(8))}],
+              **port_profile(2)}
+        wire=dispatch.trusted_allocation_manifest(case)
+        self.assertEqual(wire['port_slot'],2)
+        self.assertEqual(wire['master_port'],16002)
+        self.assertEqual(wire['hccl_host_port_range'],'24256-24319')
+        self.assertEqual(wire['hccl_npu_port_range'],'28256-28319')
+        bad={**case,'master_port':16000}
+        with self.assertRaisesRegex(ValueError,'port lease/profile mismatch'):
+            dispatch.trusted_allocation_manifest(bad)
+
+
     def test_physical_die_mapping(self):
         out = """Process id in container
 | 3       0                 | 2345      | dummy       |

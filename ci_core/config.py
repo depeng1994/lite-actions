@@ -24,6 +24,9 @@ def load_config(root: Path) -> dict:
         if pool_id not in pools:
             raise ValueError("unknown pool")
         pool = pools[pool_id]
+        cap = pool.get("max_jobs_per_host", 1)
+        if type(cap) is not int or cap not in (1, 2):
+            raise ValueError("unsupported per-host job capacity")
         if type(pool.get("reclaim_external_processes", False)) is not bool:
             raise ValueError("pool reclaim_external_processes must be boolean")
         hosts = {node["host_id"]: node for node in pool["nodes"]}

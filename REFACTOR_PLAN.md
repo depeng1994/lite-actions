@@ -534,6 +534,7 @@ Phase 1 Scheduler 流程：
 | N11 | 恢复 | Dispatcher 意外退出、远端 Rank 尚在、主机/容器重启 | 重启后依据进程/端口/台账对账，未知资源 fail-closed，不因 flock 自动释放误复用 |
 | N12 | 回滚 | 新 Host 配额、端口 Slot、Planner 发布失败 | 在停止接单和安全清理后退回上版；重新 Smoke + 8P/16P 回归，历史结果/隔离仍可追溯 |
 | N13 | 压力 | 50–100 可信模拟 Case：跨 Run/Attempt/8P/16P/64P | 设备/PortSet/Host 预算不重叠，无双重上报、无死锁/饥饿、API 限流可恢复 |
+| N14 | **两条 8P Actions 同时运行（4×8P）** | 两个独立 GitHub Run/Attempt，各自包含 Muon + AdamW 两个 Matrix Case，共 4 Case 同时启动 | **四条真实训练时间区间必须存在共同交集**；a3-3 0–7/8–15、a3-4 0–7/8–15 各占 1 组；四份 5 steps/TB/Exit0、四条独立 GitHub Case PASS，Host/NPU 端口与预算隔离、释放检查均通过 |
 
 **全链路证据格式**：每个 Test Case 记录 Run/Attempt/SHA、`test_id`、真实 Host/DeviceSet（对外脱敏）、PortProfile/Slot（无凭据）、真正训练起止时间、Steps/TB、各节点 Exit Code、Job/Comment 最终状态、清理检查与内存/网络峰值。CI 绿灯、孤立的单 16P PASS、或仅显示两个 Job `in_progress` 均不足以判定 N04/N05 并发通过。
 
@@ -556,8 +557,29 @@ Phase 1 Scheduler 流程：
 | P2.5-PORT 全部 Host/NPU HCCL 端口隔离 | **未实施** | 现行仅两项端口变量与逻辑 Slot；缺少 NPU 16666 及 Range 证明 | N06、N07、N03 |
 | P2.5-QUEUE 64>16>8 统一调度准入 | **未实施** | 当前按 Run ID 入线程池 | N08、N09、N13 |
 | P2.5-NODE 同 Node 两条 8P | **未正式验收** | 已有同 Node 独立训练记录，不等于完整 Host 预算/端口 Gate | N03、N10、N11 |
+| P2.5-4x8P 两条 8P Actions × 双 Case | **新增正式验收，未执行** | 四个逻辑 8P 资源组、4 个训练 Worker、2 个独立 GitHub Run | N14；不得将同一个 Run 的两个 Matrix Job 当成两条 Actions |
 | P2.5-MIX 8P + 16P 同节点混部 | **未验收** | — | N04 |
 | P2.5-2x16 两条双机 16P | **未验收** | — | N05 |
 | P2.5-RELEASE 灰度、故障与回滚 | **未验收** | 保留稳定的跨 Host 2×8P / 独立 16P 基线 | N10–N13，按通过场景逐项启用 |
 
 **本轮提交范围**：仅在既有 `REFACTOR_PLAN.md` 增加详细设计和状态记录，不改执行代码、资源池、Workflow、生产 Dispatcher，不启动或取消任何 Actions。
+
+### 8.10 资源池文件精简及实现记录（2026-10-12）
+
+- `config/pools.json` 里的所有整型 `device_ids` 和 `devices` 数组单行化；短 `broadcast_ssh` 数组单行化。保持 A3/A5 Host ID、SSH、网口、所有拓扑白名单和危险进程回收权限的语义不变。不得从 `device_ids` 自动推导 `verified`。
+- 本轮增量代码（尚待实机 Gate）：最多 4 个训练 Worker / 1 个 Smoke Worker；Host 容量 `max_jobs_per_host` 使用跨进程文件锁；最多四组全 Host/设备端口 Profile，完整绑定 `MASTER_PORT`、`HCCL_IF_BASE_PORT`、`HCCL_HOST_SOCKET_PORT_RANGE`、`HCCL_NPU_SOCKET_PORT_RANGE`；`allocation.json` 包含匹配的端口 Slot/Profile，SSH 子进程二次校验，禁止退回固定端口。
+- **D0 实机证据**：A3-3 `8–15` 首次 Muon 单机 8P 探针已经真实训练 PASS，退出码 0；AdamW 单机探针仍待最终完成，此时不得视作新的 16P Bundle 验收通过。两份手工探针不属于 GitHub Actions 最终 N14 验收证据。
+- **尚未达标**：真正按资源准入的高优先级预留/安全 Backfill、N14 两条 Actions 四 Case 的共同重叠窗口、16P 新组合以及同机进程/网络故障注入。生产 Pool 的正式 `verified` 与 `max_jobs_per_host=2` 只能在对应独立实机 Gate 完成后更新。
+
+### 8.11 D0 / 端口隔离的初次实机验收（2026-10-12；独立探针）
+
+| 场景 | 可信源 SHA / 保留在调度机的证据 | 验收结果 |
+| --- | --- | --- |
+| A3-3 8–15 Muon | 模型 `8f0233c`，`/tmp/p25_a33_bprobe.log` | **独立 8P 探针 PASS**；训练绑卡 8–15、5 Steps/TB 校验、`NODE_EXIT=0` / `RESULT_EXIT_CODE=0` |
+| A3-3 8–15 AdamW | 模型 `8f0233c`，`/tmp/p25_a33_b_adamw.log` | **独立 8P 探针 PASS**；训练绑卡 8–15，`NODE_EXIT=0` / `RESULT_EXIT_CODE=0` |
+| 新对角 16P：A3-3 8–15 + A3-4 0–7 | 模型验证分支 `f88d50b`，`/tmp/p25_probe_new_diagonal_16p.log` | **独立 16P PASS**，两 Node 退出码 0、Host/NPU 端口为 Slot 0 |
+| 两个双机 16P 同时训练 | 模型验证分支 `f88d50b`，`/tmp/p25_probe_legacy_16p_concurrent.log` 及上述新对角日志 | **真实并发 PASS**；既有组合占用 Slot 1（HCCL Host `24128–24191`，NPU `28128–28191`），新组合占 Slot 0（Host `24000–24063`，NPU `28000–28063`）；两者各自两 Node Exit 0，训练时间存在重叠。实际 Rank 环境核实端口 Profile |
+
+两条互补 16P 分别获得 `(a3-3, 0–7)+(a3-4, 8–15)` 与 `(a3-3, 8–15)+(a3-4, 0–7)`。以上证明新分组/新双机组合的**独立调度器探针**与 Port Slot 隔离，不等于组织仓 GitHub Actions 的最终门禁；**N03、N04、N14 的 Actions 回归仍待发布后执行**。最新代码同时修复了端口租约从 `dispatch.execute` 到 `ssh_runner.main` 的丢失问题，所有四项 PortProfile 均作为可信 `allocation.json` 传递并在子进程校验。
+
+本轮资源池清理：全部 Device ID 数组和短 SSH 目标列表改为单行，`device_ids` / `verified_multinode_allocations` / `process_indexing` / 回收授权等安全字段仍保留，不引入未验证的配置模板；A3-3 第二个 8P Group 与新对角 16P 经上述实机验证后才加入 verified，正式最大 Host 并发为 2（只适用于已验证的 A3 Pool）；A5 继续禁用。

@@ -47,15 +47,14 @@ class MatrixDispatchTests(unittest.TestCase):
         config=load_config(ROOT)
         groups=scheduler.candidates(config["a3-8p"],pools)
         self.assertGreaterEqual(len(groups),2)
-        self.assertFalse(any(g["host_id"]=="a3-3" and g["devices"]==list(range(8,16))
-                             for a in groups for g in a))
+        self.assertTrue(any(g["host_id"]=="a3-3" and g["devices"]==list(range(8,16))
+                            for a in groups for g in a))
         for allocation in groups:
             scheduler.validate_allocation(config["a3-8p"],pools,allocation)
-        with self.assertRaises(ValueError):
-            scheduler.validate_allocation(config["a3-8p"],pools,
-                [{"host_id":"a3-3","devices":list(range(8,16))}])
+        scheduler.validate_allocation(config["a3-8p"],pools,
+            [{"host_id":"a3-3","devices":list(range(8,16))}])
         multi=scheduler.candidates(config["a3-16p"],pools)
-        self.assertEqual(len(multi),1)
+        self.assertEqual(len(multi),2)
         self.assertEqual({g["host_id"] for g in multi[0]},{"a3-3","a3-4"})
 
     def test_experimental_multinode_requires_explicit_opt_in(self):
@@ -165,6 +164,110 @@ class MatrixDispatchTests(unittest.TestCase):
                     future.result()
             self.assertFalse(state.read()[old_key].get('quarantined',False))
 
+    def test_two_8p_actions_four_cases_run_on_four_disjoint_eight_p_groups(self):
+        """CPU contention gate for two independent Run IDs x two Matrix Cases."""
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+        import copy
+        cfg = load_config(ROOT)["a3-8p"]
+        pools=json.loads((ROOT/"config/pools.json").read_text())
+        pools=copy.deepcopy(pools)
+        pools["a3-shared"]["max_jobs_per_host"]=2
+        pools["a3-shared"]["nodes"][0]["allocation_groups"][1]["verified"]=True
+        barrier=Barrier(4,timeout=6)
+        def run_one(root,run_id,test_id):
+            with scheduler.claim_dynamic(root,cfg,ascend_env=None,timeout=5,sleep=.01,
+                                         owner_key=f"{run_id}:1:{test_id}") as task:
+                barrier.wait()
+                return (run_id,test_id,tuple((x['host_id'],tuple(x['devices'])) for x in task['allocation']),
+                        task['master_port'],task['hccl_host_port_range'],task['hccl_npu_port_range'])
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            (root/'config').mkdir()
+            (root/'config/pools.json').write_text(json.dumps(pools))
+            with patch.object(scheduler,'remote_preflight'), \
+                 patch.object(scheduler,'shared_resource_lock_root',return_value=root/'leases'):
+                with ThreadPoolExecutor(max_workers=4) as ex:
+                    futures=[ex.submit(run_one,root,r,t) for r in (101,102) for t in ('muon','adamw')]
+                    observed=[f.result() for f in futures]
+            self.assertEqual(len({x[2] for x in observed}),4)
+            # Reusing a numeric port on DIFFERENT hosts is safe; on one host
+            # the two concurrent cases must have different ports/ranges.
+            for host in ('a3-3','a3-4'):
+                local=[x for x in observed if x[2][0][0] == host]
+                self.assertEqual(len(local),2)
+                self.assertEqual(len({x[3] for x in local}),2)
+                self.assertEqual(len({x[4] for x in local}),2)
+                self.assertEqual(len({x[5] for x in local}),2)
+            self.assertEqual({x[0] for x in observed},{101,102})
+
+    def test_a33_eight_p_coexists_with_a33_a34_sixteen_p(self):
+        """N04: same physical node, two tasks, disjoint NPU and port leases."""
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+        import copy
+        cfg = load_config(ROOT)
+        pools=copy.deepcopy(json.loads((ROOT/'config/pools.json').read_text()))
+        pools['a3-shared']['max_jobs_per_host']=2
+        pools['a3-shared']['nodes'][0]['allocation_groups'][1]['verified']=True
+        candidate_8=[{'host_id':'a3-3','devices':list(range(8))}]
+        candidate_16=[{'host_id':'a3-3','devices':list(range(8,16))},
+                      {'host_id':'a3-4','devices':list(range(8))}]
+        barrier=Barrier(2,timeout=4)
+        def forced(case,pools):
+            return [candidate_8 if case['resources']['nodes']==1 else candidate_16]
+        def claim(root,kind,key):
+            with scheduler.claim_dynamic(root,cfg[kind],ascend_env=None,
+                                         timeout=3,sleep=.01,owner_key=key) as lease:
+                barrier.wait()
+                return lease
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);(root/'config').mkdir()
+            (root/'config/pools.json').write_text(json.dumps(pools))
+            with patch.object(scheduler,'candidates',side_effect=forced), \
+                 patch.object(scheduler,'remote_preflight'), \
+                 patch.object(scheduler,'shared_resource_lock_root',return_value=root/'leases'):
+                with ThreadPoolExecutor(max_workers=2) as ex:
+                    a=ex.submit(claim,root,'a3-8p','501:1:8p')
+                    b=ex.submit(claim,root,'a3-16p','502:1:16p')
+                    left,right=a.result(),b.result()
+        self.assertEqual(left['allocation'],candidate_8)
+        self.assertEqual(right['allocation'],candidate_16)
+        self.assertNotEqual(left['master_port'],right['master_port'])
+        self.assertNotEqual(left['hccl_npu_port_range'],right['hccl_npu_port_range'])
+
+    def test_two_simultaneous_sixteen_p_bundles_are_disjoint(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+        import copy
+        cfg=load_config(ROOT)['a3-16p']
+        pools=copy.deepcopy(json.loads((ROOT/'config/pools.json').read_text()))
+        a3=pools['a3-shared']
+        a3['max_jobs_per_host']=2
+        a3['nodes'][0]['allocation_groups'][1]['verified']=True
+        # The existing experimental candidate is NOT disjoint from the
+        # verified A3-3 0-7 + A3-4 8-15 bundle. Test the genuinely new
+        # diagonal: A3-3 8-15 + A3-4 0-7 instead.
+        assert [{'host_id':'a3-3','devices':list(range(8,16))},
+                {'host_id':'a3-4','devices':list(range(8))}] in a3['verified_multinode_allocations']
+        barrier=Barrier(2,timeout=5)
+        def task(root,key):
+            with scheduler.claim_dynamic(root,cfg,ascend_env=None,timeout=4,sleep=.01,
+                                         owner_key=key) as x:
+                barrier.wait()
+                return (scheduler.resource_keys(x['allocation']),x['master_port'])
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);(root/'config').mkdir()
+            (root/'config/pools.json').write_text(json.dumps(pools))
+            with patch.object(scheduler,'remote_preflight'), \
+                 patch.object(scheduler,'shared_resource_lock_root',return_value=root/'leases'):
+                with ThreadPoolExecutor(max_workers=2) as ex:
+                    f1=ex.submit(task,root,'103:1:16p_a')
+                    f2=ex.submit(task,root,'104:1:16p_b')
+                    a,b=f1.result(),f2.result()
+            self.assertFalse(set(a[0])&set(b[0]))
+            self.assertNotEqual(a[1],b[1])
+
     def test_approved_a3_reclaim_rechecks_before_allocation(self):
         case=load_config(ROOT)["a3-16p"]
         pools=json.loads((ROOT/"config/pools.json").read_text())
@@ -178,8 +281,25 @@ class MatrixDispatchTests(unittest.TestCase):
                  patch("ci_core.occupancy.reclaim_candidate",return_value=True) as reclaim:
                 with scheduler.claim_dynamic(root,case,ascend_env=None,
                                              timeout=1,sleep=.001) as runtime:
-                    self.assertEqual(runtime["allocation"],
-                                     scheduler.candidates(case,pools)[0])
+                    self.assertIn(runtime["allocation"], scheduler.candidates(case,pools))
+                # With a second certified 16P topology available, the
+                # scheduler safely selects it instead of killing anything.
+                reclaim.assert_not_called()
+                self.assertEqual(preflight.call_count,2)
+
+    def test_reclaim_once_when_only_verified_16p_pair_is_occupied(self):
+        case=load_config(ROOT)['a3-16p']
+        pools=json.loads((ROOT/'config/pools.json').read_text())
+        pools['a3-shared']['verified_multinode_allocations']=[
+            pools['a3-shared']['verified_multinode_allocations'][0]]
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);(root/'config').mkdir()
+            (root/'config/pools.json').write_text(json.dumps(pools))
+            with patch.dict('os.environ',{'LITE_ACTIONS_RECLAIM_EXTERNAL_PROCESSES':'1'}), \
+                 patch.object(scheduler,'remote_preflight',side_effect=[RuntimeError('occupied'),None]) as preflight, \
+                 patch('ci_core.occupancy.reclaim_candidate',return_value=True) as reclaim:
+                with scheduler.claim_dynamic(root,case,ascend_env=None,timeout=.5,sleep=.01) as x:
+                    self.assertEqual(x['allocation'],pools['a3-shared']['verified_multinode_allocations'][0])
                 reclaim.assert_called_once()
                 self.assertEqual(preflight.call_count,2)
 
@@ -204,10 +324,46 @@ class MatrixDispatchTests(unittest.TestCase):
                         raise ResourceBusy("from execution")
                 self.assertEqual(preflight.call_count,1)
 
-    def test_phase1_training_is_serial_but_dispatch_concurrent(self):
-        self.assertEqual(unified_agent.MAX_WORKERS, 4)
-        self.assertEqual(unified_agent.TRAINING_WORKERS, 3)
-        self.assertGreaterEqual(unified_agent.LIGHTWEIGHT_WORKERS, 1)
+    def test_high_priority_16p_queued_intent_preserves_its_devices(self):
+        from ci_core.job_state import JobState
+        pool=json.loads((ROOT/'config/pools.json').read_text())
+        case=load_config(ROOT)['a3-8p']
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);(root/'config').mkdir()
+            (root/'config/pools.json').write_text(json.dumps(pool))
+            (root/'config/pipelines.json').write_text((ROOT/'config/pipelines.json').read_text())
+            JobState(root).update('new_high:1:16p',phase='queued',case='a3-16p',
+                                  requested_devices=16,queued_at=1)
+            with patch.object(scheduler,'remote_preflight'), \
+                 patch.object(scheduler,'shared_resource_lock_root',return_value=root/'leases'):
+                with scheduler.claim_dynamic(root,case,ascend_env=None,timeout=.25,
+                                             sleep=.01,owner_key='new_low:1:8p') as low:
+                    high=set(scheduler.resource_keys(pool['a3-shared']['verified_multinode_allocations'][0]))
+                    self.assertFalse(high & set(scheduler.resource_keys(low['allocation'])))
+            # Disabled 64P is never allowed to reserve capacity on A3.
+            JobState(root).update('disabled:1:64p',phase='queued',case='a5-64p',
+                                  requested_devices=64,queued_at=0)
+            with patch.object(scheduler,'remote_preflight'), \
+                 patch.object(scheduler,'shared_resource_lock_root',return_value=root/'leases'):
+                with scheduler.claim_dynamic(root,case,ascend_env=None,timeout=.25,
+                                             sleep=.01,owner_key='new_low2:1:8p') as low:
+                    self.assertEqual(len(low['allocation']),1)
+
+    def test_four_training_workers_and_priority_order(self):
+        self.assertEqual(unified_agent.MAX_WORKERS, 5)
+        self.assertEqual(unified_agent.TRAINING_WORKERS, 4)
+        self.assertEqual(unified_agent.LIGHTWEIGHT_WORKERS, 1)
+        a=load_config(ROOT)
+        options=[{"id":81,"path":".github/workflows/a3_8p_lite_actions.yml"},
+                 {"id":80,"path":".github/workflows/a3_16p_lite_actions.yml"},
+                 {"id":70,"path":".github/workflows/a5_64p_lite_actions.yml"},
+                 {"id":79,"path":".github/workflows/a3_8p_lite_actions.yml"}]
+        admitted={case["workflow"]:case for case in a.values() if case["enabled"]}
+        sorted_runs=unified_agent.prioritize_runs(options,admitted)
+        self.assertEqual([x["id"] for x in sorted_runs],[80,79,81,70])
+        self.assertEqual(unified_agent.requested_devices(a["a5-64p"]),64)
+        # Disabled 64P must never gain a training priority slot.
+        self.assertNotIn(a["a5-64p"]["workflow"],admitted)
 
     def test_npu_process_classification_maps_card_die_without_kill(self):
         out=("Process id in container\n"
@@ -228,7 +384,8 @@ class MatrixDispatchTests(unittest.TestCase):
             reports=[]
             @contextmanager
             def claimed(_root,_case,**kwargs):
-                yield {**_case,"allocation":[{"host_id":"a3-4","devices":list(range(8))}]}
+                yield {**_case,"allocation":[{"host_id":"a3-4","devices":list(range(8))}],
+                       "port_slot":0}
             def execute_case(case, subrun, **kwargs):
                 self.assertTrue(kwargs["pre_reserved"])
                 assert len(seen)==0 or seen[-1] != subrun["_ci_test_id"]

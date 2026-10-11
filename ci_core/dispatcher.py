@@ -145,7 +145,9 @@ def _run_matrix_and_report(case: dict, run: dict, *, root: Path) -> None:
                 assigned = (len(allocation), len(allocation[0]["devices"])) if allocation else (0, 0)
             if expected != assigned:
                 raise ValueError(f"Case topology unauthorized {test_id}: {expected}!={assigned}")
-            state.update(key, phase="running", pipeline=case["name"],
+            # Waiting for a verified allocation is not running any remote Rank.
+            # Persist separately so recovery never quarantines an unstarted job.
+            state.update(key, phase="waiting_resources", pipeline=case["name"],
                          sha=run["head_sha"], test_id=test_id)
             log = task_dir(subrun, root) / "pipeline.log"
             try:
@@ -159,7 +161,8 @@ def _run_matrix_and_report(case: dict, run: dict, *, root: Path) -> None:
                                                  if run.get("_ci_cancel_event")
                                                  is not None else None)) as selected:
                         # Persist the exact assigned devices before remote SSH.
-                        state.update(key, allocation=selected["allocation"])
+                        state.update(key, phase="running", allocation=selected["allocation"],
+                                     port_profile=selected["port_slot"])
                         announce_running(client, run, pipeline=case["pipeline_id"],
                                          test_id=test_id,
                                          plan_digest=run["_ci_request"]["plan_digest"])

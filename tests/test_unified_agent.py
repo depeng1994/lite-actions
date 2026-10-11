@@ -220,6 +220,22 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(observed.count("train_end"), 2)
         self.assertLess(observed.index("smoke"), observed.index("train_end"))
 
+    def test_completed_unadmitted_higher_priority_does_not_block_new_cases(self):
+        from tempfile import TemporaryDirectory
+        from ci_core.job_state import JobState
+        class StubAPI:
+            def workflow_status(self, rid):
+                self_id = 5001
+                if rid != self_id:raise RuntimeError('unexpected Run')
+                return {'status':'completed','conclusion':'cancelled'}
+        with TemporaryDirectory() as td:
+            state=JobState(Path(td))
+            key='5001:1:dsv4_flash_a3_16p_example'
+            state.update(key,phase='queued',case='a3-16p',requested_devices=16,queued_at=1)
+            agent.prune_completed_unadmitted(state, StubAPI(), {}, [])
+            self.assertEqual(state.read()[key]['phase'],'reported')
+            self.assertEqual(state.read()[key]['result'],'ABANDONED')
+
     def test_matrix_cases_get_independent_futures_and_state(self):
         """Two jobs in the same GitHub run must not be serialized in one future."""
         from contextlib import nullcontext

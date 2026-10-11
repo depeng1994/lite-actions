@@ -92,6 +92,57 @@ def reserve(lock_root: Path, resources: Iterable[Mapping]) -> Iterator[tuple[tup
 
 
 @contextmanager
+def reserve_host_budget(lock_root: Path, resources: Iterable[Mapping],
+                        *, max_jobs_per_host: int) -> Iterator[dict[str, int]]:
+    """Atomically acquire one Host-capacity slot on every participating node.
+
+    Unlike mutable case status, flock stops concurrent admission races before
+    state has been persisted. A distributed allocation never holds half a Host
+    quota after contention, and no running training is ever preempted.
+    """
+    if type(max_jobs_per_host) is not int or max_jobs_per_host not in (1, 2):
+        raise ValueError("unsafe Host budget")
+    hosts = sorted({host for host, _ in resource_keys(resources)})
+    if not hosts:
+        raise ValueError("host reservation requires physical devices")
+    lock_root.mkdir(parents=True, exist_ok=True)
+    held = []
+    chosen = {}
+    try:
+        for host in hosts:
+            for slot in range(max_jobs_per_host):
+                fd = (lock_root / f"{host}_job-{slot:02d}.lock").open("a+b")
+                try:
+                    fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    fd.close()
+                    continue
+                held.append(fd)
+                chosen[host] = slot
+                break
+            else:
+                raise ResourceBusy(f"{host} Host budget full")
+        yield chosen
+    finally:
+        for fd in reversed(held):
+            fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
+            fd.close()
+
+
+def port_profile(slot: int) -> dict:
+    """Exactly one static, mutually disjoint HCCL network port namespace."""
+    if type(slot) is not int or not 0 <= slot < 4:
+        raise ValueError("invalid approved port slot")
+    host_base = 24000 + 128 * slot
+    npu_base = 28000 + 128 * slot
+    return {"master_port": 16000 + slot,
+            "hccl_if_base_port": 20000 + 128 * slot,
+            "hccl_host_port_range": f"{host_base}-{host_base+63}",
+            "hccl_npu_port_range": f"{npu_base}-{npu_base+63}",
+            "port_slot": slot}
+
+
+@contextmanager
 def reserve_ports(lock_root: Path, resources: Iterable[Mapping]) -> Iterator[dict]:
     """Reserve one matching TCP/HCCL port namespace across every node.
 
@@ -103,7 +154,10 @@ def reserve_ports(lock_root: Path, resources: Iterable[Mapping]) -> Iterator[dic
     if not hosts:
         raise ValueError("port reservation requires physical devices")
     lock_root.mkdir(parents=True, exist_ok=True)
-    for slot in range(256):
+    # Four separately reserved communication profiles, all outside the
+    # dispatcher's host ephemeral-port range on verified A3 hosts. Never
+    # enlarge without installed-CANN + real HCCL bind verification.
+    for slot in range(4):
         held = []
         entered = False
         try:
@@ -116,13 +170,12 @@ def reserve_ports(lock_root: Path, resources: Iterable[Mapping]) -> Iterator[dic
                     raise ResourceBusy(f"{host} rendezvous slot {slot}")
                 held.append(fd)
             entered = True
-            yield {"master_port": 16000 + slot,
-                   "hccl_if_base_port": 20000 + 64 * slot}
+            yield port_profile(slot)
             return
         except ResourceBusy:
             if entered:
                 raise
-            if slot == 255:
+            if slot == 3:
                 raise ResourceBusy("all rendezvous slots in use")
         finally:
             for fd in reversed(held):

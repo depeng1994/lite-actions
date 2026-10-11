@@ -224,6 +224,15 @@ def summarize(log: Path, rc: int) -> list[str]:
     return list(tail) or [f"Execution returned {rc} without output"]
 
 
+def trusted_allocation_manifest(case: dict) -> dict:
+    """Bind the subprocess's device and port manifest to one verified lease."""
+    from ci_core.resources import port_profile
+    approved_port = port_profile(case["port_slot"])
+    if any(case.get(field) != value for field, value in approved_port.items()):
+        raise ValueError("Dispatcher port lease/profile mismatch")
+    return {"allocation": case["allocation"], **approved_port}
+
+
 def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None = None,
             resource_wait_seconds: int = 600, pre_reserved: bool = False) -> Execution:
     if not case.get("enabled"):
@@ -264,7 +273,7 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
             pools_for_assignment = json.loads((root / "config/pools.json").read_text())
             validate_allocation(case, pools_for_assignment, case.get("allocation", []))
             alloc_path = log_dir / "allocation.json"
-            alloc_path.write_text(json.dumps({"allocation": case["allocation"]}) + "\n")
+            alloc_path.write_text(json.dumps(trusted_allocation_manifest(case)) + "\n")
             cmd += ["--allocation-file", str(alloc_path)]
     else:
         raise ValueError(f"unknown trusted runner: {kind}")

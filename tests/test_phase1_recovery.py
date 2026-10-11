@@ -164,7 +164,8 @@ class RecoveryTests(unittest.TestCase):
             root=Path(td)
             @contextmanager
             def claimed(_root,_case,**kwargs):
-                yield {**_case,"allocation":[{"host_id":"a3-4","devices":list(range(8))}]}
+                yield {**_case,"allocation":[{"host_id":"a3-4","devices":list(range(8))}],
+                       "port_slot":0}
             run={**RUN,"_ci_request":plan()}
             with patch.object(dispatcher,"prepare_profile",return_value=(TEST_ID,{"ascend_env":"/trusted"})), \
                  patch.object(dispatcher,"claim_dynamic",side_effect=claimed), \

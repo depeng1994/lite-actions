@@ -207,12 +207,16 @@ class SharedSshRunnerTests(unittest.TestCase):
             manifest=Path(td)/"request.json"
             manifest.write_text(json.dumps(request))
             allocation=Path(td)/"allocation.json"
-            allocation.write_text(json.dumps({"allocation": STATIC["a3-8p"]}))
+            from ci_core.resources import port_profile
+            allocation.write_text(json.dumps({"allocation": STATIC["a3-8p"],
+                                              **port_profile(1)}))
             args=["runner","--case","a3-8p","--sha","a"*40,
                   "--stamp",STAMP,"--remote-dir","job-123",
                   "--run-id","1234","--run-attempt","1",
                   "--request-file",str(manifest),
                   "--allocation-file",str(allocation)]
+            # Verify the exact reserved port identity is forwarded rather than
+            # silently resetting to slot 0 in a new Python process.
             with patch.object(sys,"argv",args), patch.object(ssh_runner,"run",return_value=0) as execute, \
                  patch('ci_core.dispatch.remote_preflight'), \
                  patch.object(ssh_runner,'model_archive',return_value=Path('/unused')), \
@@ -222,6 +226,9 @@ class SharedSshRunnerTests(unittest.TestCase):
                        'env_vars':{**ASSET_ENV,'OPTIMIZER_OVERRIDES':''}}]]):
                 self.assertEqual(ssh_runner.main(),0)
                 self.assertEqual(execute.call_count,2)
+                self.assertEqual(execute.call_args_list[0].args[0]['port_slot'],1)
+                self.assertEqual(execute.call_args_list[0].args[0]['master_port'],16001)
+                self.assertEqual(execute.call_args_list[0].args[0]['hccl_npu_port_range'],'28128-28191')
                 self.assertEqual(execute.call_args_list[0].kwargs["remote_dir"],
                                  "job-123_case-01_"+TEST_8P)
                 self.assertEqual(execute.call_args_list[1].kwargs["test_case"],"dsv4_flash_a3_8p_adamw")
