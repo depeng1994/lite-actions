@@ -1,5 +1,9 @@
 # Lite Actions V2 重构计划：Phase 1 串行动态调度 → Phase 2 资源池并发
 
+> **文档定位**：本文档为 Lite Actions V2 架构重构的技术设计契约与阶段验证台账（归档备忘）。
+> - **日常使用、系统架构与首次部署**：请直接阅读 [README.md](README.md)；
+> - **模型测试用例编写**：请查阅模型仓 [tests/integration_tests/README.md](https://github.com/depeng1994/torchtitan-npu/blob/master/tests/integration_tests/README.md)。
+
 > 状态：**Phase 1 GitHub 双仓及生产 V2 已上线，最新 master 8P Muon/AdamW 与双机 16P 均实机通过；仅 GitCode 主源归一 Gate 尚未完成**。GitCode [MR #985](https://gitcode.com/cann/torchtitan-npu/merge_requests/985) 待具备权限的另一位维护者合并；合并前 Sync Upstream 保持禁用，P1.5 不标记 Done，Phase 2 暂不启动。
 > 方案：**A（已确认）**。Phase 1 = 双仓解耦 + GitHub Matrix Jobs + 动态选卡 + **全局串行训练**；Phase 2 = 在 Phase 1 稳定基线之上增加**真正并发**。  
 > 创建：2026-10-10；最近一次计划调整：2026-10-11。
