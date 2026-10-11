@@ -14,9 +14,25 @@
 
 ---
 
-## 1. 架构总览
+## 1. 模式对比：Lite Actions vs 标准 GitHub Self-Hosted Runner
 
-### 1.1 代码同步架构
+在专有算力集群（特别是黄区等隔离受限网络）中，Lite Actions 与传统的 GitHub Self-Hosted Runner（自建 Runner）在网络拓扑、资源互斥与安全边界上有着本质不同的设计考量：
+
+| 对比维度 | 标准 GitHub Self-Hosted Runner | Lite Actions 调度模式 | 核心差异与选型考量 |
+| :--- | :--- | :--- | :--- |
+| **网络要求** | **每台执行机均需公网出站**连接 GitHub | **集中出站代理**：仅需 1 台调度机连接外网，执行机处于纯内网 | **免公网连接**：A5 等黄区/隔离区机器无需开通外网或复杂网关策略 |
+| **机器侵入性** | 需在每台执行机上安装常驻 Runner 守护进程、.NET/Node 运行时 | **执行机零侵入**：执行机无需安装任何额外 Agent，仅需标准 SSH 与已有 Docker/CANN 环境 | **零系统污染**：不修改物理机系统服务，版本升级或故障排查仅需在调度机单点操作 |
+| **硬件互斥与调度** | **无卡级感知**：仅按主机（Host）维度分配 Job，多任务同时派发时易发生 NPU 显存争抢与冲突 | **原生物理卡级原子锁**：支持按 Device ID（如 0~7 / 8~15）细粒度加锁与排队，全局单任务串行保护 | **杜绝踩卡冲突**：多人共用物理集群时自动排队，并支持对可信外部进程（如 auto-occupy/vllm）按 PID 定点回收 |
+| **分布式多机支持** | 原生单 Job 绑定单机；跨机训练（如 16P/64P）需在用户脚本内自行写复杂的 SSH 跨机编排与通信检查 | **原生支持多机拓扑**：直接在通道配置声明 `nodes: 2, devices_per_node: 8`，调度机统一原子申请跨机卡锁并校验 HCCL 小网 | **开箱即用多机**：由调度机统一编排跨机分布式启动、网络检查与日志汇聚 |
+| **凭据与执行安全** | 执行机持有 GitHub Token 与 Runner 注册凭据，外部 PR 存在恶意脚本执行与宿主机逃逸风险 | **执行机零凭据**：执行机完全无 Token；仅允许执行受信 Commit SHA 的白名单预置用例，拒绝任意 Shell 输入 | **安全受控防逃逸**：隔离区机器完全无 GitHub 写入权限，杜绝外部不可信代码注入 |
+| **日志脱敏与私网保护** | 训练标准输出实时全量上传至 GitHub Actions 控制台，易暴露内网 IP/路径，超大日志易导致网页卡死 | **有界脱敏回传**：完整日志保留在内网执行机本地，仅摘取最后 20 行关键日志与 TensorBoard 标量回传 | **保护内网隐私**：避免敏感内网信息泄露，GitHub 界面轻量直观展示 PASS/FAIL 诊断 |
+| **通用生态兼容性** | **完全自由**：支持完整 GitHub Actions 语法、Marketplace Action 插件与任意 Shell 步骤 | **受控收敛**：仅支持指定通道与标准测试用例（`test_id` / `suite`），不支持任意 Shell 自由组合 | **权衡说明**：专为大规模 AI 算力与分布式训练 Daily 看护定制，牺牲任意编排自由度换取极致的安全与硬件稳定性 |
+
+---
+
+## 2. 架构总览
+
+### 2.1 代码同步架构
 
 ```mermaid
 flowchart LR
@@ -35,7 +51,7 @@ flowchart LR
 
 ---
 
-### 1.2 CI 运行架构
+### 2.2 CI 运行架构
 
 ```mermaid
 flowchart LR
@@ -90,7 +106,7 @@ flowchart LR
 
 ---
 
-### 1.3 职责边界划分
+### 2.3 职责边界划分
 
 | 关注点 | 模型仓 (`torchtitan-npu`) | 调度仓 (`lite-actions`) |
 | :--- | :--- | :--- |
@@ -102,7 +118,7 @@ flowchart LR
 
 ---
 
-## 2. 当前已验证通道与状态
+## 3. 当前已验证通道与状态
 
 | Actions 通道展示名称 | 通道 ID | 硬件规格与作用 | 状态 |
 | :--- | :--- | :--- | :--- |
@@ -113,15 +129,15 @@ flowchart LR
 
 ---
 
-## 3. 首次部署指南（在内网调度机操作）
+## 4. 首次部署指南（在内网调度机操作）
 
-### 3.1 环境要求
+### 4.1 环境要求
 
 调度机是一台**能够主动访问 `api.github.com`，且能通过 SSH 访问内网各执行机**的 Linux 主机。
 - **软件依赖**：Python 3.10+、Git、OpenSSH Client、GitHub CLI (`gh`)。
 - **权限要求**：调度机账号具有访问执行机的 SSH 免密权限；持有具有目标仓库 Actions 读取与 Commit Comment 写入权限的 GitHub Token。
 
-### 3.2 步骤一：克隆代码与出站认证
+### 4.2 步骤一：克隆代码与出站认证
 
 在**调度机**上执行：
 
@@ -137,7 +153,7 @@ gh auth login
 ssh -o BatchMode=yes <execution-host> hostname
 ```
 
-### 3.3 步骤二：校验配置并启动调度 Agent
+### 4.3 步骤二：校验配置并启动调度 Agent
 
 ```bash
 # 1. 运行自测单测与配置语法校验
@@ -159,9 +175,9 @@ tail -n 30 logs/system/unified-agent.log
 
 ---
 
-## 4. 日常运维与应急排障
+## 5. 日常运维与应急排障
 
-### 4.1 快速健康巡检
+### 5.1 快速健康巡检
 
 ```bash
 # 检查 Agent 是否存活
@@ -174,14 +190,14 @@ tail -f logs/system/unified-agent.log
 ls -ltr logs/runs/ | tail -n 5
 ```
 
-### 4.2 任务取消与残留清理（GitHub Cancel 应对）
+### 5.2 任务取消与残留清理（GitHub Cancel 应对）
 
 当用户在 GitHub 页面点击 `Cancel workflow` 时：
 1. 调度机 Agent 会捕获取消事件，并向该任务分配的执行机发送终止指令。
 2. **精准清理机制**：根据本次任务唯一的 `LITE_CI_JOB_ID` 环境变量，调度机通过 `/proc/<pid>/environ` 精确识别本次任务启动的 `torchrun` 及其全部 Rank 进程并终止，**绝不通过 `pkill` 或进程名误杀其他用户的正常训练**。
 3. 随后调度机会通过 `npu-smi` 复查设备释放状态，确认 NPU 空闲后才会释放设备锁。
 
-### 4.3 异常隔离（Quarantine）与手动恢复
+### 5.3 异常隔离（Quarantine）与手动恢复
 
 若在任务执行过程中发生 SSH 闪断、执行机异常重启或进程无法判定退出，调度机会将相关 NPU 标记为 **Quarantine（隔离状态）**，防止后续任务因脏环境报错。
 
@@ -193,7 +209,7 @@ ls -ltr logs/runs/ | tail -n 5
    在调度机检查 `state/unified-jobs.json`，将对应 Task 的 `quarantined` 字段由 `true` 改为 `false`，并记录修复说明。
 4. **重启 Agent**：重新执行 `./run-unified-agent.sh` 恢复调度。
 
-### 4.4 磁盘空间预检（Docker Overlay / 共享 NFS 缓存）
+### 5.4 磁盘空间预检（Docker Overlay / 共享 NFS 缓存）
 
 * **常见隐患**：部分执行机容器使用的是宿主机 `/data` 作为 Docker Overlay 底层，若宿主机磁盘写满，会导致容器内报错 `Not enough disk space`。
 * **规避方案**：模型仓用例统一将 Hugging Face 缓存重定向至共享存储（`HF_HOME=/mnt/share/ci_tests/.lite-actions-hf-cache`）。
@@ -204,7 +220,7 @@ ls -ltr logs/runs/ | tail -n 5
   df -h /mnt/share
   ```
 
-### 4.5 版本平滑升级与安全回滚
+### 5.5 版本平滑升级与安全回滚
 
 * **平滑升级**：
   1. 查看日志确认当前无正在执行的训练任务；
@@ -216,7 +232,7 @@ ls -ltr logs/runs/ | tail -n 5
 
 ---
 
-## 5. 环境扩展指南：如何新增机器与调度通道
+## 6. 环境扩展指南：如何新增机器与调度通道
 
 当集群新增了机器或需要开辟新的测试通道时，按以下三个步骤在 `lite-actions` 仓配置。
 
@@ -300,7 +316,7 @@ python3 scripts/preflight_pool.py --pool a3-shared --npu
 
 ---
 
-## 6. 相关参考
+## 7. 相关参考
 
 * **如何编写和新增测试用例**：参见模型仓 [集成测试使用指南 (tests/integration_tests/README.md)](https://github.com/depeng1994/torchtitan-npu/blob/master/tests/integration_tests/README.md)。
 * **历史架构演进与阶段设计备忘**：参见 [REFACTOR_PLAN.md](REFACTOR_PLAN.md)。
