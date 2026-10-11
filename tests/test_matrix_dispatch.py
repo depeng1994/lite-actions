@@ -116,6 +116,33 @@ class MatrixDispatchTests(unittest.TestCase):
                     right = executor.submit(held_case,"202:1:case2", "a3-4")
                     self.assertEqual({left.result(),right.result()},{"a3-3","a3-4"})
 
+    def test_active_8p_blocks_16p_temporarily_without_quarantine(self):
+        from ci_core.job_state import JobState
+        from concurrent.futures import ThreadPoolExecutor
+        import time
+        root_case = load_config(ROOT)["a3-16p"]
+        pools=json.loads((ROOT/"config/pools.json").read_text())
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            (root/"config").mkdir()
+            (root/"config/pools.json").write_text(json.dumps(pools))
+            old_key="88:1:active-eight-p"
+            state=JobState(root)
+            state.update(old_key,phase="running",
+                         allocation=[{"host_id":"a3-4","devices":list(range(8,16))}])
+            def after_release():
+                time.sleep(.05)
+                state.update(old_key,phase="reported",result="PASS")
+            with patch.object(scheduler,"remote_preflight"):
+                with ThreadPoolExecutor(max_workers=1) as ex:
+                    future=ex.submit(after_release)
+                    with scheduler.claim_dynamic(root,root_case,ascend_env=None,
+                                                 timeout=1,sleep=.01,
+                                                 owner_key="89:1:16p") as selected:
+                        self.assertEqual(len(selected['allocation']),2)
+                    future.result()
+            self.assertFalse(state.read()[old_key].get('quarantined',False))
+
     def test_approved_a3_reclaim_rechecks_before_allocation(self):
         case=load_config(ROOT)["a3-16p"]
         pools=json.loads((ROOT/"config/pools.json").read_text())

@@ -106,6 +106,7 @@ def _claim_dynamic_locked(root: Path, case: dict, *, ascend_env: str | None,
         # children still block any overlapping allocation (fail closed).
         from ci_core.job_state import JobState
         quarantined_keys: set[tuple[str, int]] = set()
+        active_keys: set[tuple[str, int]] = set()
         for key, record in JobState(root).read().items():
             owner_run_key = (owner_key.rsplit(":", 1)[0]
                              if owner_key and owner_key.count(":") >= 2
@@ -115,18 +116,23 @@ def _claim_dynamic_locked(root: Path, case: dict, *, ascend_env: str | None,
             prior_allocation = record.get("allocation")
             if record.get("phase") == "blocked_recovery" and not prior_allocation:
                 raise UnsafeResourceState("unscoped recovery requires reconciliation")
-            if record.get("quarantined") or (
-                    record.get("phase") in ("running", "blocked_recovery")
-                    and prior_allocation):
+            if record.get("quarantined") or record.get("phase") == "blocked_recovery":
                 if not prior_allocation:
                     raise UnsafeResourceState("unscoped device quarantine")
                 quarantined_keys.update(resource_keys(prior_allocation))
+            elif record.get("phase") == "running" and prior_allocation:
+                # A live overlapping CI job is temporary contention, not an
+                # unsafe orphan. Wait and retry rather than fail or reclaim it.
+                active_keys.update(resource_keys(prior_allocation))
         usable = [allocation for allocation in possibilities
                   if not quarantined_keys.intersection(resource_keys(allocation))]
         if not usable:
             raise UnsafeResourceState("all verified candidates overlap quarantined devices")
         blocked = []
         for allocation in usable:
+            if active_keys.intersection(resource_keys(allocation)):
+                blocked.append((allocation, "leased"))
+                continue
             # ResourceBusy from a running task is not a device-lock conflict.
             # Never swallow execution failures and retry that training Case.
             entered_execution = False
