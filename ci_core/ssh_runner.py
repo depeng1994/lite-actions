@@ -118,6 +118,12 @@ def remote_command(node: dict, nodes: list[dict], runner: dict, dest: str,
     }
     if node.get("network_interface"):
         env["Network_Interface"] = node["network_interface"]
+    for key in ("LITE_CI_MASTER_PORT", "LITE_CI_HCCL_IF_BASE_PORT"):
+        if key in runner:
+            port = runner[key]
+            if type(port) is not int or not 1024 <= port < 65536:
+                raise ValueError("invalid dispatcher-issued rendezvous port")
+            env[key] = str(port)
     env["CKPT_SAVE_LOAD_PATH"] = dest + "/checkpoints"
     setup = f"source {q(runner['env_vars']['ASCEND_SET_ENV_PATH'])} >/dev/null 2>&1 && "
     # PID file enables bounded cancellation. Python on the dispatcher always
@@ -261,7 +267,9 @@ def run(case: dict, sha: str, stamp: str, *, test_case: str,
         # The Lite Actions JSON has no testcase-owned environment fields.
         runner={**case['runner'],
                 'mode':'single' if len(nodes)==1 else 'distributed',
-                'env_vars':matches[0]['env_vars']}
+                'env_vars':matches[0]['env_vars'],
+                'LITE_CI_MASTER_PORT':case.get('master_port', 16000),
+                'LITE_CI_HCCL_IF_BASE_PORT':case.get('hccl_if_base_port', 20000)}
         dirs = {}
         with ThreadPoolExecutor(max_workers=len(nodes)) as executor:
             futures = {executor.submit(stage, node, base, archive, sha): node for node in nodes}

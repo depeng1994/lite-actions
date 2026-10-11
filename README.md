@@ -317,6 +317,19 @@ python3 scripts/preflight_pool.py --pool a3-shared --npu
 
 ---
 
+### Phase 1 调度并发与训练串行
+
+调度器使用四个 Worker：**3 个 SSH 训练 Worker** 和 **1 个本地轻量
+Smoke Worker**。不重叠的设备组/节点可并发执行，使用全进程共享的
+物理 NPU 文件锁与多宿主 rendezvous 端口租约；
+锁存储在跨工作目录共享的 `~/.cache/lite-actions/resource-leases` 下，
+可用 `LITE_ACTIONS_RESOURCE_LOCK_ROOT` 指定绝对目录；Smoke 可与训练并行完成，
+不会因训练排队而无谓占用 GitHub Waiter 时间。GitHub 轮询和
+结果上报仍由 Dispatcher Python 执行，NPU 进程回收策略不变。
+分布式训练一次性获取全部节点/端口，绝不占据部分资源等待其他节点；
+A5 仍保持禁用。共享宿主机的其他非 Lite CI 进程不受文件锁保护，
+仍必须执行 NPU preflight 和按授权范围进行回收。
+
 ## 7. 相关参考
 
 * **如何编写和新增测试用例**：参见模型仓 [集成测试使用指南 (tests/integration_tests/README.md)](https://github.com/depeng1994/torchtitan-npu/blob/master/tests/integration_tests/README.md)。

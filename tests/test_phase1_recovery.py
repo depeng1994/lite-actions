@@ -89,7 +89,7 @@ class RecoveryTests(unittest.TestCase):
                 with scheduler.claim_dynamic(root,case,ascend_env=None,timeout=0.1):
                     pass
 
-    def test_running_previous_case_stops_global_serial_slot(self):
+    def test_running_previous_case_allows_disjoint_devices(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)
             (root/"config").mkdir()
@@ -97,11 +97,12 @@ class RecoveryTests(unittest.TestCase):
             JobState(root).update("oldrun:1:orphan", phase="running",
                                   allocation=[{"host_id":"a3-4","devices":list(range(8))}])
             case=load_config(ROOT)["a3-8p"]
-            with self.assertRaises(scheduler.UnsafeResourceState):
-                with scheduler.claim_dynamic(root,case,ascend_env=None,timeout=0.1):
-                    pass
+            with patch.object(scheduler,"remote_preflight"):
+                with scheduler.claim_dynamic(root,case,ascend_env=None,timeout=0.2) as allocated:
+                    self.assertFalse(set(allocated['allocation'][0]['devices']) == set(range(8))
+                                     and allocated['allocation'][0]['host_id'] == 'a3-4')
 
-    def test_running_previous_run_stops_global_serial_slot(self):
+    def test_running_previous_run_without_allocation_does_not_block(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)
             (root/"config").mkdir()
@@ -110,10 +111,9 @@ class RecoveryTests(unittest.TestCase):
                                   case="a3-8p", sha="a"*40)
             case=load_config(ROOT)["a3-8p"]
             with patch.object(scheduler,"remote_preflight"):
-                with self.assertRaises(scheduler.UnsafeResourceState):
-                    with scheduler.claim_dynamic(root,case,ascend_env=None,
-                                                 timeout=0.1,owner_key="1000:1"):
-                        pass
+                with scheduler.claim_dynamic(root,case,ascend_env=None,
+                                             timeout=0.2,owner_key="1000:1") as chosen:
+                    self.assertEqual(len(chosen['allocation']), 1)
 
     def test_current_owner_state_does_not_self_block(self):
         with tempfile.TemporaryDirectory() as td:

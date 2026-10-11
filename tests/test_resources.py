@@ -6,7 +6,8 @@ import unittest
 
 from ci_core.resources import (AgentAlreadyRunning, GlobalSlotBusy,
                                agent_lock_path, global_slot_path, reserve,
-                               ResourceBusy, single_agent, wait_global_slot)
+                               ResourceBusy, single_agent, wait_global_slot, reserve_ports,
+                               shared_resource_lock_root)
 from ci_core.config import load_config
 
 
@@ -77,6 +78,12 @@ class ResourceTests(unittest.TestCase):
             self.assertEqual(p.exitcode, 0)
             with single_agent(lockfile):
                 pass
+
+    def test_resource_lock_root_shared_across_repos_and_absolute(self):
+        with tempfile.TemporaryDirectory() as td:
+            with unittest.mock.patch.dict("os.environ", {"LITE_ACTIONS_RESOURCE_LOCK_ROOT": td}):
+                self.assertEqual(shared_resource_lock_root(), Path(td))
+        self.assertTrue(shared_resource_lock_root().is_absolute())
 
     def test_global_lock_defaults_are_worktree_independent(self):
         for path in (agent_lock_path(), global_slot_path()):

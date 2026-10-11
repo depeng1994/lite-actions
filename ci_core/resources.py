@@ -46,6 +46,16 @@ def global_slot_path() -> Path:
     return path
 
 
+def shared_resource_lock_root() -> Path:
+    """Shared across dispatcher worktrees and processes of the same OS user."""
+    configured = os.environ.get("LITE_ACTIONS_RESOURCE_LOCK_ROOT")
+    path = (Path(configured).expanduser() if configured else
+            Path.home() / ".cache" / "lite-actions" / "resource-leases")
+    if not path.is_absolute():
+        raise ValueError("LITE_ACTIONS_RESOURCE_LOCK_ROOT must be absolute")
+    return path
+
+
 def resource_keys(resources: Iterable[Mapping]) -> tuple[tuple[str, int], ...]:
     keys = set()
     for node in resources:
@@ -79,6 +89,45 @@ def reserve(lock_root: Path, resources: Iterable[Mapping]) -> Iterator[tuple[tup
         for fd in reversed(held):
             fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
             fd.close()
+
+
+@contextmanager
+def reserve_ports(lock_root: Path, resources: Iterable[Mapping]) -> Iterator[dict]:
+    """Reserve one matching TCP/HCCL port namespace across every node.
+
+    An occupied port slot on any participating node is rejected atomically.
+    The lease remains held for the full remote job lifetime, independently of
+    repository worktree or dispatcher worker. External users are not covered.
+    """
+    hosts = sorted({host for host, _ in resource_keys(resources)})
+    if not hosts:
+        raise ValueError("port reservation requires physical devices")
+    lock_root.mkdir(parents=True, exist_ok=True)
+    for slot in range(256):
+        held = []
+        entered = False
+        try:
+            for host in hosts:
+                fd = (lock_root / f"{host}_port-slot-{slot:03d}.lock").open("a+b")
+                try:
+                    fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    fd.close()
+                    raise ResourceBusy(f"{host} rendezvous slot {slot}")
+                held.append(fd)
+            entered = True
+            yield {"master_port": 16000 + slot,
+                   "hccl_if_base_port": 20000 + 64 * slot}
+            return
+        except ResourceBusy:
+            if entered:
+                raise
+            if slot == 255:
+                raise ResourceBusy("all rendezvous slots in use")
+        finally:
+            for fd in reversed(held):
+                fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
+                fd.close()
 
 
 @contextmanager

@@ -16,6 +16,8 @@ from ci_core.config import load_config
 from ci_core.github import GitHubClient, authorization
 from ci_core.job_state import JobState
 from ci_core.reporting import NAMES, job_key
+from ci_core.protocol import parse_plan
+from ci_core.dispatcher import task_key
 from ci_core.resources import single_agent
 from ci_core.dispatcher import run_and_report
 from ci_core.registry import workflow_label
@@ -28,7 +30,12 @@ ALLOWED_ACTORS = frozenset(
     if actor.strip()
 )
 BRANCHES = set(filter(None, os.environ.get("LITE_ACTIONS_ALLOWED_BRANCHES", "master").split(",")))
-MAX_WORKERS = 1  # Phase 1: one training Case across ALL workflows
+# Independent training workers may run on disjoint leased NPUs/hosts.
+# Local smoke has a dedicated worker; cross-process resource and port leases
+# prevent conflicting NPU jobs, including distributed multi-host allocations.
+MAX_WORKERS = 4
+TRAINING_WORKERS = 3
+LIGHTWEIGHT_WORKERS = MAX_WORKERS - TRAINING_WORKERS
 INTERVAL = int(os.environ.get("LITE_ACTIONS_POLL_SECONDS", "60"))
 STATUSES = {case: labels[0] for case, labels in NAMES.items()}
 
@@ -88,7 +95,8 @@ def main():
         state = JobState(ROOT)
         workflows = {case["workflow"]: case for case in cases.values() if case["enabled"]}
         inflight = {}
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        with (ThreadPoolExecutor(max_workers=TRAINING_WORKERS) as training_executor,
+              ThreadPoolExecutor(max_workers=LIGHTWEIGHT_WORKERS) as lightweight_executor):
             while True:
                 for key, (job, cancel_event, run_id) in list(inflight.items()):
                     if job.done():
@@ -115,33 +123,44 @@ def main():
                         if not case or not eligible(run, case):
                             continue
                         if case["runner"]["kind"] == "ssh":
-                            # The preparation Job uploads the structured manifest.
-                            # Poll again if it is not uploaded yet; never guess
-                            # test IDs from the display title.
+                            # Expand each verified GitHub Matrix Case into its
+                            # own independently scheduled execution task.
                             request = client.ci_request(run)
                             if request is None:
                                 continue
                             run["_ci_request"] = request
-                        key = job_key(run)
-                        if key in inflight:
-                            continue
-                        past = state.read().get(key, {})
-                        # CI task state prevents duplicate execution; allow
-                        # safe pending-report retry after a network interruption.
-                        if past.get("phase") == "reported":
-                            continue
-                        if (past.get("phase") == "running"
-                                and run.get("_ci_request", {}).get("schema") != 2):
-                            continue
-                        if past.get("phase") == "blocked_recovery":
-                            continue
-                        if past.get("phase") != "pending_report":
-                            state.update(key, phase="queued", case=case["name"],
-                                         sha=run["head_sha"])
-                        cancel_event = Event()
-                        run["_ci_cancel_event"] = cancel_event
-                        inflight[key] = (executor.submit(run_and_report, case, run, root=ROOT),
-                                         cancel_event, run["id"])
+                            items = parse_plan(request, run, case["pipeline_id"])
+                        else:
+                            items = [None]
+                        run_key = job_key(run)
+                        for item in items:
+                            test_id = item["test_id"] if item is not None else None
+                            key = task_key(run, test_id) if test_id else run_key
+                            if key in inflight:
+                                continue
+                            past = state.read().get(key, {})
+                            if past.get("phase") == "reported":
+                                continue
+                            if (past.get("phase") == "running"
+                                    and run.get("_ci_request", {}).get("schema") != 2):
+                                continue
+                            if past.get("phase") == "blocked_recovery":
+                                continue
+                            if past.get("phase") != "pending_report":
+                                state.update(key, phase="queued", case=case["name"],
+                                             sha=run["head_sha"])
+                            if test_id and state.read().get(run_key, {}).get("phase") != "running":
+                                state.update(run_key, phase="queued", case=case["name"],
+                                             sha=run["head_sha"])
+                            cancel_event = Event()
+                            subrun = {**run, "_ci_cancel_event": cancel_event}
+                            if test_id:
+                                subrun["_ci_case_id"] = test_id
+                            executor = (training_executor if test_id
+                                        else lightweight_executor)
+                            inflight[key] = (executor.submit(run_and_report, case, subrun,
+                                                             root=ROOT),
+                                             cancel_event, run["id"])
                 except Exception:
                     logging.exception("poll failed")
                 if args.once:

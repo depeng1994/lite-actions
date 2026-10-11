@@ -18,6 +18,7 @@ from ci_core.protocol import parse_plan
 from ci_core.source_repo import REPO
 from ci_core.reporting import make_report, job_key, post_result
 from ci_core.scheduler import claim_dynamic, ResourcesUnavailable, UnsafeResourceState
+from ci_core.resources import shared_resource_lock_root
 
 
 def task_key(run: dict, test_id: str) -> str:
@@ -96,7 +97,11 @@ def announce_running(client: GitHubClient, run: dict, *, pipeline: str,
 
 
 def _run_matrix_and_report(case: dict, run: dict, *, root: Path) -> None:
-    items = parse_plan(run["_ci_request"], run, case["pipeline_id"])
+    all_items = parse_plan(run["_ci_request"], run, case["pipeline_id"])
+    only_case = run.get("_ci_case_id")
+    if only_case is not None and only_case not in {x["test_id"] for x in all_items}:
+        raise ValueError("selected Matrix case absent from validated plan")
+    items = [x for x in all_items if only_case is None or x["test_id"] == only_case]
     state = JobState(root)
     client = GitHubClient(authorization())
     run_key = f"{run['id']}:{run.get('run_attempt', 1)}"
@@ -159,14 +164,14 @@ def _run_matrix_and_report(case: dict, run: dict, *, root: Path) -> None:
                                          test_id=test_id,
                                          plan_digest=run["_ci_request"]["plan_digest"])
                         execution = execute(selected, subrun, root=root,
-                                            lock_root=root / "state/device-locks",
+                                            lock_root=shared_resource_lock_root() / "devices",
                                             pre_reserved=True)
                 else:
                     announce_running(client, run, pipeline=case["pipeline_id"],
                                      test_id=test_id,
                                      plan_digest=run["_ci_request"]["plan_digest"])
                     execution = execute(case, subrun, root=root,
-                                        lock_root=root / "state/device-locks",
+                                        lock_root=shared_resource_lock_root() / "devices",
                                         resource_wait_seconds=900)
                 if not execution.release_verified:
                     state.update(key, quarantined=True)
@@ -207,9 +212,11 @@ def _run_matrix_and_report(case: dict, run: dict, *, root: Path) -> None:
             return
         state.update(key, phase="reported", result=report["status"])
         logging.info("CI Case reported %s %s", key, report["status"])
-    state.update(f"{run['id']}:{run.get('run_attempt', 1)}",
-                 phase="reported", result="COMPLETE",
-                 time=datetime.now(timezone.utc).isoformat())
+    done = all(state.read().get(task_key(run, item["test_id"]), {}).get("phase") == "reported"
+               for item in all_items)
+    state.update(run_key, phase="reported" if done else "running",
+                 result="COMPLETE" if done else None,
+                 time=datetime.now(timezone.utc).isoformat() if done else None)
 
 
 def _run_local_and_report(case: dict, run: dict, *, root: Path) -> None:
@@ -234,11 +241,11 @@ def _run_local_and_report(case: dict, run: dict, *, root: Path) -> None:
                 with claim_dynamic(root, case, ascend_env=profile["ascend_env"],
                                    timeout=900, owner_key=key) as runtime_case:
                     execution = execute(runtime_case, run, root=root,
-                                        lock_root=root / "state/device-locks",
+                                        lock_root=shared_resource_lock_root() / "devices",
                                         pre_reserved=True)
             else:
                 execution = execute(case, run, root=root,
-                                    lock_root=root / "state/device-locks",
+                                    lock_root=shared_resource_lock_root() / "devices",
                                     resource_wait_seconds=900)
             output = execution.log
             report = make_report(case, run, execution.exit_code, execution.tail, execution.log)

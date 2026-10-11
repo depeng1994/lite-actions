@@ -90,6 +90,32 @@ class MatrixDispatchTests(unittest.TestCase):
                 self.assertEqual(preflight.call_count,2)
                 reclaim.assert_not_called()
 
+    def test_two_eight_p_cases_on_separate_hosts_run_concurrently(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+        cfg = load_config(ROOT)["a3-8p"]
+        pools = json.loads((ROOT/"config/pools.json").read_text())
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root/"config").mkdir()
+            (root/"config/pools.json").write_text(json.dumps(pools))
+            ready = Barrier(2, timeout=3)
+            def held_case(owner, host):
+                chosen={**cfg, "test_forced_host": host}
+                with scheduler.claim_dynamic(root,chosen,ascend_env=None,
+                                             owner_key=owner,timeout=2,sleep=.01) as allocated:
+                    ready.wait()
+                    return allocated["allocation"][0]["host_id"]
+            def forced_candidates(case, pools):
+                return [[{"host_id": case["test_forced_host"], "devices": list(range(8))}]]
+            # All test workers share one deterministic mock and a single lease root.
+            with patch.object(scheduler, "candidates", side_effect=forced_candidates), \
+                 patch.object(scheduler, "remote_preflight"):
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    left = executor.submit(held_case,"201:1:case1", "a3-3")
+                    right = executor.submit(held_case,"202:1:case2", "a3-4")
+                    self.assertEqual({left.result(),right.result()},{"a3-3","a3-4"})
+
     def test_approved_a3_reclaim_rechecks_before_allocation(self):
         case=load_config(ROOT)["a3-16p"]
         pools=json.loads((ROOT/"config/pools.json").read_text())
@@ -129,8 +155,10 @@ class MatrixDispatchTests(unittest.TestCase):
                         raise ResourceBusy("from execution")
                 self.assertEqual(preflight.call_count,1)
 
-    def test_phase1_global_worker_is_serial(self):
-        self.assertEqual(unified_agent.MAX_WORKERS,1)
+    def test_phase1_training_is_serial_but_dispatch_concurrent(self):
+        self.assertEqual(unified_agent.MAX_WORKERS, 4)
+        self.assertEqual(unified_agent.TRAINING_WORKERS, 3)
+        self.assertGreaterEqual(unified_agent.LIGHTWEIGHT_WORKERS, 1)
 
     def test_npu_process_classification_maps_card_die_without_kill(self):
         out=("Process id in container\n"

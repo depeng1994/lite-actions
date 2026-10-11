@@ -1,7 +1,7 @@
-"""Phase 1 topology-aware allocation, with one global active training slot.
+"""Verified topology-aware all-or-nothing NPU and rendezvous-port leases.
 
-Reuses existing file locks. Only explicitly verified groups are eligible.
-No partial distributed allocation is ever retained while waiting.
+Disjoint allocations can run simultaneously, even across independent nodes.
+Overlapping distributed cases wait without reserving partial resources.
 """
 from __future__ import annotations
 
@@ -13,12 +13,11 @@ from pathlib import Path
 import time
 
 from ci_core.resources import (
-    GlobalSlotBusy,
     ResourceBusy,
-    global_slot_path,
     reserve,
     resource_keys,
-    wait_global_slot,
+    reserve_ports,
+    shared_resource_lock_root,
 )
 from ci_core.dispatch import remote_preflight
 
@@ -78,21 +77,11 @@ def validate_allocation(case: dict, pools: dict, allocation: list[dict]) -> None
 def claim_dynamic(root: Path, case: dict, *, ascend_env: str | None,
                   timeout: float = 900, sleep: float = 3.0,
                   owner_key: str | None = None, canceled=None):
-    """Hold the cross-process Phase 1 slot for the complete dynamic Case."""
-    started = time.monotonic()
-    try:
-        with wait_global_slot(global_slot_path(),
-                              timeout=timeout, interval=sleep,
-                              canceled=canceled):
-            remaining = timeout - (time.monotonic() - started)
-            if remaining <= 0:
-                raise ResourcesUnavailable("waited for global training slot")
-            with _claim_dynamic_locked(
-                    root, case, ascend_env=ascend_env, timeout=remaining,
-                    sleep=sleep, owner_key=owner_key, canceled=canceled) as runtime:
-                yield runtime
-    except GlobalSlotBusy as exc:
-        raise ResourcesUnavailable("waited for global training slot") from exc
+    """Hold device and port leases throughout staging, training and cleanup."""
+    with _claim_dynamic_locked(root, case, ascend_env=ascend_env,
+                               timeout=timeout, sleep=sleep,
+                               owner_key=owner_key, canceled=canceled) as runtime:
+        yield runtime
 
 
 @contextmanager
@@ -113,8 +102,8 @@ def _claim_dynamic_locked(root: Path, case: dict, *, ascend_env: str | None,
     while True:
         if canceled is not None and canceled():
             raise ResourcesUnavailable("GitHub Run canceled before allocation")
-        # Phase 1 is globally serial even after a dispatcher restart.
-        # Unresolved prior Case training is not made safe by an unlocked flock.
+        # NPU leases protect concurrently running cases; unresolved remote
+        # children still block any overlapping allocation (fail closed).
         from ci_core.job_state import JobState
         quarantined_keys: set[tuple[str, int]] = set()
         for key, record in JobState(root).read().items():
@@ -123,11 +112,12 @@ def _claim_dynamic_locked(root: Path, case: dict, *, ascend_env: str | None,
                              else owner_key)
             if key == owner_key or key == owner_run_key:
                 continue
-            if record.get("phase") in ("running", "blocked_recovery"):
-                raise UnsafeResourceState(
-                    "prior run/Case execution requires reconciliation")
-            if record.get("quarantined"):
-                prior_allocation = record.get("allocation")
+            prior_allocation = record.get("allocation")
+            if record.get("phase") == "blocked_recovery" and not prior_allocation:
+                raise UnsafeResourceState("unscoped recovery requires reconciliation")
+            if record.get("quarantined") or (
+                    record.get("phase") in ("running", "blocked_recovery")
+                    and prior_allocation):
                 if not prior_allocation:
                     raise UnsafeResourceState("unscoped device quarantine")
                 quarantined_keys.update(resource_keys(prior_allocation))
@@ -141,21 +131,22 @@ def _claim_dynamic_locked(root: Path, case: dict, *, ascend_env: str | None,
             # Never swallow execution failures and retry that training Case.
             entered_execution = False
             try:
-                with reserve(root / "state/device-locks", allocation):
-                    runtime = {**case, "allocation": allocation}
-                    try:
-                        remote_preflight(runtime, pools, ascend_env=ascend_env)
-                    except Exception as exc:
-                        # Formatting ambiguity and process ownership are both
-                        # fail-closed: never run on an unverified occupied set.
-                        blocked.append((allocation, type(exc).__name__))
-                        continue
-                    if canceled is not None and canceled():
-                        raise ResourcesUnavailable("GitHub Run canceled after allocation")
-                    logging.info("allocated Case %s: %s", case["name"], allocation)
-                    entered_execution = True
-                    yield runtime
-                    return
+                with reserve(shared_resource_lock_root() / "devices", allocation):
+                    with reserve_ports(shared_resource_lock_root() / "ports", allocation) as ports:
+                        runtime = {**case, "allocation": allocation, **ports}
+                        try:
+                            remote_preflight(runtime, pools, ascend_env=ascend_env)
+                        except Exception as exc:
+                            # Never start on unverified external occupancy.
+                            blocked.append((allocation, type(exc).__name__))
+                            continue
+                        if canceled is not None and canceled():
+                            raise ResourcesUnavailable("GitHub Run canceled after allocation")
+                        logging.info("allocated Case %s: %s ports=%s",
+                                     case["name"], allocation, ports)
+                        entered_execution = True
+                        yield runtime
+                        return
             except ResourceBusy:
                 if entered_execution:
                     raise
