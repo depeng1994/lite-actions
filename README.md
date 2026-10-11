@@ -332,3 +332,5 @@ Agent 从 GitHub PR API 核对 PR 编号、目标分支及 head SHA，拒绝过�
 组织仓 Repository Variable LITE_CI_RESULT_ACTOR 必须设置为 Dispatcher 提交 GitHub 结果评论的真实登录名；部署端可配置 A3_CI_RESULT_AUTHOR 用于结果去重校验，不把 PR 作者身份视为结果发布者。
 
 外部 fork 仍受 GitHub 原生 Workflow 审批策略约束。执行机不持有 GitHub Token；A5 64P 保持禁用。
+
+**低流量 CI 心跳**：Dispatcher 每个 Case 在资源分配后最多向 GitHub 发送一条极短的 LCI-R 状态评论；Waiter 只从对应 commit 评论读取状态，每 60 秒在 GitHub Actions 云端日志中输出一行 CI QUEUED 或 CI RUNNING。没有周期性内网状态上传；最终结果的日志摘取上限不变。

@@ -74,6 +74,26 @@ class AgentTests(unittest.TestCase):
         run["head_branch"]="untrusted-pr"
         self.assertFalse(agent.eligible(run,self.cases["a3-8p"]))
 
+    def test_progress_comment_is_short_and_idempotent(self):
+        from ci_core.dispatcher import post_progress_running
+        client = unittest.mock.MagicMock()
+        run = self.base_run()
+        client.commit_comments.return_value = []
+        post_progress_running(client, run, pipeline="a3-8p",
+                              test_id="dsv4_flash_a3_8p_example")
+        client.send_result.assert_called_once()
+        sha, body = client.send_result.call_args.args
+        self.assertEqual(sha, run["head_sha"])
+        self.assertEqual(body, "LCI-R 39100291:1:dsv4_flash_a3_8p_example")
+        self.assertLess(len(body.encode()), 60)
+        client.commit_comments.return_value = [
+            {"user":{"login":"ci-maintainer"},"body":body}]
+        client.send_result.reset_mock()
+        with patch.dict("os.environ",{"A3_CI_RESULT_AUTHOR":"ci-maintainer"}):
+            post_progress_running(client, run, pipeline="a3-8p",
+                                  test_id="dsv4_flash_a3_8p_example")
+        client.send_result.assert_not_called()
+
     def test_pull_request_allowed_without_actor_or_branch_allowlist(self):
         run = {**self.base_run(), "event": "pull_request", "head_branch": "feature",
                "actor": {"login": "external-contributor"}, "_ci_pr_number": 6}

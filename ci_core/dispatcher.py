@@ -68,6 +68,33 @@ def post_case(client: GitHubClient, run: dict, test_id: str, report: dict) -> No
     client.send_result(run["head_sha"], body)
 
 
+def post_progress_running(client: GitHubClient, run: dict, *, pipeline: str,
+                          test_id: str, plan_digest: str = "") -> None:
+    """One tiny, identity-scoped transition per Case; no periodic uploads.
+
+    The GitHub commit-comments endpoint itself scopes this marker to the SHA.
+    This is display-only telemetry, not a PASS/FAIL authorization signal.
+    """
+    marker = f"LCI-R {run['id']}:{run.get('run_attempt', 1)}:{test_id}"
+    author = os.environ.get("A3_CI_RESULT_AUTHOR")
+    prior = [item for item in client.commit_comments(run["head_sha"])
+             if (not author or item.get("user", {}).get("login") == author)
+             and (item.get("body") or "") == marker]
+    if not prior:
+        client.send_result(run["head_sha"], marker)
+
+
+def announce_running(client: GitHubClient, run: dict, *, pipeline: str,
+                     test_id: str, plan_digest: str = "") -> None:
+    try:
+        post_progress_running(client, run, pipeline=pipeline, test_id=test_id,
+                              plan_digest=plan_digest)
+    except Exception:
+        # Progress telemetry must not turn a real training PASS into FAIL.
+        logging.warning("CI progress upload unavailable: %s/%s", run["id"], test_id,
+                        exc_info=True)
+
+
 def _run_matrix_and_report(case: dict, run: dict, *, root: Path) -> None:
     items = parse_plan(run["_ci_request"], run, case["pipeline_id"])
     limit = {"a3-8p": 4, "a3-16p": 2, "a5-64p": 1}[case["name"]]
@@ -131,10 +158,16 @@ def _run_matrix_and_report(case: dict, run: dict, *, root: Path) -> None:
                                                  is not None else None)) as selected:
                         # Persist the exact assigned devices before remote SSH.
                         state.update(key, allocation=selected["allocation"])
+                        announce_running(client, run, pipeline=case["pipeline_id"],
+                                         test_id=test_id,
+                                         plan_digest=run["_ci_request"]["plan_digest"])
                         execution = execute(selected, subrun, root=root,
                                             lock_root=root / "state/device-locks",
                                             pre_reserved=True)
                 else:
+                    announce_running(client, run, pipeline=case["pipeline_id"],
+                                     test_id=test_id,
+                                     plan_digest=run["_ci_request"]["plan_digest"])
                     execution = execute(case, subrun, root=root,
                                         lock_root=root / "state/device-locks",
                                         resource_wait_seconds=900)
@@ -189,6 +222,8 @@ def _run_local_and_report(case: dict, run: dict, *, root: Path) -> None:
     if pending.get("phase") == "pending_report":
         report = pending["report"]
     else:
+        announce_running(GitHubClient(authorization()), run,
+                         pipeline=case["pipeline_id"], test_id="npu-smi")
         try:
             if "resources" in case:
                 from ci_core.dispatch import prepare_profile
