@@ -131,7 +131,7 @@ class GitHubClient:
                 raise ValueError("CI request JSON too large")
             request_data = json.loads(archive.read(info))
         if request_data.get("schema") == 2:
-            from ci_core.protocol_v2 import parse_plan
+            from ci_core.protocol import parse_plan
             # Pipeline authorization is resolved from the trusted workflow path.
             from ci_core.config import load_config
             configs = load_config(Path(__file__).resolve().parents[1])

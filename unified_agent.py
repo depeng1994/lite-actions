@@ -17,7 +17,7 @@ from ci_core.github import GitHubClient, authorization
 from ci_core.job_state import JobState
 from ci_core.reporting import NAMES, job_key, run_and_report
 from ci_core.resources import single_agent
-from ci_core.v2_dispatch import run_and_report_v2
+from ci_core.dispatcher import run_and_report
 from ci_core.registry import workflow_label
 
 ROOT = Path(__file__).resolve().parent
@@ -128,7 +128,7 @@ def main():
                         if past.get("phase") != "pending_report":
                             state.update(key, phase="queued", case=case["name"],
                                          sha=run["head_sha"])
-                        handler = (run_and_report_v2 if
+                        handler = (run_and_report if
                                    run.get("_ci_request", {}).get("schema") == 2
                                    else run_and_report)
                         cancel_event = Event()

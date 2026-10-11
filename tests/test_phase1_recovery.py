@@ -10,11 +10,11 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from ci_core import occupancy, scheduler, v2_dispatch
+from ci_core import occupancy, scheduler, dispatcher
 from ci_core.config import load_config
 from ci_core.dispatch import Execution
 from ci_core.job_state import JobState
-from ci_core.protocol_v2 import plan_digest
+from ci_core.protocol import plan_digest
 
 ROOT = Path(__file__).resolve().parents[1]
 TEST_ID = "dsv4_flash_a3_8p_example"
@@ -132,13 +132,13 @@ class RecoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)
             run={**RUN, "_ci_request": plan()}
-            key=v2_dispatch.task_key(run, TEST_ID)
+            key=dispatcher.task_key(run, TEST_ID)
             JobState(root).update(key, phase="running", sha="a"*40,
                                   allocation=[{"host_id":"a3-4","devices":list(range(8))}])
-            with patch.object(v2_dispatch,"GitHubClient",FakeGitHub), \
-                 patch.object(v2_dispatch,"authorization",return_value="fake"), \
-                 patch.object(v2_dispatch,"execute") as execute:
-                v2_dispatch.run_and_report_v2(load_config(ROOT)["a3-8p"],run,root=root)
+            with patch.object(dispatcher,"GitHubClient",FakeGitHub), \
+                 patch.object(dispatcher,"authorization",return_value="fake"), \
+                 patch.object(dispatcher,"execute") as execute:
+                dispatcher.run_and_report(load_config(ROOT)["a3-8p"],run,root=root)
             execute.assert_not_called()
             states=JobState(root).read()
             self.assertTrue(states[key]["quarantined"])
@@ -150,10 +150,10 @@ class RecoveryTests(unittest.TestCase):
             root=Path(td)
             event=Event();event.set()
             run={**RUN, "_ci_request": plan(),"_ci_cancel_event":event}
-            with patch.object(v2_dispatch,"GitHubClient",FakeGitHub), \
-                 patch.object(v2_dispatch,"authorization",return_value="fake"), \
-                 patch.object(v2_dispatch,"execute") as execute:
-                v2_dispatch.run_and_report_v2(load_config(ROOT)["a3-8p"],run,root=root)
+            with patch.object(dispatcher,"GitHubClient",FakeGitHub), \
+                 patch.object(dispatcher,"authorization",return_value="fake"), \
+                 patch.object(dispatcher,"execute") as execute:
+                dispatcher.run_and_report(load_config(ROOT)["a3-8p"],run,root=root)
             execute.assert_not_called()
             self.assertEqual(FakeGitHub.published[0]["status"],"CANCELLED")
 

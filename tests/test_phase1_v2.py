@@ -10,9 +10,9 @@ from unittest.mock import patch
 
 import unified_agent
 from ci_core.config import load_config
-from ci_core import v2_dispatch, scheduler, occupancy
+from ci_core import dispatcher, scheduler, occupancy
 from ci_core.dispatch import Execution, task_dir
-from ci_core.protocol_v2 import plan_digest
+from ci_core.protocol import plan_digest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -137,19 +137,19 @@ class V2Tests(unittest.TestCase):
                 def commit_comments(self,sha):return []
                 def send_result(self,sha,body):reports.append(json.loads(body.split("\n",1)[1]))
             run={**RUN,"_ci_request":run_plan()}
-            with patch.object(v2_dispatch,"prepare_profile",
+            with patch.object(dispatcher,"prepare_profile",
                               side_effect=lambda case,run:(run["_ci_test_id"],{"ascend_env":"/trusted"})), \
-                 patch.object(v2_dispatch,"claim_dynamic",side_effect=claimed), \
-                 patch.object(v2_dispatch,"execute",side_effect=execute_case), \
-                 patch.object(v2_dispatch,"GitHubClient",FakeGitHub), \
-                 patch.object(v2_dispatch,"authorization",return_value="fake"):
-                v2_dispatch.run_and_report_v2(original,run,root=root)
+                 patch.object(dispatcher,"claim_dynamic",side_effect=claimed), \
+                 patch.object(dispatcher,"execute",side_effect=execute_case), \
+                 patch.object(dispatcher,"GitHubClient",FakeGitHub), \
+                 patch.object(dispatcher,"authorization",return_value="fake"):
+                dispatcher.run_and_report(original,run,root=root)
             self.assertEqual(seen,[x["test_id"] for x in CASES])
             self.assertEqual([x["status"] for x in reports],["PASS","PASS"])
             self.assertEqual([x["test_id"] for x in reports],seen)
             from ci_core.job_state import JobState
             states=JobState(root).read()
-            self.assertEqual([states[v2_dispatch.task_key(run,id)]["phase"]
+            self.assertEqual([states[dispatcher.task_key(run,id)]["phase"]
                               for id in seen],["reported","reported"])
 
 

@@ -13,7 +13,7 @@ from ci_core.dispatch import execute, task_dir, prepare_profile
 from ci_core.github import GitHubClient, authorization
 from ci_core.job_state import JobState
 from ci_core.logs import clean
-from ci_core.protocol_v2 import parse_plan
+from ci_core.protocol import parse_plan
 from ci_core.reporting import make_report
 from ci_core.scheduler import claim_dynamic, ResourcesUnavailable, UnsafeResourceState
 
@@ -65,7 +65,7 @@ def post_case(client: GitHubClient, run: dict, test_id: str, report: dict) -> No
     client.send_result(run["head_sha"], body)
 
 
-def run_and_report_v2(case: dict, run: dict, *, root: Path) -> None:
+def run_and_report(case: dict, run: dict, *, root: Path) -> None:
     items = parse_plan(run["_ci_request"], run, case["pipeline_id"])
     limit = {"a3-8p": 4, "a3-16p": 2, "a5-64p": 1}[case["name"]]
     if len(items) > limit:

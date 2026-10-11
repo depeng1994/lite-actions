@@ -10,7 +10,7 @@ import unittest
 import unified_agent
 from ci_core import reporting
 from ci_core.config import load_config
-from ci_core.protocol_v2 import parse_plan, plan_digest
+from ci_core.protocol import parse_plan, plan_digest
 
 ROOT = Path(__file__).resolve().parents[1]
 
