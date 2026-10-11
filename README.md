@@ -123,7 +123,7 @@ flowchart LR
 
 | Actions 通道展示名称 | 通道 ID | 硬件规格与作用 | 状态 |
 | :--- | :--- | :--- | :--- |
-| **`Dispatcher-Smoke`** | `a3-smoke` | 调度机本地 `npu-smi` 连通性冒烟验证 | 可用 |
+| **`Dispatcher-Smoke`** | `dispatcher-smoke` | 调度机本地 `npu-smi` 连通性冒烟验证 | 可用 |
 | **`A3-8p-CI-Example`** | `a3-8p` | A3 单机 8P 动态选卡：Muon + AdamW 5 steps | **正式可用（两个独立 Job 串行执行）** |
 | **`A3-16p-CI-Example`** | `a3-16p` | A3 双机 16P（跨机 EP16）：Eager 5 steps | **正式可用** |
 | **`A5-64p-CI`** | `a5-64p` | A5 八机 64P（每台 8P）集群训练 | 预留模板，实机验收前保持禁用 |
@@ -148,7 +148,7 @@ cd lite-actions
 
 # 配置 GitHub 出站认证（两者选一即可）
 gh auth login
-# 或配置环境变量：export A3_CI_GITHUB_TOKEN="ghp_xxx"
+# 或配置环境变量：export LITE_ACTIONS_GITHUB_TOKEN="ghp_xxx"
 
 # 验证与执行机的 SSH 免密连通性
 ssh -o BatchMode=yes <execution-host> hostname
@@ -325,28 +325,43 @@ python3 scripts/preflight_pool.py --pool a3-shared --npu
 
 ### A3 共享设备的受控占用回收
 
-部署入口 run-unified-agent.sh 默认设置 A3_CI_RECLAIM_EXTERNAL_PROCESSES=1：
+部署入口 run-unified-agent.sh 默认设置 LITE_ACTIONS_RECLAIM_EXTERNAL_PROCESSES=1：
 当 A3 8P/16P 任务找不到空闲合法资源组时，Dispatcher 在全局串行锁内
-**优先尝试空闲卡**，仅在必要时进行一次有界资源回收。
+**优先尝试空闲卡**，仅在必要时进行一次有界资源回收。该能力仅允许在
+`config/pools.json` 中显式配置 `reclaim_external_processes: true` 的资源池启用；
+A5 等未批准的资源池保持关闭。
 回收前从宿主机（a3-3-relay / a3-4-relay）的 npu-smi 读取实际占卡
 PID，重新读取 /proc/PID 的启动时间、命令行、父进程，只允许
 auto-occupy 或精确的 VLLM::Worker_TP<N>/vLLM 进程族；
 使用 PID 专属 TERM/KILL，拒绝无关训练进程、无法核验的 PID、
-非 A3 资源池和正在由 Lite Dispatcher 租约锁占用的设备。
+未授权资源池和正在由 Lite Dispatcher 租约锁占用的设备。
 **不停止看门狗、不使用 pkill/killall、不经容器 PID 空间清理。**
 
-如需暂停占用回收，启动前设置 A3_CI_RECLAIM_EXTERNAL_PROCESSES=0。
+如需暂停占用回收，启动前设置 LITE_ACTIONS_RECLAIM_EXTERNAL_PROCESSES=0。
 资源回收失败则继续等待并返回 RESOURCE_TIMEOUT，不会对未知进程
 擅自扩大匹配范围。
 
+### 调度进程配置变量（与 A3/A5 机型无关）
+
+部署端统一使用 `LITE_ACTIONS_` 前缀：
+`LITE_ACTIONS_GITHUB_TOKEN`（可选，未配置时使用 `gh auth token`）、
+`LITE_ACTIONS_ALLOWED_ACTORS`、`LITE_ACTIONS_ALLOWED_BRANCHES`（默认 master）、
+`LITE_ACTIONS_POLL_SECONDS`（默认 60）、
+`LITE_ACTIONS_RESULT_AUTHOR`、
+`LITE_ACTIONS_ALLOW_EXPERIMENTAL_TOPOLOGY`（默认 0，生产禁止启用）、
+`LITE_ACTIONS_RECLAIM_EXTERNAL_PROCESSES`（默认 1，但必须同时具有资源池授权）。
+旧的 `A3_CI_*` 变量不再读取；升级调度机时需同步迁移部署环境。
+`LITE_CI_JOB_ID` 是跨执行进程的追踪协议字段，保持不变。
+`LITE_CI_RESULT_ACTOR` 是 GitHub Repository Variable，不等同于部署环境变量。
+
 ### 组织仓 PR 自动 CI（当前正式机制）
 
-所有面向 torchtitan-npu/torchtitan-npu:master 的 PR 通过 pull_request 自动触发组织仓 Workflow（含外部 fork）；默认测试套件由 Workflow 决定。手动 workflow_dispatch 保留部署环境 A3_CI_ALLOWED_ACTORS 和 A3_CI_ALLOWED_BRANCHES 约束。
+所有面向 torchtitan-npu/torchtitan-npu:master 的 PR 通过 pull_request 自动触发组织仓 Workflow（含外部 fork）；默认测试套件由 Workflow 决定。手动 workflow_dispatch 保留部署环境 LITE_ACTIONS_ALLOWED_ACTORS 和 LITE_ACTIONS_ALLOWED_BRANCHES 约束。
 
 Agent 从 GitHub PR API 核对 PR 编号、目标分支及 head SHA，拒绝过期/关联异常的 Run；用 PR head SHA 校验 Artifact 并从组织仓下载该精确版本模型代码。既有 schema-2、全局串行设备租约和 NPU 释放校验保持不变。个人 fork 的 Actions 可以继续禁用。
 
-组织仓 Repository Variable LITE_CI_RESULT_ACTOR 必须设置为 Dispatcher 提交 GitHub 结果评论的真实登录名；部署端可配置 A3_CI_RESULT_AUTHOR 用于结果去重校验，不把 PR 作者身份视为结果发布者。
+组织仓 Repository Variable LITE_CI_RESULT_ACTOR 必须设置为 Dispatcher 提交 GitHub 结果评论的真实登录名；部署端可配置 LITE_ACTIONS_RESULT_AUTHOR 用于结果去重校验，不把 PR 作者身份视为结果发布者。
 
 外部 fork 仍受 GitHub 原生 Workflow 审批策略约束。执行机不持有 GitHub Token；A5 64P 保持禁用。
 
-**低流量 CI 心跳**：Dispatcher 每个 Case 在资源分配后最多向 GitHub 发送一条极短的 LCI-R 状态评论；Waiter 只从对应 commit 评论读取状态，每 60 秒在 GitHub Actions 云端日志中输出一行 CI QUEUED 或 CI RUNNING。没有周期性内网状态上传；最终结果的日志摘取上限不变。
+**低流量 CI 心跳**：Dispatcher 每个 Case 在资源分配后最多向 GitHub 发送一条极短的 LCI-R 状态评论；Waiter 只从对应 commit 评论读取状态，每 60 秒在 GitHub Actions 云端日志中输出北京时间戳、Test ID 和 CI queued/running 状态。没有周期性内网状态上传；最终结果的日志摘取上限不变。

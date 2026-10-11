@@ -77,7 +77,7 @@ def parse_request(data: dict, run: dict) -> list[dict]:
     if data["schema"]!=1 or type(data["run_id"]) is not int or type(data["attempt"]) is not int or data["run_id"]!=run["id"] or data["attempt"]!=run.get("run_attempt",1) or data["sha"]!=run["head_sha"]:
         raise ValueError("CI request/run identity mismatch")
     cases=data["cases"]
-    if not isinstance(cases,list) or not 1<=len(cases)<=12:raise ValueError("invalid CI request case count")
+    if not isinstance(cases,list) or not cases:raise ValueError("invalid CI request case list")
     for item in cases:
         if (not isinstance(item, dict) or len(item) != 1
                 or (('test_id' in item) == ('suite' in item))):
@@ -125,8 +125,7 @@ def inspect_archive(archive:Path, selection:dict)->list[dict]:
         return rows
 
 
-def resolve_request(archive:Path, selections:list[dict],*,nodes:int,ngpu:int,
-                    max_cases:int)->list[dict]:
+def resolve_request(archive:Path, selections:list[dict],*,nodes:int,ngpu:int)->list[dict]:
     expanded=[]
     seen=set()
     for item in selections:
@@ -139,5 +138,4 @@ def resolve_request(archive:Path, selections:list[dict],*,nodes:int,ngpu:int,
             env_vars = validate_case_environment(found.get('env_vars'))
             seen.add(name)
             expanded.append({'test_id': name, 'env_vars': env_vars})
-    if len(expanded)>max_cases:raise ValueError('expanded suite exceeds channel/Waiter budget')
     return expanded

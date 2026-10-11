@@ -132,7 +132,7 @@ def prepare_profile(case:dict,run:dict)->tuple[str,dict]:
         else:
             nodes, ngpu = len(allocation), len(allocation[0]["devices"])
         expanded = resolve_request(archive, selections, nodes=nodes,
-            ngpu=ngpu, max_cases=1 if case["name"]=="a5-64p" else 4)
+            ngpu=ngpu)
     run['_ci_expanded_cases']=expanded
     # Preflight sources the toolkit selected by the model test, never a
     # hardcoded deployment value from Lite Actions.

@@ -59,6 +59,16 @@ class WorkflowContractTests(unittest.TestCase):
             parse_plan({**plan, "cases": [*plan["cases"], *plan["cases"]]},
                        run, "a3-8p")
 
+    def test_more_than_twelve_matrix_cases_are_accepted(self):
+        run = {"id": 42, "run_attempt": 1, "head_sha": "a"*40}
+        cases = [{"test_id": f"trusted_case_{i:03d}", "nnodes": 1,
+                  "ngpu": 8, "label": f"Case {i}"} for i in range(20)]
+        plan = {"schema": 2, "repo": "torchtitan-npu/torchtitan-npu",
+                "run_id": 42, "attempt": 1, "sha": "a"*40,
+                "pipeline": "a3-8p", "cases": cases}
+        plan["plan_digest"] = plan_digest(plan)
+        self.assertEqual(parse_plan(plan, run, "a3-8p"), cases)
+
     def test_source_configuration_is_upstream_only(self):
         from ci_core.source_repo import REPO
         self.assertEqual(REPO, "torchtitan-npu/torchtitan-npu")

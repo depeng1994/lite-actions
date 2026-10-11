@@ -63,11 +63,11 @@ class MatrixDispatchTests(unittest.TestCase):
         case=load_config(ROOT)["a3-16p"]
         verified=pools["a3-shared"]["verified_multinode_allocations"]
         trial=pools["a3-shared"]["experimental_multinode_allocations"][0]
-        with patch.dict("os.environ", {"A3_CI_ALLOW_EXPERIMENTAL_TOPOLOGY":"0"}):
+        with patch.dict("os.environ", {"LITE_ACTIONS_ALLOW_EXPERIMENTAL_TOPOLOGY":"0"}):
             self.assertEqual(scheduler.candidates(case,pools),verified)
             with self.assertRaises(ValueError):
                 scheduler.validate_allocation(case,pools,trial)
-        with patch.dict("os.environ", {"A3_CI_ALLOW_EXPERIMENTAL_TOPOLOGY":"1"}):
+        with patch.dict("os.environ", {"LITE_ACTIONS_ALLOW_EXPERIMENTAL_TOPOLOGY":"1"}):
             self.assertEqual(scheduler.candidates(case,pools),verified+[trial])
             scheduler.validate_allocation(case,pools,trial)
 
@@ -79,7 +79,7 @@ class MatrixDispatchTests(unittest.TestCase):
             root=Path(td)
             (root/"config").mkdir()
             (root/"config/pools.json").write_text(json.dumps(pools))
-            with patch.dict("os.environ", {"A3_CI_RECLAIM_EXTERNAL_PROCESSES":"0"}), \
+            with patch.dict("os.environ", {"LITE_ACTIONS_RECLAIM_EXTERNAL_PROCESSES":"0"}), \
                  patch.object(scheduler,"remote_preflight",
                               side_effect=[RuntimeError("occupied"),None]) as preflight, \
                  patch("ci_core.occupancy.reclaim_candidate") as reclaim:
@@ -97,7 +97,7 @@ class MatrixDispatchTests(unittest.TestCase):
             root=Path(td)
             (root/"config").mkdir()
             (root/"config/pools.json").write_text(json.dumps(pools))
-            with patch.dict("os.environ", {"A3_CI_RECLAIM_EXTERNAL_PROCESSES":"1"}), \
+            with patch.dict("os.environ", {"LITE_ACTIONS_RECLAIM_EXTERNAL_PROCESSES":"1"}), \
                  patch.object(scheduler,"remote_preflight",
                               side_effect=[RuntimeError("occupied"), None]) as preflight, \
                  patch("ci_core.occupancy.reclaim_candidate",return_value=True) as reclaim:
@@ -107,6 +107,13 @@ class MatrixDispatchTests(unittest.TestCase):
                                      scheduler.candidates(case,pools)[0])
                 reclaim.assert_called_once()
                 self.assertEqual(preflight.call_count,2)
+
+    def test_reclaim_requires_per_pool_authorization(self):
+        pools = json.loads((ROOT / "config/pools.json").read_text())
+        self.assertTrue(pools["a3-shared"]["reclaim_external_processes"])
+        self.assertFalse(pools["a5-64p-lab"]["reclaim_external_processes"])
+        # An arbitrary pool without explicit approval must remain fail closed.
+        self.assertFalse(pools["local-smoke"].get("reclaim_external_processes", False))
 
     def test_case_execution_resource_busy_not_retried(self):
         from ci_core.resources import ResourceBusy

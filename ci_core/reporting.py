@@ -15,7 +15,7 @@ from ci_core.logs import clean
 from ci_core.registry import workflow_label
 
 NAMES = {
-    "a3-smoke": ("Dispatcher-Smoke", "A3-2p-CI"),
+    "dispatcher-smoke": ("Dispatcher-Smoke",),
     "a3-8p": ("A3-8p-CI-Example", "A3-8p-CI"),
     "a3-16p": ("A3-16p-CI-Example", "A3-16p-CI"),
     "a5-64p": ("A5-64p-CI",),
@@ -44,14 +44,14 @@ def case_summary(log:Path|None,run:dict)->list[dict]:
         for line in log.read_text(encoding='utf-8',errors='replace').splitlines():
             if line.startswith('CASE_PLAN '):
                 names=line[len('CASE_PLAN '):].split(',')
-                if not plan:plan=names[:12]
+                if not plan:plan=names
             match=re.fullmatch(r'CASE_RESULT ([a-z][a-z0-9_]{0,79}) (PASS|FAIL) (\d+)',line)
             if match:
                 name,status,rc=match.groups()
                 if name in plan and name not in results:
                     results[name]={'test_name':name,'status':status,'exit_code':int(rc)}
     if not plan and '_ci_request' in run:
-        plan=[row.get('test_id',row.get('suite','unknown')) for row in run['_ci_request'].get('cases',[])][:12]
+        plan=[row.get('test_id',row.get('suite','unknown')) for row in run['_ci_request'].get('cases',[])]
     return [results.get(name,{'test_name':name,'status':'NOT_RUN','exit_code':None}) for name in plan]
 
 

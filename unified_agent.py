@@ -24,12 +24,12 @@ ROOT = Path(__file__).resolve().parent
 LOG = ROOT / "logs" / "system" / "unified-agent.log"
 # Explicit deployment-time allowlist. No maintainer account in repository code.
 ALLOWED_ACTORS = frozenset(
-    actor.strip() for actor in os.environ.get("A3_CI_ALLOWED_ACTORS", "").split(",")
+    actor.strip() for actor in os.environ.get("LITE_ACTIONS_ALLOWED_ACTORS", "").split(",")
     if actor.strip()
 )
-BRANCHES = set(filter(None, os.environ.get("A3_CI_ALLOWED_BRANCHES", "master").split(",")))
+BRANCHES = set(filter(None, os.environ.get("LITE_ACTIONS_ALLOWED_BRANCHES", "master").split(",")))
 MAX_WORKERS = 1  # Phase 1: one training Case across ALL workflows
-INTERVAL = int(os.environ.get("A3_CI_POLL_SECONDS", "60"))
+INTERVAL = int(os.environ.get("LITE_ACTIONS_POLL_SECONDS", "60"))
 STATUSES = {case: labels[0] for case, labels in NAMES.items()}
 
 

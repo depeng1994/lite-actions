@@ -123,7 +123,7 @@ def remote_command(node: dict, nodes: list[dict], runner: dict, dest: str,
     # PID file enables bounded cancellation. Python on the dispatcher always
     # validates job identity before killing its *own* remote process group.
     exports = " ".join(f"{key}={q(value)}" for key, value in env.items())
-    # Preserve legacy A3 ordering: source CANN first, then apply trusted
+    # Source the selected CANN toolkit first, then apply trusted
     # NODE_IPS / HCCL / device variables so the toolkit cannot override them.
     inner = (f"cd {q(dest+'/repo')} && {setup}"
              f"export {exports} && "
@@ -255,7 +255,7 @@ def run(case: dict, sha: str, stamp: str, *, test_case: str,
     with tempfile.TemporaryDirectory(prefix="lite-ci-stage-") as tmp:
         archive = model_archive(sha, Path(tmp))
         matches=resolve_request(archive,[{'test_id':test_case}],
-                               nodes=len(nodes),ngpu=len(nodes[0]['devices']),max_cases=1)
+                               nodes=len(nodes),ngpu=len(nodes[0]['devices']))
         if len(matches)!=1:raise ValueError('case selection changed')
         # These values are resolved from the pinned SHA's OverrideDefinitions.
         # The Lite Actions JSON has no testcase-owned environment fields.
@@ -370,9 +370,6 @@ def main() -> int:
         items = parse_request(request, {"id": args.run_id,
                                         "run_attempt": args.run_attempt,
                                         "head_sha": args.sha})
-        max_cases = 1 if case["name"] == "a5-64p" else 2
-        if len(items) > max_cases:
-            raise ValueError("CI request exceeds per-channel runtime budget")
         # Resolve validated per-case environment before running. In particular,
         # after a case exits, preflight uses its toolkit path and never a stale
         # environment from a different suite member.
@@ -381,7 +378,7 @@ def main() -> int:
             archive=model_archive(args.sha,Path(tmp))
             nodes=allocations(case,json.loads((ROOT/'config/pools.json').read_text()))
             resolved=resolve_request(archive,items,nodes=len(nodes),
-                                     ngpu=len(nodes[0]['devices']),max_cases=max_cases)
+                                     ngpu=len(nodes[0]['devices']))
         print("CASE_PLAN " + ",".join(x['test_id'] for x in items),flush=True)
         overall=0
         for index,item in enumerate(items):

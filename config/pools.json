@@ -178,7 +178,8 @@
           ]
         }
       ]
-    ]
+    ],
+    "reclaim_external_processes": true
   },
   "local-smoke": {
     "type": "local",
@@ -339,6 +340,7 @@
       }
     ],
     "notes": "Real addresses from operators. SSH, NPU numbering, broadcast and multi-node training are NOT hardware-verified; CI disabled.",
-    "process_indexing": "card"
+    "process_indexing": "card",
+    "reclaim_external_processes": false
   }
 }

@@ -24,6 +24,8 @@ def load_config(root: Path) -> dict:
         if pool_id not in pools:
             raise ValueError("unknown pool")
         pool = pools[pool_id]
+        if type(pool.get("reclaim_external_processes", False)) is not bool:
+            raise ValueError("pool reclaim_external_processes must be boolean")
         hosts = {node["host_id"]: node for node in pool["nodes"]}
         if len(hosts) != len(pool["nodes"]):
             raise ValueError("duplicate physical host")

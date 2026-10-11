@@ -40,7 +40,7 @@ def parse_plan(data: dict, run: dict, pipeline: str) -> list[dict]:
     if plan_digest(unsigned) != data["plan_digest"]:
         raise ValueError("CI plan digest mismatch")
     items = data["cases"]
-    if not isinstance(items, list) or not 1 <= len(items) <= 12:
+    if not isinstance(items, list) or not items:
         raise ValueError("invalid CI case list")
     seen = set()
     for item in items:

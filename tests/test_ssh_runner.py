@@ -53,20 +53,26 @@ class SharedSshRunnerTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     selected_test({**r, "name": bad.get("display_title", r["name"]), **bad})
 
-    def test_suite_expansion_topology_budget_and_selector_is_fail_closed(self):
+    def test_suite_expansion_topology_and_selector_is_fail_closed(self):
         with patch('ci_core.registry.inspect_archive',return_value=[
             {'test_id':TEST_8P,'nnodes':1,'ngpu':8,'env_vars':ASSET_ENV},
             {'test_id':'dsv4_flash_a3_8p_adamw','nnodes':1,'ngpu':8,'env_vars':{**ASSET_ENV,'OPTIMIZER_OVERRIDES':''}}
         ]):
             s=[{'suite':'a3_8p_tests'}]
-            rows=resolve_request(Path('/unused'),s,nodes=1,ngpu=8,max_cases=2)
+            rows=resolve_request(Path('/unused'),s,nodes=1,ngpu=8)
             self.assertEqual(len(rows),2)
             with self.assertRaisesRegex(ValueError,'topology'):
-                resolve_request(Path('/unused'),s,nodes=2,ngpu=8,max_cases=2)
-            with self.assertRaisesRegex(ValueError,'budget'):
-                resolve_request(Path('/unused'),s,nodes=1,ngpu=8,max_cases=1)
+                resolve_request(Path('/unused'),s,nodes=2,ngpu=8)
         req={'schema':1,'run_id':42,'attempt':1,'sha':'a'*40,'cases':[{'suite':'a3_8p_tests'}]}
         self.assertEqual(parse_request(req,{'id':42,'run_attempt':1,'head_sha':'a'*40})[0]['suite'],'a3_8p_tests')
+
+    def test_suite_expands_beyond_legacy_case_budget(self):
+        samples = [dict(test_id=f"trusted_case_{i:03d}", nnodes=1, ngpu=8,
+                        env_vars=dict(ASSET_ENV)) for i in range(15)]
+        with patch('ci_core.registry.inspect_archive', return_value=samples):
+            resolved = resolve_request(Path('/unused'), [{'suite': 'synthetic_tests'}],
+                                       nodes=1, ngpu=8)
+        self.assertEqual(len(resolved), 15)
 
     def test_model_owned_environment_is_forwarded_without_any_pipeline_asset_fields(self):
         for name in ('a3-8p', 'a3-16p', 'a5-64p'):
@@ -127,7 +133,7 @@ class SharedSshRunnerTests(unittest.TestCase):
                     for file in (model/subfolder).rglob('*.py'):
                         tar.add(file, arcname=str(file.relative_to(model)))
             found=resolve_request(archive,[{'suite':'a3_8p_tests'}],
-                                  nodes=1,ngpu=8,max_cases=2)
+                                  nodes=1,ngpu=8)
             self.assertEqual([x['test_id'] for x in found],
                 ['dsv4_flash_a3_8p_example','dsv4_flash_a3_8p_adamw'])
             for case in found:

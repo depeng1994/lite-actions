@@ -1,5 +1,5 @@
 {
-  "a3-smoke": {
+  "dispatcher-smoke": {
     "workflow": "lite-actions-dispatcher-smoke.yml",
     "pool": "local-smoke",
     "allocation": [],

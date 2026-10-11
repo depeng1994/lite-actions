@@ -159,10 +159,13 @@ class RecoveryTests(unittest.TestCase):
 
     def test_runner_enables_only_scoped_approved_reclamation_by_default(self):
         script=(ROOT/"run-unified-agent.sh").read_text()
-        self.assertIn('A3_CI_RECLAIM_EXTERNAL_PROCESSES:-1',script)
+        self.assertIn('LITE_ACTIONS_RECLAIM_EXTERNAL_PROCESSES:-1',script)
         source=(ROOT/"ci_core/scheduler.py").read_text()
-        self.assertIn('case["pool"] == "a3-shared"',source)
-        self.assertIn('"A3_CI_RECLAIM_EXTERNAL_PROCESSES", "0"',source)
+        self.assertIn('pools[case["pool"]].get("reclaim_external_processes", False)',source)
+        self.assertIn('"LITE_ACTIONS_RECLAIM_EXTERNAL_PROCESSES", "1"',source)
+        pools=json.loads((ROOT/"config/pools.json").read_text())
+        self.assertTrue(pools["a3-shared"]["reclaim_external_processes"])
+        self.assertFalse(pools["a5-64p-lab"]["reclaim_external_processes"])
 
     def test_external_host_pid_cleanup_never_uses_docker_namespace(self):
         from types import SimpleNamespace

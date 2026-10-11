@@ -15,7 +15,7 @@ API = f"https://api.github.com/repos/{REPO}"
 
 
 def authorization() -> str:
-    token = os.environ.get("A3_CI_GITHUB_TOKEN")
+    token = os.environ.get("LITE_ACTIONS_GITHUB_TOKEN")
     if token:
         return token
     proc = subprocess.run(["gh", "auth", "token"], capture_output=True,
@@ -43,7 +43,7 @@ class GitHubClient:
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
             "Authorization": f"Bearer {self.token}",
-            "User-Agent": "lite-actions/2",
+            "User-Agent": "lite-actions",
         }
         if payload is not None:
             headers["Content-Type"] = "application/json"
@@ -153,7 +153,7 @@ class GitHubClient:
         if len(matching) != 1:
             raise ValueError("ambiguous CI request artifacts")
         artifact = matching[0]
-        if artifact.get("size_in_bytes", 0) > 65536:
+        if artifact.get("size_in_bytes", 0) > 262144:
             raise ValueError("CI request artifact oversized")
         if artifact.get("workflow_run", {}).get("id", run_id) != run_id:
             raise ValueError("CI artifact does not belong to the selected run")
@@ -179,14 +179,14 @@ class GitHubClient:
             raise ValueError("invalid signed artifact download URL")
         # Signed URL is bearer access in itself. Never forward GitHub token.
         with urllib.request.urlopen(urllib.request.Request(signed_url), timeout=25) as response:
-            payload = response.read(65537)
-        if len(payload) > 65536:
+            payload = response.read(262145)
+        if len(payload) > 262144:
             raise ValueError("downloaded CI request oversized")
         with zipfile.ZipFile(io.BytesIO(payload)) as archive:
             if archive.namelist() != ["ci-request.json"]:
                 raise ValueError("unexpected CI request archive contents")
             info = archive.getinfo("ci-request.json")
-            if info.file_size > 32768:
+            if info.file_size > 262144:
                 raise ValueError("CI request JSON too large")
             request_data = json.loads(archive.read(info))
         if request_data.get("schema") != 2:
@@ -203,7 +203,7 @@ class GitHubClient:
 
     def commit_comments(self, sha: str) -> list[dict]:
         comments = []
-        for page in range(1, 5):
+        for page in range(1, 21):
             data = self.request(
                 "GET", f"/commits/{sha}/comments?per_page=100&page={page}") or []
             if not isinstance(data, list):

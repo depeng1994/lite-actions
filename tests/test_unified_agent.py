@@ -32,7 +32,7 @@ class AgentTests(unittest.TestCase):
         with patch.object(dispatcher, "_run_local_and_report") as local, \
              patch.object(dispatcher, "_run_matrix_and_report") as matrix:
             run = self.base_run()
-            dispatcher.run_and_report(self.cases["a3-smoke"], run,
+            dispatcher.run_and_report(self.cases["dispatcher-smoke"], run,
                                       root=Path("/tmp/not-used"))
             local.assert_called_once()
             matrix.assert_not_called()
@@ -89,7 +89,7 @@ class AgentTests(unittest.TestCase):
         client.commit_comments.return_value = [
             {"user":{"login":"ci-maintainer"},"body":body}]
         client.send_result.reset_mock()
-        with patch.dict("os.environ",{"A3_CI_RESULT_AUTHOR":"ci-maintainer"}):
+        with patch.dict("os.environ",{"LITE_ACTIONS_RESULT_AUTHOR":"ci-maintainer"}):
             post_progress_running(client, run, pipeline="a3-8p",
                                   test_id="dsv4_flash_a3_8p_example")
         client.send_result.assert_not_called()

@@ -57,7 +57,7 @@ def post_case(client: GitHubClient, run: dict, test_id: str, report: dict) -> No
     body = marker + "\n" + json.dumps(report, ensure_ascii=False, separators=(",", ":"))
     if len(body.encode("utf-8")) > 6100:
         raise ValueError("case result over GitHub upload budget")
-    author = os.environ.get("A3_CI_RESULT_AUTHOR")
+    author = os.environ.get("LITE_ACTIONS_RESULT_AUTHOR")
     prior = [item.get("body", "") for item in client.commit_comments(run["head_sha"])
              if (not author or item.get("user", {}).get("login") == author)
              and (item.get("body") or "").startswith(marker + "\n")]
@@ -76,7 +76,7 @@ def post_progress_running(client: GitHubClient, run: dict, *, pipeline: str,
     This is display-only telemetry, not a PASS/FAIL authorization signal.
     """
     marker = f"LCI-R {run['id']}:{run.get('run_attempt', 1)}:{test_id}"
-    author = os.environ.get("A3_CI_RESULT_AUTHOR")
+    author = os.environ.get("LITE_ACTIONS_RESULT_AUTHOR")
     prior = [item for item in client.commit_comments(run["head_sha"])
              if (not author or item.get("user", {}).get("login") == author)
              and (item.get("body") or "") == marker]
@@ -97,9 +97,6 @@ def announce_running(client: GitHubClient, run: dict, *, pipeline: str,
 
 def _run_matrix_and_report(case: dict, run: dict, *, root: Path) -> None:
     items = parse_plan(run["_ci_request"], run, case["pipeline_id"])
-    limit = {"a3-8p": 4, "a3-16p": 2, "a5-64p": 1}[case["name"]]
-    if len(items) > limit:
-        raise ValueError("CI plan exceeds channel case limit")
     state = JobState(root)
     client = GitHubClient(authorization())
     run_key = f"{run['id']}:{run.get('run_attempt', 1)}"

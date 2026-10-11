@@ -85,7 +85,7 @@ class RequestTests(unittest.TestCase):
         self.assertIn("page=2",request.call_args_list[1].args[1])
 
         c=GitHubClient("TOKEN")
-        with patch.object(c,"request",side_effect=[[{}]*100]*4):
+        with patch.object(c,"request",side_effect=[[{}]*100]*20):
             with self.assertRaisesRegex(RuntimeError,"too many commit comments"):
                 c.commit_comments("a"*40)
 
