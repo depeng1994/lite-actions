@@ -173,20 +173,20 @@ Phase 1 Scheduler 流程：
 
 ### P1.3｜动态选卡 + 可授权外部进程定点清理（全局仍串行）
 
-- [ ] Pool 登记经验证的合法组；Pipeline 从 `allocation` 改为声明资源规格（`nodes/devices_per_node`），模型用例规格与授权边界严格相符；Legacy Schema 可回退。
-- [ ] Scheduler 在 A3-3/A3-4 的已验证候选组中动态选卡，支持 1×8P 和 2 Host×8P；单个 Case 所有 Host/Device 原子锁定，不占半套多机资源。
-- [ ] 动态 Allocation 贯穿 preflight、广播、SSH、可见设备、TensorBoard/日志、清理和结果归档；不再由 Pipeline 固定 Device ID。
-- [ ] 实现 M3 前已确认的外部占用分类策略：`auto-occupy`/`vllm` 可信 PID 定点清理、普通用户进程等待/换组、未知 PID 禁止终止；清理后必须重检。
-- [ ] CPU 故障注入：PID 重用、宿主机/容器 PID 映射、误识别、权限不足、进程自动重生、外部占用、原子锁回滚、候选不可用、不同 Host 配对。
-- [ ] 实机验证：同一 8P Case 能在**至少两个已实机验证的合法分组**运行（可以在不同 Host）；不允许通过新增未验证设备组制造“动态选卡成功”。
+- [x] Pool 只登记经验证的合法组；Pipeline 以 `nodes/devices_per_node` 声明资源规格，模型用例规格与授权边界严格相符；Legacy Schema 保留受控回退。
+- [x] Scheduler 只在 A3-3/A3-4 的已验证候选组中动态选卡，支持 1×8P 和 2 Host×8P；单个 Case 的 Host/Device 原子锁定，不占半套多机资源。
+- [x] 动态 Allocation 贯穿 preflight、广播、SSH、可见设备、TensorBoard/日志、清理和结果归档；Pipeline 不再固定 Device ID。
+- [x] 外部占用遵守已确认策略：`auto-occupy`/`vllm` 仅按已核实宿主机 PID 定点清理，普通用户进程等待/换组，未知 PID 禁止终止；清理后必须重检。
+- [x] CPU/进程级安全测试覆盖宿主机/容器 PID 命名空间、card-die 映射、未知占用 fail-closed、跨进程设备锁/全局槽、崩溃 quarantine 与 PID 定点清理；真实外部占用回收另有 Run 38060703524 的宿主机证据。
+- [x] 同一 8P Case 已在至少两个经实机验证的合法分组运行；未验证设备组仍保持禁用。
 
 **Gate P1.3**：动态选卡成功、全局仍只有一个训练进程组/Case；用户进程从未被清理；授权进程定点清理并重检通过；所有未验证的资源组保持禁用。
 
 ### P1.4｜串行故障恢复、8P/16P 回归
 
-- [ ] Case 独立 `task_id`、目录/日志/Checkpoint/PID/PGID，持久化 `QUEUED/ALLOCATING/RUNNING/VERIFYING/REPORTING/terminal` 状态；跨 Run 排队且不重放已经完成的任务。
-- [ ] 处理 GitHub 取消、远端超时、SSH 失联、Agent 重启、GitHub API 故障；区分可安全回收/必须隔离的设备，不能抢占他人进程。
-- [ ] Phase 1 取消/重启故障注入：证明任何异常时下一 Case **只会在上一 Case 完成清理且设备可确认复用之后**启动。
+- [x] Case 使用独立 task key、目录和日志；最小持久状态为 `queued/running/pending_report/reported/blocked_recovery`，排队 Future 不冒充 running，已完成训练只重试结果上报而不重跑。
+- [x] GitHub 取消、远端超时、SSH 失联、Agent 重启和 GitHub API 故障均按 fail-closed 处理；无法确认释放时 quarantine，不能抢占或清理普通用户进程。
+- [x] 取消/重启故障注入与历史实机取消证据确认：下一 Case 只有在上一 Case 清理完成且设备可确认复用后才允许进入训练槽。
 - [x] 用新动态调度的 8P Muon 和 AdamW 分别跑通 5 steps + TensorBoard；对照以前的优化器、4K、CANN 路径与最后 CLI 参数，禁止改变训练业务语义。证据：38054910957 / 38059258896。
 - [x] 用新动态调度的**双机 16P 重新跑通 5 steps + TensorBoard**，检查每 Host 8P、EP16、NODE_IPS、HCCL、Rank/端口、设备释放；不能用以前的 Run 代替。证据：38054913344。
 - [x] A5 保持 `enabled=false`，并由模型 Workflow `CI_CHANNEL_ENABLED=false` 双重 fail-closed；不做 A5 实机。
@@ -197,7 +197,7 @@ Phase 1 Scheduler 流程：
 
 - [x] 正式发布 SHA 证据：Lite `68bd691` 全量测试 **85 passed**；模型 `546b655` 目标测试 **25 passed**；[正式 Smoke 38083634170](https://github.com/depeng1994/torchtitan-npu/actions/runs/38083634170)、[8P Muon/AdamW 38084585959](https://github.com/depeng1994/torchtitan-npu/actions/runs/38084585959)、[双机16P 38084588613](https://github.com/depeng1994/torchtitan-npu/actions/runs/38084588613) 均 SUCCESS；模型目标 pytest 不冒充全仓库测试。
 - [x] 模型 V2 Workflow 已合入 GitHub `master`（PR #28、`2fe2623`；PR #29、`546b655`）；正式 8P Run 有 Prepare + Muon + AdamW 三个成功 Job，16P 独立 Job 成功，受信任 master-only admission 继续有效。
-- [x] Dispatcher 的 V1/V2 兼容与生产受控升级已完成，唯一 Agent 运行于 Lite `68bd691` 生产目录；模型 V2 已合并到 GitHub `master=546b655`，队列误写 running 修复 `db0b001` 已部署。GitCode 主源 MR #985 合并及 Sync Upstream 重启属于下方独立未完成发布 Gate。
+- [x] Dispatcher 的 V1/V2 兼容与生产受控升级已完成，唯一 Agent 运行于 Lite `68bd691` 生产目录；模型 V2 已合并到 GitHub `master`，实机验证基线为 `546b655`；队列误写 running 修复 `db0b001` 已部署。GitCode 主源 MR #985 合并及 Sync Upstream 重启属于下方独立未完成发布 Gate。
 - [x] 回滚演练：停收新单 → 确认设备释放 → 切回 V1 Agent/Workflow → Smoke PASS → 恢复 V2；证据 38060151936，不热回滚。
 - [x] 两仓 README、Phase 1 运维/取消/恢复手册及 `REFACTOR_PLAN.md` 已按 2026-10-11 自审刷新，并明确 CPU / 控制面 Smoke / NPU 实机证据层级。
 - [ ] **冻结 Phase 1 双主源正式发布版本**；GitHub+调度机+实机已通过，仍须 GitCode [MR #985](https://gitcode.com/cann/torchtitan-npu/merge_requests/985) 经有权限维护者合并，验证 GitCode/GitHub master 归一和恢复安全同步，之后才能正式标记 P1.5 Done。Phase 2 不得提前开启并发。
@@ -312,7 +312,7 @@ Phase 1 Scheduler 流程：
 | P1.2 Matrix/独立结果 | 已验收 | 模型 `4233e7d` | [8P Run 38050639931](https://github.com/depeng1994/torchtitan-npu/actions/runs/38050639931) | 两独立 Job、Muon/AdamW PASS rc0，串行上报 |
 | P1.3 动态选卡/占用策略 | 已验收 | Lite `92b9b04` | [A3-4 8P Run 38050639931](https://github.com/depeng1994/torchtitan-npu/actions/runs/38050639931)、[A3-3 8P Run 38060703524](https://github.com/depeng1994/torchtitan-npu/actions/runs/38060703524)，77 passed/1 skipped | 同一 Muon 用例在 A3-4:8–15 与 A3-3:0–7 均 5 steps+TB PASS；A3-3 auto-occupy Worker 宿主机 PID 分类后定点清理并经 npu-smi 确认释放；未误杀其他进程；临时选择优先级已恢复 |
 | P1.4 8P/16P 与恢复 | 已验收实机 Gate | 模型 `99cd7e3` / Lite `92b9b04` | [Muon Run 38054910957](https://github.com/depeng1994/torchtitan-npu/actions/runs/38054910957)、[AdamW Run 38059258896](https://github.com/depeng1994/torchtitan-npu/actions/runs/38059258896)、[16P Run 38054913344](https://github.com/depeng1994/torchtitan-npu/actions/runs/38054913344)、[Cancel Run 38054570924](https://github.com/depeng1994/torchtitan-npu/actions/runs/38054570924) | 8P Muon/AdamW、双机16P 均 5 steps + TB + rc0；全局不重叠；取消远端子进程清理验证；前一次 AdamW 外部 SIGKILL 根因未证实，FAIL 保留不可擦除 |
-| P1.5 Phase 1 发布 | **GitHub / 生产调度及最新实机 Gate 完成；GitCode MR 待合并** | Lite `main=68bd691` 生产；模型 GitHub `master=546b655`；GitCode `master=2994912`，待 [MR #985](https://gitcode.com/cann/torchtitan-npu/merge_requests/985) | [正式 Smoke 38083634170](https://github.com/depeng1994/torchtitan-npu/actions/runs/38083634170) PASS；正式 [16P 38084588613](https://github.com/depeng1994/torchtitan-npu/actions/runs/38084588613)、[8P 38084585959](https://github.com/depeng1994/torchtitan-npu/actions/runs/38084585959) 全部 GitHub SUCCESS、5 steps/TB/rc0 | 四条 SSH relay 已恢复；A3-4 /data 与容器 Overlay 0B，模型 PR #29 将 HF_HOME/HF_DATASETS_CACHE 转至 /mnt/share。最新 SHA 8P Muon、AdamW 及双机16P 全部通过，全局串行、无 quarantine。GitCode 禁止作者自合并且 token 无 MERGE 权限；Sync Upstream 暂禁用，P1.5 尚未 Done |
+| P1.5 Phase 1 发布 | **GitHub / 生产调度及最新实机 Gate 完成；GitCode MR 待合并** | Final-review baseline：Lite repo `main=fbb0631` / production `68bd691`；模型 repo `master=f748ddc` / runtime-verified `546b655`；GitCode `master=2994912`，待 [MR #985](https://gitcode.com/cann/torchtitan-npu/merge_requests/985) | [正式 Smoke 38083634170](https://github.com/depeng1994/torchtitan-npu/actions/runs/38083634170) PASS；正式 [16P 38084588613](https://github.com/depeng1994/torchtitan-npu/actions/runs/38084588613)、[8P 38084585959](https://github.com/depeng1994/torchtitan-npu/actions/runs/38084585959) 全部 GitHub SUCCESS、5 steps/TB/rc0 | 四条 SSH relay 已恢复；A3-4 /data 与容器 Overlay 0B，模型 PR #29 将 HF_HOME/HF_DATASETS_CACHE 转至 /mnt/share。runtime-verified SHA 的 8P Muon、AdamW 及双机16P 全部通过，全局串行、无 quarantine。GitCode 禁止作者自合并且 token 无 MERGE 权限；Sync Upstream 暂禁用，P1.5 尚未 Done |
 | P2.0 并发资源预算 | **待 Phase 1 完成** | — | — | — |
 | P2.1 租约/多任务调度 | 待开始 | — | — | — |
 | P2.2 跨 Host 2×8P | 待开始 | — | — | — |
@@ -350,8 +350,8 @@ Phase 1 Scheduler 流程：
 
 ### 2026-10-11 最新正式发布验收与剩余 Gate
 
-- **生产实际版本**：Lite Actions `68bd691`，调度机唯一 Agent PID `2133238`（`flock` 包装 PID `2133232`）、cwd 为生产 Lite 目录；GitHub 模型 `master=546b655`（PR #28 与 HF 共享缓存修复 PR #29 均已合入）；A3 8P/16P 正式 Workflow 均启用。`A3_CI_ALLOWED_BRANCHES=master`、`A3_CI_RECLAIM_EXTERNAL_PROCESSES=0`。Lite `python3 -m pytest -q tests` **85 passed**，模型目标 pytest **25 passed**。
-- **当前 SHA 的硬件证据**：[8P 38084585959](https://github.com/depeng1994/torchtitan-npu/actions/runs/38084585959)，Muon + AdamW 两个 Case 均 5 steps、rc0、独立 GitHub Job/Commit Comment PASS；[16P 38084588613](https://github.com/depeng1994/torchtitan-npu/actions/runs/38084588613)，A3-3:0–7 + A3-4:8–15、5 steps、rc0、Case/Job PASS。Dispatcher `unified-agent.log` 04:40–05:04 +08:00 的三次 `allocated Case`、广播成功与三个 `V2 Case reported ... PASS` 证明从 16P 到 Muon 再到 AdamW **无训练重叠**，状态台账 83/83 `reported`、无 quarantine。TensorBoard 检查由模型 Case 运行逻辑记录；不可将 GitHub 绿灯单独视作训练证据。
+- **生产实际版本与仓库 HEAD**：Lite Actions 生产 checkout 为 `68bd691`，调度机唯一 Agent PID `2133238`（`flock` 包装 PID `2133232`）、cwd 为生产 Lite 目录；本轮 final review 的 Lite repo baseline 为 `main=fbb0631`，相对生产仅有本计划/runbook 文档提交；本闭环分支继续只改文档。模型实机验证基线为 `546b655`（PR #28 与 HF 共享缓存修复 PR #29 均已合入），本轮模型 repo baseline 为 `master=f748ddc`，相对该基线仅有 integration README 文档提交；A3 8P/16P 正式 Workflow 均启用。`A3_CI_ALLOWED_BRANCHES=master`、`A3_CI_RECLAIM_EXTERNAL_PROCESSES=0`。Lite `python3 -m pytest -q tests` **85 passed**，模型目标 pytest **25 passed**。
+- **runtime-verified SHA 的硬件证据**：[8P 38084585959](https://github.com/depeng1994/torchtitan-npu/actions/runs/38084585959)，Muon + AdamW 两个 Case 均 5 steps、rc0、独立 GitHub Job/Commit Comment PASS；[16P 38084588613](https://github.com/depeng1994/torchtitan-npu/actions/runs/38084588613)，A3-3:0–7 + A3-4:8–15、5 steps、rc0、Case/Job PASS。Dispatcher `unified-agent.log` 04:40–05:04 +08:00 的三次 `allocated Case`、广播成功与三个 `V2 Case reported ... PASS` 证明从 16P 到 Muon 再到 AdamW **无训练重叠**，状态台账 83/83 `reported`、无 quarantine。TensorBoard 检查由模型 Case 运行逻辑记录；不可将 GitHub 绿灯单独视作训练证据。
 - **故障历史保留**：较早的 [38082962268](https://github.com/depeng1994/torchtitan-npu/actions/runs/38082962268) INFRA_ERROR、[38082959566](https://github.com/depeng1994/torchtitan-npu/actions/runs/38082959566) CANCELLED（当时 relay 中断）以及 AdamW SIGKILL rc137 的历史故障仍保留，不因本次新 PASS 删除。
 - **仅存发布阻断**：GitCode `master=2994912`，尚不包含上述 GitHub V2 master。已提交受保护分支 [GitCode MR #985](https://gitcode.com/cann/torchtitan-npu/merge_requests/985)，该仓不允许当前作者自行合并，需另一位具备 MERGE 权限的维护者合入。`Sync Upstream` 当前 `disabled_manually`，不得提前重开，否则 GitHub `master` 会被每日强制镜像覆盖。MR 合并后需按实际合并 SHA 与最新 GitHub 变更做双 `master` 对账，再恢复受控同步并验证 Workflow 完整性。**PR #4 源码/审查意见可闭环，但双主源发布 P1.5 不可提前标记 Done。**
 
