@@ -116,6 +116,21 @@ class MatrixDispatchTests(unittest.TestCase):
                     right = executor.submit(held_case,"202:1:case2", "a3-4")
                     self.assertEqual({left.result(),right.result()},{"a3-3","a3-4"})
 
+    def test_two_8p_prefer_independent_a3_hosts(self):
+        from ci_core.job_state import JobState
+        cfg=load_config(ROOT)["a3-8p"]
+        pools=json.loads((ROOT/"config/pools.json").read_text())
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            (root/"config").mkdir()
+            (root/"config/pools.json").write_text(json.dumps(pools))
+            JobState(root).update("88:1:8p",phase="running",
+                                  allocation=[{"host_id":"a3-4","devices":list(range(8))}])
+            with patch.object(scheduler,"remote_preflight"):
+                with scheduler.claim_dynamic(root,cfg,ascend_env=None,
+                                             timeout=1,owner_key="89:1:8p") as chosen:
+                    self.assertEqual(chosen['allocation'][0]['host_id'],'a3-3')
+
     def test_active_8p_blocks_16p_temporarily_without_quarantine(self):
         from ci_core.job_state import JobState
         from concurrent.futures import ThreadPoolExecutor

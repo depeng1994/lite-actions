@@ -107,6 +107,7 @@ def _claim_dynamic_locked(root: Path, case: dict, *, ascend_env: str | None,
         from ci_core.job_state import JobState
         quarantined_keys: set[tuple[str, int]] = set()
         active_keys: set[tuple[str, int]] = set()
+        active_hosts: set[str] = set()
         for key, record in JobState(root).read().items():
             owner_run_key = (owner_key.rsplit(":", 1)[0]
                              if owner_key and owner_key.count(":") >= 2
@@ -124,10 +125,16 @@ def _claim_dynamic_locked(root: Path, case: dict, *, ascend_env: str | None,
                 # A live overlapping CI job is temporary contention, not an
                 # unsafe orphan. Wait and retry rather than fail or reclaim it.
                 active_keys.update(resource_keys(prior_allocation))
+                active_hosts.update(item["host_id"] for item in prior_allocation)
         usable = [allocation for allocation in possibilities
                   if not quarantined_keys.intersection(resource_keys(allocation))]
         if not usable:
             raise UnsafeResourceState("all verified candidates overlap quarantined devices")
+        # Prefer an unused host when two disjoint 8P groups are available.
+        # This reduces shared CPU/HCCL-port contention without forbidding
+        # same-node parallelism when all alternative hosts are occupied.
+        usable.sort(key=lambda allocation: sum(n["host_id"] in active_hosts
+                                              for n in allocation))
         blocked = []
         for allocation in usable:
             if active_keys.intersection(resource_keys(allocation)):
