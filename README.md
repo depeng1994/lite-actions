@@ -321,3 +321,14 @@ python3 scripts/preflight_pool.py --pool a3-shared --npu
 
 * **如何编写和新增测试用例**：参见模型仓 [集成测试使用指南 (tests/integration_tests/README.md)](https://github.com/depeng1994/torchtitan-npu/blob/master/tests/integration_tests/README.md)。
 * **历史架构演进与阶段设计备忘**：参见 [REFACTOR_PLAN.md](REFACTOR_PLAN.md)。
+
+
+### 组织仓 PR 调试准入（当前正式机制）
+
+模型请求只接受组织仓 `torchtitan-npu/torchtitan-npu`。
+部署 Agent 时必须明确指定受信任的 GitHub 维护者登录名和当前组织仓 PR 分支，
+例如配置 `A3_CI_ALLOWED_ACTORS` 和
+`A3_CI_ALLOWED_BRANCHES=ci/lite-actions-validation`。
+调度机只接收该来源的 `workflow_dispatch`，执行严格 SHA/Artifact 校验与
+串行设备租约。个人 fork 已不再作为 Actions 调度源。
+结果评论的作者必须与触发该 Run 的授权操作者一致。

@@ -57,7 +57,7 @@ def post_case(client: GitHubClient, run: dict, test_id: str, report: dict) -> No
     if len(body.encode("utf-8")) > 6100:
         raise ValueError("case result over GitHub upload budget")
     prior = [item.get("body", "") for item in client.commit_comments(run["head_sha"])
-             if item.get("user", {}).get("login") == "depeng1994"
+             if item.get("user", {}).get("login") == run.get("actor", {}).get("login")
              and (item.get("body") or "").startswith(marker + "\n")]
     if prior:
         if body not in prior:

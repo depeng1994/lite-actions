@@ -16,7 +16,7 @@ class AgentTests(unittest.TestCase):
         return {"id":39100291,"run_number":9,"run_attempt":1,"head_sha":"a"*40,
                 "created_at":"2026-10-09T01:00:00Z","event":"workflow_dispatch",
                 "status":"in_progress","head_branch":"master",
-                "actor":{"login":"depeng1994"},
+                "actor":{"login":"ci-maintainer"},
                 "path":".github/workflows/a3-8p-lite-actions.yml","name":"A3-8p-CI-Example",
                 "display_title":"A3-8p-CI-Example | test=dsv4_flash_a3_8p_example"}
 

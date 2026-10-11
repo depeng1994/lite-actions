@@ -1,10 +1,6 @@
-"""Explicitly allowlisted model repository for a dispatcher deployment."""
+"""Only the upstream organization is an authorized CI model source."""
 import os
 
-ALLOWED_REPOS = frozenset({
-    "depeng1994/torchtitan-npu",
-    "torchtitan-npu/torchtitan-npu",
-})
-REPO = os.environ.get("A3_CI_REPOSITORY", "depeng1994/torchtitan-npu")
-if REPO not in ALLOWED_REPOS:
-    raise ValueError("untrusted A3_CI_REPOSITORY")
+REPO = "torchtitan-npu/torchtitan-npu"
+if os.environ.get("A3_CI_REPOSITORY", REPO) != REPO:
+    raise ValueError("unsupported CI source repository")

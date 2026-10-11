@@ -25,7 +25,7 @@ class BroadcastTests(unittest.TestCase):
         self.assertEqual(len(msg.splitlines()),6)
         self.assertEqual({display_width(line) for line in msg.splitlines()}, {88})
         self.assertIn("[2026-10-09 10:42:00] 本环境正在用于torchtitan CI验证，请勿使用！",msg)
-        self.assertIn("https://github.com/depeng1994/torchtitan-npu/actions/runs/37868722207",msg)
+        self.assertIn("https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/37868722207",msg)
         self.assertTrue(msg.startswith("*"*88))
         self.assertIn("本任务所占NPU资源已释放",notification(RUN,"end",now=when))
         self.assertIn("NPU仍可能被占用，请勿使用",notification(RUN,"uncertain",now=when))

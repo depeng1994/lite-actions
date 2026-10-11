@@ -44,7 +44,7 @@ class WorkflowContractTests(unittest.TestCase):
 
     def test_matrix_digest_and_identity_validation(self):
         run = {"id": 42, "run_attempt": 1, "head_sha": "a"*40}
-        plan = {"schema": 2, "repo": "depeng1994/torchtitan-npu",
+        plan = {"schema": 2, "repo": "torchtitan-npu/torchtitan-npu",
                 "run_id": 42, "attempt": 1, "sha": "a"*40,
                 "pipeline": "a3-8p",
                 "cases": [{"test_id": "dsv4_flash_a3_8p_example",
@@ -59,26 +59,25 @@ class WorkflowContractTests(unittest.TestCase):
             parse_plan({**plan, "cases": [*plan["cases"], *plan["cases"]]},
                        run, "a3-8p")
 
-    def test_source_configuration_is_allowlisted(self):
-        from ci_core.source_repo import REPO, ALLOWED_REPOS
-        self.assertIn(REPO, ALLOWED_REPOS)
-        self.assertEqual(ALLOWED_REPOS, {
-            "depeng1994/torchtitan-npu", "torchtitan-npu/torchtitan-npu"
-        })
+    def test_source_configuration_is_upstream_only(self):
+        from ci_core.source_repo import REPO
+        self.assertEqual(REPO, "torchtitan-npu/torchtitan-npu")
 
     def test_dispatcher_denies_untrusted_source(self):
         cfg=load_config(ROOT)
         run=dict(id=91,run_number=1,run_attempt=1,
                  head_sha="a"*40,head_branch="master",
                  event="workflow_dispatch",status="in_progress",
-                 actor={"login":"depeng1994"},
+                 actor={"login":"ci-maintainer"},
                  path=".github/workflows/a3-8p-lite-actions.yml",
                  name="A3-8p-CI-Example",display_title="A3-8p-CI-Example")
-        self.assertTrue(unified_agent.eligible(run,cfg["a3-8p"]))
-        self.assertFalse(unified_agent.eligible({**run,"head_branch":"untrusted-pr"},
-                                               cfg["a3-8p"]))
-        self.assertFalse(unified_agent.eligible({**run,"actor":{"login":"attacker"}},
-                                               cfg["a3-8p"]))
+        from unittest.mock import patch
+        with patch.object(unified_agent,"ALLOWED_ACTORS",frozenset({"ci-maintainer"})):
+            self.assertTrue(unified_agent.eligible(run,cfg["a3-8p"]))
+            self.assertFalse(unified_agent.eligible({**run,"head_branch":"untrusted-pr"},
+                                                   cfg["a3-8p"]))
+            self.assertFalse(unified_agent.eligible({**run,"actor":{"login":"attacker"}},
+                                                   cfg["a3-8p"]))
 
 
 if __name__ == "__main__":

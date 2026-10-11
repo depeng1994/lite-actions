@@ -22,7 +22,11 @@ from ci_core.registry import workflow_label
 
 ROOT = Path(__file__).resolve().parent
 LOG = ROOT / "logs" / "system" / "unified-agent.log"
-OWNER = "depeng1994"
+# Explicit deployment-time allowlist. No maintainer account in repository code.
+ALLOWED_ACTORS = frozenset(
+    actor.strip() for actor in os.environ.get("A3_CI_ALLOWED_ACTORS", "").split(",")
+    if actor.strip()
+)
 BRANCHES = set(filter(None, os.environ.get("A3_CI_ALLOWED_BRANCHES", "master").split(",")))
 MAX_WORKERS = 1  # Phase 1: one training Case across ALL workflows
 INTERVAL = int(os.environ.get("A3_CI_POLL_SECONDS", "60"))
@@ -42,7 +46,7 @@ def eligible(run: dict, case: dict) -> bool:
             and run.get("event") == "workflow_dispatch"
             and run.get("status") == "in_progress"
             and run.get("head_branch") in BRANCHES
-            and run.get("actor", {}).get("login") == OWNER
+            and run.get("actor", {}).get("login") in ALLOWED_ACTORS
             and run.get("path") == ".github/workflows/" + case["workflow"]
             and authorized_name
             and isinstance(run.get("id"), int)
