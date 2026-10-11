@@ -4,6 +4,8 @@
 > - **日常使用、系统架构与首次部署**：请直接阅读 [README.md](README.md)；
 > - **模型测试用例编写**：请查阅模型仓 [tests/integration_tests/README.md](https://github.com/depeng1994/torchtitan-npu/blob/master/tests/integration_tests/README.md)。
 
+> **下一阶段设计**：[第 8 节：同 Node 双 8P／8P+16P／双 16P、HCCL 全端口租约与 64P>16P>8P 准入优先级](#8-phase-25-增量详细设计同-node-多任务双-16p-与大集群优先调度2026-10-12)，当前**仅设计、未实施**。
+>
 > **现行实施状态（2026-10-12）**：本文件保留 2026-10-10/11 的 Phase 1 串行架构历史设计与验收记录；下方历史规划表并非当前运行约束。Phase 2 的 **Case 级并发、设备/端口租约、跨 Host 2×8P** 已提交并部署（Lite `78015f9` / 模型 `e465e79`），Smoke、跨 Host 8P 并发、双机 16P 已实机 PASS。**Phase 2 整体尚未 Done**：同 Host 2×8P 容量与长期稳定性、8P/16P 同时混部、故障注入及串行回滚仍待单独验收。A5 保持禁用。
 >
 > **历史基线说明**：此前 Phase 1 全局串行已完成其当时的 GitHub/生产 Gate；当时 GitCode MR #985 等主源归一工作另行跟踪，不因本轮 CI 并发验证自动宣告完成。下文 Phase 1 的串行要求是历史契约，现行资源调度行为以 [README](README.md) 为准。
@@ -324,6 +326,7 @@ Phase 1 Scheduler 流程：
 | P2.2 跨 Host 2×8P | **实机验收通过** | Lite `78015f9` / 模型 `e465e79` | [8P 38147139071，Attempt 3](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38147139071) | A3-3 0–7 AdamW 与 A3-4 0–7 Muon 并发，均 5 steps、rc0、单独上报 PASS |
 | P2.3 同机/4×8P 容量 | **尚未完成容量 Gate** | — | 8P [Run 38147139071](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38147139071) 曾完成同机不同设备组 Case | 仍缺 Host 内存/IO/HCCL 压力、长期稳定与 4×8P 负载数据，不标记 Done |
 | P2.4 混部/发布 | **部分完成** | Lite `78015f9` / 模型 `e465e79` | [16P 38147139067，Attempt 2](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38147139067) PASS；[Smoke 38147139076](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38147139076) PASS | 生产已切换且 16P 双机回归通过；**8P 与 16P 同时运行、故障注入及回滚 Gate 未完成** |
+| P2.5 同 Node 并发与优先级扩展 | **设计完成，实施待开始** | 仅第 8 节详细设计（代码未修改） | 计划 N01–N13：拓扑、Host/NPU 端口、双 16P、8P+16P、64P>16P>8P 优先准入 | 未验证的 A3-3 第二组与新 16P Bundle 均保持禁用；A5 保持禁用 |
 
 ### 2026-10-11 并发能力真实验收（当前发布基线）
 
@@ -387,3 +390,174 @@ Phase 1 Scheduler 流程：
 - **2026-10-10**：启动 Phase 1 方案 A 开发。在调度机**独立 Git worktree**建立 `refactor/v2-phase1-serial` 双仓分支；完成 V2 Plan/Matrix/Case Waiter、资源配置解耦及串行动态选卡初版，删除 Lite 重复 `github/` 镜像；推送 [Lite Actions Draft PR #1](https://github.com/depeng1994/lite-actions/pull/1)、[TorchTitan-NPU Draft PR #28](https://github.com/depeng1994/torchtitan-npu/pull/28)。Lite CPU unittest 67 OK（1 skipped），模型仓相关 pytest 20 passed；A3 做了只读 SSH/NPU 探测。**尚未在新链路触发真实 NPU 训练、Kill 外部进程、切换生产 Agent 或完成 Phase 1 门禁。**
 - **2026-10-10**：Phase 1 安全/云端验证追加：Lite 单测 **69 项 OK（1 skipped）**，模型仓 pytest **21 passed**；[GitHub Run 38042640944](https://github.com/depeng1994/torchtitan-npu/actions/runs/38042640944) **Prepare 成功并生成 Muon/AdamW 两个独立 Matrix Jobs**，为避免特性分支任务被生产 Agent 领取，主动取消等待 Job，**未跑实际 NPU**；临时特性分支准入已撤销，恢复 master-only。只读定位了 A3 `npu-smi` 宿主机 PID 与容器 PID 命名空间差异，外部授权进程清理已改为宿主机 SSH 定点操作，并新增防误杀单测；**尚未在物理机执行任何进程清理**。P1.3/P1.4 的实机门禁仍未通过。
 - **2026-10-10 18:57 +08:00**：**第一轮 Phase 1 实机验收窗口已结束，旧生产 Dispatcher 已恢复**。切换前 GitHub 无在途 workflow_dispatch，备份了旧配置/状态；切换期间使用单 Worker + 外部进程清理关闭。8P [Run 38043726171](https://github.com/depeng1994/torchtitan-npu/actions/runs/38043726171)：Muon 5 steps/TB/Exit 0，因结束 wall 失败被错误上报 FAIL；AdamW PASS，确认严格串行；修复结束通知不再改写训练退出码。8P [Run 38044923848](https://github.com/depeng1994/torchtitan-npu/actions/runs/38044923848)：Muon 5 steps/TB/GitHub PASS；AdamW 进程被 SIGKILL（rc=137），设备释放检查不确定而报告 INFRA_ERROR 并记录隔离，尚未查明 kill 原因。16P [Run 38046480324](https://github.com/depeng1994/torchtitan-npu/actions/runs/38046480324)：原子选取 A3-3 0–7 + A3-4 8–15、双机启动和 dp_shard=16/ep=16 Mesh 完成，但 HCCL 报 `Communication_Error_Bind_IP_Port (EI0020)`，地址 `192.168.3.186:16666` 绑定失败，未完成5步。失败后 GitHub 无在途任务，两个执行容器未见本次训练 Rank；V2 隔离记录留存，未手工删除。旧 Agent 在旧工作区重新启动（源码 SHA `2a0427c`，生产配置逐文件比对无变化），经核对只有一个旧进程且无测试分支授权环境变量；模型仓测试分支临时 Workflow 许可已撤销回 master-only。Lite [Draft PR #1](https://github.com/depeng1994/lite-actions/pull/1)、模型 [Draft PR #28](https://github.com/depeng1994/torchtitan-npu/pull/28) 保持 Draft、未合并。**P1.2 双 PASS、P1.3 全部分组、P1.4 16P/异常恢复均未达到正式 Gate；下次窗口须先定位 rc137 与 HCCL 16666，再经预检实机回归。**
+
+
+## 8. Phase 2.5 增量详细设计：同 Node 多任务、双 16P 与大集群优先调度（2026-10-12）
+
+> **状态：设计待实施（Design Only）**。本节是 Phase 2 的新需求及下一轮实现契约，**不是已部署功能或验收结果**。现行生产基线：Lite Actions 执行代码 `78015f9`，模型仓 `e465e79`；后续纯文档 Commit 不改变执行代码。已有跨 Host 2×8P / 单独 16P 实机通过，证据见第 7 节。**A3-3 8–15 尚未 verified；第二条 16P 对角拓扑尚未 verified；A5 64P 仍 disabled**。这些必须先过 Gate，禁止直接改 `verified=true`。
+
+### 8.1 目标、范围和硬约束
+
+**新需求**（一个 A3 Node 16 个逻辑设备，按 `0–7`、`8–15` 两个 8P 组切分；所有设备 ID 必须以现行 `card-die` 映射和实机检查为准）：
+
+| ID | 目标场景 | 建议拓扑（示意，不等于全部已验证） | 成立前提 |
+| --- | --- | --- | --- |
+| N1 | **A3-3 上 8P + A3-3/A3-4 上 16P 同时运行** | 8P = A3-3 `0–7`；16P = A3-3 `8–15` + A3-4 `0–7` **或** `8–15` | A3-3 `8–15` 的 8P 验证，以及对应新的双机 16P 组合单独验收 |
+| N2 | **两组 A3-3+A3-4 16P 同时运行** | 16P-A = A3-3 `0–7` + A3-4 `8–15`（已验证单任务）；16P-B = A3-3 `8–15` + A3-4 `0–7` | A3-3 第二组、新 16P-B 的 HCCL/EP16 单任务验证；两机均通过 Host/端口/IO 容量验证 |
+| N3 | **单 Node 2×8P 同时运行** | A3-4 `0–7` + `8–15`；后续 A3-3 `0–7` + `8–15` | 两组不重叠、同机端口完整隔离、Host 预算满足；A3-3 第二组验证后才可放开 |
+| Q1 | **全局优先：64P > 16P > 8P** | 按受信任的 `nnodes × devices_per_node` 计算资源需求，从高到低进行调度准入 | 64P 即使排队权重最高，也必须先通过 A5 独立的硬件/安全上线 Gate；**禁用任务不得进入抢占或资源预留** |
+
+**不做的事**：不启用 A5，不接受未经签名的拓扑/端口/priority 输入，不抢占正在训练的 Job，不为了凑 16P 而把同 Node 两个 8P 误算作两个 Node，不直接放宽当前 `experimental_multinode_allocations`，不默认允许四训练并发，不通过用户进程名猜测回收对象。
+
+**关键不变量**：
+
+1. 每个 Case 的 **DeviceSet** 是物理 `(host_id, chip_id)` 集合；并发 Case 的 DeviceSet 必须两两不交叠。16P / 64P **一次获取全部 Host 资源**，获取失败时释放所有临时锁，不得持有半套资源等待。
+2. **PortSet = (canonical physical host + network namespace, protocol, concrete port/range)**。同一宿主的两组训练即使 NPU 不重叠，端口集合也必须互斥；单个分布式 Case 使用同一租约身份并覆盖其全部参与节点。不能只靠不同 `MASTER_PORT` 推断 HCCL 安全。
+3. Host 预算至少考虑 `max_jobs_per_host`、RAM/CPU/IO/网络和训练类别，缺少可靠资源测量时仍按每 Host 1 Job；不得把 “16 个 NPU 空闲” 当成同时运行两份 8P 的充分条件。
+4. Quarantine / 未清理的远端 Rank 优先于任何优先级；未知残留只能阻止对应 Host/Device/端口重用，若范围未知则 fail-closed，不允许重启 Dispatcher 后因文件锁释放而跳过。
+5. 每个 `repo + run_id + attempt + sha + pipeline + test_id` 唯一运行、唯一上报；取消/超时仅清理本 Case 和本 Case 的端口、进程、租约，绝不误杀同 Node 其他 Case。
+
+### 8.2 现有实现核对与缺口（以 Lite `78015f9` 为基线）
+
+| 代码位置 | 已有能力 | 增量改造点 |
+| --- | --- | --- |
+| `unified_agent.py` | `MAX_WORKERS=4`、`TRAINING_WORKERS=3`、每个 Matrix Case 独立 Future；当前按 `run_id` 升序提交 | **不能只把循环改为反向排序**：线程池先入先出、等待任务占满 Worker、跨轮询新增 16P/64P 都会破坏优先级。应引入持久化 Pending Queue + 单一 Admission Planner，准入成功后才交训练 Worker |
+| `ci_core/scheduler.py:candidates()` | 单机 verified Group；多机仅取 `verified_multinode_allocations`，当前只含一组 16P；可优先空闲 Host | 为 N1/N2 新增候选 Bundle，**先通过测试再进入 verified 清单**；资源组选择须与大任务优先预留/回填联动 |
+| `ci_core/resources.py:reserve()` | 跨工作目录 `flock` 设备原子锁 | 增加 Host 预算与网络命名空间级复合租约；资源获取过程使用确定性锁顺序，确保无死锁、无未释放的部分租约 |
+| `ci_core/resources.py:reserve_ports()` | 256 个逻辑 slot；`master_port=16000+slot`，`hccl_if_base_port=20000+64*slot`，对参与 Host 使用同 slot 锁 | **现有锁只保证参与 Lite 的逻辑 slot 不重复，不能保证实际 Host/NPU 端口范围不冲突**；需要完整端口画像、Host/NPU 端口段与远端实际监听预检，不能机械扩 slot |
+| `ci_core/ssh_runner.py`、模型 `nightly_all_models_test/runner.py` | Dispatcher 传递 `LITE_CI_MASTER_PORT` / `LITE_CI_HCCL_IF_BASE_PORT`，模型覆盖默认值 | 向所有 Rank、所有 Node 按同一 Case 租约传递完整通信端口配置，并验证 `set_env.sh`、训练脚本等没有再次覆盖；8P 的本机 `run_tests/GPUPool` 启动路径也必须覆盖 |
+| `ci_core/job_state.py` / Dispatcher | 运行、取消、结果状态与部分 `allocation` 信息持久化 | 新增 `queued_at` / 优先级 / 最终 DeviceSet / PortSet / 租约 owner / 启停时间 / Release 证据；重启后用远端事实对账，不凭本地 flock 解锁宣称释放 |
+
+### 8.3 设备拓扑准入：先验证 A3-3 8–15 和第二套 16P
+
+**现有事实**：`config/pools.json` 中 A3-3 `0–7 verified=true`、`8–15 verified=false`；A3-4 两组均 `verified=true`。现有正式 16P 只有 **A3-3 0–7 + A3-4 8–15**。A3-3 8–15 + A3-4 0–7 目前列在 `experimental_multinode_allocations`，不是正式可用资源。
+
+实施顺序：
+
+1. 只读核对 A3-3 8–15 的 `npu-smi` chip/card-die 映射、设备健康、PCIe/HCCS、Host/RDMA 网卡、NPU/Host 现有占用以及必要的宿主资源。不得杀未知 PID。
+2. **独立 8P 5 steps** 验证 A3-3 8–15：Muon 与 AdamW 分别 `exit_code=0`、TensorBoard 步数通过、设备释放、无 quarantine；满足后只批准该单机 Group。
+3. **独立 16P 5 steps** 验证新 Bundle（A3-3 8–15 + A3-4 0–7，及 N1 需要的其他非既有配对）：确认 Rank、`NODE_IPS` 顺序、Master 选择、EP16、HCCL 小网、TB 和释放；**单机两组分别 PASS 不等于其跨机组合 PASS**。
+4. 仅在对应拓扑通过后，更新 `verified_multinode_allocations`；`experimental` 不自动转正式，`LITE_ACTIONS_ALLOW_EXPERIMENTAL_TOPOLOGY` 生产仍为 0。按场景启用 `max_jobs_per_host=2` 前需独立完成第 8.4 节端口和 Host 预算门禁。
+
+### 8.4 Host + HCCL + NPU 端口完整隔离方案（本次核心）
+
+#### 8.4.1 先确定真实端口集合，不能只改两个变量
+
+现行端口逻辑覆盖 `MASTER_PORT` 和 `HCCL_IF_BASE_PORT`，但历次存在过 `Communication_Error_Bind_IP_Port` 及 **NPU 侧 16666** 端口冲突。昇腾官方资料明确：
+
+- `HCCL_IF_BASE_PORT` 在 Host 侧使用**连续端口段**，具体占用数量受 CANN 版本影响：部分文档为 16 个端口，新版本为 32 个端口。必须以当前**实装 CANN/torch_npu** 为准确认，而不是仅按 base port 1 个端口上锁。
+- `HCCL_HOST_SOCKET_PORT_RANGE` 可定义 Host 端口范围，优先级高于 `HCCL_IF_BASE_PORT`（适用版本/算子须检查）。
+- `HCCL_NPU_SOCKET_PORT_RANGE` 对 NPU 侧根节点通信可指定范围或 `auto`；未设置时可能使用默认 **16666**。不能假定仅修改 Host 端口会自动隔离该端口；A3/MC² 场景的具体支持约束必须验证。
+
+**参考官方文档**：
+[HCCL_IF_BASE_PORT / 连续端口段](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/850alpha002/maintenref/envvar/envref_07_0074.html)；
+[HCCL_HOST_SOCKET_PORT_RANGE / 优先级](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/850/commlib/hcclug/hcclug_000093.html)；
+[HCCL_NPU_SOCKET_PORT_RANGE / 默认 16666 / auto](https://www.hiascend.com/doc_center/source/en/CANNCommunityEdition/900/maintenref/envvar/envref_07_0144.html)。
+
+#### 8.4.2 端口租约数据模型
+
+新建 **每个物理 Host 的 PortProfile**，由部署端可信配置定义，禁止由 PR 自带 JSON 指定任意端口；至少包含：
+
+```json
+{
+  "host_id": "a3-3",
+  "network_namespace": "host",
+  "max_jobs_per_host": 1,
+  "port_profiles": {
+    "hccl_host_range_width": "determined_by_installed_cann",
+    "hccl_npu_port_strategy": "explicit_range_after_validation",
+    "slots": ["operator_verified_slot_0", "operator_verified_slot_1"]
+  }
+}
+```
+
+这是**目标 Schema 示意**，不是可直接投入生产的 `pools.json`。每个 slot 必须映射互不重叠的（1）torchrun `MASTER_PORT`；（2）Host HCCL 全部监听/预留段；（3）NPU HCCL 监听段；（4）如该模型实际使用的额外 HCCL/RDMA/控制端口段。Host/NPU 网络命名空间与路由来源要明确；现有 `--network host` 使两个容器共享宿主端口空间，容器隔离不等于端口隔离。
+
+分配算法采用 **Host 端口区间租约**（而非仅 slot 整数比较）：若两个 Case 在同一 Host/相同 netns 的 TCP/UDP/Host HCCL/NPU 端口区间存在交集，视为不可并行。同一 Case 的两个 Host 可以使用相同端口数值，但须分别持有两个 Host 的租约。取得所有参与 Host 的端口许可后，连同设备锁和 Host 预算一起原子提交；失败必须整体释放。
+
+**端口预算示意（非生产定值）**：
+
+| Case | `MASTER_PORT` | Host HCCL 区间（按保守 64 宽度预留） | NPU HCCL 区间（须先验实际支持） |
+| --- | --- | --- | --- |
+| 同 Node Job A | 18000 | 30000–30063 | 50000–50063 |
+| 同 Node Job B | 18001 | 30128–30191 | 50128–50191 |
+
+以上数字只说明**不同 Case 的完整区间互不重叠**，不是已经验证能运行的生产端口；实际范围应经网络策略、`ip_local_reserved_ports`、`ss`/`/proc`、NPU 侧占用、CANN 版本及两路 HCCL 压测确认。尤其 `HCCL_NPU_SOCKET_PORT_RANGE` 的 `auto` 不能在未测时直接认作隔离成功，存在 MC²/算子不支持时必须采用可验证替代方案，无法证明则拒绝同 Node 并发。
+
+#### 8.4.3 执行、预检与释放闭环
+
+1. **候选选取**：先选完整 DeviceSet，再选全部 Host 的 PortSet + Host 预算；跨节点端口段在所有 Node 上可用才整体准入。
+2. **启动前预检**：核查该 Case 的 Host/NPU 端口确实未被外部非 Lite 进程占用；所有执行机读取同一 `port_lease_id` / Profile，避免 Node0 与 Node1 各自随机端口；并发第三方作业存在不可消除的 TOCTOU 风险，需对绑定失败 fail-closed、完整清理后重新调度而非直接重试训练。
+3. **环境注入**：模型仓启动器必须落实到真正启动的 torchrun 和每个 Rank（单机 8P 和多机 16P 均覆盖）。Dispatcher 发 `LITE_CI_MASTER_PORT`、`LITE_CI_HCCL_IF_BASE_PORT` 以及新定义的可信 `LITE_CI_HCCL_HOST_PORT_RANGE` / `LITE_CI_HCCL_NPU_PORT_RANGE`；模型按验证通过的版本转换成对应 HCCL 环境变量。拒绝 `OverrideDefinitions.env_vars`、`set_env.sh`、`scripts/run_train*.sh` 后续无声覆盖；日志只记录非敏感端口 Profile 和实际生效值。
+4. **资源全周期持有**：从 staging / preflight / 启动 / 训练 / 停机到 remote child cleanup、端口与 NPU 复查结束，均持有完整设备、Host 预算、端口租约。不可在完成上报前提前释放，尤其不能把另一个并发 Case 的监听视作污染并杀掉。
+5. **异常**：绑定失败、HCCL timeout、SSH 中断、Docker 重启或进程无法归属时，记录 `HOST_PORT_CONFLICT` 或具体 `INFRA_ERROR` 与 Slot/Host，不把“分配成功”当作“训练启动成功”。必要时仅 quarantine 本 Case 的真实端口/设备，未知作用域才升级为 Host 级隔离。
+
+### 8.5 调度优先级：64P > 16P > 8P，非抢占式 + 防饥饿
+
+当前 `unified_agent.py` 按 `run_id` 升序发现任务、直接提交到 `ThreadPoolExecutor(max_workers=3)`，属于先提交先排队，**不是**真正可控的资源规模优先级。增量设计：
+
+- **可信入队**：仍然先验 Actor、PR/branch/SHA、plan_digest、Case Test ID；从验证后的 `case["resources"]["nodes"] × devices_per_node` 得出 `requested_devices`，并保存到 JobState：`queued_at`（首次出现时）、`enqueue_seq`、`requested_devices`、`priority_class`、`run_id/attempt/test_id`。不得接受 PR 设置 `priority`、指定 Host/卡号/PortSet 或篡改排队时间。
+- **单个 Admission Planner**：负责跨所有 Workflow/Run 的资源仲裁，持有全局**短时调度决策互斥**，按 `(requested_devices DESC, queued_at ASC, stable_job_key ASC)` 决定候选次序；**训练执行本身不持有全局串行锁**。Planner 在准入前取得整套资源，资源就绪才提交给 3 个 Training Worker。64P 已禁用时从合法队列直接排除，不能占住优先级槽或拖慢 A3。
+- **非抢占**：已启动的 8P 不因新的 16P/64P 到来被强制停止。若 16P 当前可获取完整资源且 8P 同样待启动，则 16P 必须先 Admission；如果 16P 暂不满足而 8P 可用，允许**安全 Backfill**，但不得无限延长已等待 16P 的完成窗口。
+- **保留与公平性**：为最老的高优先级可配置 `reservation_grace_seconds`（初始建议 60–120s，必须经压测选定）；预留的是**调度意图与即将空出的资源组**，不是先拿住某一 Host 的真实 flock 再等第二 Host。Backfill 必须证明不延后高优先级的可行完整 Bundle；无法证明预计完成时间就停止相交资源的 Backfill，避免新 8P 无限挤占 16P。对同等级 Case 用 FIFO；更低级 Case 的等待时长在指标中显式监测，必要时引入公平配额/老化但不可悄悄反转显式的 64>16>8 顺序。
+- **Worker 与取消**：等待资源不应长期占住 Training Worker；引入 `QUEUED/WAITING_RESOURCES/ADMITTED/RUNNING/PENDING_REPORT/REPORTED` 可观测状态，Worker 只运行已 Admission 的 Case。每轮重新检查 GitHub Run 是否取消、Attempt 是否变化、SHA 是否过期；资源准入与状态转移使用幂等 owner CAS 或单一计划锁，避免并发重复派发。
+
+**示例**：16P 和两条 8P 同时入队，若 N2 所需完整双机资源已空闲，则先给 16P；剩余 8P 再根据不重叠设备分配。如果 16P 的第二组未验证，属于**不合法候选**，不能无限阻止两个可运行 8P。一个 64P 即使计划权重最高，也要先满足 A5 的 enable/硬件 Gate，否则既不运行也不预留。
+
+### 8.6 分批实现与变更文件
+
+| 阶段 | 变更范围（计划） | 退出门槛 |
+| --- | --- | --- |
+| D0｜清查拓扑/端口 | 调度机、两 A3 设备组、当前 CANN/HCCL/torch_npu、端口监控；`config/pools.json` 仅在验收后改 verified | 取得第二组 8P 与新 Bundle 的受信任证据、Host RAM/CPU/网络和端口用量基线；不占用生产 Job |
+| D1｜复合租约 | `ci_core/resources.py` / `scheduler.py` / `config/pools.json` / `ci_core/config.py` | 设备+Host 预算+全端口范围的原子租约，多进程冲突、端口碰撞、失联/取消测试通过 |
+| D2｜Case 优先准入 | `unified_agent.py` / `ci_core/dispatcher.py` / `ci_core/job_state.py` / `ci_core/reporting.py`（视需要） | 64>16>8、FIFO、跨 Workflow、非抢占、安全 Backfill、无重复领取；50–100 个模拟 Case 压测 |
+| D3｜模型适配 | Lite `ci_core/ssh_runner.py` / `dispatch.py`；模型 `tests/integration_tests/nightly_all_models_test/runner.py`、8P/16P 启动链、单测 | 单机和双机端口 ENV 全链路生效，Host/NPU 监听经实机核实，模型脚本不覆盖 |
+| D4｜分级硬件验收 | Lite 与模型仓测试及 `REFACTOR_PLAN.md` 台账 | 按 N3 → N1 → N2 启用，各 Case 独立 5 steps/TB/rc0、时间重叠、端口冲突 0、NPU 释放和无 quarantine |
+| D5｜灰度/回滚与文档 | 两仓 README、调度端部署 runbook、配置文档、版本与 Run 链接 | 旧 Dispatcher 停接单，待在途 Case 安全结束后切换；不改历史状态、不热替换训练；可回滚到 `78015f9` 资源并发基线 |
+
+**发布默认值**：新机制合入代码后仍 **`max_jobs_per_host=1`**、新 Bundle 不启用；N3 单 Host 验证通过后仅对应 Host 灰度为 2。N1/N2 各自独立 Gate，未通过则相应场景始终不调度。优先级机制可先在已验证的跨 Host 场景上线，但 A5 继续禁用。
+
+### 8.7 必须完成的测试矩阵（新增 Gate）
+
+| ID | 类别 | 输入 / 故障 | 验收标准 |
+| --- | --- | --- | --- |
+| N01 | 拓扑 | A3-3 8–15 单独 8P | `npu-smi` 映射、Muon/AdamW 5 steps + TB + rc0；无未授权进程清理 |
+| N02 | 拓扑 | 新 A3-3 8–15 + A3-4 0–7 双机 16P | 先独立 5 steps、EP16/HCCL/全部 Rank/TB PASS，才能转 verified |
+| N03 | 并发 | A3-4 单 Node `0–7` + `8–15` 两条 8P | 同时 RUNNING 且各自独立成功，真实监听端口段不重叠，Host RAM/IO 预算达标 |
+| N04 | 并发 | A3-3 8P 与 A3-3+A3-4 16P | 两个 Case 在 A3-3 设备组、PortSet 不重叠，16P 双机 Rank 正常，双方 5 steps/rc0/TB |
+| N05 | 并发 | 两条 A3-3+A3-4 16P | 同时训练，各占两机独立 8P，Host HCCL + NPU port range 隔离，双 Case PASS |
+| N06 | 端口 | 两条 Case 配到同 `MASTER_PORT` / 交叠 Host 或 NPU 区间 | Admission 阶段拒绝相交 PortSet，不启动训练、不泄漏锁 |
+| N07 | 端口 | 跨节点仅一个 Host 端口不可用 / 外部进程占用 16666 | 原子失败并换合法 Slot 或等待；不会在另一 Host 留锁、不 kill 未授权 PID |
+| N08 | 调度 | 64P/16P/8P 同时 Pending（64P 仅模拟） | 同时合法可调度时准入顺序 64>16>8；64P disabled 时不得阻塞 |
+| N09 | 调度 | 16P 长等待，持续到达 8P | 无永久饥饿；非抢占、保留窗口内 Backfill 不延误高优先级 Case；同优先级 FIFO |
+| N10 | 容错 | 2×8P / 2×16P 其中一条 Cancel、SSH 断、HCCL Bind Fail | 仅故障 Case 退出/清理/必要隔离，另一 Case 继续 PASS，无误杀/假 PASS |
+| N11 | 恢复 | Dispatcher 意外退出、远端 Rank 尚在、主机/容器重启 | 重启后依据进程/端口/台账对账，未知资源 fail-closed，不因 flock 自动释放误复用 |
+| N12 | 回滚 | 新 Host 配额、端口 Slot、Planner 发布失败 | 在停止接单和安全清理后退回上版；重新 Smoke + 8P/16P 回归，历史结果/隔离仍可追溯 |
+| N13 | 压力 | 50–100 可信模拟 Case：跨 Run/Attempt/8P/16P/64P | 设备/PortSet/Host 预算不重叠，无双重上报、无死锁/饥饿、API 限流可恢复 |
+
+**全链路证据格式**：每个 Test Case 记录 Run/Attempt/SHA、`test_id`、真实 Host/DeviceSet（对外脱敏）、PortProfile/Slot（无凭据）、真正训练起止时间、Steps/TB、各节点 Exit Code、Job/Comment 最终状态、清理检查与内存/网络峰值。CI 绿灯、孤立的单 16P PASS、或仅显示两个 Job `in_progress` 均不足以判定 N04/N05 并发通过。
+
+### 8.8 风险与发布阻断
+
+- **端口范围与 CANN 版本错配**：Host HCCL 16/32 端口版本差异、NPU 16666 默认、额外 RDMA/HCCL 端口、环境变量的支持矩阵；未形成完整 Profile 前一律 `max_jobs_per_host=1`。
+- **设备组未验证**：A3-3 8–15 当前未验收，不许直接置 `verified=true`；新 16P Bundle 不得从 experimental 静默放行。
+- **Host 过载与性能回退**：内存、CPU、网络与磁盘 IO 会互相干扰；真实 NPU DeviceSet 不重叠只是必要条件。超过 Host 预算退回单 Host 1 Job。
+- **高优先级饥饿及队头阻塞**：队列公平性按端到端 Admission 日志证明；不可将无法执行或 disabled 的 64P 作为全局锁。
+- **跨 Case 回收误杀**：按 `LITE_CI_JOB_ID`、PID 启动时间、命名空间归属定点清理；设备和端口仍被其他 Case 租约持有时禁止清理。
+- **时序/恢复竞态**：抢卡、端口绑定检查 TOCTOU、取消与报结果并发、Dispatcher 重启后锁释放；必须可幂等恢复且无重复训练。
+- **双主源同步风险**：更新模型仓启动器后对照 GitCode/GitHub 真实 SHA；不擅自开启 Sync Upstream，不提前合并组织仓 PR，也不改变 A5 禁用状态。
+
+### 8.9 新需求台账
+
+| 里程碑 | 当前状态（2026-10-12） | 代码 / 验收证据 | 下一步 |
+| --- | --- | --- | --- |
+| P2.5-DESIGN 三种同 Node 并发 + 优先级 | **设计完成，待评审和实施** | 本节；执行代码仍是 Lite `78015f9` / 模型 `e465e79` | 维护者确认设计与安全边界 |
+| P2.5-TOPO A3-3 第二组与新 16P Bundle | **未验收** | A3-3 8–15 `verified=false`，新对角 16P 在 experimental | N01、N02 |
+| P2.5-PORT 全部 Host/NPU HCCL 端口隔离 | **未实施** | 现行仅两项端口变量与逻辑 Slot；缺少 NPU 16666 及 Range 证明 | N06、N07、N03 |
+| P2.5-QUEUE 64>16>8 统一调度准入 | **未实施** | 当前按 Run ID 入线程池 | N08、N09、N13 |
+| P2.5-NODE 同 Node 两条 8P | **未正式验收** | 已有同 Node 独立训练记录，不等于完整 Host 预算/端口 Gate | N03、N10、N11 |
+| P2.5-MIX 8P + 16P 同节点混部 | **未验收** | — | N04 |
+| P2.5-2x16 两条双机 16P | **未验收** | — | N05 |
+| P2.5-RELEASE 灰度、故障与回滚 | **未验收** | 保留稳定的跨 Host 2×8P / 独立 16P 基线 | N10–N13，按通过场景逐项启用 |
+
+**本轮提交范围**：仅在既有 `REFACTOR_PLAN.md` 增加详细设计和状态记录，不改执行代码、资源池、Workflow、生产 Dispatcher，不启动或取消任何 Actions。
