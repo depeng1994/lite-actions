@@ -10,7 +10,7 @@ import logging
 import os
 from pathlib import Path
 
-from ci_core.dispatch import execute, task_dir, prepare_profile
+from ci_core.dispatch import execute, task_dir, prepare_profile, ExternalNpuOccupancy
 from ci_core.github import GitHubClient, authorization
 from ci_core.job_state import JobState
 from ci_core.logs import clean
@@ -178,7 +178,10 @@ def _run_matrix_and_report(case: dict, run: dict, *, root: Path) -> None:
                 logging.exception("CI case execution error: %s", key)
                 # If a remote assignment existed, an exceptional path
                 # cannot safely prove the remote ranks have stopped.
-                if state.read().get(key, {}).get("allocation"):
+                # A failed read-only preflight has not launched any CI rank.
+                # Quarantine only when a remote child may actually exist.
+                if (state.read().get(key, {}).get("allocation")
+                        and not isinstance(exc, ExternalNpuOccupancy)):
                     state.update(key, quarantined=True)
                 log.parent.mkdir(parents=True, exist_ok=True)
                 if not log.exists():
@@ -192,7 +195,9 @@ def _run_matrix_and_report(case: dict, run: dict, *, root: Path) -> None:
                         and run["_ci_cancel_event"].is_set()):
                     report["status"] = "CANCELLED"
                     report["exit_code"] = 130
-                elif isinstance(exc, ResourcesUnavailable) and not isinstance(exc, UnsafeResourceState):
+                elif isinstance(exc, ExternalNpuOccupancy) or (
+                        isinstance(exc, ResourcesUnavailable)
+                        and not isinstance(exc, UnsafeResourceState)):
                     report["status"] = "RESOURCE_TIMEOUT"
             state.update(key, phase="pending_report", report=report)
         try:

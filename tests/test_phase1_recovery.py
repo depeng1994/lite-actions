@@ -157,6 +157,27 @@ class RecoveryTests(unittest.TestCase):
             execute.assert_not_called()
             self.assertEqual(FakeGitHub.published[0]["status"],"CANCELLED")
 
+    def test_failed_preflight_before_launch_does_not_quarantine(self):
+        from ci_core.dispatch import ExternalNpuOccupancy
+        case=load_config(ROOT)["a3-8p"]
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            @contextmanager
+            def claimed(_root,_case,**kwargs):
+                yield {**_case,"allocation":[{"host_id":"a3-4","devices":list(range(8))}]}
+            run={**RUN,"_ci_request":plan()}
+            with patch.object(dispatcher,"prepare_profile",return_value=(TEST_ID,{"ascend_env":"/trusted"})), \
+                 patch.object(dispatcher,"claim_dynamic",side_effect=claimed), \
+                 patch.object(dispatcher,"execute",side_effect=ExternalNpuOccupancy("external vllm")), \
+                 patch.object(dispatcher,"GitHubClient",FakeGitHub), \
+                 patch.object(dispatcher,"authorization",return_value="fake"):
+                dispatcher.run_and_report(case,run,root=root)
+            report=FakeGitHub.published[-1]
+            state=JobState(root).read()[f"{run['id']}:1:{TEST_ID}"]
+            self.assertEqual(report["status"],"RESOURCE_TIMEOUT")
+            self.assertFalse(state.get("quarantined",False))
+            self.assertEqual(state["phase"],"reported")
+
     def test_runner_enables_only_scoped_approved_reclamation_by_default(self):
         script=(ROOT/"run-unified-agent.sh").read_text()
         self.assertIn('LITE_ACTIONS_RECLAIM_EXTERNAL_PROCESSES:-1',script)

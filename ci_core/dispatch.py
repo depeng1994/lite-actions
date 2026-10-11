@@ -33,6 +33,13 @@ MARKER_END = "RESULT_LAST_20_LINES_END"
 SCRIPTS = {"local": BASE / "pipeline.sh"}
 
 
+class ExternalNpuOccupancy(RuntimeError):
+    """A verified NPU allocation was externally occupied before launch.
+
+    Raised only by a read-only preflight, before any CI rank is started.
+    """
+
+
 @dataclass
 class Execution:
     exit_code: int
@@ -170,9 +177,32 @@ def remote_preflight(case: dict, pools: dict, *, ascend_env: str | None = None) 
             raise RuntimeError(f"NPU preflight failed on {request['host_id']}")
         found = selected_processes(proc.stdout, request["devices"], indexing=indexing)
         if found:
-            raise RuntimeError(
+            raise ExternalNpuOccupancy(
                 f"External NPU activity on {request['host_id']}: {found[:3]}"
             )
+
+
+def preflight_before_launch(case: dict, pools: dict, *, ascend_env: str | None,
+                            pre_reserved: bool) -> None:
+    """Handle a one-time external auto/vLLM race under a held NPU lease.
+
+    A second preflight is mandatory; a newly occupied card is never launched
+    blindly. Reclamation remains restricted to explicitly approved pools and
+    the PID/start-time-verified auto-occupy/vLLM classifier. The operation is
+    bounded to one additional attempt; unknown processes remain untouched.
+    """
+    try:
+        remote_preflight(case, pools, ascend_env=ascend_env)
+    except ExternalNpuOccupancy:
+        if (not pre_reserved or case["runner"]["kind"] != "ssh"
+                or pools[case["pool"]].get("reclaim_external_processes") is not True
+                or os.environ.get("LITE_ACTIONS_RECLAIM_EXTERNAL_PROCESSES", "1") != "1"):
+            raise
+        from ci_core.occupancy import reclaim_candidate
+        if not reclaim_candidate(case, pools, ascend_env=ascend_env):
+            raise
+        # A reclaimed PID does not prove device availability: re-read npu-smi.
+        remote_preflight(case, pools, ascend_env=ascend_env)
 
 
 def summarize(log: Path, rc: int) -> list[str]:
@@ -245,7 +275,8 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
                           timeout=resource_wait_seconds))
     release_verified = True
     with lease:
-        remote_preflight(case, pools, ascend_env=setup)
+        preflight_before_launch(case, pools, ascend_env=setup,
+                                pre_reserved=pre_reserved)
         announced = bool(case.get("allocation"))
         with logfile.open("w", encoding="utf-8") as stream:
             rc = 125
