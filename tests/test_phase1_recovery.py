@@ -157,6 +157,13 @@ class RecoveryTests(unittest.TestCase):
             execute.assert_not_called()
             self.assertEqual(FakeGitHub.published[0]["status"],"CANCELLED")
 
+    def test_runner_enables_only_scoped_approved_reclamation_by_default(self):
+        script=(ROOT/"run-unified-agent.sh").read_text()
+        self.assertIn('A3_CI_RECLAIM_EXTERNAL_PROCESSES:-1',script)
+        source=(ROOT/"ci_core/scheduler.py").read_text()
+        self.assertIn('case["pool"] == "a3-shared"',source)
+        self.assertIn('"A3_CI_RECLAIM_EXTERNAL_PROCESSES", "0"',source)
+
     def test_external_host_pid_cleanup_never_uses_docker_namespace(self):
         from types import SimpleNamespace
         pool=json.loads((ROOT/"config/pools.json").read_text())
@@ -190,7 +197,8 @@ class RecoveryTests(unittest.TestCase):
         funcs=[node for node in ast.parse(occupancy._REMOTE_TERMINATE).body
                if isinstance(node,ast.FunctionDef) and node.name=="direct_class"]
         import os
-        env={"os":os}
+        import re
+        env={"os":os,"re":re}
         exec(compile(ast.Module(body=funcs,type_ignores=[]),
                      "<remote-classifier>","exec"),env)
         classify=env["direct_class"]
@@ -199,6 +207,12 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(classify(["python3","/opt/auto_occupy.py"]),"auto-occupy")
         self.assertEqual(classify(["python3","/data/example/auto-occupy/auto_occupy_worker.py"]),"auto-occupy")
         self.assertIsNone(classify(["python3","/data/example/other/auto_occupy_worker.py"]))
+        self.assertEqual(classify(["VLLM::Worker_TP0"]), "vllm")
+        self.assertEqual(classify(["VLLM::Worker_TP15"]), "vllm")
+        self.assertIsNone(classify(["ray::VLLMEngine"]))
+        self.assertIsNone(classify(["rayTorchTitan"]))
+        self.assertIsNone(classify(["VLLM::EngineCore"]))
+        self.assertIsNone(classify(["python3", "train.py", "--role", "VLLM::Worker_TP0"]))
         self.assertIsNone(classify(["python3","train.py","--data","/data/vllm"]))
         self.assertIsNone(classify(["python3","train.py","--arg","auto-occupy"]))
 
@@ -239,6 +253,27 @@ class RecoveryTests(unittest.TestCase):
                     if proc.poll() is None:
                         proc.kill()
                     proc.wait(timeout=5)
+
+    def test_authorized_vllm_worker_pid_termination_is_scoped(self):
+        """Actual process signals on disposable CPU-only vLLM titled worker."""
+        import subprocess
+        import sys
+        import time
+        owned=subprocess.Popen(["bash","-c","exec -a VLLM::Worker_TP0 /bin/sleep 60"],
+                               start_new_session=True)
+        foreign=subprocess.Popen(["sleep","60"],start_new_session=True)
+        try:
+            time.sleep(.15)
+            result=subprocess.run([sys.executable,"-c",occupancy._REMOTE_TERMINATE,
+                                   str(owned.pid)],
+                                  capture_output=True,text=True,timeout=12)
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            owned.wait(timeout=3)
+            self.assertIsNone(foreign.poll())
+        finally:
+            for proc in (owned,foreign):
+                if proc.poll() is None: proc.kill()
+                proc.wait(timeout=5)
 
     def test_authorized_auto_occupy_pid_termination_is_scoped(self):
         """Exercise actual classifier/signals on disposable CPU-only processes."""

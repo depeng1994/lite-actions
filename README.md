@@ -323,6 +323,22 @@ python3 scripts/preflight_pool.py --pool a3-shared --npu
 * **历史架构演进与阶段设计备忘**：参见 [REFACTOR_PLAN.md](REFACTOR_PLAN.md)。
 
 
+### A3 共享设备的受控占用回收
+
+部署入口 run-unified-agent.sh 默认设置 A3_CI_RECLAIM_EXTERNAL_PROCESSES=1：
+当 A3 8P/16P 任务找不到空闲合法资源组时，Dispatcher 在全局串行锁内
+**优先尝试空闲卡**，仅在必要时进行一次有界资源回收。
+回收前从宿主机（a3-3-relay / a3-4-relay）的 npu-smi 读取实际占卡
+PID，重新读取 /proc/PID 的启动时间、命令行、父进程，只允许
+auto-occupy 或精确的 VLLM::Worker_TP<N>/vLLM 进程族；
+使用 PID 专属 TERM/KILL，拒绝无关训练进程、无法核验的 PID、
+非 A3 资源池和正在由 Lite Dispatcher 租约锁占用的设备。
+**不停止看门狗、不使用 pkill/killall、不经容器 PID 空间清理。**
+
+如需暂停占用回收，启动前设置 A3_CI_RECLAIM_EXTERNAL_PROCESSES=0。
+资源回收失败则继续等待并返回 RESOURCE_TIMEOUT，不会对未知进程
+擅自扩大匹配范围。
+
 ### 组织仓 PR 自动 CI（当前正式机制）
 
 所有面向 torchtitan-npu/torchtitan-npu:master 的 PR 通过 pull_request 自动触发组织仓 Workflow（含外部 fork）；默认测试套件由 Workflow 决定。手动 workflow_dispatch 保留部署环境 A3_CI_ALLOWED_ACTORS 和 A3_CI_ALLOWED_BRANCHES 约束。

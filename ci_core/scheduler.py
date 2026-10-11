@@ -163,8 +163,8 @@ def _claim_dynamic_locked(root: Path, case: dict, *, ascend_env: str | None,
                 continue
         # Prefer genuinely idle legal groups before reclaiming auto/vllm.
         # Only one bounded reclaim pass per task to avoid a watchdog kill-loop.
-        if not already_reclaimed and os.environ.get(
-                "A3_CI_RECLAIM_EXTERNAL_PROCESSES", "0") == "1":
+        if (not already_reclaimed and case["pool"] == "a3-shared"
+                and os.environ.get("A3_CI_RECLAIM_EXTERNAL_PROCESSES", "0") == "1"):
             from ci_core.occupancy import reclaim_candidate
             for allocation, reason in blocked:
                 if reason == "leased":

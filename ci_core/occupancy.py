@@ -62,6 +62,11 @@ def direct_class(argv):
         return 'auto-occupy'
     if exe in ('vllm','vllm-server','vllm_server'):
         return 'vllm'
+    # vLLM's multiprocessing worker titles appear as VLLM::Worker_TP0
+    # in /proc/PID/cmdline, rather than python -m vllm.
+    # Match only the exact worker title family, not arbitrary Ray workers.
+    if re.fullmatch(r'vllm::worker_tp[0-9]+', exe):
+        return 'vllm'
     if exe.startswith(('python','python3','pypy')) or exe=='uv':
         args=list(argv[1:5])
         if '-m' in args:
