@@ -157,7 +157,7 @@ pgrep -af 'python3 -u unified_agent.py'
 tail -n 30 logs/system/unified-agent.log
 ```
 
-`run-unified-agent.sh` 通过 `flock` 保证同一目录只有一个实例；默认每 60 秒轮询。只接收指定账户手工触发、受信任分支（默认 `master`）和 Workflow 的任务。需要测试其他可信分支时可显式设置 `A3_CI_ALLOWED_BRANCHES`，切勿开放所有分支。**当前没有 systemd 或容器重启后自动拉起机制**，环境重启后需重新执行 Step 3 的启动部分。
+`run-unified-agent.sh` 通过 `flock` 保证同一目录只有一个实例；默认每 60 秒轮询。只接收指定账户手工触发、受信任分支（默认 `master`）和 Workflow 的任务。需要测试其他可信分支时可显式设置 `A3_CI_ALLOWED_BRANCHES`，切勿开放所有分支。按组织仓 PR 调试时，显式同时指定 `A3_CI_REPOSITORY=torchtitan-npu/torchtitan-npu` 和精确的 `A3_CI_ALLOWED_BRANCHES=fix/lite-actions-pr-validation`；默认仓库仍是 `depeng1994/torchtitan-npu`，并对仓库值执行白名单验证。**不能在正在训练时切换运行中 Agent 的源码或重启：先完成远端资源释放，再做受控切换。** 每个部署进程只轮询一个仓库。**当前没有 systemd 或容器重启后自动拉起机制**，环境重启后需重新执行 Step 3 的启动部分。
 
 ### 4.2 日常操作
 

@@ -10,6 +10,7 @@ import logging
 import subprocess
 import time
 import unicodedata
+from ci_core.source_repo import REPO
 
 
 BEIJING = dt.timezone(dt.timedelta(hours=8))
@@ -39,7 +40,7 @@ def action_url(run: dict) -> str:
     if ident <= 0:
         raise ValueError("invalid GitHub run id")
     # Derived from trusted numeric run_id, never accepts arbitrary remote URL.
-    return f"https://github.com/depeng1994/torchtitan-npu/actions/runs/{ident}"
+    return f"https://github.com/{REPO}/actions/runs/{ident}"
 
 
 def notification(run: dict, phase: str, *, now: dt.datetime | None = None) -> str:

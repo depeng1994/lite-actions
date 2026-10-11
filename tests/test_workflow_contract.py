@@ -59,6 +59,13 @@ class WorkflowContractTests(unittest.TestCase):
             parse_plan({**plan, "cases": [*plan["cases"], *plan["cases"]]},
                        run, "a3-8p")
 
+    def test_source_configuration_is_allowlisted(self):
+        from ci_core.source_repo import REPO, ALLOWED_REPOS
+        self.assertIn(REPO, ALLOWED_REPOS)
+        self.assertEqual(ALLOWED_REPOS, {
+            "depeng1994/torchtitan-npu", "torchtitan-npu/torchtitan-npu"
+        })
+
     def test_dispatcher_denies_untrusted_source(self):
         cfg=load_config(ROOT)
         run=dict(id=91,run_number=1,run_attempt=1,

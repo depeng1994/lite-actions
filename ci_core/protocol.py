@@ -12,7 +12,7 @@ from ci_core.registry import SELECTOR
 
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 DIGEST = re.compile(r"[0-9a-f]{64}\Z")
-REPO = "depeng1994/torchtitan-npu"
+from ci_core.source_repo import REPO
 CASE_KEYS = {"test_id", "nnodes", "ngpu", "label"}
 PLAN_KEYS = {"schema", "repo", "run_id", "attempt", "sha", "pipeline", "cases",
              "plan_digest"}

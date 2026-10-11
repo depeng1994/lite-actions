@@ -99,7 +99,9 @@ def main():
                         except Exception:
                             logging.warning("GitHub Run status unavailable for %s", run_id)
                 try:
-                    for run in client.running_workflows():
+                    # GitHub returns newest-first; preserve submission order for
+                    # finite-timeout smoke jobs and globally serial NPU cases.
+                    for run in sorted(client.running_workflows(), key=lambda item: item["id"]):
                         filename = (run.get("path") or "").rsplit("/", 1)[-1]
                         case = workflows.get(filename)
                         if not case or not eligible(run, case):
