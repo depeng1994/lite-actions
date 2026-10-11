@@ -44,7 +44,17 @@ def candidates(case: dict, pools: dict) -> list[list[dict]]:
             if group.get("verified") and len(devices) == ngpu:
                 eligible.append({"host_id": host["host_id"], "devices": list(devices)})
     if nodes == 1:
-        return [[group] for group in eligible]
+        # Round-robin verified groups across hosts before taking a second
+        # group on one host. This works even when two workers allocate at the
+        # same instant, before either has persisted its state record.
+        group_index: dict[str, int] = {}
+        spread = []
+        for group in eligible:
+            host = group["host_id"]
+            ordinal = group_index.get(host, 0)
+            group_index[host] = ordinal + 1
+            spread.append((ordinal, group))
+        return [[group] for _, group in sorted(spread, key=lambda pair: pair[0])]
     # Do not guess that an arbitrary pair of individually valid groups is a
     # verified distributed topology. Multi-node combinations are allowlisted.
     known = list(pool.get("verified_multinode_allocations", []))

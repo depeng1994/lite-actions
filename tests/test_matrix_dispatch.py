@@ -116,6 +116,13 @@ class MatrixDispatchTests(unittest.TestCase):
                     right = executor.submit(held_case,"202:1:case2", "a3-4")
                     self.assertEqual({left.result(),right.result()},{"a3-3","a3-4"})
 
+    def test_candidates_round_robin_hosts_without_state_race(self):
+        pool=json.loads((ROOT/"config/pools.json").read_text())
+        cfg=load_config(ROOT)["a3-8p"]
+        choices=scheduler.candidates(cfg,pool)
+        self.assertEqual([x[0]['host_id'] for x in choices[:3]],
+                         ['a3-4','a3-3','a3-4'])
+
     def test_two_8p_prefer_independent_a3_hosts(self):
         from ci_core.job_state import JobState
         cfg=load_config(ROOT)["a3-8p"]
