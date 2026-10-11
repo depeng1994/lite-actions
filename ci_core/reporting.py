@@ -9,7 +9,6 @@ import json
 import logging
 from pathlib import Path
 
-from ci_core.dispatch import execute, task_dir
 from ci_core.github import GitHubClient, authorization
 from ci_core.job_state import JobState
 from ci_core.logs import clean
@@ -101,44 +100,3 @@ def post_result(case: dict, run: dict, report: dict, log_path: Path, state: JobS
     state.update(job_key(run), phase="reported", result=report["status"])
     logging.info("reported run=%s pipeline=%s %s",
                  run["id"], case["name"], report["status"])
-
-
-def run_and_report(case: dict, run: dict, *, root: Path) -> None:
-    """Run fixed pipeline, collect diagnostics, and POST: all on dispatcher."""
-    state = JobState(root)
-    key = job_key(run)
-    output = task_dir(run, root) / "pipeline.log"
-    output.parent.mkdir(parents=True, exist_ok=True)
-    pending = state.read().get(key, {})
-    if pending.get("phase") == "queued":
-        state.update(key, phase="running")
-    if pending.get("phase") == "pending_report":
-        report = pending["report"]
-    else:
-        try:
-            if "resources" in case:
-                from ci_core.dispatch import prepare_profile
-                from ci_core.scheduler import claim_dynamic
-                _, profile = prepare_profile(case, run)
-                with claim_dynamic(root, case, ascend_env=profile["ascend_env"],
-                                   timeout=900, owner_key=key) as runtime_case:
-                    execution = execute(runtime_case, run, root=root,
-                                        lock_root=root / "state/device-locks",
-                                        pre_reserved=True)
-            else:
-                execution = execute(case, run, root=root,
-                                    lock_root=root / "state/device-locks",
-                                    resource_wait_seconds=900)
-            output = execution.log
-            report = make_report(case, run, execution.exit_code, execution.tail, execution.log)
-        except Exception as exc:
-            if not output.exists():
-                output.write_text(f"CI infra error: {type(exc).__name__}\n")
-            report = make_report(case, run, 125,
-                                 [f"Dispatcher error: {type(exc).__name__}"],output)
-        state.update(key, phase="pending_report", report=report)
-    try:
-        post_result(case, run, report, output, state)
-    except Exception as exc:
-        logging.error("GitHub POST pending for run=%s: %s",
-                      run["id"], type(exc).__name__)

@@ -20,15 +20,25 @@ class AgentTests(unittest.TestCase):
                 "path":".github/workflows/a3-8p-lite-actions.yml","name":"A3-8p-CI-Example",
                 "display_title":"A3-8p-CI-Example | test=dsv4_flash_a3_8p_example"}
 
-    def test_handler_routing_separates_smoke_from_v2_matrix(self):
-        # Regression: duplicated run_and_report imports previously routed the
-        # no-artifact local smoke to the V2 parser and raised KeyError.
-        self.assertIs(agent.select_run_handler({}), agent.run_v1_and_report)
-        self.assertIs(agent.select_run_handler({"_ci_request": {"schema": 1}}),
-                      agent.run_v1_and_report)
-        self.assertIs(agent.select_run_handler({"_ci_request": {"schema": 2}}),
-                      agent.run_v2_and_report)
-        self.assertIsNot(agent.run_v1_and_report, agent.run_v2_and_report)
+    def test_single_dispatcher_entrypoint_routes_by_authorized_runner_kind(self):
+        from ci_core import dispatcher
+        self.assertIs(agent.run_and_report, dispatcher.run_and_report)
+        with patch.object(dispatcher, "_run_local_and_report") as local, \
+             patch.object(dispatcher, "_run_matrix_and_report") as matrix:
+            run = self.base_run()
+            dispatcher.run_and_report(self.cases["a3-smoke"], run,
+                                      root=Path("/tmp/not-used"))
+            local.assert_called_once()
+            matrix.assert_not_called()
+            local.reset_mock()
+            with self.assertRaisesRegex(ValueError, "schema-2"):
+                dispatcher.run_and_report(self.cases["a3-8p"], run,
+                                          root=Path("/tmp/not-used"))
+            local.assert_not_called()
+            dispatcher.run_and_report(self.cases["a3-8p"],
+                                      {**run, "_ci_request": {"schema": 2}},
+                                      root=Path("/tmp/not-used"))
+            matrix.assert_called_once()
 
     def test_valid_dispatch(self):
         self.assertTrue(agent.eligible(self.base_run(),self.cases["a3-8p"]))
