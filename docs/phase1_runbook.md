@@ -35,7 +35,7 @@ A3-4 宿主 /data 是 Docker Overlay 的底层磁盘；实际曾出现 /data 100
 1. GitHub Cancel 后，Dispatcher 只能终止本次任务。SSH Runner 以本次唯一 LITE_CI_JOB_ID 精确比对 /proc/PID/environ，记录 PID starttime，对 torchrun 和**脱离原 PGID 的所有同标识 rank** 逐 PID 先 TERM、限时后身份未变才 KILL。不能只 kill 启动器进程组，也不能仅凭进程名误杀。
 2. 对每台涉及宿主机复查 npu-smi 与本次任务 marker，所有分配的设备都已释放才能释放全局训练槽。如取消中 SSH 失联、释放未确认、PID 不可核实，保留 quarantined=true 与原始日志，严禁错误 PASS 或复用脏设备。
 3. GitHub CANCELLED、INFRA_ERROR、RESOURCE_TIMEOUT、FAIL 和 PASS 必须区分。结束广播失败只能记 Warning，不得改写训练已确认的 Exit Code/TensorBoard/设备释放；开始广播仍必须成功。
-4. **解除 Quarantine 只能人工审计**：先停收新任务并退出 Agent；核对 Run/Attempt/Test ID、远端 Task 目录、Host PID/启动时间、完整 marker、NPU 占用、相关设备组并记录恢复证据。仅在确认已释放时，把该 Task 的 quarantined 标为 false，同时写 recovery_verified_at 和 recovery_evidence。不能直接清空整个 state 目录。
+4. **解除 Quarantine 与 `blocked_recovery` 必须分别闭环**：先停收新任务并退出 Agent；核对 Run/Attempt/Test ID、远端 Task 目录、Host PID/启动时间、完整 marker、NPU 占用、相关设备组并记录恢复证据。仅在确认已释放时，才允许把该 Task 的 `quarantined` 标为 false，同时写 `recovery_verified_at` 和 `recovery_evidence`；这只解除设备 quarantine，**不会**自动解除 Task/Run 两级 `blocked_recovery`。若事故记录处于 `blocked_recovery`，还必须确认对应 GitHub Run 已进入 terminal，并将 Task 与 Run 两级记录作为同一事故处理：先补齐与原 Run/Attempt/Test ID 精确绑定的非 PASS 终态结果，再在 Agent 停止且 state 已备份的前提下同时转为现有 terminal `reported` 状态并保留 recovery evidence。无法证明终态或远端释放时继续保持 `blocked_recovery`，不得恢复接单。禁止只清 `quarantined`、删除整个 state、或靠重启 Agent 绕过 fail-closed。
 5. Agent 崩溃后，进程锁释放不代表远端训练停止。running/blocked_recovery 不得被盲重放。GitHub API 故障留下 pending_report 时只重试带原身份的结果上报，不得重跑已完成训练。GitHub 局部 re-run failed jobs 缺少新 Attempt Artifact 时 fail-closed；应完整重触发 Workflow 产生新 Run。
 
 ## 5. V1 回滚演练和 V2 恢复
