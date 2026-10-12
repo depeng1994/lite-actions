@@ -348,16 +348,18 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
                         except (RuntimeError, subprocess.SubprocessError, ValueError):
                             if retry < 2:
                                 time.sleep(2)
-                    phase = "end" if idle else "uncertain"
+                    # One exit event; successful release must be explicitly
+                    # verified before its notice can claim devices are free.
                     try:
-                        errors = broadcast_job(case, pools, run, phase)
+                        errors = broadcast_job(case, pools, run, "end",
+                                               released=idle)
                         if errors:
-                            # End/uncertain broadcast is best-effort: notification
+                            # Exit broadcast is best-effort: notification
                             # transport failures do not invalidate confirmed
                             # training exit, TensorBoard, or NPU release.
                             # BEGIN remains mandatory and blocks launch.
                             logging.warning("CI %s wall delivery incomplete: %s",
-                                            phase, errors)
+                                            "end", errors)
                     except Exception:
                         logging.exception("CI exit wall failed (non-fatal alert)")
                     if not idle:

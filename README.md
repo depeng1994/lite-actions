@@ -234,6 +234,12 @@ ls -ltr logs/runs/ | tail -n 5
    在调度机检查 `state/unified-jobs.json`，将对应 Task 的 `quarantined` 字段由 `true` 改为 `false`，并记录修复说明。
 4. **重启 Agent**：重新执行 `./run-unified-agent.sh` 恢复调度。
 
+### 5.3.1 按任务真实 DeviceSet 广播（宿主机 + 容器）
+
+每个 Case 在本次 `allocation` 的各执行节点分别发送 `wall -n`；使用 `enumerate(allocation)` 生成任务内 `Node 0/1`，从受信任 `config/pools.json` 的 `node_ip` 显示 HCCL 小网 IP，并打印**本机实际分配的 Device 范围**（例如 `0-7`、`8-15`；非连续卡组不合并为虚假的连续区间）。广播包含 Run ID、完整 GitHub Actions 链接和整个任务的 `nodes`、`ngpus_per_node`。同机两个并发 8P Case 只广播各自的卡组，不声称整机空闲。
+
+对外只使用 `begin` 和 `end` 两种事件。`end` 在远端释放核验通过时显示「资源释放 ✅ / 本机资源释放」；未确认时显示「任务结束 ⚠️ / 本机资源状态，释放尚未确认，请勿占用」，**绝不把 SSH 子进程退出等同于 NPU 已释放**。广播内容按 Host 生成并分别发送到相应的 `broadcast_ssh` 地址，原有通知重试与清理/隔离逻辑不变。
+
 ### 5.4 A3 共享设备闲置占卡受控回收（Reclaim 机制）
 
 当 A3 任务缺少空闲卡组且资源池显式配置了 `reclaim_external_processes: true` 时，调度机支持受控清理闲置占卡进程：

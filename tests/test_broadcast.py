@@ -7,7 +7,7 @@ import datetime as dt
 from unittest.mock import patch
 import subprocess
 
-from ci_core.broadcast import broadcast_job, notification, display_width, star_box
+from ci_core.broadcast import broadcast_job, notification, device_range
 from ci_core.config import load_config
 from ci_core import dispatch
 
@@ -19,27 +19,46 @@ RUN = {"id": 37868722207, "run_number": 6, "run_attempt": 1,
 
 
 class BroadcastTests(unittest.TestCase):
-    def test_exact_frame_and_beijing_timestamp(self):
-        when = dt.datetime(2026,10,9,2,42,0,tzinfo=dt.timezone.utc)
-        url = "https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/37868722207"
-        for phase, expected in (
-            ("begin", "本环境正在用于torchtitan CI验证，请勿使用！"),
-            ("end", "本次torchtitan CI验证已结束，本任务所占NPU资源已释放！"),
-            ("uncertain", "本次torchtitan CI已退出，但NPU仍可能被占用，请勿使用！"),
-        ):
-            with self.subTest(phase=phase):
-                msg = notification(RUN, phase, now=when)
-                self.assertEqual(
-                    msg,
-                    "*" * 79 + "\n"
-                    + "* [2026-10-09 10:42:00] " + expected + "\n"
-                    + "* " + url + "\n\n"
-                    + "*" * 79 + "\n",
-                )
-                self.assertEqual(len(msg.splitlines()), 5)
-                self.assertLessEqual(max(map(display_width, msg.splitlines())), 79)
-        with self.assertRaisesRegex(ValueError, "does not fit"):
-            star_box("very long message", url, width=20)
+    def test_two_exit_states_share_end_event_without_false_release(self):
+        when = dt.datetime(2026, 10, 9, 2, 42, tzinfo=dt.timezone.utc)
+        shared = {"node_rank": 0, "node_ip": "192.168.0.30",
+                  "devices": list(range(8, 16)), "nnodes": 2, "ngpus_per_node": 8,
+                  "now": when}
+        messages = {
+            "begin": notification(RUN, "begin", **shared),
+            "released": notification(RUN, "end", released=True, **shared),
+            "unverified": notification(RUN, "end", released=False, **shared),
+        }
+        for kind, msg in messages.items():
+            with self.subTest(kind=kind):
+                self.assertIn("2026-10-09 10:42:00", msg)
+                self.assertIn("nodes=2，ngpus_per_node=8", msg)
+                self.assertIn("节点：Node 0", msg)
+                self.assertIn("小网IP : 192.168.0.30", msg)
+                self.assertIn("Device : 8-15（共8P）", msg)
+                self.assertIn("【任务ID】：37868722207", msg)
+                self.assertIn("https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/37868722207", msg)
+                self.assertTrue(msg.startswith("********"))
+                self.assertTrue(msg.rstrip().endswith("*" * 80))
+        self.assertIn("【本机资源占用】", messages["begin"])
+        self.assertIn("请勿占用", messages["begin"])
+        self.assertIn("【本机资源释放】", messages["released"])
+        self.assertIn("以上 Device 已释放", messages["released"])
+        self.assertIn("【本机资源状态】", messages["unverified"])
+        self.assertIn("释放尚未确认", messages["unverified"])
+        self.assertNotIn("已释放", messages["unverified"])
+        with self.assertRaisesRegex(ValueError, "verified release"):
+            notification(RUN, "end", **shared)
+        with self.assertRaisesRegex(ValueError, "unsupported broadcast phase"):
+            notification(RUN, "uncertain", **shared)
+
+    def test_actual_device_range_not_hardcoded(self):
+        self.assertEqual(device_range(list(range(8))), "0-7")
+        self.assertEqual(device_range(list(range(8, 16))), "8-15")
+        self.assertEqual(device_range([0, 1, 4, 5, 9]), "0-1,4-5,9")
+        for invalid in ([], [0, 0], [-1], [0, "1"]):
+            with self.subTest(devices=invalid), self.assertRaises(ValueError):
+                device_range(invalid)
 
     def test_only_execution_hosts_and_containers(self):
         config=Path(__file__).resolve().parents[1]
@@ -60,6 +79,86 @@ class BroadcastTests(unittest.TestCase):
         self.assertTrue(all(x[1]=="wall -n" for x in calls))
         self.assertFalse(any("dispatcher" in x[0] for x in calls))
         self.assertTrue(all("actions/runs/37868722207" in x[2] for x in calls))
+        # Each host and its CI container get only *their* allocated DeviceSet.
+        for target, _, payload in calls[:2]:
+            self.assertIn("节点：Node 0", payload)
+            self.assertIn("小网IP : 192.168.0.30", payload)
+            self.assertIn("Device : 0-7（共8P）", payload)
+            self.assertNotIn("Device : 8-15", payload)
+        for target, _, payload in calls[2:]:
+            self.assertIn("节点：Node 1", payload)
+            self.assertIn("小网IP : 192.168.0.107", payload)
+            self.assertIn("Device : 8-15（共8P）", payload)
+            self.assertNotIn("Device : 0-7", payload)
+
+
+    def test_single_node_eight_p_variants_are_scoped_to_actual_group(self):
+        root = Path(__file__).resolve().parents[1]
+        spec = load_config(root)["a3-8p"]
+        pools = json.loads((root / "config/pools.json").read_text())
+        for group in (list(range(8)), list(range(8, 16))):
+            with self.subTest(group=group):
+                messages = []
+                def collect(argv, **kwargs):
+                    messages.append(kwargs["input"])
+                    return subprocess.CompletedProcess(argv, 0, "", "")
+                case = {**spec, "allocation": [{"host_id": "a3-3", "devices": group}]}
+                self.assertEqual(broadcast_job(case, pools, RUN, "begin", executor=collect), [])
+                self.assertEqual(len(messages), 2)
+                for msg in messages:
+                    self.assertIn("nodes=1，ngpus_per_node=8", msg)
+                    self.assertIn(f"Device : {device_range(group)}（共8P）", msg)
+                    self.assertIn("节点：Node 0", msg)
+
+    def test_end_broadcast_per_host_and_release_verification(self):
+        root = Path(__file__).resolve().parents[1]
+        pools = json.loads((root / "config/pools.json").read_text())
+        case = {**load_config(root)["a3-16p"], "allocation": [
+            {"host_id": "a3-3", "devices": list(range(8, 16))},
+            {"host_id": "a3-4", "devices": list(range(8))}]}
+        def render(released):
+            messages = {}
+            def collect(argv, **kwargs):
+                messages[argv[-2]] = kwargs["input"]
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            self.assertEqual(broadcast_job(case, pools, RUN, "end", released=released,
+                                           executor=collect), [])
+            return messages
+        released = render(True)
+        self.assertIn("节点：Node 0", released["a3-3-relay"])
+        self.assertIn("Device : 8-15（共8P）", released["a3-3-relay"])
+        self.assertIn("节点：Node 1", released["a3-4-relay"])
+        self.assertIn("Device : 0-7（共8P）", released["a3-4-relay"])
+        self.assertTrue(all("以上 Device 已释放" in msg for msg in released.values()))
+        uncertain = render(False)
+        self.assertTrue(all("释放尚未确认" in msg for msg in uncertain.values()))
+        self.assertTrue(all("以上 Device 已释放" not in msg for msg in uncertain.values()))
+        with self.assertRaisesRegex(ValueError, "verified release"):
+            broadcast_job(case, pools, RUN, "end", executor=lambda *args, **kwargs: None)
+
+    def test_missing_ip_or_mixed_node_sizes_reject_before_wall(self):
+        root = Path(__file__).resolve().parents[1]
+        pools = json.loads((root / "config/pools.json").read_text())
+        spec = load_config(root)["a3-16p"]
+        calls = []
+        def remote(argv, **kwargs):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        broken = {**spec, "allocation": [
+            {"host_id": "a3-3", "devices": list(range(8))},
+            {"host_id": "a3-4", "devices": list(range(8, 12))}]}
+        with self.assertRaisesRegex(ValueError, "consistent devices"):
+            broadcast_job(broken, pools, RUN, "begin", executor=remote)
+        node = pools["a3-shared"]["nodes"][1]
+        old = node["node_ip"]
+        node["node_ip"] = None
+        try:
+            broken["allocation"][1]["devices"] = list(range(8))
+            with self.assertRaisesRegex(ValueError, "missing trusted HCCL node IP"):
+                broadcast_job(broken, pools, RUN, "begin", executor=remote)
+        finally:
+            node["node_ip"] = old
+        self.assertEqual(calls, [])
 
     def test_host_wall_failure_is_reported(self):
         root=Path(__file__).resolve().parents[1]
@@ -82,7 +181,7 @@ class BroadcastTests(unittest.TestCase):
                 {"host_id":"a3-4","devices":[0]}],"pool":"test",
                 "timeout_seconds":10,"enabled":True}
             events=[]
-            def tell(*args):
+            def tell(*args, **kwargs):
                 # Resource still held for BOTH start and exit broadcasts.
                 lk=root/"state/device-locks/a3-4_chip-000.lock"
                 import fcntl
@@ -127,8 +226,8 @@ class BroadcastTests(unittest.TestCase):
                 {"host_id":"a3-4","devices":[0]}],"pool":"test",
                 "enabled":True,"timeout_seconds":10}
             events=[]
-            def wall(*args):
-                events.append(args[-1])
+            def wall(*args, **kwargs):
+                events.append((args[-1], kwargs.get("released")))
                 return ["a3-4-relay"] if args[-1]=="end" else []
             class Runner:
                 def __init__(self,argv,**kwargs):kwargs["stdout"].write("CASE_RESULT approved PASS 0\n")
@@ -146,7 +245,7 @@ class BroadcastTests(unittest.TestCase):
                 execution=dispatch.execute(case,RUN,root=root)
             self.assertEqual(execution.exit_code,0)
             self.assertTrue(execution.release_verified)
-            self.assertEqual(events,["begin","end"])
+            self.assertEqual(events,[("begin", None),("end", True)])
 
     def test_retry_transient_host_wall_only_before_training(self):
         cfg=Path(__file__).resolve().parents[1]
@@ -173,11 +272,14 @@ class BroadcastTests(unittest.TestCase):
                   "allocation":[{"host_id":"a3-4","devices":[0]}],
                   "pool":"test","enabled":True,"timeout_seconds":5}
             phases=[]
+            releases=[]
             def preflight(*args, **kwargs):
                 if phases:
                     raise RuntimeError("NPU process still present")
-            def notice(*args):
+            def notice(*args, **kwargs):
                 phases.append(args[-1])
+                if args[-1] == "end":
+                    releases.append(kwargs["released"])
                 return []
             class Runner:
                 def __init__(self, argv, **kwargs): pass
@@ -190,7 +292,8 @@ class BroadcastTests(unittest.TestCase):
                  patch.object(dispatch.time,"sleep"):
                 result=dispatch.execute(case,RUN,root=root)
             self.assertEqual(result.exit_code,125)
-            self.assertEqual(phases,["begin","uncertain"])
+            self.assertEqual(phases,["begin","end"])
+            self.assertEqual(releases,[False])
             self.assertIn("release unverified",result.log.read_text())
 
     def test_failed_begin_stops_launch_and_sends_exit(self):
@@ -201,7 +304,7 @@ class BroadcastTests(unittest.TestCase):
             case={"name":"test-ci","runner":{"kind":"ssh"},"allocation":[{"host_id":"a3-4","devices":[0]}],
                   "pool":"test","enabled":True,"timeout_seconds":5}
             events=[]
-            def wall(*args):
+            def wall(*args, **kwargs):
                 events.append(args[-1])
                 return ["a3-4-relay"] if args[-1]=="begin" else []
             with patch.object(dispatch,"prepare_profile",return_value=("dsv4_flash_a3_16p_example",{"ascend_env":"/path/set_env.sh"})), \
