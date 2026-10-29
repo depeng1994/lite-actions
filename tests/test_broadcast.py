@@ -74,8 +74,8 @@ class BroadcastTests(unittest.TestCase):
         self.assertEqual(broadcast_job(allocated,pools,RUN,"begin",
                                        executor=remote),[])
         self.assertEqual([x[0] for x in calls],
-                         ["a3-3-relay","a3-3-docker-relay",
-                          "a3-4-relay","a3-4-docker-relay"])
+                         ["a3-3","a3-3-docker",
+                          "a3-4","a3-4-docker"])
         self.assertTrue(all(x[1]=="wall -n" for x in calls))
         self.assertFalse(any("dispatcher" in x[0] for x in calls))
         self.assertTrue(all("actions/runs/37868722207" in x[2] for x in calls))
@@ -125,10 +125,10 @@ class BroadcastTests(unittest.TestCase):
                                            executor=collect), [])
             return messages
         released = render(True)
-        self.assertIn("节点：Node 0", released["a3-3-relay"])
+        self.assertIn("节点：Node 0", released["a3-3"])
         self.assertIn("Device : 8-15（共8P）", released["a3-3-relay"])
-        self.assertIn("节点：Node 1", released["a3-4-relay"])
-        self.assertIn("Device : 0-7（共8P）", released["a3-4-relay"])
+        self.assertIn("节点：Node 1", released["a3-4"])
+        self.assertIn("Device : 0-7（共8P）", released["a3-4"])
         self.assertTrue(all("以上 Device 已释放" in msg for msg in released.values()))
         uncertain = render(False)
         self.assertTrue(all("释放尚未确认" in msg for msg in uncertain.values()))
@@ -165,7 +165,7 @@ class BroadcastTests(unittest.TestCase):
         spec=load_config(root)["a3-8p"]
         pools=json.loads((root/"config/pools.json").read_text())
         def remote(argv, **kwargs):
-            return subprocess.CompletedProcess(argv,1 if argv[-2]=="a3-4-relay" else 0,"","")
+            return subprocess.CompletedProcess(argv,1 if argv[-2]=="a3-4" else 0,"","")
         runtime={**spec,"allocation":[{"host_id":"a3-4","devices":list(range(8))}]}
         self.assertEqual(broadcast_job(runtime,pools,RUN,"begin",executor=remote),
                          ["a3-4-relay"])
