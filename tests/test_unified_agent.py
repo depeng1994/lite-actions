@@ -188,7 +188,7 @@ class AgentTests(unittest.TestCase):
 
         def stub_execute(case, run, *, root):
             nonlocal running_train, peak_train
-            if case["runner"]["kind"] == "local":
+            if case["runner"]["kind"] in {"local", "worker"}:
                 self.assertTrue(train_started.wait(2), "training never began")
                 with guard:
                     observed.append("smoke")
