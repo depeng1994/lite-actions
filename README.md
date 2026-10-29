@@ -111,7 +111,7 @@ flowchart LR
 
 为了提升集群利用率并缩短 CI 等待耗时，Dispatcher 具备用例级并发与严格隔离机制：
 
-* **独立 Case 并发（4 Worker 架构）**：Dispatcher 运行 4 个独立 Worker（3 个 SSH 训练 Worker + 1 个本地 Smoke Worker）。GitHub Matrix 中互不冲突的用例可同时排队并发执行（例如单机的 Muon 与 AdamW 同时运行）；本地 Smoke 任务独立运行，无需等待训练排队。
+* **独立 Case 并发（5 Worker 架构）**：Dispatcher 运行 5 个独立 Worker（4 个 SSH 训练 Worker + 1 个本地 Smoke Worker）。支持最多 4 组训练任务（如 4×8P 满载或双 16P 互补并发）同时排队并发执行；本地 Smoke 任务独立运行，无需等待训练排队。
 * **物理卡号与通信端口双重原子锁**：每个任务原子获取目标 Host 的 NPU 物理文件锁，同时持有该 Host 动态分配的 rendezvous 端口及 HCCL 端口范围租约（`LITE_CI_MASTER_PORT` 与 `LITE_CI_HCCL_*_PORT_RANGE`），从根本上避免同机并发时的卡号与网络端口冲突。
 * **跨机任务原子准入**：16P 等跨节点分布式任务必须一次性获取全部节点的完整 8P 设备组，资源未凑齐前在队列中等待，绝不半途持卡占位。
 * **组织仓 PR 自动 CI 与安全准入**：面向 `torchtitan-npu:master` 提交的 PR 自动触发组织仓 CI；Agent 通过 GitHub PR API 严格校验 PR 编号与 Head Commit SHA，按精确 SHA 下载代码；执行机零 GitHub Token；低频心跳（每 60 秒上报一次状态日志至 GitHub Actions 云端日志）。
@@ -134,7 +134,7 @@ flowchart LR
 
 | Actions 通道展示名称 | 通道 ID | 硬件规格与作用 | 状态 |
 | :--- | :--- | :--- | :--- |
-| **`Dispatcher-Smoke`** | `a3-smoke` | 调度机本地 `npu-smi` 连通性冒烟验证 | 可用 |
+| **`Dispatcher-Smoke`** | `dispatcher-smoke` | 调度机本地 `npu-smi` 连通性冒烟验证 | 可用 |
 | **`A3-8p-CI-Example`** | `a3-8p` | A3 单机 8P 动态选卡：Muon + AdamW 5 steps | **正式可用（支持同机/跨机并发调度）** |
 | **`A3-16p-CI-Example`** | `a3-16p` | A3 双机 16P（跨机 EP16）：Eager 5 steps | **正式可用（支持跨机原子调度）** |
 | **`A5-64p-CI`** | `a5-64p` | A5 八机 64P（每台 8P）集群训练 | 预留模板，实机验收前保持禁用 |
@@ -280,25 +280,25 @@ ls -ltr logs/runs/ | tail -n 5
 
 ```json
 {
-  "pools": {
-    "a3-shared": {
-      "type": "ascend-a3",
-      "process_indexing": "card",
-      "nodes": [
-        {
-          "host_id": "a3-03",
-          "ssh": "root@10.x.x.3",
-          "node_ip": "192.168.1.3",
-          "device_ids": [0, 1, 2, 3, 4, 5, 6, 7]
-        },
-        {
-          "host_id": "a3-04",
-          "ssh": "root@10.x.x.4",
-          "node_ip": "192.168.1.4",
-          "device_ids": [0, 1, 2, 3, 4, 5, 6, 7]
-        }
-      ]
-    }
+  "a3-shared": {
+    "type": "ascend-a3",
+    "process_indexing": "card-die",
+    "max_jobs_per_host": 2,
+    "reclaim_external_processes": true,
+    "nodes": [
+      {
+        "host_id": "a3-3",
+        "ssh": "a3-3-docker-relay",
+        "broadcast_ssh": ["a3-3-relay", "a3-3-docker-relay"],
+        "node_ip": "192.168.0.30",
+        "network_interface": "enp23s0f3",
+        "device_ids": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        "allocation_groups": [
+          { "devices": [0, 1, 2, 3, 4, 5, 6, 7], "verified": true },
+          { "devices": [8, 9, 10, 11, 12, 13, 14, 15], "verified": true }
+        ]
+      }
+    ]
   }
 }
 ```
@@ -314,21 +314,19 @@ ls -ltr logs/runs/ | tail -n 5
 
 ```json
 {
-  "pipelines": {
-    "a3-8p": {
-      "workflow": "a3_8p_lite_actions.yml",
-      "pool": "a3-shared",
-      "resources": {
-        "nodes": 1,
-        "devices_per_node": 8
-      },
-      "runner": {
-        "kind": "ssh"
-      },
-      "timeout_seconds": 7500,
-      "enabled": true,
-      "pipeline_id": "a3-8p"
-    }
+  "a3-8p": {
+    "workflow": "a3_8p_lite_actions.yml",
+    "pool": "a3-shared",
+    "resources": {
+      "nodes": 1,
+      "devices_per_node": 8
+    },
+    "runner": {
+      "kind": "ssh"
+    },
+    "timeout_seconds": 7500,
+    "enabled": true,
+    "pipeline_id": "a3-8p"
   }
 }
 ```
@@ -357,4 +355,4 @@ python3 scripts/preflight_pool.py --pool a3-shared --npu
 ## 7. 相关参考
 
 * **如何编写和新增测试用例**：参见模型仓 [集成测试使用指南 (tests/integration_tests/README.md)](https://github.com/depeng1994/torchtitan-npu/blob/master/tests/integration_tests/README.md)。
-* **历史架构演进与阶段设计备忘**：参见 [REFACTOR_PLAN.md](REFACTOR_PLAN.md)。
+* **架构重构与开发台账**：参见 [DEVELOPMENT_LEDGER.md](DEVELOPMENT_LEDGER.md)。
