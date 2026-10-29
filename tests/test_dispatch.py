@@ -52,9 +52,9 @@ class DispatchTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,"chip 8: pid 4567"):
                 dispatch.remote_preflight(case,pools,ascend_env="/container/cann/set_env.sh")
         argv=run.call_args.args[0]
-        self.assertIn("a3-4-relay",argv)
-        self.assertNotIn("a3-4-docker-relay",argv)
-        self.assertNotIn("source",argv[-1])
+        self.assertIn("a3-4-docker",argv)
+        self.assertNotIn("a3-4",argv)
+        self.assertIn("source",argv[-1])
 
     def test_late_external_occupancy_has_single_scoped_reclaim(self):
         from ci_core import occupancy
