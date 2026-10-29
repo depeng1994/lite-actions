@@ -272,7 +272,7 @@ def run_and_report(case: dict, run: dict, *, root: Path) -> None:
     schema-2 immutable plan; old SSH request formats are not accepted.
     """
     kind = case.get("runner", {}).get("kind")
-    if kind == "local":
+    if kind in {"local", "worker"}:
         if "_ci_request" in run:
             raise ValueError("local smoke must not accept a CI plan")
         return _run_local_and_report(case, run, root=root)
