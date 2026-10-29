@@ -51,9 +51,10 @@ class WorkerRunnerTests(unittest.TestCase):
                 "transport": "local", "expected_hostname": "worker.example",
             }), 0)
         command = run.call_args.args[0]
-        self.assertEqual(command[:2], ["bash", "-lc"])
-        self.assertIn("/etc/os-release", command[2])
-        self.assertNotIn("npu-smi", command[2])
+        self.assertEqual(command, ["bash", str(ROOT / "pipeline.sh")])
+        script = (ROOT / "pipeline.sh").read_text()
+        self.assertIn("/etc/os-release", script)
+        self.assertNotIn("npu-smi", script)
         printed = "\n".join(str(call) for call in output.call_args_list)
         self.assertIn("WORKER_ID=depeng", printed)
         self.assertIn("WORKER_STATUS=PASS", printed)
@@ -120,6 +121,7 @@ class WorkerRunnerTests(unittest.TestCase):
             (root / "ci_core").mkdir()
             (root / "config").mkdir()
             shutil.copy2(ROOT / "ci_core/worker_runner.py", root / "ci_core/worker_runner.py")
+            shutil.copy2(ROOT / "pipeline.sh", root / "pipeline.sh")
             (root / "config/pools.json").write_text(json.dumps({
                 "local-smoke": {"type": "local", "nodes": []},
             }))
