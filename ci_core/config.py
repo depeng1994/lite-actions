@@ -1,4 +1,4 @@
-"""Validate trusted V1/V2 pipeline and physical resource pool boundaries."""
+"""Validate trusted current pipeline and physical resource pool boundaries."""
 from __future__ import annotations
 
 import json
@@ -16,7 +16,7 @@ def load_config(root: Path) -> dict:
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", name):
             raise ValueError(f"invalid pipeline ID: {name!r}")
         workflow = spec["workflow"]
-        if (not re.fullmatch(r"[a-z0-9][a-z0-9_-]+\.yml", workflow)
+        if (not re.fullmatch(r"[a-z0-9][a-z0-9_]+\.yml", workflow)
                 or workflow in workflows):
             raise ValueError("invalid or duplicate workflow")
         workflows.add(workflow)
@@ -24,6 +24,11 @@ def load_config(root: Path) -> dict:
         if pool_id not in pools:
             raise ValueError("unknown pool")
         pool = pools[pool_id]
+        cap = pool.get("max_jobs_per_host", 1)
+        if type(cap) is not int or cap not in (1, 2):
+            raise ValueError("unsupported per-host job capacity")
+        if type(pool.get("reclaim_external_processes", False)) is not bool:
+            raise ValueError("pool reclaim_external_processes must be boolean")
         hosts = {node["host_id"]: node for node in pool["nodes"]}
         if len(hosts) != len(pool["nodes"]):
             raise ValueError("duplicate physical host")
@@ -40,7 +45,7 @@ def load_config(root: Path) -> dict:
                         or not set(group_ids) <= set(ids)):
                     raise ValueError("invalid verified allocation group")
         runner = spec["runner"]
-        if runner["kind"] not in {"ssh", "local"}:
+        if runner["kind"] not in {"ssh", "local", "worker"}:
             raise ValueError("unknown trusted runner")
         has_static = "allocation" in spec
         has_dynamic = "resources" in spec
@@ -65,6 +70,18 @@ def load_config(root: Path) -> dict:
                 from ci_core.scheduler import candidates
                 if not candidates(spec, pools):
                     raise ValueError("enabled pool has no verified topology")
+        if runner["kind"] == "worker":
+            if set(runner) != {"kind", "worker_id"}:
+                raise ValueError("worker runner requires only worker_id")
+            worker_id = runner["worker_id"]
+            if not isinstance(worker_id, str) or not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", worker_id):
+                raise ValueError("invalid worker ID")
+            worker_file = root / "config/workers.json"
+            if not worker_file.is_file():
+                raise ValueError("worker registry missing")
+            worker_registry = json.loads(worker_file.read_text())
+            if worker_id not in worker_registry or worker_registry[worker_id].get("enabled") is not True:
+                raise ValueError("pipeline references an unregistered/disabled worker")
         if runner["kind"] == "ssh":
             if set(runner) != {"kind"}:
                 raise ValueError("SSH pipeline must be generic")

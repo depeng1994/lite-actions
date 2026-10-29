@@ -53,27 +53,35 @@ class SharedSshRunnerTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     selected_test({**r, "name": bad.get("display_title", r["name"]), **bad})
 
-    def test_suite_expansion_topology_budget_and_selector_is_fail_closed(self):
+    def test_suite_expansion_topology_and_selector_is_fail_closed(self):
         with patch('ci_core.registry.inspect_archive',return_value=[
             {'test_id':TEST_8P,'nnodes':1,'ngpu':8,'env_vars':ASSET_ENV},
             {'test_id':'dsv4_flash_a3_8p_adamw','nnodes':1,'ngpu':8,'env_vars':{**ASSET_ENV,'OPTIMIZER_OVERRIDES':''}}
         ]):
             s=[{'suite':'a3_8p_tests'}]
-            rows=resolve_request(Path('/unused'),s,nodes=1,ngpu=8,max_cases=2)
+            rows=resolve_request(Path('/unused'),s,nodes=1,ngpu=8)
             self.assertEqual(len(rows),2)
             with self.assertRaisesRegex(ValueError,'topology'):
-                resolve_request(Path('/unused'),s,nodes=2,ngpu=8,max_cases=2)
-            with self.assertRaisesRegex(ValueError,'budget'):
-                resolve_request(Path('/unused'),s,nodes=1,ngpu=8,max_cases=1)
+                resolve_request(Path('/unused'),s,nodes=2,ngpu=8)
         req={'schema':1,'run_id':42,'attempt':1,'sha':'a'*40,'cases':[{'suite':'a3_8p_tests'}]}
         self.assertEqual(parse_request(req,{'id':42,'run_attempt':1,'head_sha':'a'*40})[0]['suite'],'a3_8p_tests')
+
+    def test_suite_expands_beyond_legacy_case_budget(self):
+        samples = [dict(test_id=f"trusted_case_{i:03d}", nnodes=1, ngpu=8,
+                        env_vars=dict(ASSET_ENV)) for i in range(15)]
+        with patch('ci_core.registry.inspect_archive', return_value=samples):
+            resolved = resolve_request(Path('/unused'), [{'suite': 'synthetic_tests'}],
+                                       nodes=1, ngpu=8)
+        self.assertEqual(len(resolved), 15)
 
     def test_model_owned_environment_is_forwarded_without_any_pipeline_asset_fields(self):
         for name in ('a3-8p', 'a3-16p', 'a5-64p'):
             self.assertEqual(self.cases[name]['runner'], {'kind': 'ssh'})
         nodes = ssh_runner.allocations(runtime(self.cases['a3-8p']), self.pools)
-        profile = {'kind': 'ssh', 'mode': 'single', 'env_vars': {
-            **ASSET_ENV, 'OPTIMIZER_OVERRIDES': ''}}
+        profile = {'kind': 'ssh', 'mode': 'single',
+                   'LITE_CI_MASTER_PORT': 16000,
+                   'LITE_CI_HCCL_IF_BASE_PORT': 20000,
+                   'env_vars': {**ASSET_ENV, 'OPTIMIZER_OVERRIDES': ''}}
         dest = '/mnt/share/ci_tests/example/node0'
         cmd = ssh_runner.remote_command(nodes[0], nodes, profile,
                                         dest, STAMP, 120, TEST_8P)
@@ -82,6 +90,8 @@ class SharedSshRunnerTests(unittest.TestCase):
         self.assertIn('CKPT_INIT_LOAD_PATH=/weights', cmd)
         self.assertIn('OPTIMIZER_OVERRIDES=', cmd)
         self.assertIn(f'CKPT_SAVE_LOAD_PATH={dest}/checkpoints', cmd)
+        self.assertIn('MASTER_PORT=16000', cmd)
+        self.assertIn('HCCL_IF_BASE_PORT=20000', cmd)
         self.assertNotIn('hf_assets_path', cmd)
         self.assertEqual(subprocess.run(['bash', '-n', '-c', cmd],
                                         capture_output=True).returncode, 0)
@@ -127,7 +137,7 @@ class SharedSshRunnerTests(unittest.TestCase):
                     for file in (model/subfolder).rglob('*.py'):
                         tar.add(file, arcname=str(file.relative_to(model)))
             found=resolve_request(archive,[{'suite':'a3_8p_tests'}],
-                                  nodes=1,ngpu=8,max_cases=2)
+                                  nodes=1,ngpu=8)
             self.assertEqual([x['test_id'] for x in found],
                 ['dsv4_flash_a3_8p_example','dsv4_flash_a3_8p_adamw'])
             for case in found:
@@ -197,12 +207,16 @@ class SharedSshRunnerTests(unittest.TestCase):
             manifest=Path(td)/"request.json"
             manifest.write_text(json.dumps(request))
             allocation=Path(td)/"allocation.json"
-            allocation.write_text(json.dumps({"allocation": STATIC["a3-8p"]}))
+            from ci_core.resources import port_profile
+            allocation.write_text(json.dumps({"allocation": STATIC["a3-8p"],
+                                              **port_profile(1)}))
             args=["runner","--case","a3-8p","--sha","a"*40,
                   "--stamp",STAMP,"--remote-dir","job-123",
                   "--run-id","1234","--run-attempt","1",
                   "--request-file",str(manifest),
                   "--allocation-file",str(allocation)]
+            # Verify the exact reserved port identity is forwarded rather than
+            # silently resetting to slot 0 in a new Python process.
             with patch.object(sys,"argv",args), patch.object(ssh_runner,"run",return_value=0) as execute, \
                  patch('ci_core.dispatch.remote_preflight'), \
                  patch.object(ssh_runner,'model_archive',return_value=Path('/unused')), \
@@ -212,6 +226,9 @@ class SharedSshRunnerTests(unittest.TestCase):
                        'env_vars':{**ASSET_ENV,'OPTIMIZER_OVERRIDES':''}}]]):
                 self.assertEqual(ssh_runner.main(),0)
                 self.assertEqual(execute.call_count,2)
+                self.assertEqual(execute.call_args_list[0].args[0]['port_slot'],1)
+                self.assertEqual(execute.call_args_list[0].args[0]['master_port'],16001)
+                self.assertEqual(execute.call_args_list[0].args[0]['hccl_npu_port_range'],'28128-28191')
                 self.assertEqual(execute.call_args_list[0].kwargs["remote_dir"],
                                  "job-123_case-01_"+TEST_8P)
                 self.assertEqual(execute.call_args_list[1].kwargs["test_case"],"dsv4_flash_a3_8p_adamw")

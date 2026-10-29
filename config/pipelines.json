@@ -1,12 +1,12 @@
 {
-  "a3-smoke": {
-    "workflow": "lite-actions-dispatcher-smoke.yml",
+  "dispatcher-smoke": {
+    "workflow": "lite_actions_dispatcher_smoke.yml",
     "pool": "local-smoke",
     "allocation": [],
     "timeout_seconds": 90,
     "runner": {
-      "kind": "local",
-      "script": "pipeline.sh"
+      "kind": "worker",
+      "worker_id": "depeng"
     },
     "enabled": true,
     "pipeline_id": "npu-smi"

@@ -89,7 +89,7 @@ class RecoveryTests(unittest.TestCase):
                 with scheduler.claim_dynamic(root,case,ascend_env=None,timeout=0.1):
                     pass
 
-    def test_running_previous_case_stops_global_serial_slot(self):
+    def test_running_previous_case_allows_disjoint_devices(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)
             (root/"config").mkdir()
@@ -97,11 +97,12 @@ class RecoveryTests(unittest.TestCase):
             JobState(root).update("oldrun:1:orphan", phase="running",
                                   allocation=[{"host_id":"a3-4","devices":list(range(8))}])
             case=load_config(ROOT)["a3-8p"]
-            with self.assertRaises(scheduler.UnsafeResourceState):
-                with scheduler.claim_dynamic(root,case,ascend_env=None,timeout=0.1):
-                    pass
+            with patch.object(scheduler,"remote_preflight"):
+                with scheduler.claim_dynamic(root,case,ascend_env=None,timeout=0.2) as allocated:
+                    self.assertFalse(set(allocated['allocation'][0]['devices']) == set(range(8))
+                                     and allocated['allocation'][0]['host_id'] == 'a3-4')
 
-    def test_running_previous_v1_run_stops_global_serial_slot(self):
+    def test_running_previous_run_without_allocation_does_not_block(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)
             (root/"config").mkdir()
@@ -110,12 +111,11 @@ class RecoveryTests(unittest.TestCase):
                                   case="a3-8p", sha="a"*40)
             case=load_config(ROOT)["a3-8p"]
             with patch.object(scheduler,"remote_preflight"):
-                with self.assertRaises(scheduler.UnsafeResourceState):
-                    with scheduler.claim_dynamic(root,case,ascend_env=None,
-                                                 timeout=0.1,owner_key="1000:1"):
-                        pass
+                with scheduler.claim_dynamic(root,case,ascend_env=None,
+                                             timeout=0.2,owner_key="1000:1") as chosen:
+                    self.assertEqual(len(chosen['allocation']), 1)
 
-    def test_current_v1_owner_state_does_not_self_block(self):
+    def test_current_owner_state_does_not_self_block(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)
             (root/"config").mkdir()
@@ -157,6 +157,38 @@ class RecoveryTests(unittest.TestCase):
             execute.assert_not_called()
             self.assertEqual(FakeGitHub.published[0]["status"],"CANCELLED")
 
+    def test_failed_preflight_before_launch_does_not_quarantine(self):
+        from ci_core.dispatch import ExternalNpuOccupancy
+        case=load_config(ROOT)["a3-8p"]
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            @contextmanager
+            def claimed(_root,_case,**kwargs):
+                yield {**_case,"allocation":[{"host_id":"a3-4","devices":list(range(8))}],
+                       "port_slot":0}
+            run={**RUN,"_ci_request":plan()}
+            with patch.object(dispatcher,"prepare_profile",return_value=(TEST_ID,{"ascend_env":"/trusted"})), \
+                 patch.object(dispatcher,"claim_dynamic",side_effect=claimed), \
+                 patch.object(dispatcher,"execute",side_effect=ExternalNpuOccupancy("external vllm")), \
+                 patch.object(dispatcher,"GitHubClient",FakeGitHub), \
+                 patch.object(dispatcher,"authorization",return_value="fake"):
+                dispatcher.run_and_report(case,run,root=root)
+            report=FakeGitHub.published[-1]
+            state=JobState(root).read()[f"{run['id']}:1:{TEST_ID}"]
+            self.assertEqual(report["status"],"RESOURCE_TIMEOUT")
+            self.assertFalse(state.get("quarantined",False))
+            self.assertEqual(state["phase"],"reported")
+
+    def test_runner_enables_only_scoped_approved_reclamation_by_default(self):
+        script=(ROOT/"run-unified-agent.sh").read_text()
+        self.assertIn('LITE_ACTIONS_RECLAIM_EXTERNAL_PROCESSES:-1',script)
+        source=(ROOT/"ci_core/scheduler.py").read_text()
+        self.assertIn('pools[case["pool"]].get("reclaim_external_processes", False)',source)
+        self.assertIn('"LITE_ACTIONS_RECLAIM_EXTERNAL_PROCESSES", "1"',source)
+        pools=json.loads((ROOT/"config/pools.json").read_text())
+        self.assertTrue(pools["a3-shared"]["reclaim_external_processes"])
+        self.assertFalse(pools["a5-64p-lab"]["reclaim_external_processes"])
+
     def test_external_host_pid_cleanup_never_uses_docker_namespace(self):
         from types import SimpleNamespace
         pool=json.loads((ROOT/"config/pools.json").read_text())
@@ -190,7 +222,8 @@ class RecoveryTests(unittest.TestCase):
         funcs=[node for node in ast.parse(occupancy._REMOTE_TERMINATE).body
                if isinstance(node,ast.FunctionDef) and node.name=="direct_class"]
         import os
-        env={"os":os}
+        import re
+        env={"os":os,"re":re}
         exec(compile(ast.Module(body=funcs,type_ignores=[]),
                      "<remote-classifier>","exec"),env)
         classify=env["direct_class"]
@@ -199,6 +232,12 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(classify(["python3","/opt/auto_occupy.py"]),"auto-occupy")
         self.assertEqual(classify(["python3","/data/example/auto-occupy/auto_occupy_worker.py"]),"auto-occupy")
         self.assertIsNone(classify(["python3","/data/example/other/auto_occupy_worker.py"]))
+        self.assertEqual(classify(["VLLM::Worker_TP0"]), "vllm")
+        self.assertEqual(classify(["VLLM::Worker_TP15"]), "vllm")
+        self.assertIsNone(classify(["ray::VLLMEngine"]))
+        self.assertIsNone(classify(["rayTorchTitan"]))
+        self.assertIsNone(classify(["VLLM::EngineCore"]))
+        self.assertIsNone(classify(["python3", "train.py", "--role", "VLLM::Worker_TP0"]))
         self.assertIsNone(classify(["python3","train.py","--data","/data/vllm"]))
         self.assertIsNone(classify(["python3","train.py","--arg","auto-occupy"]))
 
@@ -239,6 +278,27 @@ class RecoveryTests(unittest.TestCase):
                     if proc.poll() is None:
                         proc.kill()
                     proc.wait(timeout=5)
+
+    def test_authorized_vllm_worker_pid_termination_is_scoped(self):
+        """Actual process signals on disposable CPU-only vLLM titled worker."""
+        import subprocess
+        import sys
+        import time
+        owned=subprocess.Popen(["bash","-c","exec -a VLLM::Worker_TP0 /bin/sleep 60"],
+                               start_new_session=True)
+        foreign=subprocess.Popen(["sleep","60"],start_new_session=True)
+        try:
+            time.sleep(.15)
+            result=subprocess.run([sys.executable,"-c",occupancy._REMOTE_TERMINATE,
+                                   str(owned.pid)],
+                                  capture_output=True,text=True,timeout=12)
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            owned.wait(timeout=3)
+            self.assertIsNone(foreign.poll())
+        finally:
+            for proc in (owned,foreign):
+                if proc.poll() is None: proc.kill()
+                proc.wait(timeout=5)
 
     def test_authorized_auto_occupy_pid_termination_is_scoped(self):
         """Exercise actual classifier/signals on disposable CPU-only processes."""

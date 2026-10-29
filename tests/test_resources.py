@@ -6,7 +6,8 @@ import unittest
 
 from ci_core.resources import (AgentAlreadyRunning, GlobalSlotBusy,
                                agent_lock_path, global_slot_path, reserve,
-                               ResourceBusy, single_agent, wait_global_slot)
+                               ResourceBusy, single_agent, wait_global_slot, reserve_ports,
+                               shared_resource_lock_root, reserve_host_budget)
 from ci_core.config import load_config
 
 
@@ -45,6 +46,39 @@ class ResourceTests(unittest.TestCase):
                 with reserve(Path(td), A16):
                     pass
 
+    def test_atomic_host_budget_and_slot_capacity(self):
+        a=[{"host_id":"a3-3","devices":list(range(8))}]
+        b=[{"host_id":"a3-3","devices":list(range(8,16))}]
+        two=[a[0],{"host_id":"a3-4","devices":list(range(8))}]
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            with reserve_host_budget(root,a,max_jobs_per_host=1):
+                with self.assertRaises(ResourceBusy):
+                    with reserve_host_budget(root,b,max_jobs_per_host=1):pass
+            with reserve_host_budget(root,a,max_jobs_per_host=2) as one:
+                with reserve_host_budget(root,b,max_jobs_per_host=2) as two_slots:
+                    self.assertNotEqual(one['a3-3'],two_slots['a3-3'])
+                    with self.assertRaises(ResourceBusy):
+                        with reserve_host_budget(root,b,max_jobs_per_host=2):pass
+            with reserve_host_budget(root,a,max_jobs_per_host=1):
+                with self.assertRaises(ResourceBusy):
+                    with reserve_host_budget(root,two,max_jobs_per_host=1):pass
+                with reserve_host_budget(root,[{'host_id':'a3-4','devices':list(range(8))}],
+                                         max_jobs_per_host=1):pass
+
+    def test_hccl_port_profiles_include_disjoint_ranges(self):
+        one=[{"host_id":"a3-4","devices":list(range(8))}]
+        with tempfile.TemporaryDirectory() as td:
+            with reserve_ports(Path(td),one) as a:
+                with reserve_ports(Path(td),one) as b:
+                    self.assertNotEqual(a['master_port'],b['master_port'])
+                    for name in ('hccl_host_port_range','hccl_npu_port_range'):
+                        low1,high1=map(int,a[name].split('-'))
+                        low2,high2=map(int,b[name].split('-'))
+                        self.assertTrue(high1<low2 or high2<low1)
+                        self.assertEqual(high1-low1+1,64)
+                self.assertEqual(a['port_slot'],0)
+
     def test_overlap_rejected_across_processes(self):
         with tempfile.TemporaryDirectory() as td:
             with reserve(Path(td), A8):
@@ -77,6 +111,12 @@ class ResourceTests(unittest.TestCase):
             self.assertEqual(p.exitcode, 0)
             with single_agent(lockfile):
                 pass
+
+    def test_resource_lock_root_shared_across_repos_and_absolute(self):
+        with tempfile.TemporaryDirectory() as td:
+            with unittest.mock.patch.dict("os.environ", {"LITE_ACTIONS_RESOURCE_LOCK_ROOT": td}):
+                self.assertEqual(shared_resource_lock_root(), Path(td))
+        self.assertTrue(shared_resource_lock_root().is_absolute())
 
     def test_global_lock_defaults_are_worktree_independent(self):
         for path in (agent_lock_path(), global_slot_path()):

@@ -5,11 +5,10 @@ model repository at the exact GitHub SHA. No GitHub credential reaches nodes.
 """
 from __future__ import annotations
 
+import fcntl
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import fcntl
 import gzip
-import os
 import shutil
 import json
 from pathlib import Path
@@ -24,7 +23,8 @@ from ci_core.config import load_config
 from ci_core.registry import inspect_archive, SELECTOR, parse_request, resolve_request
 
 ROOT = Path(__file__).resolve().parents[1]
-REPO = "git@github.com:torchtitan-npu/torchtitan-npu.git"
+from ci_core.source_repo import REPO as MODEL_REPO
+REPO = f"git@github.com:{MODEL_REPO}.git"
 DEST_ROOT = "/mnt/share/ci_tests"
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 STAMP = re.compile(r"[0-9A-Za-z_-]+\Z")
@@ -143,12 +143,32 @@ def remote_command(node: dict, nodes: list[dict], runner: dict, dest: str,
     }
     if node.get("network_interface"):
         env["Network_Interface"] = node["network_interface"]
+    for key in ("LITE_CI_MASTER_PORT", "LITE_CI_HCCL_IF_BASE_PORT"):
+        if key in runner:
+            port = runner[key]
+            if type(port) is not int or not 1024 <= port < 65536:
+                raise ValueError("invalid dispatcher-issued rendezvous port")
+            env[key] = str(port)
+            # The 8P single-node runner inherits the standard environment,
+            # whereas the 16P adapter applies LITE_CI_* after recipe defaults.
+            env["MASTER_PORT" if key == "LITE_CI_MASTER_PORT" else "HCCL_IF_BASE_PORT"] = str(port)
+    for key, hccl_key in (("LITE_CI_HCCL_HOST_PORT_RANGE", "HCCL_HOST_SOCKET_PORT_RANGE"),
+                          ("LITE_CI_HCCL_NPU_PORT_RANGE", "HCCL_NPU_SOCKET_PORT_RANGE")):
+        if key in runner:
+            value = runner[key]
+            if (not isinstance(value, str) or not re.fullmatch(r"[1-9][0-9]{3,4}-[1-9][0-9]{3,4}", value)):
+                raise ValueError("invalid dispatcher-issued HCCL port range")
+            start, end = map(int, value.split("-"))
+            if not (1024 <= start <= end <= 65535 and end-start >= 31):
+                raise ValueError("unsafe dispatcher-issued HCCL range")
+            env[key] = value
+            env[hccl_key] = value
     env["CKPT_SAVE_LOAD_PATH"] = dest + "/checkpoints"
     setup = f"source {q(runner['env_vars']['ASCEND_SET_ENV_PATH'])} >/dev/null 2>&1 && "
     # PID file enables bounded cancellation. Python on the dispatcher always
     # validates job identity before killing its *own* remote process group.
     exports = " ".join(f"{key}={q(value)}" for key, value in env.items())
-    # Preserve legacy A3 ordering: source CANN first, then apply trusted
+    # Source the selected CANN toolkit first, then apply trusted
     # NODE_IPS / HCCL / device variables so the toolkit cannot override them.
     inner = (f"cd {q(dest+'/repo')} && {setup}"
              f"export {exports} && "
@@ -280,13 +300,17 @@ def run(case: dict, sha: str, stamp: str, *, test_case: str,
     with tempfile.TemporaryDirectory(prefix="lite-ci-stage-") as tmp:
         archive = model_archive(sha, Path(tmp))
         matches=resolve_request(archive,[{'test_id':test_case}],
-                               nodes=len(nodes),ngpu=len(nodes[0]['devices']),max_cases=1)
+                               nodes=len(nodes),ngpu=len(nodes[0]['devices']))
         if len(matches)!=1:raise ValueError('case selection changed')
         # These values are resolved from the pinned SHA's OverrideDefinitions.
         # The Lite Actions JSON has no testcase-owned environment fields.
         runner={**case['runner'],
                 'mode':'single' if len(nodes)==1 else 'distributed',
-                'env_vars':matches[0]['env_vars']}
+                'env_vars':matches[0]['env_vars'],
+                'LITE_CI_MASTER_PORT':case.get('master_port', 16000),
+                'LITE_CI_HCCL_IF_BASE_PORT':case.get('hccl_if_base_port', 20000),
+                'LITE_CI_HCCL_HOST_PORT_RANGE':case.get('hccl_host_port_range', '24000-24063'),
+                'LITE_CI_HCCL_NPU_PORT_RANGE':case.get('hccl_npu_port_range', '28000-28063')}
         dirs = {}
         with ThreadPoolExecutor(max_workers=len(nodes)) as executor:
             futures = {executor.submit(stage, node, base, archive, sha): node for node in nodes}
@@ -381,11 +405,16 @@ def main() -> int:
             raise ValueError("dynamic CI requires runtime allocation")
         from ci_core.scheduler import validate_allocation
         runtime = json.loads(Path(args.allocation_file).read_text())
-        if set(runtime) != {"allocation"}:
-            raise ValueError("unrecognized allocation document")
+        from ci_core.resources import port_profile
+        slot = runtime.get("port_slot")
+        approved = port_profile(slot)
+        if set(runtime) != {"allocation", *approved}:
+            raise ValueError("unrecognized allocation/port lease document")
+        if any(runtime.get(field) != value for field,value in approved.items()):
+            raise ValueError("untrusted allocation/port profile mismatch")
         validate_allocation(case, json.loads((ROOT / "config/pools.json").read_text()),
                             runtime["allocation"])
-        case = {**case, "allocation": runtime["allocation"]}
+        case = {**case, "allocation": runtime["allocation"], **approved}
     elif args.allocation_file:
         raise ValueError("unexpected dynamic allocation for static CI")
     if args.request_file:
@@ -395,9 +424,6 @@ def main() -> int:
         items = parse_request(request, {"id": args.run_id,
                                         "run_attempt": args.run_attempt,
                                         "head_sha": args.sha})
-        max_cases = 1 if case["name"] == "a5-64p" else 2
-        if len(items) > max_cases:
-            raise ValueError("CI request exceeds per-channel runtime budget")
         # Resolve validated per-case environment before running. In particular,
         # after a case exits, preflight uses its toolkit path and never a stale
         # environment from a different suite member.
@@ -406,7 +432,7 @@ def main() -> int:
             archive=model_archive(args.sha,Path(tmp))
             nodes=allocations(case,json.loads((ROOT/'config/pools.json').read_text()))
             resolved=resolve_request(archive,items,nodes=len(nodes),
-                                     ngpu=len(nodes[0]['devices']),max_cases=max_cases)
+                                     ngpu=len(nodes[0]['devices']))
         print("CASE_PLAN " + ",".join(x['test_id'] for x in items),flush=True)
         overall=0
         for index,item in enumerate(items):

@@ -1,25 +1,45 @@
 # Lite Actions
 
-> **V2 Phase 1 交付说明**：GitHub Matrix 每个 Case 独立 Job、动态 A3 选卡与**全局串行训练**已完成实机功能回归。发布状态、剩余 Gate 与证据以 [REFACTOR_PLAN.md](REFACTOR_PLAN.md) 为准；生产操作参阅 [Phase 1 运维及回滚手册](docs/phase1_runbook.md)。不能以开发分支单测替代正式发布验收。
+**Lite Actions** 是一套面向 NPU 集群的轻量级 CI 调度系统。它将 GitHub Actions 作为云端远程控制台，内网调度机通过 Pull 模式主动领取任务，锁定指定物理 NPU、通过 SSH 远程执行训练，并将执行结果及少量关键指标回传 GitHub。
 
-**一句话**：用 GitHub Actions 当远程按钮，内网调度机主动领取任务，锁定指定 NPU、SSH 执行训练，再把 PASS/FAIL 和少量日志回传 GitHub。**无需公网 IP、入站端口或 Self-hosted Runner。**
+> **核心特性**：**无需公网 IP、无需入站端口映射、无需在测试机部署 Self-hosted Runner**。
 
-**解决的痛点**：
-* **A5等黄区环境无法使用蓝区agent调试**
-* **CI看护用例与对外examples脚本不同仓也不同源，容易导致Daily看护与实际交付脚本的漂移**
-* **多人使用环境易冲突，使用actions池化管理验证环境后，支持多人提交任务排队执行**
+---
 
-**阅读指引**：触发 CI 见 [第 4.2 节](#42-日常操作)；新增用例见 [第 3 节](#3-日常新增测试用例)；初次部署和 A5 接入分别见第 4.1、5 节。
+## 解决的核心痛点
 
-## 1. 架构总览
+* **A5 等黄区环境无法使用蓝区 Agent 调试**：受限网络区域外部无法直接接入，通过内网调度机主动拉取（Outbound Pull），免去开通公网入站端口或复杂网络打通的困难。
+* **CI 看护用例与对外 Examples 脚本不同仓也不同源**：容易导致 Daily 看护与实际交付脚本脱节。Lite Actions 直接调度模型仓原生的训练用例与启动脚本，保证测试与交付完全同源。
+* **多人共用集群易冲突**：使用 Actions 对物理验证环境进行池化调度，支持多人提交任务自动排队执行，杜绝抢卡踩踏。
 
-### 1.1 代码同步架构
+---
+
+## 1. 能力全景对比：Lite Actions vs 标准 GitHub Self-Hosted Runner
+
+| 能力维度 / 特性 | 标准 GitHub Self-Hosted Runner | Lite Actions 调度模式 |
+| :--- | :--- | :--- |
+| **执行命令与工作流能力** | **完全开放**：原生支持任意 Shell 命令、多步骤 Steps、自定义 Docker 容器与组合 Action | **受控收敛**：仅支持执行受信任白名单的测试用例（`test_id` / `suite`），不支持任意 Shell 输入 |
+| **GitHub 官方生态与插件** | **原生全面集成**：完整支持 Marketplace Actions、Cache、Artifacts 上传下载等全套生态 | **轻量协议交互**：通过云端 Waiter 与 Commit Comment 传递状态，不依赖 GitHub 插件体系 |
+| **任务日志回传** | **全量实时流式回传**：实时在网页端查看完整的 stdout/stderr 训练输出日志 | **脱敏关键摘取**：完整日志留存执行机，仅脱敏回传关键 ≤20 行日志与 TensorBoard 标量 |
+| **网络接入与环境要求** | **每台执行机需出站公网**：直接长连接 GitHub API；隔离区（黄区）无外网机器无法直接接入 | **集中出站代理**：仅需 1 台调度机连接外网，所有训练执行机处于纯内网/黄区 |
+| **执行机侵入性与依赖** | **需安装常驻服务**：每台机器需部署 Runner 守护进程、.NET/Node 运行时等系统常驻依赖 | **零侵入**：执行机无需安装任何额外 Agent，仅依赖系统自带的 SSH 与已有的容器/CANN 环境 |
+| **物理加速卡（NPU）互斥** | **默认主机级调度**：按整机分发 Job，无物理卡号感知；多任务并发容易争抢 NPU 显存冲突 | **原生物理卡级原子锁**：支持按物理卡号（如 0~7 / 8~15）细粒度加锁与排队，防止抢卡踩踏 |
+| **分布式跨机训练编排** | **单 Job 绑定单机**：跨机训练（如 16P/64P）需在用户脚本内自行写复杂的 SSH 跨机协同与环境传递 | **原生支持多机拓扑**：配置声明 `nodes/devices_per_node`，调度机统一申请跨机卡锁并校验 HCCL 小网 |
+| **执行凭据暴露面** | **执行机持有凭据**：机器上存有 Runner 注册凭据与 GitHub Token，需防范不可信 PR 提权逃逸 | **执行机零凭据**：执行机完全无 GitHub Token，仅调度机单点持有回写权限 |
+| **任务取消与清理** | **原生实时中断**：由 Runner 进程组直接接收 GitHub Cancel 信号并终止 | **轮询感知与定点清理**：调度机轮询捕获取消，按环境变量精确 kill 远端对应 rank 进程组 |
+| **适用场景定位** | **通用 CI/CD 全流程流水线**（功能完备、生态丰富，适用于通用软件构建与测试） | **隔离区 NPU 集群专项训练看护**（聚焦受限网络下的硬件独占、多机排队与用例回归） |
+
+---
+
+## 2. 架构总览
+
+### 2.1 代码同步架构
 
 ```mermaid
 flowchart LR
     U["GitCode upstream/master<br/>源码 · tests · examples · CI 配置"]
-    S["Sync Upstream<br/>同步代码和 Workflow"]
-    M["GitHub master<br/>代码镜像 · GitHub Actions"]
+    S["Sync Upstream<br/>定时镜像与同步"]
+    M["GitHub master<br/>代码镜像 · GitHub Actions 控制台"]
     U --> S --> M
     classDef base fill:#eef2f7,stroke:#9aa8b8,color:#172033;
     classDef target fill:#e3f4ee,stroke:#4aaf90,color:#164e3b;
@@ -27,36 +47,39 @@ flowchart LR
     class M target;
 ```
 
-**发布规则**：模型仓 GitCode `master` 是上游主源，`Sync Upstream` 每日镜像 GitHub 同名分支。2026-10-10 已在两侧特性分支合并 GitCode/GitHub 原有分叉提交（`99cd7e3`）；正式发布必须将同一个发布 SHA 以快进方式提交到两侧 `master`，避免次日强制同步覆盖。
+* **双主源规则**：模型仓 GitCode `master` 是上游开发主源，GitHub `master` 为镜像及 Actions 触发入口。
+* 正式发布时，确保同一发布提交在两侧 `master` 保持一致，避免定时镜像覆盖分支改动。
 
-### 1.2 CI 运行架构（已上线）
+---
+
+### 2.2 CI 运行架构
 
 ```mermaid
 flowchart LR
     subgraph GH["云端 · GitHub"]
         direction TB
-        W["① GitHub Actions<br/>手工触发 / 排队"]
-        H["② Waiter<br/>等待 Run ID / SHA"]
-        C["⑥ Commit Comment<br/>PASS / FAIL + 最多 20 行"]
+        W["① GitHub Actions<br/>用户手动触发 / 定时触发"]
+        H["② Waiter<br/>等待 Run ID / Commit SHA"]
+        C["⑥ Commit Comment<br/>PASS / FAIL + 关键指标与日志"]
         W -->|"启动"| H
         C -->|"获取结果"| H
     end
 
     subgraph DIS["内网调度机 · lite-actions"]
         direction TB
-        A["③ Pull Agent<br/>轮询任务 / 去重"]
-        D["④ Dispatcher Python<br/>锁卡 / SSH / 日志 / POST"]
+        A["③ Pull Agent<br/>主动轮询任务 / 去重排队"]
+        D["④ Dispatcher<br/>原子锁卡 / SSH 远端触发 / 收集结果"]
         A --> D
     end
 
     subgraph EX["内网执行机 · A3 / A5"]
-        X["⑤ 训练 + TensorBoard 校验<br/>完整日志仅留执行机"]
+        X["⑤ 真实训练 + 指标校验<br/>完整日志与 TensorBoard 留存本机"]
     end
 
-    W -.->|"API 轮询发现"| A
-    D -->|"SSH 启动"| X
-    X -.->|"SSH 有界回读"| D
-    D -.->|"GitHub REST POST"| C
+    W -.->|"API 轮询发现任务"| A
+    D -->|"SSH 启动训练"| X
+    X -.->|"SSH 读取最后日志与指标"| D
+    D -.->|"GitHub REST API 回传"| C
 
     style GH fill:#f2f5fb,stroke:#899db7,stroke-width:2px
     style DIS fill:#edf5fb,stroke:#6d98ba,stroke-width:2px
@@ -69,271 +92,300 @@ flowchart LR
     class X execution
 ```
 
-**按编号阅读**：① 在 GitHub 触发 Action → ② 云端 Waiter 开始等待 → ③ 内网 Agent 主动发现任务 → ④ Dispatcher 预留 NPU、检查占用并广播 → ⑤ 执行机运行训练并保留完整日志 → ④ 调度机 Python 从执行机通过 SSH 读取最多 128 KiB 原始日志、摘取最多 20 行、封装结果 → ⑥ **调度机 Python 直接调用 GitHub REST API** 写入 Commit Comment，由 Waiter 获取结果并结束 Job。**Pull Agent 不参与日志筛选、封装或回传；全过程不调用 AI Agent API。** ② 与 ③～⑤ 并行等待/执行，不是串行阻塞。
+**完整交互时序**：
+1. **触发任务**：开发者在 GitHub Actions 页面触发 Workflow。
+2. **云端等待**：GitHub Waiter Job 启动并等待调度结果。
+3. **主动发现**：内网调度机的 Agent 定期轮询 GitHub API，主动发现新任务。
+4. **资源加锁**：调度机检查物理卡状态，通过**两级锁机制**（任务槽位 + 设备与端口原子租约）锁定目标资源。
+5. **远程执行**：调度机通过 SSH 在目标执行机上运行训练容器与脚本，执行机保留完整日志。
+6. **脱敏回传**：训练结束后，调度机通过 SSH 读取尾部关键日志（最多 20 行）和 TensorBoard 结果，调用 GitHub API 回写 Commit Comment，Waiter Job 获得终态并成功结束。
 
-**数据路径**：执行机保留完整 `run.log`；调度机 Python 通过 SSH 仅读取最后 128 KiB 原始日志，再统一筛选性能指标或异常上下文（最多 20 行，每行最多 180 字符）。`ci_core/reporting.py` 在调度机生成结果 JSON 并调用 GitHub REST API，**执行机无 Token，Pull Agent 只负责发现与提交任务，无任何 AI Agent API 调用**。
+> **安全与性能保障**：
+> - 执行机**无需配置 GitHub Token**，也不直接连外网；
+> - 回传仅包含脱敏后的核心指标，保证敏感数据不泄露；
+> - 全过程不调用任何第三方 AI Agent API。
 
-**V2 Phase 1** 使用两层跨进程防线：OS 用户级 Agent 单例锁防止重复 Dispatcher 同时轮询/写状态，全局训练槽锁覆盖完整动态 Case 分配与执行；设备锁继续做细粒度资源保护。因此 GitHub Matrix Waiter 可并列展示，但任何时刻至多 **1 个训练 Case**。V1 仅作为受控回滚版本保留。`wall -n` 只广播到**执行机宿主机和训练容器**，不广播调度机。
+---
 
-### 1.3 职责边界：测试用例与调度配置分别维护
+### 2.3 任务级并发与资源隔离机制
 
-正确的职责边界应该是：
+为了提升集群利用率并缩短 CI 等待耗时，Dispatcher 具备用例级并发与严格隔离机制：
 
-| 位置 | 负责什么 |
-| --- | --- |
-| `torchtitan-npu/tests/integration_tests/` | 测试用例、模型配置、执行参数、结果校验 |
-| `torchtitan-npu/.github/workflows/` | GitHub Actions 的触发入口 |
-| `lite-actions/config/pools.json` | 执行机器、SSH 地址及 NPU 资源 |
-| `lite-actions/config/pipelines.json` | **调度通道与资源授权映射**，不是模型测试用例注册表 |
-| `lite-actions/ci_core/` | 资源互斥、执行调度、日志摘取和 GitHub 结果回传 |
+* **独立 Case 并发（5 Worker 架构）**：Dispatcher 运行 5 个独立 Worker（4 个 SSH 训练 Worker + 1 个本地 Smoke Worker）。支持最多 4 组训练任务（如 4×8P 满载或双 16P 互补并发）同时排队并发执行；本地 Smoke 任务独立运行，无需等待训练排队。
+* **物理卡号与通信端口双重原子锁**：每个任务原子获取目标 Host 的 NPU 物理文件锁，同时持有该 Host 动态分配的 rendezvous 端口及 HCCL 端口范围租约（`LITE_CI_MASTER_PORT` 与 `LITE_CI_HCCL_*_PORT_RANGE`），从根本上避免同机并发时的卡号与网络端口冲突。
+* **跨机任务原子准入**：16P 等跨节点分布式任务必须一次性获取全部节点的完整 8P 设备组，资源未凑齐前在队列中等待，绝不半途持卡占位。
+* **组织仓 PR 自动 CI 与安全准入**：面向 `torchtitan-npu:master` 提交的 PR 自动触发组织仓 CI；Agent 通过 GitHub PR API 严格校验 PR 编号与 Head Commit SHA，按精确 SHA 下载代码；执行机零 GitHub Token；低频心跳（每 60 秒上报一次状态日志至 GitHub Actions 云端日志）。
 
-**补充说明**：`torchtitan-npu/examples/` 维护模型训练脚本；Workflow/Waiter 唯一源码位于模型仓 `.github/`；V2 已在本开发分支删除 `lite-actions/github/` 重复镜像；`lite-actions/unified_agent.py` 负责轮询、验证并接收授权任务。
+---
 
-**最重要的判断规则：**
+### 2.4 职责边界划分
 
-- **仅新增 Integration Test 用例**（复用已有机器和受信任执行入口）：只改 `torchtitan-npu` 的测试定义、suite/入口和校验；**不改 lite-actions 的 `pipelines.json`**。
-- **仅增加可调度机器**：修改 `pools.json`；若已有通道需要使用新机器，再修改 `pipelines.json` 的授权 Pool/资源规格（如确需）。
-- **新增独立 GitHub Action**：增加 Workflow，配置调度通道与 Waiter 的固定标识；这属于**通道授权**，不等于每个模型用例都在调度机注册。
-- **引入新的硬件/跨节点拓扑**：必须先适配安全执行器、占用检查、环境及跨节点启动，不能只靠 JSON 自动支持。
+| 关注点 | 模型仓 (`torchtitan-npu`) | 调度仓 (`lite-actions`) |
+| :--- | :--- | :--- |
+| **测试用例与参数** | 测试逻辑、超参、步数、模型 Flavor | 仅透传执行，不解析参数细节 |
+| **运行时环境** | CANN 路径、权重路径、HF 缓存路径 | 负责在执行机 source 与 export 对应环境变量 |
+| **触发入口** | `.github/workflows/` 定义触发参数 | 负责拉取并校验任务合法性 |
+| **硬件与机器** | 仅声明需要多少卡（如 8P / 16P） | 维护具体 IP、SSH 账号、网卡与物理 Device ID |
+| **资源互斥** | 不关心 | 维护设备原子锁与排队机制，防止抢卡 |
 
-`MODULE`、`CONFIG`、`STEPS`、`train_args`、CANN 环境及模型文件路径与训练校验由模型仓控制；调度层不维护这些内容的第二份。模型仓单机 `GPUPool` **不能自动代表多机 8×8**。
+---
 
-## 2. 当前已验证能力与运行状态
+## 3. 当前已验证通道与状态
 
-| Actions 展示名称 | 通道 ID | 作用 | 状态 |
-| --- | --- | --- | --- |
-| `Dispatcher-Smoke` | `a3-smoke` | 调度机本地 `npu-smi` 连通性 PoC | 可用；不是 2P 训练 |
-| `A3-8p-CI-Example` | `a3-8p` | 已验证的 A3-3 / A3-4 合法 8P 组动态选卡，Muon + AdamW Eager 5 steps | **V2 两个独立 Matrix Jobs，5 steps/TB 实机通过** |
-| `A3-16p-CI-Example` | `a3-16p` | A3-3 + A3-4：EP16，Eager 5 steps | **统一 SSH Runner + nightly 用例已实机通过 5 steps** |
-| `A5-64p-CI`（Workflow 已定义，通道禁用） | `a5-64p` | A5 8 台 × 每台 8P | **通用 SSH 执行器已配置；`enabled=false` 且 Workflow admission 禁用，待实机验收** |
+| Actions 通道展示名称 | 通道 ID | 硬件规格与作用 | 状态 |
+| :--- | :--- | :--- | :--- |
+| **`Dispatcher-Smoke`** | `dispatcher-smoke` | 调度机本地 `npu-smi` 连通性冒烟验证 | 可用 |
+| **`A3-8p-CI-Example`** | `a3-8p` | A3 单机 8P 动态选卡：Muon + AdamW 5 steps | **正式可用（支持同机/跨机并发调度）** |
+| **`A3-16p-CI-Example`** | `a3-16p` | A3 双机 16P（跨机 EP16）：Eager 5 steps | **正式可用（支持跨机原子调度）** |
+| **`A5-64p-CI`** | `a5-64p` | A5 八机 64P（每台 8P）集群训练 | 预留模板，实机验收前保持禁用 |
 
-**V2 代码归属**：模型仓 `.github/` 是唯一 Workflow/Waiter 定义；本仓不再维护镜像。发布前验证 GitCode/GitHub `master` 的同 SHA 和 Workflow 白名单。独立 Case Job 的回归证据与取消演练记录见 [Phase 1 计划台账](REFACTOR_PLAN.md)。
+---
 
-**安全提示**：Workflow 展示名和公开仓 README 可被外部看到，尽量不用内网 IP 命名。下文 A5 地址为指定的接入示例；在公开仓推送真实地址前应确认符合内部信息发布要求。
+## 4. 首次部署指南（在内网调度机操作）
 
-## 3. 日常新增测试用例
+### 4.1 环境要求
 
-只需将新的 `OverrideDefinitions` 放进模型仓相应的 `build_test_list()`，并维护其 `env_vars` 中的 CANN/HF/Checkpoint 路径；不用修改 Lite Actions `pipelines.json` 测试注册或模型环境配置。只有新增物理资源通道、SSH/HCCL 网络拓扑或者资源策略需要修改 Lite Actions。手工使用 `python3 -m tests.integration_tests.tools.lite_actions.entrypoint inspect --suite a3_8p_tests` 查看一组测试定义。真实 NPU 训练统一通过 GitHub/Lite Actions 调度；本地 CPU 单测只能验证协议和 argv，不等于训练验收。具体测试入口与用例矩阵参见 [模型仓 Integration Tests README](https://github.com/torchtitan-npu/torchtitan-npu/blob/master/tests/integration_tests/README.md)。
+调度机是一台**能够主动访问 `api.github.com`，且能通过 SSH 访问内网各执行机**的 Linux 主机。
+- **软件依赖**：Python 3.10+、Git、OpenSSH Client、GitHub CLI (`gh`)。
+- **权限要求**：调度机账号具有访问执行机的 SSH 免密权限；持有具有目标仓库 Actions 读取与 Commit Comment 写入权限的 GitHub Token。
 
-## 4. 首次部署与日常运维（在内网调度机操作）
+### 4.2 步骤一：克隆代码与出站认证
 
-### 4.1 首次部署
-
-**Step 1 · 准备调度机与代码**
-
-调度机必须是**能够主动访问 `api.github.com` 且能 SSH 访问执行机的独立 Linux 环境**，不要求公网 IP、入站端口或 Self-hosted Runner。需要 Python 3、Git、OpenSSH Client、GitHub CLI（`gh`）。以下命令都在**调度机**上执行，首次部署才需要 clone：
+在**调度机**上执行：
 
 ```bash
 git clone https://github.com/depeng1994/lite-actions.git
 cd lite-actions
-python3 --version
-git status --short --branch
-```
 
-如果已有部署，则进入已有工作目录，例如 `/mnt/workspace/work/multi-agent-workflow/lite-actions`，**不要在运行中覆盖配置或随手删除 `state/`**。执行机须单独准备 CANN/torch-npu、模型训练资产、`npu-smi` 和需要的 `wall` 命令。
-
-**Step 2 · 配好 GitHub 出站认证与 SSH**
-
-```bash
+# 配置 GitHub 出站认证（两者选一即可）
 gh auth login
-gh auth status
-# 对需要的执行机验证：先核对 SSH 主机公钥指纹，再接受 known_hosts
-ssh -o BatchMode=yes a3-4-docker-relay hostname
+# 或配置环境变量：export LITE_ACTIONS_GITHUB_TOKEN="ghp_xxx"
+
+# 验证与执行机的 SSH 免密连通性
+ssh -o BatchMode=yes <execution-host> hostname
 ```
 
-调度机也可使用 `A3_CI_GITHUB_TOKEN` 替代 `gh auth token`；Token 必须能读取该仓库 Actions/Commit Comment 并**写入 Commit Comment**（一般需要对应的 Actions 读取与 Contents 写入权限），不能配置到共享执行机。不要把 Token 放在 README、命令输出或训练日志里。SSH 使用非交互认证；新机器的 host key 应通过可信渠道核对并预先写入 `known_hosts`，不要为方便而全局关闭校验。
+### 4.3 步骤二：环境变量配置
 
-**Step 3 · 校验配置并只启动一个调度 Agent**
+调度进程支持通过以下环境变量定制运行参数（未指定时全部采用安全默认值）：
 
-检查 `config/pools.json` 中 SSH 与物理芯片对应关系，及 `config/pipelines.json` 中已授权 Workflow/资源分配。随后执行：
+| 环境变量 | 默认值 | 作用说明 |
+| :--- | :--- | :--- |
+| **`LITE_ACTIONS_GITHUB_TOKEN`** | 留空（自动读取 `gh auth token`） | GitHub API 认证凭据 |
+| **`LITE_ACTIONS_ALLOWED_ACTORS`** | 留空（仅白名单人员） | 允许触发任务的 GitHub 用户白名单 |
+| **`LITE_ACTIONS_ALLOWED_BRANCHES`** | `master` | 允许执行任务的仓库分支 |
+| **`LITE_ACTIONS_POLL_SECONDS`** | `60` | 调度机拉取 GitHub Actions 任务队列的轮询周期（秒） |
+| **`LITE_ACTIONS_RECLAIM_EXTERNAL_PROCESSES`** | `1` | 是否允许安全回收白名单闲置占卡进程（需在资源池显式授权） |
+| **`LITE_ACTIONS_RESOURCE_LOCK_ROOT`** | `~/.cache/lite-actions/resource-leases` | 物理设备锁与端口租约本地存储路径 |
+
+### 4.4 步骤三：校验配置并启动调度 Agent
 
 ```bash
+# 1. 运行自测单测与配置语法校验
 python3 -m unittest discover -s tests
 python3 unified_agent.py --validate
+
+# 2. 确认当前没有残留旧 Agent 进程
 pgrep -af 'python3 -u unified_agent.py' || true
-# 确认没有旧 Agent 在运行后，才启动：
+
+# 3. 后台启动唯一的调度守护进程
 nohup ./run-unified-agent.sh >/dev/null 2>&1 < /dev/null &
+
+# 4. 确认 Agent 成功运行
 pgrep -af 'python3 -u unified_agent.py'
 tail -n 30 logs/system/unified-agent.log
 ```
 
-`run-unified-agent.sh` 通过 `flock` 保证同一目录只有一个实例；默认每 10 秒轮询，可用环境变量 A3_CI_POLL_SECONDS 调整。只接收指定账户手工触发、受信任分支（默认 `master`）和 Workflow 的任务。需要测试其他可信分支时可显式设置 `A3_CI_ALLOWED_BRANCHES`，切勿开放所有分支。**当前没有 systemd 或容器重启后自动拉起机制**，环境重启后需重新执行 Step 3 的启动部分。
+> **启动说明**：`run-unified-agent.sh` 通过 `flock` 文件锁保证全局单例运行，默认每 10 秒轮询一次 GitHub Actions 队列。
 
-### 4.2 日常操作
+---
 
-**Step 1 · 检查 Agent 与可用性**
+## 5. 日常运维与应急排障
+
+### 5.1 快速健康巡检
 
 ```bash
-cd /mnt/workspace/work/multi-agent-workflow/lite-actions
+# 检查 Agent 是否存活
 pgrep -af 'python3 -u unified_agent.py'
-tail -n 50 logs/system/unified-agent.log
-python3 unified_agent.py --validate
-```
 
-如果没有 Agent 进程，先判断上次任务是否仍在执行机上运行，确认空闲后按首次部署 Step 3 重启；不要通过删除 `state/unified-agent.lock` 强制绕过排他锁。
-
-**Step 2 · 从 GitHub 触发已启用的 CI 通道**
-
-进入 [torchtitan-npu Actions](https://github.com/torchtitan-npu/torchtitan-npu/actions) → 选择已部署的 Workflow → `Run workflow` → 选择已允许的分支并运行。Waiter 保持等待；调度机轮询到对应 Run ID/SHA 后锁定资源、广播、SSH 执行，并自行摘取日志和写入 Commit Comment。成功/失败最终以 **GitHub Job 状态**为准。
-
-**Step 3 · 查看结果、排障和维护**
-
-```bash
-# 调度机日志（不含完整训练日志）
+# 查看调度机实时日志
 tail -f logs/system/unified-agent.log
-# 该次任务调度和上传统计
-ls -ltr logs/runs/ | tail
-# 示例：查看某次任务目录中的 pipeline.log / upload-metrics.json
+
+# 查看最近任务的运行记录与上报指标
+ls -ltr logs/runs/ | tail -n 5
 ```
 
-完整 `run.log`、TensorBoard、模型输出保留在**执行机**。调度机仅通过 SSH 有界读取日志、挑选最多 20 行，每行不超过 180 字符，直接调用 GitHub REST API 回传；**不调用 AI Agent API，执行机不持有 GitHub Token**。`state/` 包含任务去重及 NPU 锁；不可清空运行中的状态。需要升级/重启 Agent 时，应先确认无正在执行的任务，再停止唯一 Agent、拉取代码、通过 Step 3 测试并启动。意外中断后不应假定远端训练自动停止，须先人工排查残留进程及占用。
+### 5.2 任务取消与残留清理（GitHub Cancel 应对）
 
-## 5. 实战：新增 A5 64P（8 台 × 8P）
+当用户在 GitHub 页面点击 `Cancel workflow` 时：
+1. 调度机 Agent 会捕获取消事件，并向该任务分配的执行机发送终止指令。
+2. **精准清理机制**：根据本次任务唯一的 `LITE_CI_JOB_ID` 环境变量，调度机通过 `/proc/<pid>/environ` 精确识别本次任务启动的 `torchrun` 及其全部 Rank 进程并终止，**绝不通过 `pkill` 或进程名误杀其他用户的正常训练**。
+3. 随后调度机会通过 `npu-smi` 复查设备释放状态，确认 NPU 空闲后才会释放设备锁。
 
-本节是**真实地址接入配置 + 安全上线流程**，不代表已完成 A5 训练。当前调度机对这 8 个 SSH 地址的探测连接超时，因此 `a5-64p` 暂为 `enabled: false`。它已经与 A3 共用正式 SSH 执行器，但不能在 SSH/环境未验收时触发训练。
+### 5.3 异常隔离（Quarantine）与手动恢复
 
-### Step 1 · 确认 8 台机器的 SSH / NPU / 网络基础条件
+若在任务执行过程中发生 SSH 闪断、执行机异常重启或进程无法判定退出，调度机会将相关 NPU 标记为 **Quarantine（隔离状态）**，防止后续任务因脏环境报错。
 
-| host_id | 调度机使用的 SSH |
-| --- | --- |
-| `a5-01` | `root@7.246.125.19` |
-| `a5-02` | `root@7.246.125.20` |
-| `a5-03` | `root@7.246.125.21` |
-| `a5-04` | `root@7.246.125.22` |
-| `a5-05` | `root@7.246.125.23` |
-| `a5-06` | `root@7.246.125.24` |
-| `a5-07` | `root@7.246.125.25` |
-| `a5-08` | `root@7.246.125.26` |
+**解除 Quarantine 的标准步骤**：
+1. **暂停调度**：停止当前 Agent（`kill <agent-pid>`）。
+2. **检查远端真实物理卡状态**：
+   SSH 登录执行机，运行 `npu-smi info`，确认对应卡上确实已无残留进程。如有僵尸进程，核对 PID 后手动 `kill -9` 清理。
+3. **解除隔离记录**：
+   在调度机检查 `state/unified-jobs.json`，将对应 Task 的 `quarantined` 字段由 `true` 改为 `false`，并记录修复说明。
+4. **重启 Agent**：重新执行 `./run-unified-agent.sh` 恢复调度。
 
-逐机核对 host key 指纹并预置信任后，运行 Lite Actions 提供的**只读**检查（不会启动训练、占用设备或终止进程）：
+### 5.3.1 按任务真实 DeviceSet 广播（宿主机 + 容器）
 
-```bash
-cd /mnt/workspace/work/multi-agent-workflow/lite-actions
-python3 scripts/preflight_pool.py --pool a5-64p-lab
-python3 scripts/preflight_pool.py --pool a5-64p-lab --npu
-```
+每个 Case 在本次 `allocation` 的各执行节点分别发送 `wall -n`；使用 `enumerate(allocation)` 生成任务内 `Node 0/1`，从受信任 `config/pools.json` 的 `node_ip` 显示 HCCL 小网 IP，并打印**本机实际分配的 Device 范围**（例如 `0-7`、`8-15`；非连续卡组不合并为虚假的连续区间）。广播包含 Run ID、完整 GitHub Actions 链接和整个任务的 `nodes`、`ngpus_per_node`。同机两个并发 8P Case 只广播各自的卡组，不声称整机空闲。
 
-第二条只测试 `npu-smi info` 能否执行，**不等于设备空闲检查**。还需人工核对每机确有 8 个可用计算单元、A5 上的真实 device ID、宿主机/容器关系、驱动及 CANN/torch-npu、模型与数据路径、NPU 进程表格式、8 机 HCCL 网络互通及选定网卡。当前配置假设各机 device ID 为 `0..7`，须由实机证实。`wall -n` 广播指向 SSH 登录的宿主机；若在容器中训练，需另外登记容器 SSH 地址，不得把调度机填入广播目标。
+对外只使用 `begin` 和 `end` 两种事件。`end` 在远端释放核验通过时显示「资源释放 ✅ / 本机资源释放」；未确认时显示「任务结束 ⚠️ / 本机资源状态，释放尚未确认，请勿占用」，**绝不把 SSH 子进程退出等同于 NPU 已释放**。广播内容按 Host 生成并分别发送到相应的 `broadcast_ssh` 地址，原有通知重试与清理/隔离逻辑不变。
 
-### Step 2 · 在 Lite Actions 登记物理资源与调度通道
+### 5.4 A3 共享设备闲置占卡受控回收（Reclaim 机制）
 
-**1）`config/pools.json`：登记 SSH 登录入口和 HCCL 小网地址，不登记模型资产。** 下例的 SSH IP 已知，`node_ip` 尚未提供，故先填 `null`；请用每台机器真实的**HCCL 小网 IP**替换，不能把 `7.246.125.*`（大网 SSH IP）直接复制过去。`device_ids` 与调度分配一律单行，便于核对。
+当 A3 任务缺少空闲卡组且资源池显式配置了 `reclaim_external_processes: true` 时，调度机支持受控清理闲置占卡进程：
+* **白名单安全过滤**：回收前通过宿主机 `npu-smi` 读取占卡 PID，严格比对 `/proc/<pid>` 的启动时间、命令行和父进程，**仅允许清理 `auto-occupy` 或空闲的 `vLLM` worker 进程族**；
+* **防误杀保障**：采用专属 PID 发送 TERM/KILL，**绝不停止看门狗、绝不使用 pkill/killall、绝不误杀任何正在执行的真实训练任务**。若检测到非白名单未知进程，立即放弃回收并退出等待；
+* **开关控制**：如需临时关闭回收，启动前设置 `LITE_ACTIONS_RECLAIM_EXTERNAL_PROCESSES=0` 即可。
+
+### 5.5 磁盘空间预检（Docker Overlay / 共享 NFS 缓存）
+
+* **常见隐患**：部分执行机容器使用的是宿主机 `/data` 作为 Docker Overlay 底层，若宿主机磁盘写满，会导致容器内报错 `Not enough disk space`。
+* **规避方案**：模型仓用例统一将 Hugging Face 缓存重定向至共享存储（`HF_HOME=/mnt/share/ci_tests/.lite-actions-hf-cache`）。
+* **排查命令**：
+  ```bash
+  # 在执行机上检查根目录与共享目录可用空间
+  df -h /
+  df -h /mnt/share
+  ```
+
+### 5.6 版本平滑升级与安全回滚
+
+* **平滑升级**：
+  1. 查看日志确认当前无正在执行的训练任务；
+  2. 终止当前 Agent 进程；
+  3. 执行 `git pull` 拉取最新代码，执行 `python3 unified_agent.py --validate` 校验配置；
+  4. 启动新 Agent 并通过 `Dispatcher-Smoke` 工作流做冒烟验收。
+* **安全回滚**：
+  如新版本出现非预期异常，停止 Agent 后执行 `git checkout <stable-tag/sha>`，重新拉起旧版本即可。
+
+---
+
+## 6. 环境扩展指南：如何新增机器与调度通道
+
+当集群新增了机器或需要开辟新的测试通道时，按以下三个步骤在 `lite-actions` 仓配置。
+
+### 步骤一：在 `config/pools.json` 中登记物理机与 NPU
+
+机器池配置文件用于描述物理节点、SSH 登录入口与 NPU 卡号分配：
 
 ```json
-"a5-64p-lab": {
-  "type": "ascend-a5",
-  "process_indexing": "card",
-  "nodes": [
-    {"host_id": "a5-01", "ssh": "root@7.246.125.19", "node_ip": null, "device_ids": [0,1,2,3,4,5,6,7], "broadcast_ssh": ["root@7.246.125.19"]},
-    {"host_id": "a5-02", "ssh": "root@7.246.125.20", "node_ip": null, "device_ids": [0,1,2,3,4,5,6,7], "broadcast_ssh": ["root@7.246.125.20"]},
-    {"host_id": "a5-03", "ssh": "root@7.246.125.21", "node_ip": null, "device_ids": [0,1,2,3,4,5,6,7], "broadcast_ssh": ["root@7.246.125.21"]},
-    {"host_id": "a5-04", "ssh": "root@7.246.125.22", "node_ip": null, "device_ids": [0,1,2,3,4,5,6,7], "broadcast_ssh": ["root@7.246.125.22"]},
-    {"host_id": "a5-05", "ssh": "root@7.246.125.23", "node_ip": null, "device_ids": [0,1,2,3,4,5,6,7], "broadcast_ssh": ["root@7.246.125.23"]},
-    {"host_id": "a5-06", "ssh": "root@7.246.125.24", "node_ip": null, "device_ids": [0,1,2,3,4,5,6,7], "broadcast_ssh": ["root@7.246.125.24"]},
-    {"host_id": "a5-07", "ssh": "root@7.246.125.25", "node_ip": null, "device_ids": [0,1,2,3,4,5,6,7], "broadcast_ssh": ["root@7.246.125.25"]},
-    {"host_id": "a5-08", "ssh": "root@7.246.125.26", "node_ip": null, "device_ids": [0,1,2,3,4,5,6,7], "broadcast_ssh": ["root@7.246.125.26"]}
-  ]
+{
+  "a3-shared": {
+    "type": "ascend-a3",
+    "process_indexing": "card-die",
+    "max_jobs_per_host": 2,
+    "reclaim_external_processes": true,
+    "nodes": [
+      {
+        "host_id": "a3-3",
+        "ssh": "a3-3-docker-relay",
+        "broadcast_ssh": ["a3-3-relay", "a3-3-docker-relay"],
+        "node_ip": "192.168.0.30",
+        "network_interface": "enp23s0f3",
+        "device_ids": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        "allocation_groups": [
+          { "devices": [0, 1, 2, 3, 4, 5, 6, 7], "verified": true },
+          { "devices": [8, 9, 10, 11, 12, 13, 14, 15], "verified": true }
+        ]
+      }
+    ]
+  }
 }
 ```
 
-说明：此处是完整 `a5-64p-lab` 配置项，写到文件顶层 `pools` JSON 内，不要把上述代码当成整个 `pools.json` 覆盖。实际的 `process_indexing` / `device_ids` 还需以 A5 `npu-smi` 进程表核验；`node_ip=null` 时 64P 必须保持禁用。
+* `host_id`：机器唯一标识；
+* `ssh`：调度机访问该节点所用的 SSH 用户名与 IP；
+* `node_ip`：多机分布式训练时节点间通信的 HCCL 小网 IP；
+* `device_ids`：该节点允许被 CI 调度的物理卡号列表。
 
-**2）`config/pipelines.json`：仅登记通道授权和 8×8 资源，不绑定任何测试 Module。**
+### 步骤二：在 `config/pipelines.json` 中配置调度通道
+
+调度通道配置文件用于将 GitHub Actions 的 Workflow 与物理机器池建立授权映射：
 
 ```json
-"a5-64p": {
-  "workflow": "a5-64p-lite-actions.yml",
-  "pool": "a5-64p-lab",
-  "resources": {"nodes": 8, "devices_per_node": 8},
-  "runner": {"kind": "ssh"},
-  "timeout_seconds": 14400,
-  "pipeline_id": "a5-64p",
-  "enabled": false
-}
-```
-
-此处的 `pipeline_id` 仅供 GitHub Waiter 识别**CI 通道**，不是具体测试用例名称。`runner` 只有通用的 `kind` 字段，**不应新增 CANN、HF、Checkpoint 或 case 专属环境字段**。启用 A5 前须补齐 8 台 HCCL IP、在**模型仓用例的 `env_vars`** 中填好真实模型资产路径，并验证 SSH/NPU 进程映射；最后才设置 `enabled=true`。
-
-### Step 3 · 在模型仓定义 Nightly 用例（不建立 Registry JSON）
-
-路径：`tests/integration_tests/nightly_all_models_test/`。按照 TorchTitan `OverrideDefinitions` 定义 `build_test_list()`，在定义中指定 `test_name`、`ngpu`、`nnodes`、`override_args` 和 `expected_steps`。多 case 可以放在同一个文件。旧的 `ci_registry.json` 已删除。Lite Actions 通过已授权 SHA 中的 `build_test_list()` 发现用例；**不能**从 GitHub 输入任意模块路径或命令。
-
-**模型及运行时资产归用例所有。** 在 `OverrideDefinitions.env_vars` 中维护：`ASCEND_SET_ENV_PATH`（CANN 的 `set_env.sh`）、`HF_ASSETS_PATH`（tokenizer/model assets）、`CKPT_INIT_LOAD_PATH`（初始权重目录），以及需要的 `CONFIG`、`OPTIMIZER_OVERRIDES` 和模型专用端口等。调度机从请求绑定的 **Commit SHA** 实际 `build_test_list()` 解析这些值、校验绝对路径及保留变量、经 SSH 在执行机先 source CANN 再 export 对应用例环境。只有设备分配和机器拓扑（如 `node_ip` 的 HCCL 小网地址）属于 Lite Actions `pools.json/pipelines.json`。动态生成的 `CKPT_SAVE_LOAD_PATH` 由通用 SSH Runner 设成当次 case 输出目录，不应写死在模型用例里。
-
-示例（仅展示模型用例的环境归属；A5 路径尚未核实，因此保持禁用）：
-
-```python
-OverrideDefinitions(
-    test_name="dsv4_flash_a3_8p_example",
-    # ...
-    env_vars={
-        "ASCEND_SET_ENV_PATH": "/mnt/share/Ascend/20260805101249091/ascend-toolkit/latest/set_env.sh",
-        "HF_ASSETS_PATH": "/mnt/share/models/DeepSeek-V4-Flash-bf16",
-        "CKPT_INIT_LOAD_PATH": "/mnt/share/dsv4_ckpt_8rank",
+{
+  "a3-8p": {
+    "workflow": "a3_8p_lite_actions.yml",
+    "pool": "a3-shared",
+    "resources": {
+      "nodes": 1,
+      "devices_per_node": 8
     },
-)
+    "runner": {
+      "kind": "ssh"
+    },
+    "timeout_seconds": 7500,
+    "enabled": true,
+    "pipeline_id": "a3-8p"
+  }
+}
 ```
 
-每条 case 分别声明自己的 `env_vars`，Lite Actions 不维护复用的模型环境字典。
+* `workflow`：关联的模型仓 GitHub Actions Workflow 文件名；
+* `pool`：指定使用的机器池名称；
+* `resources`：该通道单次运行所需的拓扑规格（节点数、单节点卡数）；
+* `timeout_seconds`：单任务最大超时时间（秒）。
 
-A5 仍须核实网络连通性与上述环境后方可启用。
+### 步骤三：网络与连通性只读自检
 
-### Step 4 · Workflow 只选择真实 test ID 或 suite
-
-GitHub `workflow_dispatch.inputs.test_cases` 为有界 JSON 数组，只允许下列两种选择，不再接受 `params/STEPS`、Python module 路径或任意 CLI/Shell 命令：
-
-```json
-[{"test_id":"dsv4_flash_a3_8p_adamw"}]
-```
-
-```json
-[{"suite":"a3_8p_tests"}]
-```
-
-第二种会展开成 **Muon 和 AdamW 两个语义不同的 8P Eager case**（各 5 steps），而不是用 5/3 steps 制造重复测试。具体优化器、`override_args`、TensorBoard 预期均由模型仓对应的 `OverrideDefinitions` 决定。当前 8P AdamW 在自身 `env_vars` 中选择 `OPTIMIZER_OVERRIDES="torchtitan_npu.override.common.optimizer.virtual"`，在保持 4K 序列长度的同时使用 Host-backed Virtual Optimizer，而不是早期的空值覆盖；Muon 保留默认 swap。**Lite Actions 对具体优化器实现和值没有固定假设**，只读取并透传受信任模型源码给出的环境。16P 的非默认 Flash CONFIG、AdamW swap 关闭、CANN/HF/Checkpoint 资产路径及训练端口同样由模型 case 的 `env_vars` 提供；只有设备号、SSH 入口和 HCCL 小网拓扑属于调度机。
+添加配置后，在调度机上运行只读预检脚本（不会启动训练，不占用物理卡）：
 
 ```bash
-gh workflow run a3-8p-lite-actions.yml --ref master \
-  -f 'test_cases=[{"suite":"a3_8p_tests"}]'
+# 验证 SSH 连通性
+python3 scripts/preflight_pool.py --pool a3-shared
+
+# 验证远端 npu-smi 命令与卡号识别
+python3 scripts/preflight_pool.py --pool a3-shared --npu
 ```
 
-**V2 Phase 1 串行动态调度链路（发布验收）**：GitHub Inputs → Prepare 校验并展开 `build_test_list()` → 一个 SHA/Run/Attempt 绑定的 Artifact + Matrix（每 Case 独立 Job）→ Dispatcher 唯一领取 Run、展开 Case → **全局单训练槽位** → Pool 合法拓扑动态选卡 → SSH/TensorBoard 校验 → Case 级 Commit Comment → 对应 Matrix Waiter 独立结束。A3-8P 计划上限 4 个唯一 Case（当前 Suite 实际 2），16P 上限 2；A5 仍禁用。
+自检全绿后，即可在 GitHub 触发该通道的任务。
 
-**生产 V1 历史链路**：GitHub Inputs → 请求 Artifact → Dispatcher 串行执行 Suite → 汇总 Commit Comment → 一个 Waiter Job。调度端真实超时以 `config/pipelines.json` 为准，而不是 testcase 中对多机不生效的另一份 `timeout`。继续保持 300 分钟 GitHub Job / 16800 秒 Waiter 预算。
+---
 
-**历史 V1 实机验收：** [Run 38034002241](https://github.com/depeng1994/torchtitan-npu/actions/runs/38034002241) 基于模型仓 `master` 的 `1dafd49`，Muon 5 steps / AdamW + Virtual Optimizer 4K 5 steps **双 PASS**、每项 Exit Code 0、TensorBoard 5 steps、Commit Comment 两项 PASS，完整 GitHub Job **Success**。早期 [Run 38024403411](https://github.com/depeng1994/torchtitan-npu/actions/runs/38024403411) 的无 Virtual AdamW 曾在反向 FSDP AllGather OOM，已经被本次新的单次 Eager 冒烟验证覆盖，但不代表 Inductor 或长期稳定性通过。16P 本轮依维护者要求沿用此前验收、不再重复跑；A5 仍禁用、未实机验收。正式 Workflow 已进入 GitHub `master`。
+## 7. 相关参考
 
-### Step 5 · Lite Actions 专属 Workflow/脚本边界
+* **如何编写和新增测试用例**：参见模型仓 [集成测试使用指南 (tests/integration_tests/README.md)](https://github.com/torchtitan-npu/torchtitan-npu/blob/master/tests/integration_tests/README.md)。
+* **架构重构与开发台账**：参见 [DEVELOPMENT_LEDGER.md](DEVELOPMENT_LEDGER.md)。
 
-模型仓 `.github/` 是唯一可部署源码；V2 已删除本仓 `github/` 镜像及 `scripts/sync_ci_mirror.py`。跨仓通过绑定 SHA 的 V2 Plan/Case Result JSON 协议交互；两仓各自运行协议测试。Workflow 文件名分别是 `a3-8p-lite-actions.yml`、`a3-16p-lite-actions.yml`、`a5-64p-lite-actions.yml`、`lite-actions-dispatcher-smoke.yml`，显示名仍为原来 A3 8P/16P 的用户可读名称；后者仅本地检查 `npu-smi`，不是 2P 训练。
+---
 
-### Step 6 · 分阶段验证并正式启用
+## 8. Named Worker Registry and OS Smoke
 
-按照 **代码单测/配置校验 → 8 台 SSH 连通性 → 只读 NPU/广播检查 → 单机短跑 → 8 机 1 step → 8 机 5 steps + TensorBoard → GitHub Actions E2E** 逐关放行。验收时同时检查 Commit SHA 一致性、所有 64 rank、资源锁互斥、外部占用防护、超时清理、广播、结果回传和 GitHub Job Success/Failure。
+The dispatcher can route a lightweight probe to a named worker. Worker definitions are trusted deployment configuration in `config/workers.json`; PR-controlled inputs never provide shell commands or SSH destinations.
 
-如果 SSH、A5 占用解析、跨节点启动或模型测试任一环节没有通过，就维持 `a5-64p` 为**禁用**，不得为了出现在 Actions 页面上提前启用。
+Example:
 
-## 6. 验收参考、排障与限制
+```json
+{
+  "depeng": {
+    "transport": "local",
+    "enabled": true,
+    "expected_hostname": "depeng_us_euler.local",
+    "capabilities": ["smoke"]
+  },
+  "another-worker": {
+    "transport": "ssh",
+    "enabled": true,
+    "host": "another-worker-ssh-alias",
+    "expected_hostname": "another-worker",
+    "capabilities": ["smoke"]
+  }
+}
+```
 
-只保留有代表性的记录；历史成功仅证明**对应提交**，不代表最新 testcase、Workflow 已完成回归。
-
-| 场景 | 记录 | 结果 |
-| --- | --- | --- |
-| 8P 成功 | [Run 37939445270](https://github.com/depeng1994/torchtitan-npu/actions/runs/37939445270) | Eager 5 steps、TensorBoard、GitHub PASS |
-| 16P 失败 | [Run 37913151439](https://github.com/depeng1994/torchtitan-npu/actions/runs/37913151439) | 双机 HCCL `EI0006` 超时 |
-| 16P 成功 | [Run 37942444656](https://github.com/depeng1994/torchtitan-npu/actions/runs/37942444656) | 修复 CANN 环境传递后，双机 Eager 5 steps、TensorBoard、GitHub PASS |
-| 64P 待验收 | A5 64P | 通道禁用；SSH/HCCL、设备映射及实际训练尚未完成验证 |
-
-**16P 排障经验**：TCP 连通不代表 HCCL 可用；跨机启动须正确传递 `ASCEND_SET_ENV_PATH`。遇到类似错误，优先检查 CANN 环境及 HCCL 网络，而非反复重试训练。
-
-**常见问题**：Agent 不接单查进程、Workflow/actor/branch 白名单与 `enabled`；Waiter 超时查 `run_id/attempt/SHA`、`pipeline_id` 和 GitHub 回传权限；SSH/HCCL 失败查 host key、网络与 CANN；NPU 被占用先查远端残留进程，**普通用户进程不得清理；仅经身份核实的 auto-occupy/vllm PID 按授权定点清理**。
-
-**日志位置**：执行机完整日志与 TensorBoard 在 `/mnt/share/ci_tests/` 下按北京时间和 Workflow `run_number` 建立的 Run 目录，多机分别保存在 `node0/`、`node1/` 等子目录；重跑通过 `_attempt-N` 避免覆盖。调度机 `logs/runs/` 按 GitHub **Run ID / attempt** 记录任务，`logs/system/` 存 Agent 日志，`state/` 存任务去重与资源锁；不要清理正在运行的任务，或公开 Token、隐私信息及完整内网日志。
-
-**已知限制**：Workflow 仍需与默认分支同步；A5 未实机验收；Agent 无开机自动拉起，资源锁无法约束外部用户，取消或崩溃后须确认远端进程已清理；GitHub Waiter 有时长上限，不用于长稳训练。测试定义归模型仓，机器和调度策略归 Lite Actions。
-
-### GitHub master / GitCode 同步说明
-
-模型仓唯一正式 Workflow：`a3-8p-lite-actions.yml`、`a3-16p-lite-actions.yml`、`a5-64p-lite-actions.yml` 和 `lite-actions-dispatcher-smoke.yml`；每个通道只维护一份 Workflow。Lite Actions `main` 是唯一调度部署分支，SSH runner 配置仅含 `{"kind":"ssh"}`；模型的 CANN/HF/Checkpoint 环境在 `OverrideDefinitions.env_vars`。
-
-GitHub `master` 的 `Sync Upstream` 每日从 GitCode 强制镜像：请将 GitHub 已合入的模型仓改动同步到 GitCode `master` 以防镜像覆盖。实机验收以 GitHub `master` 新 Run ID、单 case 状态、日志和 Commit Comment 为准。
+- `transport: local` runs the fixed probe on the dispatcher host; `transport: ssh` uses a preconfigured SSH alias.
+- SSH uses batch mode and normal host-key verification. Add the alias and trusted host key to the dispatcher before enabling the worker.
+- `expected_hostname` pins the identity reported by the target. A mismatch or unreachable worker fails the job; the dispatcher does not silently fall back to a different worker.
+- Pipeline configuration selects the worker explicitly, for example `{"kind":"worker","worker_id":"depeng"}`. Additional workers can be registered without changing the dispatcher code.
+- The smoke probe reports `/etc/os-release`, hostname, architecture, kernel and Python version. It does not require NPU hardware or invoke `npu-smi`.
+- The worker registry is static configuration rather than an auto-discovery service. Availability is verified when a task is dispatched; a future health-check service can build on this contract.

@@ -33,6 +33,13 @@ MARKER_END = "RESULT_LAST_20_LINES_END"
 SCRIPTS = {"local": BASE / "pipeline.sh"}
 
 
+class ExternalNpuOccupancy(RuntimeError):
+    """A verified NPU allocation was externally occupied before launch.
+
+    Raised only by a read-only preflight, before any CI rank is started.
+    """
+
+
 @dataclass
 class Execution:
     exit_code: int
@@ -57,7 +64,7 @@ def task_dir(run: dict, root: Path) -> Path:
         from ci_core.registry import SELECTOR
         test_id = run["_ci_test_id"]
         if not isinstance(test_id, str) or not SELECTOR.fullmatch(test_id):
-            raise ValueError("invalid V2 task Test ID")
+            raise ValueError("invalid CI task Test ID")
         suffix = f"_test-{test_id}"
     return root / "logs/runs" / (
         f"{local:%Y-%m-%d_%H-%M-%S}_run-{int(run['id'])}"
@@ -89,7 +96,7 @@ def remote_task_name(run: dict) -> str:
         from ci_core.registry import SELECTOR
         test_id = run["_ci_test_id"]
         if not isinstance(test_id, str) or not SELECTOR.fullmatch(test_id):
-            raise ValueError("invalid V2 test ID")
+            raise ValueError("invalid CI test ID")
         suffix += f"_test-{test_id}"
     return f"{local:%Y-%m-%d_%H-%M-%S}_run_{name}_{number}{suffix}"
 
@@ -132,7 +139,7 @@ def prepare_profile(case:dict,run:dict)->tuple[str,dict]:
         else:
             nodes, ngpu = len(allocation), len(allocation[0]["devices"])
         expanded = resolve_request(archive, selections, nodes=nodes,
-            ngpu=ngpu, max_cases=1 if case["name"]=="a5-64p" else 4)
+            ngpu=ngpu)
     run['_ci_expanded_cases']=expanded
     # Preflight sources the toolkit selected by the model test, never a
     # hardcoded deployment value from Lite Actions.
@@ -170,9 +177,32 @@ def remote_preflight(case: dict, pools: dict, *, ascend_env: str | None = None) 
             raise RuntimeError(f"NPU preflight failed on {request['host_id']}")
         found = selected_processes(proc.stdout, request["devices"], indexing=indexing)
         if found:
-            raise RuntimeError(
+            raise ExternalNpuOccupancy(
                 f"External NPU activity on {request['host_id']}: {found[:3]}"
             )
+
+
+def preflight_before_launch(case: dict, pools: dict, *, ascend_env: str | None,
+                            pre_reserved: bool) -> None:
+    """Handle a one-time external auto/vLLM race under a held NPU lease.
+
+    A second preflight is mandatory; a newly occupied card is never launched
+    blindly. Reclamation remains restricted to explicitly approved pools and
+    the PID/start-time-verified auto-occupy/vLLM classifier. The operation is
+    bounded to one additional attempt; unknown processes remain untouched.
+    """
+    try:
+        remote_preflight(case, pools, ascend_env=ascend_env)
+    except ExternalNpuOccupancy:
+        if (not pre_reserved or case["runner"]["kind"] != "ssh"
+                or pools[case["pool"]].get("reclaim_external_processes") is not True
+                or os.environ.get("LITE_ACTIONS_RECLAIM_EXTERNAL_PROCESSES", "1") != "1"):
+            raise
+        from ci_core.occupancy import reclaim_candidate
+        if not reclaim_candidate(case, pools, ascend_env=ascend_env):
+            raise
+        # A reclaimed PID does not prove device availability: re-read npu-smi.
+        remote_preflight(case, pools, ascend_env=ascend_env)
 
 
 def summarize(log: Path, rc: int) -> list[str]:
@@ -194,6 +224,15 @@ def summarize(log: Path, rc: int) -> list[str]:
     return list(tail) or [f"Execution returned {rc} without output"]
 
 
+def trusted_allocation_manifest(case: dict) -> dict:
+    """Bind the subprocess's device and port manifest to one verified lease."""
+    from ci_core.resources import port_profile
+    approved_port = port_profile(case["port_slot"])
+    if any(case.get(field) != value for field, value in approved_port.items()):
+        raise ValueError("Dispatcher port lease/profile mismatch")
+    return {"allocation": case["allocation"], **approved_port}
+
+
 def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None = None,
             resource_wait_seconds: int = 600, pre_reserved: bool = False) -> Execution:
     if not case.get("enabled"):
@@ -211,6 +250,12 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
         if not script.exists():
             raise FileNotFoundError(script)
         cmd = ["bash", str(script)]
+    elif kind == "worker":
+        worker_id = case["runner"].get("worker_id")
+        if not isinstance(worker_id, str):
+            raise ValueError("worker runner requires worker_id")
+        cmd = [sys.executable, "-u", str(root / "ci_core/worker_runner.py"),
+               "--worker-id", worker_id]
     elif kind == "ssh":
         test_id, profile = prepare_profile(case, run)
         setup = profile["ascend_env"]
@@ -234,7 +279,7 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
             pools_for_assignment = json.loads((root / "config/pools.json").read_text())
             validate_allocation(case, pools_for_assignment, case.get("allocation", []))
             alloc_path = log_dir / "allocation.json"
-            alloc_path.write_text(json.dumps({"allocation": case["allocation"]}) + "\n")
+            alloc_path.write_text(json.dumps(trusted_allocation_manifest(case)) + "\n")
             cmd += ["--allocation-file", str(alloc_path)]
     else:
         raise ValueError(f"unknown trusted runner: {kind}")
@@ -245,7 +290,8 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
                           timeout=resource_wait_seconds))
     release_verified = True
     with lease:
-        remote_preflight(case, pools, ascend_env=setup)
+        preflight_before_launch(case, pools, ascend_env=setup,
+                                pre_reserved=pre_reserved)
         announced = bool(case.get("allocation"))
         with logfile.open("w", encoding="utf-8") as stream:
             rc = 125
@@ -308,16 +354,18 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
                         except (RuntimeError, subprocess.SubprocessError, ValueError):
                             if retry < 2:
                                 time.sleep(2)
-                    phase = "end" if idle else "uncertain"
+                    # One exit event; successful release must be explicitly
+                    # verified before its notice can claim devices are free.
                     try:
-                        errors = broadcast_job(case, pools, run, phase)
+                        errors = broadcast_job(case, pools, run, "end",
+                                               released=idle)
                         if errors:
-                            # End/uncertain broadcast is best-effort: notification
+                            # Exit broadcast is best-effort: notification
                             # transport failures do not invalidate confirmed
                             # training exit, TensorBoard, or NPU release.
                             # BEGIN remains mandatory and blocks launch.
                             logging.warning("CI %s wall delivery incomplete: %s",
-                                            phase, errors)
+                                            "end", errors)
                     except Exception:
                         logging.exception("CI exit wall failed (non-fatal alert)")
                     if not idle:
@@ -326,7 +374,7 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
                                      "remote processes may remain; operator action needed\n")
                         rc = rc or 125
                     stream.flush()
-    if kind == "local":
+    if kind in {"local", "worker"}:
         excerpt = summarize(logfile, rc)
     else:
         try:

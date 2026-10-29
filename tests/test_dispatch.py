@@ -9,6 +9,20 @@ from ci_core.config import load_config
 
 
 class DispatchTests(unittest.TestCase):
+    def test_exact_port_profile_is_serialized_for_subprocess(self):
+        from ci_core.resources import port_profile
+        case={"allocation": [{"host_id":"a3-3","devices":list(range(8))}],
+              **port_profile(2)}
+        wire=dispatch.trusted_allocation_manifest(case)
+        self.assertEqual(wire['port_slot'],2)
+        self.assertEqual(wire['master_port'],16002)
+        self.assertEqual(wire['hccl_host_port_range'],'24256-24319')
+        self.assertEqual(wire['hccl_npu_port_range'],'28256-28319')
+        bad={**case,'master_port':16000}
+        with self.assertRaisesRegex(ValueError,'port lease/profile mismatch'):
+            dispatch.trusted_allocation_manifest(bad)
+
+
     def test_physical_die_mapping(self):
         out = """Process id in container
 | 3       0                 | 2345      | dummy       |
@@ -41,6 +55,51 @@ class DispatchTests(unittest.TestCase):
         self.assertIn("a3-4-relay",argv)
         self.assertNotIn("a3-4-docker-relay",argv)
         self.assertNotIn("source",argv[-1])
+
+    def test_late_external_occupancy_has_single_scoped_reclaim(self):
+        from ci_core import occupancy
+        root=Path(__file__).resolve().parents[1]
+        pools=json.loads((root/"config/pools.json").read_text())
+        case={**load_config(root)["a3-8p"],
+              "allocation":[{"host_id":"a3-4","devices":list(range(8))}]}
+        occupied=dispatch.ExternalNpuOccupancy("External NPU activity on a3-4")
+        with patch.dict("os.environ", {"LITE_ACTIONS_RECLAIM_EXTERNAL_PROCESSES":"1"}), \
+             patch.object(dispatch,"remote_preflight",side_effect=[occupied,None]) as preflight, \
+             patch.object(occupancy,"reclaim_candidate",return_value=True) as reclaim:
+            dispatch.preflight_before_launch(case,pools,ascend_env=None,pre_reserved=True)
+        self.assertEqual(preflight.call_count,2)
+        reclaim.assert_called_once()
+        for allowed in (False, True):
+            with self.subTest(approved=allowed), \
+                 patch.dict("os.environ", {"LITE_ACTIONS_RECLAIM_EXTERNAL_PROCESSES":"1"}), \
+                 patch.object(dispatch,"remote_preflight",side_effect=occupied), \
+                 patch.object(occupancy,"reclaim_candidate") as reclaim:
+                other={**case,"pool":"a5-64p-lab"} if not allowed else case
+                with self.assertRaises(dispatch.ExternalNpuOccupancy):
+                    dispatch.preflight_before_launch(other,pools,ascend_env=None,
+                                                     pre_reserved=not allowed)
+                reclaim.assert_not_called()
+        with patch.dict("os.environ", {"LITE_ACTIONS_RECLAIM_EXTERNAL_PROCESSES":"0"}), \
+             patch.object(dispatch,"remote_preflight",side_effect=occupied), \
+             patch.object(occupancy,"reclaim_candidate") as reclaim:
+            with self.assertRaises(dispatch.ExternalNpuOccupancy):
+                dispatch.preflight_before_launch(case,pools,ascend_env=None,pre_reserved=True)
+            reclaim.assert_not_called()
+
+    def test_reclaim_retry_still_fails_closed_if_occupied(self):
+        from ci_core import occupancy
+        root=Path(__file__).resolve().parents[1]
+        pools=json.loads((root/"config/pools.json").read_text())
+        case={**load_config(root)["a3-8p"],
+              "allocation":[{"host_id":"a3-4","devices":list(range(8))}]}
+        with patch.dict("os.environ", {"LITE_ACTIONS_RECLAIM_EXTERNAL_PROCESSES":"1"}), \
+             patch.object(dispatch,"remote_preflight",
+                          side_effect=dispatch.ExternalNpuOccupancy("occupied")) as preflight, \
+             patch.object(occupancy,"reclaim_candidate",return_value=True) as reclaim:
+            with self.assertRaises(dispatch.ExternalNpuOccupancy):
+                dispatch.preflight_before_launch(case,pools,ascend_env=None,pre_reserved=True)
+            self.assertEqual(preflight.call_count,2)
+            reclaim.assert_called_once()
 
     def test_result_log_selection(self):
         with tempfile.TemporaryDirectory() as td:

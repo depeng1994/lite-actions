@@ -9,6 +9,8 @@ import zipfile
 from unittest.mock import patch
 from ci_core.github import GitHubClient
 from ci_core.registry import parse_request,resolve_request
+from ci_core.protocol import plan_digest
+from ci_core.source_repo import REPO as SOURCE_REPO
 from tests.test_ssh_runner import TEST_8P
 
 RUN={"id":12345,"run_attempt":1,"head_sha":"a"*40}
@@ -42,9 +44,15 @@ class RequestTests(unittest.TestCase):
         listing={"artifacts":[{"name":"lite-ci-request-1","id":678,
                                "size_in_bytes":300,"expired":False,
                                "workflow_run":{"id":12345}}]}
+        case = {"test_id": TEST_8P, "nnodes": 1, "ngpu": 8,
+                "label": "Trusted 8P test"}
+        raw = {"schema": 2, "repo": SOURCE_REPO, "run_id": RUN["id"],
+               "attempt": RUN["run_attempt"], "sha": RUN["head_sha"],
+               "pipeline": "a3-8p", "cases": [case]}
+        trusted_plan = {**raw, "plan_digest": plan_digest(raw)}
         binary=io.BytesIO()
         with zipfile.ZipFile(binary,"w") as z:
-            z.writestr("ci-request.json",json.dumps(REQ))
+            z.writestr("ci-request.json",json.dumps(trusted_plan))
         class RedirectError(Exception):
             pass
         from urllib.error import HTTPError
@@ -63,7 +71,7 @@ class RequestTests(unittest.TestCase):
         with patch.object(c,"request",return_value=listing), \
              patch("ci_core.github.urllib.request.build_opener",return_value=holder), \
              patch("ci_core.github.urllib.request.urlopen",side_effect=download):
-            self.assertEqual(c.ci_request(RUN),REQ)
+            self.assertEqual(c.ci_request({**RUN, "path": ".github/workflows/a3_8p_lite_actions.yml"}),trusted_plan)
             self.assertIn("SECRET_TOKEN",holder.request.headers.get("Authorization",""))
 
     def test_commit_comment_lookup_is_bounded_and_paginated(self):
@@ -77,7 +85,7 @@ class RequestTests(unittest.TestCase):
         self.assertIn("page=2",request.call_args_list[1].args[1])
 
         c=GitHubClient("TOKEN")
-        with patch.object(c,"request",side_effect=[[{}]*100]*4):
+        with patch.object(c,"request",side_effect=[[{}]*100]*20):
             with self.assertRaisesRegex(RuntimeError,"too many commit comments"):
                 c.commit_comments("a"*40)
 
