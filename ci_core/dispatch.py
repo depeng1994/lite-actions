@@ -157,14 +157,10 @@ def remote_preflight(case: dict, pools: dict, *, ascend_env: str | None = None) 
         raise ValueError("NPU process index mode must be configured")
     for request in case["allocation"]:
         node = by_host[request["host_id"]]
-        # Occupancy is a physical-host property.  Use the same host namespace
-        # as PID classification/reclamation instead of the execution container,
-        # whose npu-smi visibility depends on its CANN/runtime environment.
-        targets = node.get("broadcast_ssh", [])
-        if isinstance(targets, list) and targets and isinstance(targets[0], str) and targets[0]:
-            host = targets[0]
-        else:
-            host = node.get("ssh")
+        # Preflight needs the configured CANN runtime, which is available
+        # through the Docker execution alias. PID-specific reclamation uses
+        # broadcast_ssh separately because it requires the host PID namespace.
+        host = node.get("ssh")
         if not isinstance(host, str) or not host:
             raise ValueError("NPU preflight host SSH is not configured")
         command = "npu-smi info"
