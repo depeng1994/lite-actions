@@ -34,6 +34,7 @@ class A5OnboardingTests(unittest.TestCase):
             root = Path(tmp)
             (root / "config").mkdir()
             copyfile(ROOT / "config/pools.json", root / "config/pools.json")
+            copyfile(ROOT / "config/workers.json", root / "config/workers.json")
             cases = json.loads((ROOT / "config/pipelines.json").read_text())
             cases["a5-64p"]["enabled"] = True
             (root / "config/pipelines.json").write_text(json.dumps(cases))
