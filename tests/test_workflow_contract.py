@@ -25,7 +25,7 @@ class WorkflowContractTests(unittest.TestCase):
         cfg = load_config(ROOT)
         self.assertEqual(cfg["dispatcher-smoke"]["runner"],
                          {"kind": "worker", "worker_id": "depeng"})
-        self.assertEqual(cfg["dispatcher-smoke"]["pipeline_id"], "os-info")
+        self.assertEqual(cfg["dispatcher-smoke"]["pipeline_id"], "npu-smi")
         self.assertTrue(cfg["dispatcher-smoke"]["enabled"])
         for key, value in expected.items():
             self.assertEqual(unified_agent.STATUSES[key], value)
