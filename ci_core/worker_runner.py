@@ -10,7 +10,21 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKER_ID = re.compile(r"[a-z][a-z0-9-]{0,62}\Z")
-PROBE = """printf 'WORKER_HOSTNAME='; hostname -f; printf 'WORKER_ARCH='; uname -m; printf 'WORKER_KERNEL='; uname -sr; printf 'OS_RELEASE_BEGIN\n'; if [ -r /etc/os-release ]; then cat /etc/os-release; else echo 'PRETTY_NAME=unknown'; fi; printf 'OS_RELEASE_END\n'; printf 'WORKER_PYTHON='; python3 --version"""
+HOST_ALIAS = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
+PROBE = """set -eu
+printf 'WORKER_HOSTNAME='; hostname -f
+printf 'WORKER_ARCH='; uname -m
+printf 'WORKER_KERNEL='; uname -sr
+printf 'OS_RELEASE_BEGIN\\n'
+if [ -r /etc/os-release ]; then
+  cat /etc/os-release
+else
+  echo '/etc/os-release is unavailable' >&2
+  exit 1
+fi
+printf 'OS_RELEASE_END\\n'
+printf 'WORKER_PYTHON='; python3 --version
+"""
 
 
 def load_worker(worker_id: str, config_path: Path) -> dict:
@@ -29,10 +43,10 @@ def load_worker(worker_id: str, config_path: Path) -> dict:
             raise ValueError("unexpected local worker fields")
     elif transport == "ssh":
         allowed = {"transport", "enabled", "host", "expected_hostname", "capabilities"}
-        if not isinstance(worker.get("host"), str) or not worker["host"].strip():
-            raise ValueError("SSH worker host alias is required")
         if set(worker) - allowed:
             raise ValueError("unexpected SSH worker fields")
+        if not isinstance(worker.get("host"), str) or not HOST_ALIAS.fullmatch(worker["host"]):
+            raise ValueError("SSH worker host must be a trusted SSH config alias")
     else:
         raise ValueError("unsupported worker transport")
     expected = worker.get("expected_hostname")
@@ -52,17 +66,36 @@ def run_probe(worker_id: str, worker: dict) -> int:
         # Host-key verification remains enabled; host must be a trusted SSH config alias.
         command = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
                    worker["host"], "bash -lc " + shlex.quote(PROBE)]
-    completed = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True,
+                                   timeout=30, check=False)
+    except subprocess.TimeoutExpired:
+        print(f"WORKER_ID={worker_id}")
+        print("WORKER_STATUS=FAIL reason=timeout")
+        return 124
     output = completed.stdout.strip()
     if output:
         print(output)
     if completed.stderr.strip():
         print(completed.stderr.strip())
     if completed.returncode:
-        print("WORKER_STATUS=FAIL")
+        print(f"WORKER_ID={worker_id}")
+        print("WORKER_STATUS=FAIL reason=probe_exit")
         return completed.returncode
+
     fields = dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
     actual = fields.get("WORKER_HOSTNAME", "")
+    required = (
+        fields.get("WORKER_ARCH"),
+        fields.get("WORKER_KERNEL"),
+        "OS_RELEASE_BEGIN" if "OS_RELEASE_BEGIN" in output else None,
+        "OS_RELEASE_END" if "OS_RELEASE_END" in output else None,
+        re.search(r"(?m)^PRETTY_NAME=.+$", output),
+    )
+    if not actual or any(item is None or item == "" for item in required):
+        print(f"WORKER_ID={worker_id}")
+        print("WORKER_STATUS=FAIL reason=incomplete_os_information")
+        return 1
     expected = worker.get("expected_hostname")
     if expected and actual != expected:
         print(f"WORKER_ID={worker_id}")
