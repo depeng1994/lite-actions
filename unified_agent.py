@@ -36,7 +36,7 @@ BRANCHES = set(filter(None, os.environ.get("LITE_ACTIONS_ALLOWED_BRANCHES", "mas
 MAX_WORKERS = 5
 TRAINING_WORKERS = 4
 LIGHTWEIGHT_WORKERS = MAX_WORKERS - TRAINING_WORKERS
-INTERVAL = int(os.environ.get("LITE_ACTIONS_POLL_SECONDS", "60"))
+INTERVAL = int(os.environ.get("LITE_ACTIONS_POLL_SECONDS", "10"))
 STATUSES = {case: labels[0] for case, labels in NAMES.items()}
 
 

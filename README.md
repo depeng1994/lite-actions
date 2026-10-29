@@ -196,7 +196,7 @@ pgrep -af 'python3 -u unified_agent.py'
 tail -n 30 logs/system/unified-agent.log
 ```
 
-> **启动说明**：`run-unified-agent.sh` 通过 `flock` 文件锁保证全局单例运行，默认每 60 秒轮询一次 GitHub Actions 队列。
+> **启动说明**：`run-unified-agent.sh` 通过 `flock` 文件锁保证全局单例运行，默认每 10 秒轮询一次 GitHub Actions 队列。
 
 ---
 
@@ -354,7 +354,7 @@ python3 scripts/preflight_pool.py --pool a3-shared --npu
 
 ## 7. 相关参考
 
-* **如何编写和新增测试用例**：参见模型仓 [集成测试使用指南 (tests/integration_tests/README.md)](https://github.com/depeng1994/torchtitan-npu/blob/master/tests/integration_tests/README.md)。
+* **如何编写和新增测试用例**：参见模型仓 [集成测试使用指南 (tests/integration_tests/README.md)](https://github.com/torchtitan-npu/torchtitan-npu/blob/master/tests/integration_tests/README.md)。
 * **架构重构与开发台账**：参见 [DEVELOPMENT_LEDGER.md](DEVELOPMENT_LEDGER.md)。
 
 ---
@@ -389,4 +389,3 @@ Example:
 - Pipeline configuration selects the worker explicitly, for example `{"kind":"worker","worker_id":"depeng"}`. Additional workers can be registered without changing the dispatcher code.
 - The smoke probe reports `/etc/os-release`, hostname, architecture, kernel and Python version. It does not require NPU hardware or invoke `npu-smi`.
 - The worker registry is static configuration rather than an auto-discovery service. Availability is verified when a task is dispatched; a future health-check service can build on this contract.
-

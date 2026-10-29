@@ -1,11 +1,11 @@
 # Lite Actions 架构重构与开发台账 (DEVELOPMENT LEDGER)
 
-> **文档定位**：本文档为 Lite Actions 架构演进、并发调度设计契约及阶段验收成果的唯一跟踪台账。  
-> **日常使用与系统架构**：请参阅 [README.md](README.md)；模型测试用例编写请参阅模型仓 [tests/integration_tests/README.md](https://github.com/depeng1994/torchtitan-npu/blob/master/tests/integration_tests/README.md)。  
-> **最新状态（2026-10-29 刷新）**：  
-> - **Phase 1（解耦、Matrix、动态选卡、全局串行）**：**已全部完工并通过实机验收**。  
-> - **Phase 2 / P2.5（资源池并发、全端口隔离、同 Node 多任务、双 16P、4×8P 满载）**：**核心并发功能已全部实机验收并正式上线**。  
-> - **待完成事项**：N10~N13 破坏性故障注入与高压饥饿压测；GitCode 主源 [MR #985](https://gitcode.com/cann/torchtitan-npu/merge_requests/985) 合并归一；A5 64P 专项接入（继续保持 disabled）。  
+> **文档定位**：本文档为 Lite Actions 架构演进、并发调度设计契约及阶段验收成果的唯一跟踪台账。
+> **日常使用与系统架构**：请参阅 [README.md](README.md)；模型测试用例编写请参阅模型仓 [tests/integration_tests/README.md](https://github.com/depeng1994/torchtitan-npu/blob/master/tests/integration_tests/README.md)。
+> **最新状态（2026-10-29 刷新）**：
+> - **Phase 1（解耦、Matrix、动态选卡、全局串行）**：**已全部完工并通过实机验收**。
+> - **Phase 2 / P2.5（资源池并发、全端口隔离、同 Node 多任务、双 16P、4×8P 满载）**：**核心并发功能已全部实机验收并正式上线**。
+> - **待完成事项**：N10~N13 破坏性故障注入与高压饥饿压测；GitCode 主源 [MR #985](https://gitcode.com/cann/torchtitan-npu/merge_requests/985) 合并归一；A5 64P 专项接入（继续保持 disabled）。
 > **生产代码基线**：调度仓 `lite-actions:main` 当前 HEAD `9069e19`（生产运行基线 `c54c0de` / `9069e19`）；模型仓 `torchtitan-npu:master` 验证基线 `f88d50b`。
 
 ---

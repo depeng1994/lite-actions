@@ -19,3 +19,6 @@ id_rsa
 id_ed25519
 *.p12
 *.pfx
+
+# SHA-pinned model source archive cache.
+cache/model-archives/
