@@ -25,7 +25,7 @@ LOG = ROOT / "logs" / "system" / "unified-agent.log"
 OWNER = "depeng1994"
 BRANCHES = set(filter(None, os.environ.get("A3_CI_ALLOWED_BRANCHES", "master").split(",")))
 MAX_WORKERS = 1  # Phase 1: one training Case across ALL workflows
-INTERVAL = int(os.environ.get("A3_CI_POLL_SECONDS", "60"))
+INTERVAL = int(os.environ.get("A3_CI_POLL_SECONDS", "10"))
 STATUSES = {case: labels[0] for case, labels in NAMES.items()}
 LEGACY_STATUSES = {case: labels[1] for case, labels in NAMES.items() if len(labels) > 1}
 

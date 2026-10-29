@@ -157,7 +157,7 @@ pgrep -af 'python3 -u unified_agent.py'
 tail -n 30 logs/system/unified-agent.log
 ```
 
-`run-unified-agent.sh` 通过 `flock` 保证同一目录只有一个实例；默认每 60 秒轮询。只接收指定账户手工触发、受信任分支（默认 `master`）和 Workflow 的任务。需要测试其他可信分支时可显式设置 `A3_CI_ALLOWED_BRANCHES`，切勿开放所有分支。**当前没有 systemd 或容器重启后自动拉起机制**，环境重启后需重新执行 Step 3 的启动部分。
+`run-unified-agent.sh` 通过 `flock` 保证同一目录只有一个实例；默认每 10 秒轮询，可用环境变量 A3_CI_POLL_SECONDS 调整。只接收指定账户手工触发、受信任分支（默认 `master`）和 Workflow 的任务。需要测试其他可信分支时可显式设置 `A3_CI_ALLOWED_BRANCHES`，切勿开放所有分支。**当前没有 systemd 或容器重启后自动拉起机制**，环境重启后需重新执行 Step 3 的启动部分。
 
 ### 4.2 日常操作
 
