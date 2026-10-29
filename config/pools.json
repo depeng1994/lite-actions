@@ -4,18 +4,56 @@
     "nodes": [
       {
         "host_id": "a3-3",
-        "ssh": "a3-3-docker-relay",
-        "device_ids": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
-        "broadcast_ssh": ["a3-3-relay", "a3-3-docker-relay"],
+        "ssh": "a3-3-docker",
+        "device_ids": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "broadcast_ssh": [
+          "a3-3",
+          "a3-3-docker"
+        ],
         "node_ip": "192.168.0.30",
         "network_interface": "enp23s0f3",
         "allocation_groups": [
           {
-            "devices": [0, 1, 2, 3, 4, 5, 6, 7],
+            "devices": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7
+            ],
             "verified": true
           },
           {
-            "devices": [8, 9, 10, 11, 12, 13, 14, 15],
+            "devices": [
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15
+            ],
             "verified": true
           }
         ],
@@ -23,18 +61,56 @@
       },
       {
         "host_id": "a3-4",
-        "ssh": "a3-4-docker-relay",
-        "device_ids": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
-        "broadcast_ssh": ["a3-4-relay", "a3-4-docker-relay"],
+        "ssh": "a3-4-docker",
+        "device_ids": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "broadcast_ssh": [
+          "a3-4",
+          "a3-4-docker"
+        ],
         "node_ip": "192.168.0.107",
         "network_interface": "enp23s0f3",
         "allocation_groups": [
           {
-            "devices": [0, 1, 2, 3, 4, 5, 6, 7],
+            "devices": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7
+            ],
             "verified": true
           },
           {
-            "devices": [8, 9, 10, 11, 12, 13, 14, 15],
+            "devices": [
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15
+            ],
             "verified": true
           }
         ],
@@ -47,21 +123,57 @@
       [
         {
           "host_id": "a3-3",
-          "devices": [0, 1, 2, 3, 4, 5, 6, 7]
+          "devices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ]
         },
         {
           "host_id": "a3-4",
-          "devices": [8, 9, 10, 11, 12, 13, 14, 15]
+          "devices": [
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ]
         }
       ],
       [
         {
           "host_id": "a3-3",
-          "devices": [8, 9, 10, 11, 12, 13, 14, 15]
+          "devices": [
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ]
         },
         {
           "host_id": "a3-4",
-          "devices": [0, 1, 2, 3, 4, 5, 6, 7]
+          "devices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ]
         }
       ]
     ],
@@ -69,11 +181,29 @@
       [
         {
           "host_id": "a3-3",
-          "devices": [0, 1, 2, 3, 4, 5, 6, 7]
+          "devices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ]
         },
         {
           "host_id": "a3-4",
-          "devices": [0, 1, 2, 3, 4, 5, 6, 7]
+          "devices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ]
         }
       ]
     ],
@@ -96,57 +226,145 @@
       {
         "host_id": "a5-01",
         "ssh": "root@7.246.125.19",
-        "device_ids": [0, 1, 2, 3, 4, 5, 6, 7],
-        "broadcast_ssh": ["root@7.246.125.19"],
+        "device_ids": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "broadcast_ssh": [
+          "root@7.246.125.19"
+        ],
         "node_ip": null
       },
       {
         "host_id": "a5-02",
         "ssh": "root@7.246.125.20",
-        "device_ids": [0, 1, 2, 3, 4, 5, 6, 7],
-        "broadcast_ssh": ["root@7.246.125.20"],
+        "device_ids": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "broadcast_ssh": [
+          "root@7.246.125.20"
+        ],
         "node_ip": null
       },
       {
         "host_id": "a5-03",
         "ssh": "root@7.246.125.21",
-        "device_ids": [0, 1, 2, 3, 4, 5, 6, 7],
-        "broadcast_ssh": ["root@7.246.125.21"],
+        "device_ids": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "broadcast_ssh": [
+          "root@7.246.125.21"
+        ],
         "node_ip": null
       },
       {
         "host_id": "a5-04",
         "ssh": "root@7.246.125.22",
-        "device_ids": [0, 1, 2, 3, 4, 5, 6, 7],
-        "broadcast_ssh": ["root@7.246.125.22"],
+        "device_ids": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "broadcast_ssh": [
+          "root@7.246.125.22"
+        ],
         "node_ip": null
       },
       {
         "host_id": "a5-05",
         "ssh": "root@7.246.125.23",
-        "device_ids": [0, 1, 2, 3, 4, 5, 6, 7],
-        "broadcast_ssh": ["root@7.246.125.23"],
+        "device_ids": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "broadcast_ssh": [
+          "root@7.246.125.23"
+        ],
         "node_ip": null
       },
       {
         "host_id": "a5-06",
         "ssh": "root@7.246.125.24",
-        "device_ids": [0, 1, 2, 3, 4, 5, 6, 7],
-        "broadcast_ssh": ["root@7.246.125.24"],
+        "device_ids": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "broadcast_ssh": [
+          "root@7.246.125.24"
+        ],
         "node_ip": null
       },
       {
         "host_id": "a5-07",
         "ssh": "root@7.246.125.25",
-        "device_ids": [0, 1, 2, 3, 4, 5, 6, 7],
-        "broadcast_ssh": ["root@7.246.125.25"],
+        "device_ids": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "broadcast_ssh": [
+          "root@7.246.125.25"
+        ],
         "node_ip": null
       },
       {
         "host_id": "a5-08",
         "ssh": "root@7.246.125.26",
-        "device_ids": [0, 1, 2, 3, 4, 5, 6, 7],
-        "broadcast_ssh": ["root@7.246.125.26"],
+        "device_ids": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "broadcast_ssh": [
+          "root@7.246.125.26"
+        ],
         "node_ip": null
       }
     ],
