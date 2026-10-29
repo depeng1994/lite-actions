@@ -45,7 +45,7 @@ def load_config(root: Path) -> dict:
                         or not set(group_ids) <= set(ids)):
                     raise ValueError("invalid verified allocation group")
         runner = spec["runner"]
-        if runner["kind"] not in {"ssh", "local"}:
+        if runner["kind"] not in {"ssh", "local", "worker"}:
             raise ValueError("unknown trusted runner")
         has_static = "allocation" in spec
         has_dynamic = "resources" in spec
@@ -70,6 +70,18 @@ def load_config(root: Path) -> dict:
                 from ci_core.scheduler import candidates
                 if not candidates(spec, pools):
                     raise ValueError("enabled pool has no verified topology")
+        if runner["kind"] == "worker":
+            if set(runner) != {"kind", "worker_id"}:
+                raise ValueError("worker runner requires only worker_id")
+            worker_id = runner["worker_id"]
+            if not isinstance(worker_id, str) or not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", worker_id):
+                raise ValueError("invalid worker ID")
+            worker_file = root / "config/workers.json"
+            if not worker_file.is_file():
+                raise ValueError("worker registry missing")
+            worker_registry = json.loads(worker_file.read_text())
+            if worker_id not in worker_registry or worker_registry[worker_id].get("enabled") is not True:
+                raise ValueError("pipeline references an unregistered/disabled worker")
         if runner["kind"] == "ssh":
             if set(runner) != {"kind"}:
                 raise ValueError("SSH pipeline must be generic")
