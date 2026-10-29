@@ -9,7 +9,7 @@
       "worker_id": "depeng"
     },
     "enabled": true,
-    "pipeline_id": "os-info"
+    "pipeline_id": "npu-smi"
   },
   "a3-8p": {
     "workflow": "a3_8p_lite_actions.yml",
