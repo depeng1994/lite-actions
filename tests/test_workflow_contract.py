@@ -44,7 +44,7 @@ class WorkflowContractTests(unittest.TestCase):
 
     def test_v2_digest_and_identity_validation(self):
         run = {"id": 42, "run_attempt": 1, "head_sha": "a"*40}
-        plan = {"schema": 2, "repo": "depeng1994/torchtitan-npu",
+        plan = {"schema": 2, "repo": "torchtitan-npu/torchtitan-npu",
                 "run_id": 42, "attempt": 1, "sha": "a"*40,
                 "pipeline": "a3-8p",
                 "cases": [{"test_id": "dsv4_flash_a3_8p_example",
@@ -65,7 +65,7 @@ class WorkflowContractTests(unittest.TestCase):
                  head_sha="a"*40,head_branch="master",
                  event="workflow_dispatch",status="in_progress",
                  actor={"login":"depeng1994"},
-                 path=".github/workflows/a3-8p-lite-actions.yml",
+                 path=".github/workflows/a3_8p_lite_actions.yml",
                  name="A3-8p-CI-Example",display_title="A3-8p-CI-Example")
         self.assertTrue(unified_agent.eligible(run,cfg["a3-8p"]))
         self.assertFalse(unified_agent.eligible({**run,"head_branch":"untrusted-pr"},

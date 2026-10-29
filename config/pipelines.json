@@ -12,7 +12,7 @@
     "pipeline_id": "npu-smi"
   },
   "a3-8p": {
-    "workflow": "a3-8p-lite-actions.yml",
+    "workflow": "a3_8p_lite_actions.yml",
     "pool": "a3-shared",
     "timeout_seconds": 7500,
     "runner": {
@@ -26,7 +26,7 @@
     }
   },
   "a3-16p": {
-    "workflow": "a3-16p-lite-actions.yml",
+    "workflow": "a3_16p_lite_actions.yml",
     "pool": "a3-shared",
     "timeout_seconds": 7500,
     "runner": {
@@ -40,7 +40,7 @@
     }
   },
   "a5-64p": {
-    "workflow": "a5-64p-lite-actions.yml",
+    "workflow": "a5_64p_lite_actions.yml",
     "pool": "a5-64p-lab",
     "timeout_seconds": 14400,
     "runner": {

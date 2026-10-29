@@ -10,7 +10,7 @@ import subprocess
 import urllib.parse
 import urllib.request
 
-REPO = "depeng1994/torchtitan-npu"
+REPO = "torchtitan-npu/torchtitan-npu"
 API = f"https://api.github.com/repos/{REPO}"
 
 

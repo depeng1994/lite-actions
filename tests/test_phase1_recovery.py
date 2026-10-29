@@ -22,7 +22,7 @@ CASE = {"test_id": TEST_ID, "nnodes": 1, "ngpu": 8, "label": "Muon"}
 
 
 def plan():
-    base = {"schema": 2, "repo": "depeng1994/torchtitan-npu",
+    base = {"schema": 2, "repo": "torchtitan-npu/torchtitan-npu",
             "run_id": 1024, "attempt": 1, "sha": "a"*40,
             "pipeline": "a3-8p", "cases": [CASE]}
     return {**base, "plan_digest": plan_digest(base)}

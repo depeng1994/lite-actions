@@ -22,7 +22,7 @@ from ci_core.config import load_config
 from ci_core.registry import inspect_archive, SELECTOR, parse_request, resolve_request
 
 ROOT = Path(__file__).resolve().parents[1]
-REPO = "git@github.com:depeng1994/torchtitan-npu.git"
+REPO = "git@github.com:torchtitan-npu/torchtitan-npu.git"
 DEST_ROOT = "/mnt/share/ci_tests"
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 STAMP = re.compile(r"[0-9A-Za-z_-]+\Z")

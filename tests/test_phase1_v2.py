@@ -24,7 +24,7 @@ CASES = [
 
 
 def run_plan(cases=CASES):
-    plan={"schema":2,"repo":"depeng1994/torchtitan-npu",
+    plan={"schema":2,"repo":"torchtitan-npu/torchtitan-npu",
           "run_id":1092,"attempt":1,"sha":SHA,"pipeline":"a3-8p","cases":cases}
     plan["plan_digest"]=plan_digest(plan)
     return plan

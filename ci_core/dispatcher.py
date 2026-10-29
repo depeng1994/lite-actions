@@ -42,7 +42,7 @@ def result_for_case(case: dict, run: dict, test_id: str, rc: int,
         status = "NOT_RUN"
     else:
         status = "FAIL"
-    return {"schema": 2, "repo": "depeng1994/torchtitan-npu",
+    return {"schema": 2, "repo": "torchtitan-npu/torchtitan-npu",
             "run_id": run["id"], "attempt": run.get("run_attempt", 1),
             "sha": run["head_sha"], "pipeline": case["pipeline_id"],
             "test_id": test_id, "plan_digest": run["_ci_request"]["plan_digest"],
@@ -92,7 +92,7 @@ def run_and_report(case: dict, run: dict, *, root: Path) -> None:
             return
         elif (run.get("_ci_cancel_event") is not None
               and run["_ci_cancel_event"].is_set()):
-            report = {"schema": 2, "repo": "depeng1994/torchtitan-npu",
+            report = {"schema": 2, "repo": "torchtitan-npu/torchtitan-npu",
                       "run_id": run["id"], "attempt": run.get("run_attempt", 1),
                       "sha": run["head_sha"], "pipeline": case["pipeline_id"],
                       "test_id": test_id, "plan_digest": run["_ci_request"]["plan_digest"],
