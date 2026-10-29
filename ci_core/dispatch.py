@@ -168,6 +168,11 @@ def remote_preflight(case: dict, pools: dict, *, ascend_env: str | None = None) 
         if not isinstance(host, str) or not host:
             raise ValueError("NPU preflight host SSH is not configured")
         command = "npu-smi info"
+        if ascend_env:
+            # Some relay shells do not load CANN by default; without sourcing
+            # the configured toolkit, npu-smi fails with missing libc_sec.so
+            # and an otherwise-free host is incorrectly marked unavailable.
+            command = "source " + shlex.quote(ascend_env) + " >/dev/null 2>&1 && npu-smi info"
         proc = subprocess.run(
             ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
              host, "bash -lc " + shlex.quote(command)],
