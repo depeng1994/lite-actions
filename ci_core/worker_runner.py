@@ -1,4 +1,4 @@
-"""Run a trusted, identity-checked probe on a configured Lite Actions worker."""
+"""Run a trusted, identity-checked OS probe on a configured Lite Actions worker."""
 from __future__ import annotations
 
 import argparse
@@ -9,8 +9,8 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-WORKER_ID = re.compile(r"[a-z][a-z0-9-]{0,62}\\Z")
-PROBE = "printf \"WORKER_HOSTNAME=\"; hostname -f; printf \"WORKER_ARCH=\"; uname -m; printf \"WORKER_PYTHON=\"; python3 --version"
+WORKER_ID = re.compile(r"[a-z][a-z0-9-]{0,62}\Z")
+PROBE = """printf 'WORKER_HOSTNAME='; hostname -f; printf 'WORKER_ARCH='; uname -m; printf 'WORKER_KERNEL='; uname -sr; printf 'OS_RELEASE_BEGIN\n'; if [ -r /etc/os-release ]; then cat /etc/os-release; else echo 'PRETTY_NAME=unknown'; fi; printf 'OS_RELEASE_END\n'; printf 'WORKER_PYTHON='; python3 --version"""
 
 
 def load_worker(worker_id: str, config_path: Path) -> dict:
@@ -49,7 +49,7 @@ def run_probe(worker_id: str, worker: dict) -> int:
     if transport == "local":
         command = ["bash", "-lc", PROBE]
     else:
-        # Host-key verification stays enabled; host must be a trusted SSH config alias.
+        # Host-key verification remains enabled; host must be a trusted SSH config alias.
         command = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
                    worker["host"], "bash -lc " + shlex.quote(PROBE)]
     completed = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
