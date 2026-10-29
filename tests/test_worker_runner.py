@@ -127,7 +127,7 @@ class WorkerRunnerTests(unittest.TestCase):
                 "depeng": {"transport": "local", "enabled": True, "capabilities": ["smoke"]},
             }))
             case = {
-                "name": "dispatcher-smoke", "pipeline_id": "npu-smi",
+                "name": "dispatcher-smoke", "pipeline_id": "npu-smi", "enabled": True,
                 "pool": "local-smoke", "allocation": [], "timeout_seconds": 15,
                 "runner": {"kind": "worker", "worker_id": "depeng"},
             }
