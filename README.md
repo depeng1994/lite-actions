@@ -356,3 +356,37 @@ python3 scripts/preflight_pool.py --pool a3-shared --npu
 
 * **如何编写和新增测试用例**：参见模型仓 [集成测试使用指南 (tests/integration_tests/README.md)](https://github.com/depeng1994/torchtitan-npu/blob/master/tests/integration_tests/README.md)。
 * **架构重构与开发台账**：参见 [DEVELOPMENT_LEDGER.md](DEVELOPMENT_LEDGER.md)。
+
+---
+
+## 8. Named Worker Registry and OS Smoke
+
+The dispatcher can route a lightweight probe to a named worker. Worker definitions are trusted deployment configuration in `config/workers.json`; PR-controlled inputs never provide shell commands or SSH destinations.
+
+Example:
+
+```json
+{
+  "depeng": {
+    "transport": "local",
+    "enabled": true,
+    "expected_hostname": "depeng_us_euler.local",
+    "capabilities": ["smoke"]
+  },
+  "another-worker": {
+    "transport": "ssh",
+    "enabled": true,
+    "host": "another-worker-ssh-alias",
+    "expected_hostname": "another-worker",
+    "capabilities": ["smoke"]
+  }
+}
+```
+
+- `transport: local` runs the fixed probe on the dispatcher host; `transport: ssh` uses a preconfigured SSH alias.
+- SSH uses batch mode and normal host-key verification. Add the alias and trusted host key to the dispatcher before enabling the worker.
+- `expected_hostname` pins the identity reported by the target. A mismatch or unreachable worker fails the job; the dispatcher does not silently fall back to a different worker.
+- Pipeline configuration selects the worker explicitly, for example `{"kind":"worker","worker_id":"depeng"}`. Additional workers can be registered without changing the dispatcher code.
+- The smoke probe reports `/etc/os-release`, hostname, architecture, kernel and Python version. It does not require NPU hardware or invoke `npu-smi`.
+- The worker registry is static configuration rather than an auto-discovery service. Availability is verified when a task is dispatched; a future health-check service can build on this contract.
+
