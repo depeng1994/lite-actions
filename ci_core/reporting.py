@@ -63,6 +63,7 @@ def make_report(case: dict, run: dict, rc: int, excerpt: list[str], log:Path|Non
     return {
         'run_id':run['id'],'attempt':run.get('run_attempt',1),'sha':run['head_sha'],
         'pipeline':case['pipeline_id'],'status':'PASS' if ok else 'FAIL',
+        'worker_id':case.get('runner', {}).get('worker_id'),
         'exit_code':rc if rc!=0 else (0 if ok else 125),
         'cases':cases,
         'last_20_lines':[clean(x) for x in excerpt],
