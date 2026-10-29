@@ -197,7 +197,7 @@ class RecoveryTests(unittest.TestCase):
         calls=[]
         def fake_ssh(host, command, **kwargs):
             calls.append((host,command))
-            self.assertEqual(host,"a3-3-relay")
+            self.assertEqual(host,"a3-3")
             if command=="npu-smi info":
                 return SimpleNamespace(returncode=0,
                     stdout="Process id in container\n| 3  0 | 2345 | dummy |\n")
@@ -205,7 +205,7 @@ class RecoveryTests(unittest.TestCase):
         with patch.object(occupancy,"ssh",side_effect=fake_ssh):
             self.assertFalse(occupancy.reclaim_candidate(case,pool,ascend_env=None))
         self.assertEqual(len(calls),2)
-        self.assertTrue(all(host=="a3-3-relay" for host,_ in calls))
+        self.assertTrue(all(host=="a3-3" for host,_ in calls))
         self.assertIn("2345",calls[1][1])
         self.assertNotIn("a3-3-docker-relay",str(calls))
 
