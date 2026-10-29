@@ -1,6 +1,6 @@
 {
   "dispatcher-smoke": {
-    "workflow": "lite-actions-dispatcher-smoke.yml",
+    "workflow": "lite_actions_dispatcher_smoke.yml",
     "pool": "local-smoke",
     "allocation": [],
     "timeout_seconds": 90,
