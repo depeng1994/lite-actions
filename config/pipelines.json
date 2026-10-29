@@ -5,11 +5,11 @@
     "allocation": [],
     "timeout_seconds": 90,
     "runner": {
-      "kind": "local",
-      "script": "pipeline.sh"
+      "kind": "worker",
+      "worker_id": "depeng"
     },
     "enabled": true,
-    "pipeline_id": "npu-smi"
+    "pipeline_id": "os-info"
   },
   "a3-8p": {
     "workflow": "a3_8p_lite_actions.yml",
