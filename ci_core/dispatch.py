@@ -250,6 +250,12 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
         if not script.exists():
             raise FileNotFoundError(script)
         cmd = ["bash", str(script)]
+    elif kind == "worker":
+        worker_id = case["runner"].get("worker_id")
+        if not isinstance(worker_id, str):
+            raise ValueError("worker runner requires worker_id")
+        cmd = [sys.executable, "-u", str(root / "ci_core/worker_runner.py"),
+               "--worker-id", worker_id]
     elif kind == "ssh":
         test_id, profile = prepare_profile(case, run)
         setup = profile["ascend_env"]
@@ -368,7 +374,7 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
                                      "remote processes may remain; operator action needed\n")
                         rc = rc or 125
                     stream.flush()
-    if kind == "local":
+    if kind in {"local", "worker"}:
         excerpt = summarize(logfile, rc)
     else:
         try:
