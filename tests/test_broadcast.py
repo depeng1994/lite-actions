@@ -126,7 +126,7 @@ class BroadcastTests(unittest.TestCase):
             return messages
         released = render(True)
         self.assertIn("节点：Node 0", released["a3-3"])
-        self.assertIn("Device : 8-15（共8P）", released["a3-3-relay"])
+        self.assertIn("Device : 8-15（共8P）", released["a3-3"])
         self.assertIn("节点：Node 1", released["a3-4"])
         self.assertIn("Device : 0-7（共8P）", released["a3-4"])
         self.assertTrue(all("以上 Device 已释放" in msg for msg in released.values()))
@@ -168,15 +168,15 @@ class BroadcastTests(unittest.TestCase):
             return subprocess.CompletedProcess(argv,1 if argv[-2]=="a3-4" else 0,"","")
         runtime={**spec,"allocation":[{"host_id":"a3-4","devices":list(range(8))}]}
         self.assertEqual(broadcast_job(runtime,pools,RUN,"begin",executor=remote),
-                         ["a3-4-relay"])
+                         ["a3-4"])
 
     def test_begin_then_end_while_device_lock_held(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)
             (root/"config").mkdir()
             (root/"config/pools.json").write_text(json.dumps({"test":{"type":"ascend-a3","nodes":[
-                {"host_id":"a3-4","ssh":"a3-4-docker-relay","device_ids":[0],
-                 "broadcast_ssh":["a3-4-relay","a3-4-docker-relay"]}]}}))
+                {"host_id":"a3-4","ssh":"a3-4-docker","device_ids":[0],
+                 "broadcast_ssh":["a3-4","a3-4-docker"]}]}}))
             case={"name":"test-ci","runner":{"kind":"ssh"},"allocation":[
                 {"host_id":"a3-4","devices":[0]}],"pool":"test",
                 "timeout_seconds":10,"enabled":True}
@@ -209,7 +209,7 @@ class BroadcastTests(unittest.TestCase):
                  patch.object(dispatch,"remote_preflight") as preflight, \
                  patch.object(dispatch,"broadcast_job",side_effect=tell), \
                  patch.object(dispatch.subprocess,"Popen",Runner), \
-                 patch.object(dispatch,"metadata",return_value={"host":"a3-4-docker-relay","path":"/mnt/share/ci_tests/fake/run.log"}), \
+                 patch.object(dispatch,"metadata",return_value={"host":"a3-4-docker","path":"/mnt/share/ci_tests/fake/run.log"}), \
                  patch.object(dispatch,"select_remote",return_value=["TRAINED"]):
                 result=dispatch.execute(case,RUN,root=root)
             self.assertEqual(result.exit_code,0)
@@ -228,7 +228,7 @@ class BroadcastTests(unittest.TestCase):
             events=[]
             def wall(*args, **kwargs):
                 events.append((args[-1], kwargs.get("released")))
-                return ["a3-4-relay"] if args[-1]=="end" else []
+                return ["a3-4"] if args[-1]=="end" else []
             class Runner:
                 def __init__(self,argv,**kwargs):kwargs["stdout"].write("CASE_RESULT approved PASS 0\n")
                 def poll(self):return None
@@ -239,7 +239,7 @@ class BroadcastTests(unittest.TestCase):
                  patch.object(dispatch,"broadcast_job",side_effect=wall), \
                  patch.object(dispatch.subprocess,"Popen",Runner), \
                  patch.object(dispatch,"metadata",
-                              return_value={"host":"a3-4-docker-relay",
+                              return_value={"host":"a3-4-docker",
                                             "path":"/mnt/share/ci_tests/fake/run.log"}), \
                  patch.object(dispatch,"select_remote",return_value=["step5 PASS"]):
                 execution=dispatch.execute(case,RUN,root=root)
@@ -259,8 +259,8 @@ class BroadcastTests(unittest.TestCase):
                                                "", "")
         with patch("ci_core.broadcast.time.sleep") as pause:
             self.assertEqual(broadcast_job(case,pools,RUN,"begin",executor=remote),[])
-        self.assertEqual(attempts,["a3-4-relay","a3-4-relay",
-                                    "a3-4-docker-relay"])
+        self.assertEqual(attempts,["a3-4","a3-4",
+                                    "a3-4-docker"])
         pause.assert_called_once_with(2)
 
     def test_release_not_verified_warns_instead_of_falsely_free(self):
@@ -306,7 +306,7 @@ class BroadcastTests(unittest.TestCase):
             events=[]
             def wall(*args, **kwargs):
                 events.append(args[-1])
-                return ["a3-4-relay"] if args[-1]=="begin" else []
+                return ["a3-4"] if args[-1]=="begin" else []
             with patch.object(dispatch,"prepare_profile",return_value=("dsv4_flash_a3_16p_example",{"ascend_env":"/path/set_env.sh"})), \
                  patch.object(dispatch,"remote_preflight"), \
                  patch.object(dispatch,"broadcast_job",side_effect=wall):
