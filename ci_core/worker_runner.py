@@ -61,7 +61,7 @@ def load_worker(worker_id: str, config_path: Path) -> dict:
 def run_probe(worker_id: str, worker: dict) -> int:
     transport = worker["transport"]
     if transport == "local":
-        command = ["bash", "-lc", PROBE]
+        command = ["bash", str(ROOT / "pipeline.sh")]
     else:
         # Host-key verification remains enabled; host must be a trusted SSH config alias.
         command = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
