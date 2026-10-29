@@ -9,6 +9,7 @@ import fcntl
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import gzip
+import os
 import shutil
 import json
 from pathlib import Path
