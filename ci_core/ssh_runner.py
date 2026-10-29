@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import fcntl
 import gzip
+import os
 import shutil
 import json
 from pathlib import Path
@@ -45,30 +47,54 @@ def ssh(host: str, command: str, *, timeout: int = 90, check: bool = True) -> su
 
 
 def model_archive(sha: str, work: Path) -> Path:
-    """Package exactly the vetted Commit SHA on dispatcher, not on shared NPUs."""
+    """Return a SHA-verified source archive, cached to avoid double Git fetches."""
     if not SHA.fullmatch(sha):
         raise ValueError("invalid commit SHA")
-    repo = work / "repo"
-    subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=25)
-    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", REPO], check=True)
-    subprocess.run(["git", "-C", str(repo), "fetch", "--depth=1", "-q", "origin", sha],
-                   check=True, timeout=180)
-    actual = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "FETCH_HEAD"], text=True).strip()
-    if actual != sha:
-        raise RuntimeError("GitHub SHA mismatch")
-    archive = work / "source.tar.gz"
-    with archive.open("wb") as output:
-        pack = subprocess.Popen(["git", "-C", str(repo), "archive", "--format=tar", sha],
-                                stdout=subprocess.PIPE)
-        assert pack.stdout is not None
-        with gzip.GzipFile(fileobj=output, mode="wb", compresslevel=1) as zipped:
-            shutil.copyfileobj(pack.stdout, zipped)
-        pack.stdout.close()
-        if pack.wait(timeout=90) != 0:
-            raise RuntimeError("git archive failed")
-    if archive.stat().st_size == 0:
-        raise RuntimeError("empty source archive")
-    return archive
+    cache_dir = ROOT / "cache" / "model-archives"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cached = cache_dir / f"{sha}.tar.gz"
+    lock_path = cache_dir / f"{sha}.lock"
+    with lock_path.open("a+") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        if cached.is_file() and cached.stat().st_size > 0:
+            return cached
+
+        repo = work / "repo"
+        subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=25)
+        subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", REPO], check=True)
+        subprocess.run(["git", "-C", str(repo), "fetch", "--depth=1", "-q", "origin", sha],
+                       check=True, timeout=180)
+        actual = subprocess.check_output(
+            ["git", "-C", str(repo), "rev-parse", "FETCH_HEAD"], text=True).strip()
+        if actual != sha:
+            raise RuntimeError("GitHub SHA mismatch")
+
+        temp_archive = cache_dir / f".{sha}.{os.getpid()}.tmp"
+        try:
+            with temp_archive.open("wb") as output:
+                pack = subprocess.Popen(
+                    ["git", "-C", str(repo), "archive", "--format=tar", sha],
+                    stdout=subprocess.PIPE)
+                assert pack.stdout is not None
+                with gzip.GzipFile(fileobj=output, mode="wb", compresslevel=1) as zipped:
+                    shutil.copyfileobj(pack.stdout, zipped)
+                pack.stdout.close()
+                if pack.wait(timeout=90) != 0:
+                    raise RuntimeError("git archive failed")
+            if temp_archive.stat().st_size == 0:
+                raise RuntimeError("empty source archive")
+            os.replace(temp_archive, cached)
+        finally:
+            temp_archive.unlink(missing_ok=True)
+
+        # Bound disk growth during iterative development while preserving the
+        # current archive. The dispatcher serializes hardware jobs globally.
+        archives = sorted(cache_dir.glob("[0-9a-f]" * 40 + ".tar.gz"),
+                          key=lambda item: item.stat().st_mtime, reverse=True)
+        for stale in archives[20:]:
+            if stale != cached:
+                stale.unlink(missing_ok=True)
+        return cached
 
 
 def allocations(case: dict, pools: dict) -> list[dict]:
