@@ -72,3 +72,14 @@ YAML、格式、拼写、架构边界、OAT 等检查通过。**完整 Lint 未�
 - yellow 的两个训练池保持禁用；A5 不声明已验收。
 
 下一阶段需要先确定容器绑定与第二节点环境，再保留/核对旧隔离记录、排空旧调度、切换新锁身份，依次执行 8P smoke、两条 DSV4 五步训练、16P smoke、并发和取消验收。通过后才能进行生产入口切换及 required checks 更新。
+
+## 最终回归与候选运行状态
+
+- 本地调度仓：109 passed、6 skipped、61 subtests。
+- blue/ycy：完整运行 115 项测试，OK，跳过 1 项。
+- yellow/hwy：完整运行 115 项测试，OK，跳过 2 项。
+- [Nightly 手动入口的 OS 选择验收](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/41044618633)：Prepare、blue/yellow case、Lite-Actions-Nightly 汇总全部成功。此运行选择 worker_probe_tests，不代表默认 DSV4 用例已执行。
+- 已禁用 4 个源文件不存在的历史 workflow 注册；有效生产入口随最终硬件验收后切换。
+- 候选 OS 验证结束后停止候选 worker，保存候选源码、配置、日志和凭据文件的受限权限；原生产部署继续保持原状态。继续验收时先更新候选代码，再按本文硬件门槛恢复，不直接解除旧隔离记录。
+
+完整 Linux pre-commit 的日志位于 hwy `/home/developer/lite-actions-v2-candidate/linux-precommit-pinned.log`；基线对照日志为同目录 `baseline-pyrefly.log`。完整 Linux 调度测试日志为两台 worker 各自候选根目录下的 `final-validation.log`。
