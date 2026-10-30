@@ -165,9 +165,46 @@ class ReclaimTests(unittest.TestCase):
                 remote_preflight(self.case, {"a5": self.pool})
         self.assertTrue(all(not call.args[1].startswith("kill") for call in transport.call_args_list))
 
-    def test_failed_host_kill_fails_closed(self):
+    def test_nonzero_host_kill_with_exited_pid_is_not_failure(self):
+        # Process exits after confirm but before host kill: ESRCH (rc=1).
+        # Re-scan confirms no selected-card occupancy, so reclaim succeeds.
+        evidence = io.StringIO()
+        commands = self._run_with_outputs(
+            [EXTERNAL, EXTERNAL, EMPTY, EMPTY], kill_rc=1, evidence=evidence
+        )
+        self.assertEqual(
+            [call for call in commands if call[1].startswith("kill -9 --")],
+            [("host-ssh:22", "kill -9 -- 2341399")],
+        )
+        self.assertIn("stage=post_kill_nonzero", evidence.getvalue())
+        self.assertIn("rc=1", evidence.getvalue())
+
+    def test_nonzero_host_kill_with_same_pid_still_allocated_fails_closed(self):
+        # A nonzero kill is a real failure if the *same host PID* remains.
         with self.assertRaisesRegex(RuntimeError, "kill failed"):
-            self._run_with_outputs([EXTERNAL, EXTERNAL], kill_rc=1)
+            self._run_with_outputs([EXTERNAL, EXTERNAL, EXTERNAL], kill_rc=1)
+
+    def test_nonzero_kill_after_respawn_retries_only_allocated_host_pids(self):
+        # A new PID on the allocated card does not make the old ESRCH fatal,
+        # but it must be removed before resources are considered idle.
+        observations = iter([EXTERNAL, EXTERNAL, RESPAWN,
+                             RESPAWN, RESPAWN, EMPTY])
+        kills = []
+        def transport(host, script, **kwargs):
+            if script.startswith("kill -9 --"):
+                kills.append((host, script))
+                return SimpleNamespace(returncode=1 if len(kills) == 1 else 0, stdout="")
+            self.assertEqual(host, self.container_ssh)
+            return SimpleNamespace(returncode=0, stdout=next(observations))
+        with (
+            patch("ci_core.config.execution_node", return_value={"ssh": self.container_ssh}),
+            patch("ci_core.transport.run", side_effect=transport),
+        ):
+            remote_preflight(self.case, {"a5": self.pool})
+        self.assertEqual(kills, [
+            ("host-ssh:22", "kill -9 -- 2341399"),
+            ("host-ssh:22", "kill -9 -- 2341400"),
+        ])
 
     def test_reclaim_succeeds_on_fourth_round_only(self):
         # Four complete scan/confirm rounds; final verification is idle.

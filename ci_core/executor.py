@@ -281,10 +281,15 @@ def remote_preflight(
                     )
                     evidence.flush()
                 if result.returncode != 0:
-                    raise RuntimeError(
-                        f"NPU reclaim kill failed on {request['host_id']} "
-                        f"host_pid={pid}"
-                    )
+                    # ESRCH race: the process can exit after confirmation but
+                    # before kill reaches the host. Re-read allocated chips
+                    # rather than trusting the nonzero exit status alone.
+                    remaining = inspect(attempt, "post_kill_nonzero")
+                    if any(host_pid == pid for _, host_pid, _ in remaining):
+                        raise RuntimeError(
+                            f"NPU reclaim kill failed on {request['host_id']} "
+                            f"host_pid={pid}"
+                        )
             if attempt == 3:
                 # Four rounds may be needed if the process is respawned.
                 # Successful final verification must exit the loop normally.
