@@ -23,7 +23,11 @@
         ],
         "priority": 1,
         "environments": {},
-        "host_ssh": "113.46.17.205:153"
+        "host_ssh": "113.46.17.205:153",
+        "capabilities": [
+          "train",
+          "npu_smoke"
+        ]
       },
       {
         "host_id": "113.46.17.205:154",
@@ -36,17 +40,20 @@
         "network_interface": "enp23s0f3",
         "allocation_groups": [
           {
-            "devices": [0, 1, 2, 3, 4, 5, 6, 7],
+            "devices": [8, 9, 10, 11, 12, 13, 14, 15],
             "verified": true
           },
           {
-            "devices": [8, 9, 10, 11, 12, 13, 14, 15],
+            "devices": [0, 1, 2, 3, 4, 5, 6, 7],
             "verified": true
           }
         ],
         "priority": 0,
         "environments": {},
-        "host_ssh": "113.46.17.205:154"
+        "host_ssh": "113.46.17.205:154",
+        "capabilities": [
+          "npu_smoke"
+        ]
       }
     ],
     "notes": "Chip IDs must be confirmed with npu-smi; 2 dies per physical card in this environment.",

@@ -430,6 +430,10 @@ def run(
                     errors.append((node["host_id"], type(exc).__name__))
             if errors:
                 raise RuntimeError(f"staging failed: {errors}")
+    # Preserve a trusted log locator if cancellation interrupts the rank wait.
+    # A normal multi-node failure replaces this with the failing node below.
+    print(f"RESULT_HOST: {nodes[0]['ssh']}", flush=True)
+    print(f"RESULT_LOG: {dirs[nodes[0]['host_id']]}/run.log", flush=True)
     results = {}
     first_error: tuple[str, int] | None = None
 

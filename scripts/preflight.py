@@ -12,11 +12,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ci_core.config import execution_node, format_pools, load
 from ci_core.transport import run
 
-IMAGE = "cann_master_torchtitan_master_xyj"
+ENVIRONMENT = "cann_master_torchtitan_master_xyj"
 INSPECT = """docker inspect --format '{"Id":{{json .Id}},"Image":{{json .Image}},"ImageRef":{{json .Config.Image}},"State":{"Running":{{json .State.Running}}}}' """
 
 
-def probe_node(node, image, *, container_ref=None):
+def probe_node(node, environment, *, container_ref=None):
     host = node["ssh"]
     identity = run(
         host,
@@ -25,39 +25,17 @@ def probe_node(node, image, *, container_ref=None):
     ).stdout.strip()
     if node.get("machine_fingerprint") and node["machine_fingerprint"] != identity:
         raise ValueError("PHYSICAL_NODE_IDENTITY_CHANGED")
-    configured = node.get("environments", {}).get(image)
-    selected = container_ref or (configured or {}).get("container_id")
-    image_id = None
-    if selected:
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", selected):
-            raise ValueError("invalid configured container")
-        ids = [selected]
-    else:
-        image_id = run(
-            host,
-            "docker image inspect --format '{{.Id}}' " + shlex.quote(image),
-            timeout=45,
-        ).stdout.strip()
-        ids = run(host, "docker ps -q --no-trunc", timeout=45).stdout.split()
-    matches = []
-    for ident in ids:
-        data = json.loads(run(host, INSPECT + shlex.quote(ident), timeout=30).stdout)
-        if (image_id is None or data.get("Image") == image_id) and data.get(
-            "State", {}
-        ).get("Running"):
-            matches.append(data)
-    if len(matches) != 1:
-        raise ValueError(
-            f"Expected one explicitly selected running container for {image}; found {len(matches)}"
-        )
+    configured = node.get("environments", {}).get(environment)
+    selected = container_ref or (configured or {}).get("container_id") or environment
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", selected):
+        raise ValueError("select an existing container name or ID")
+    data = json.loads(run(host, INSPECT + shlex.quote(selected), timeout=30).stdout)
+    if not data.get("State", {}).get("Running"):
+        raise ValueError("selected container is not running")
     binding = dict(
-        container_id=matches[0]["Id"],
-        image_id=matches[0]["Image"],
-        image_ref=(
-            matches[0]["ImageRef"]
-            if container_ref
-            else (configured or {}).get("image_ref", image)
-        ),
+        container_id=data["Id"],
+        image_id=data["Image"],
+        image_ref=data["ImageRef"],
     )
     if (
         configured
@@ -65,8 +43,11 @@ def probe_node(node, image, *, container_ref=None):
         and any(binding.get(key) != value for key, value in configured.items())
     ):
         raise ValueError("configured image/container identity changed")
-    checked = {**node, "environments": {**node.get("environments", {}), image: binding}}
-    execution_node(checked, image)
+    checked = {
+        **node,
+        "environments": {**node.get("environments", {}), environment: binding},
+    }
+    execution_node(checked, environment)
     return dict(machine_fingerprint=identity, binding=binding)
 
 
@@ -74,9 +55,9 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--worker-id", required=True)
     p.add_argument(
-        "--image",
-        default=IMAGE,
-        help="Workflow docker environment key; explicit bindings may use different per-node image references",
+        "--environment",
+        default=ENVIRONMENT,
+        help="Workflow docker environment key; defaults to the same existing container name",
     )
     p.add_argument(
         "--node", help="Canonical node ID; omit to verify all registered owned nodes"
@@ -117,7 +98,7 @@ def main():
             found = True
             try:
                 result = probe_node(
-                    node, a.image, container_ref=selections.get(node["host_id"])
+                    node, a.environment, container_ref=selections.get(node["host_id"])
                 )
                 print(
                     json.dumps(
@@ -126,7 +107,9 @@ def main():
                 )
                 if a.write_bindings:
                     node["machine_fingerprint"] = result["machine_fingerprint"]
-                    node.setdefault("environments", {})[a.image] = result["binding"]
+                    node.setdefault("environments", {})[a.environment] = result[
+                        "binding"
+                    ]
                     changed = True
             except Exception as exc:
                 failed = True

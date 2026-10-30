@@ -140,8 +140,8 @@ def remote_preflight(case: dict, pools: dict, *, ascend_env: str | None = None) 
     for request in case["allocation"]:
         node = by_host[request["host_id"]]
         # Preflight needs the configured CANN runtime, which is available
-        # through the Docker execution alias. PID-specific reclamation uses
-        # broadcast_ssh separately because it requires the host PID namespace.
+        # through the Docker execution alias. Host notifications use
+        # broadcast_ssh separately. External tasks are never reclaimed.
         host = node.get("ssh")
         if not isinstance(host, str) or not host:
             raise ValueError("NPU preflight host SSH is not configured")

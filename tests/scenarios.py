@@ -41,7 +41,11 @@ def write_workspace(root):
                 dict(devices=[2, 3], verified=True),
             ],
             environments={
-                "training": dict(container_id="a" * 64, image_id="sha256:" + "b" * 64)
+                "training": dict(
+                    container_id="a" * 64,
+                    image_id="sha256:" + "b" * 64,
+                    image_ref="fixture:tag",
+                )
             },
         )
         for i in [10, 11]

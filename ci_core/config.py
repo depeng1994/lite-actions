@@ -67,12 +67,14 @@ def load(root, worker):
     return workers, pools
 
 
-def execution_node(node, image):
-    env = node.get("environments", {}).get(image)
-    if not env or not env.get("container_id") or not env.get("image_id"):
+def execution_node(node, environment):
+    env = node.get("environments", {}).get(environment)
+    if not env or not all(
+        env.get(k) for k in ("container_id", "image_id", "image_ref")
+    ):
         raise ValueError("CONTAINER_BINDING_MISSING")
     container = env["container_id"]
-    if not re.fullmatch(r"[a-f0-9]{12,64}", container):
+    if not re.fullmatch(r"[a-f0-9]{64}", container):
         raise ValueError("container must be pinned by ID")
     script = (
         'docker inspect --format \'{"Image":{{json .Image}},"State":{"Running":{{json .State.Running}}}}\' '
@@ -85,8 +87,7 @@ def execution_node(node, image):
 
     actual = run(
         node["ssh"],
-        "docker image inspect --format '{{.Id}}' "
-        + shlex.quote(env.get("image_ref", image)),
+        "docker image inspect --format '{{.Id}}' " + shlex.quote(env["image_ref"]),
         timeout=30,
     ).stdout.strip()
     if actual != env["image_id"]:

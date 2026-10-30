@@ -11,7 +11,7 @@ their own diagnostics. A training case without LOSS evidence is not reported PAS
 
 ## Deployment
 
-| Worker | Login | Pools | First-release acceptance |
+| Worker | Login | Pools | Validation scope |
 | --- | --- | --- | --- |
 | blue | `ssh ycy` | `a3_shared_blue` | OS, 8P/16P smoke, DSV4 8P Muon/AdamW |
 | yellow | `ssh hwy` | `a3_shared_yellow`, `a5_shared_yellow` | OS probe; training pools disabled |
@@ -91,8 +91,8 @@ resource leases are shared across checkouts of the same deployment user.
 
 ## Existing-container onboarding
 
-`docker` is an image reference mapped by trusted per-node `environments` entries to
-an existing full container ID and image ID. The executor does not create containers,
+`docker` names an existing container or a shared logical environment. Trusted
+per-node `environments` entries pin its full container ID, image ID and image reference. The executor does not create containers,
 pull images, or choose among ambiguous candidates. It checks the running container
 and current image tag before NPU admission. NPU execution requires root-level PID
 visibility in the execution namespace so cleanup can verify every marked descendant. Different jobs use isolated directories.
@@ -116,8 +116,7 @@ not backfill past a blocked queue head. Four resource-execution slots and one lo
 probe slot are independent. Distributed requests never retain partial leases.
 
 A busy external device group is temporarily avoided so another verified group can
-be tried. Unknown occupancy is never killed. Scoped external reclaim remains subject
-to explicit per-pool approval and PID identity verification.
+be tried. Unknown occupancy is never killed. This worker does not reclaim external tasks.
 
 Cancellation terminates only the case's marked ranks. Release requires NPU checks;
 unknown remote state quarantines the allocation. State is atomically persisted and
@@ -169,9 +168,9 @@ python3 scripts/import_quarantine.py --worker-id blue --legacy-root /root/work/l
 process is stopped. Mapping uses the trusted node IP inventory, rejects unknown
 allocations, and preserves unscoped quarantine across the entire owned pool. Legacy
 guards retain their original job keys for manual evidence-based recovery; the normal
-v3 reconciliation command applies to v3 tasks with their persisted runtime records.
+reconciliation command applies to current tasks with their persisted runtime records.
 
-For an explicit selection when multiple containers share an image, use a trusted
+To map an environment key to a differently named container, use a trusted
 JSON file such as `{"113.46.17.205:153":"<existing-container-name-or-id>"}`:
 
 ```bash
@@ -180,7 +179,8 @@ python3 scripts/preflight.py --worker-id blue --node 113.46.17.205:153 \
 ```
 
 This is read-only with respect to execution hosts and does not enable a pool or
-start training. An existing pinned binding is verified rather than rediscovered.
+start training. The default selects the environment's exact container name; an
+existing binding is always verified by its full container ID.
 `docker` may also name a shared logical environment. With explicit container
 selection, each node pins its container ID, image ID and actual `image_ref` under
 that key. Runtime checks both the running container and the node's image reference;
