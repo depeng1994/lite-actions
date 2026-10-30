@@ -1,5 +1,6 @@
 """Durable run state shared by the poller and the dispatcher reporter."""
 
+import fcntl
 import json
 import os
 import threading
@@ -10,7 +11,11 @@ _MUTEX = threading.RLock()
 
 class JobState:
     def __init__(self, root: Path):
-        self.path = root / "state" / "unified-jobs.json"
+        configured = os.environ.get("LITE_ACTIONS_STATE_DIR")
+        directory = Path(configured).expanduser() if configured else root / "state"
+        if configured and not directory.is_absolute():
+            raise ValueError("LITE_ACTIONS_STATE_DIR must be absolute")
+        self.path = directory / "unified-jobs.json"
 
     def read(self) -> dict:
         with _MUTEX:
@@ -18,19 +23,21 @@ class JobState:
 
     def update(self, key: str, **fields) -> None:
         with _MUTEX:
-            current = self.read()
-            item = current.get(key, {})
-            item.update(fields)
-            current[key] = item
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_suffix(".tmp")
-            with tmp.open("w") as f:
-                f.write(json.dumps(current, ensure_ascii=False, indent=2) + "\n")
-                f.flush()
-                os.fsync(f.fileno())
-            tmp.replace(self.path)
-            fd = os.open(self.path.parent, os.O_RDONLY)
-            try:
-                os.fsync(fd)
-            finally:
-                os.close(fd)
+            with self.path.with_suffix(".lock").open("a+b") as lock:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+                current = self.read()
+                item = current.get(key, {})
+                item.update(fields)
+                current[key] = item
+                tmp = self.path.with_suffix(".tmp")
+                with tmp.open("w") as f:
+                    f.write(json.dumps(current, ensure_ascii=False, indent=2) + "\n")
+                    f.flush()
+                    os.fsync(f.fileno())
+                tmp.replace(self.path)
+                fd = os.open(self.path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)

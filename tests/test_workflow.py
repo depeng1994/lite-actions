@@ -1,8 +1,11 @@
 """Artifact-to-result lifecycle scenarios; GitHub and model execution are external fixtures."""
 
 import json
+import subprocess
+import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -24,6 +27,7 @@ class WorkflowTests(unittest.TestCase):
             "os.environ",
             LITE_ACTIONS_ALLOWED_ACTORS="maintainer",
             LITE_ACTIONS_RESOURCE_LOCK_ROOT=str(self.root / "leases"),
+            LITE_ACTIONS_STATE_DIR="",
         )
         self.env.start()
 
@@ -220,29 +224,105 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(service.results()[0]["cleanup_verified"])
 
     def test_report_outage_recovers_after_restart_without_reexecution(self):
+        with patch.dict(
+            "os.environ", LITE_ACTIONS_STATE_DIR=str(self.root / "durable-state")
+        ):
+            service = Service([definition("training")], self.root)
+            router = self.router(service)
+
+            def execute(case, run, **kwargs):
+                service.offline = True
+                return completed_execution(router.root, case, run)
+
+            with (
+                service.connected(),
+                patch("ci_core.router.execute", side_effect=execute) as execution,
+            ):
+                router.tick()
+                self.drain(router)
+                self.assertEqual(
+                    next(iter(router.state.read().values()))["phase"], "PENDING_REPORT"
+                )
+                service.offline = False
+                service.runs[20]["status"] = "completed"
+                release = self.root / "replacement-checkout"
+                write_workspace(release)
+                recovered = self.router(service, existing=release)
+                recovered.tick()
+                recovered.tick()
+            self.assertEqual(execution.call_count, 1)
+            self.assertEqual(len(service.results()), 1)
+
+    def test_admin_transaction_preserves_task_and_quarantine_during_workflow(self):
         service = Service([definition("training")], self.root)
         router = self.router(service)
+        ready, release = self.root / "admin-ready", self.root / "admin-release"
+        script = """import sys,time
+from pathlib import Path
+from ci_core.job_state import JobState
+class AdminState(JobState):
+    def read(self):
+        prior=super().read()
+        Path(sys.argv[2]).touch()
+        deadline=time.monotonic()+10
+        while not Path(sys.argv[3]).exists():
+            if time.monotonic()>deadline: raise TimeoutError('admin transaction')
+            time.sleep(.01)
+        return prior
+AdminState(Path(sys.argv[1])).update('operator_guard',phase='REPORTED',
+    quarantined=True,allocation=[{'host_id':'192.0.2.10:22','devices':[0,1]}])
+"""
+        admin = subprocess.Popen(
+            [sys.executable, "-c", script, str(router.root), str(ready), str(release)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        executed = threading.Event()
+        errors = []
 
         def execute(case, run, **kwargs):
-            service.offline = True
+            executed.set()
             return completed_execution(router.root, case, run)
 
-        with (
-            service.connected(),
-            patch("ci_core.router.execute", side_effect=execute) as execution,
-        ):
-            router.tick()
-            self.drain(router)
-            self.assertEqual(
-                next(iter(router.state.read().values()))["phase"], "PENDING_REPORT"
-            )
-            service.offline = False
-            service.runs[20]["status"] = "completed"
-            recovered = self.router(service, existing=router.root)
-            recovered.tick()
-            recovered.tick()
-        self.assertEqual(execution.call_count, 1)
-        self.assertEqual(len(service.results()), 1)
+        def tick():
+            try:
+                router.tick()
+            except Exception as exc:
+                errors.append(exc)
+
+        poller = threading.Thread(target=tick)
+        try:
+            deadline = time.monotonic() + 5
+            while not ready.exists():
+                if time.monotonic() > deadline:
+                    self.fail("admin did not reach its state transaction")
+                time.sleep(0.01)
+            with (
+                service.connected(),
+                patch("ci_core.router.execute", side_effect=execute),
+            ):
+                poller.start()
+                executed.wait(0.5)
+                release.touch()
+                poller.join(10)
+                self.assertFalse(poller.is_alive())
+                self.assertEqual(errors, [])
+                self.drain(router)
+            _, stderr = admin.communicate(timeout=5)
+            self.assertEqual(admin.returncode, 0, stderr)
+            records = router.state.read()
+            key = task_key(service.runs[20], service.plans[20]["cases"][0])
+            self.assertEqual(records[key]["phase"], "REPORTED")
+            self.assertTrue(records["operator_guard"]["quarantined"])
+            self.assertEqual([r["status"] for r in service.results()], ["PASS"])
+        finally:
+            release.touch()
+            if poller.ident:
+                poller.join(10)
+            if admin.poll() is None:
+                admin.kill()
+            admin.communicate()
 
     def test_crash_recovery_quarantines_allocation_and_prevents_relaunch(self):
         service = Service([definition("training")], self.root)
