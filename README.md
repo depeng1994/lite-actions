@@ -148,3 +148,16 @@ CANN, asset paths, network, device numbering and real smoke/training/cleanup che
 have been accepted. A5 registration alone does not certify 64P capability.
 
 See [implementation validation](docs/V2_VALIDATION.md) for actual evidence and remaining gates.
+
+Before the first hardware switch, preview legacy quarantine mapping without changing
+state or contacting devices:
+
+```bash
+python3 scripts/migrate_v2_state.py --worker-id blue --legacy-root /root/work/lite-actions
+```
+
+`--apply` is permitted only after every legacy task is terminal and the legacy
+process is stopped. Mapping uses the trusted node IP inventory, rejects unknown
+allocations, and preserves unscoped quarantine across the entire owned pool. Legacy
+guards retain their original job keys for manual evidence-based recovery; the normal
+v3 reconciliation command applies to v3 tasks with their persisted runtime records.
