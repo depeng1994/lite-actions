@@ -211,10 +211,6 @@ def remote_preflight(
             command = (
                 "source " + shlex.quote(ascend_env) + " >/dev/null 2>&1 && npu-smi info"
             )
-        if case.get("docker"):
-            from ci_core.config import execution_node
-            probe_host = execution_node(node, case["docker"])["ssh"]
-
         # The host PID has no meaning inside the bound container's PID
         # namespace. Never pass /container to the signal transport.
         kill_host = None
@@ -226,6 +222,10 @@ def remote_preflight(
                 or "/" in kill_host
             ):
                 raise ValueError("NPU reclaim requires a host-only SSH alias")
+
+        if case.get("docker"):
+            from ci_core.config import execution_node
+            probe_host = execution_node(node, case["docker"])["ssh"]
 
         def inspect(round_number: int, stage: str):
             proc = transport_run(probe_host, command, timeout=40, check=False)
