@@ -54,7 +54,11 @@ def probe_node(node, image, *, container_ref=None):
     binding = dict(
         container_id=matches[0]["Id"],
         image_id=matches[0]["Image"],
-        image_ref=matches[0]["ImageRef"],
+        image_ref=(
+            matches[0]["ImageRef"]
+            if container_ref
+            else (configured or {}).get("image_ref", image)
+        ),
     )
     if (
         configured

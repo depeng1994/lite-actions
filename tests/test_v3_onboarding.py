@@ -103,6 +103,21 @@ class OnboardingTests(unittest.TestCase):
         self.assertEqual(resolved["ssh"], "node/" + FIRST)
         self.assertTrue(remote.call_args_list[1].args[1].endswith("node_image:tag"))
 
+    def test_legacy_binding_retains_original_image_tag_drift_check(self):
+        node = dict(
+            ssh="node",
+            environments={IMAGE: dict(container_id=FIRST, image_id="sha256:expected")},
+        )
+        with (
+            patch.object(onboarding, "run", side_effect=self.remote),
+            patch.object(onboarding, "execution_node") as verify,
+        ):
+            result = onboarding.probe_node(node, IMAGE)
+        self.assertEqual(result["binding"]["image_ref"], IMAGE)
+        self.assertEqual(
+            verify.call_args.args[0]["environments"][IMAGE]["image_ref"], IMAGE
+        )
+
     def test_retagged_node_image_is_rejected(self):
         node = dict(
             ssh="node",
