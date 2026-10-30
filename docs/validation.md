@@ -15,6 +15,11 @@
 | 单节点 8P | [41058552176](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/41058552176)，all-reduce sum=28，world_size=8，PASS，释放已确认 |
 | 双节点 16P | [41059095421](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/41059095421)，all-reduce sum=120，world_size=16，PASS，释放已确认 |
 | 外部占卡及预启动取消 | [8P](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/41056010151)、[16P](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/41056178876)，等待后取消，cleanup_verified=true，无新增隔离；不证明运行中 ranks 的取消 |
+| 清理后完整 Smoke | [41062066103](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/41062066103)，系统探测、8P、16P 的 worker 结果均 PASS，释放已确认 |
+| 调度仓 CI | [41062412495](https://github.com/depeng1994/lite-actions/actions/runs/41062412495)，Ruff、Device ID 单行检查、生命周期测试通过 |
+| DSV4 首轮 | [41062062884](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/41062062884)，Muon/AdamW 均 FAIL，释放已确认。容器继承的 Python 路径指向旧 TorchTitan override，缺少 `torchtitan.components.checkpointer`；不是训练成功 |
+
+首轮 DSV4 还暴露了失败摘录被 torchrun 收尾信息覆盖的问题，已改为优先保留最早的去重异常及上下文。成功训练必须提供 LOSS，不能用纯通信 smoke 的 PASS 代替。
 
 ## 部署条件
 

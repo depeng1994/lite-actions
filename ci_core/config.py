@@ -17,6 +17,15 @@ def load(root, worker):
         if pool.get("owner") not in workers:
             raise ValueError("unknown pool owner")
         for node in pool["nodes"]:
+            pythonpath = node.get("pythonpath")
+            if pythonpath is not None and (
+                not isinstance(pythonpath, str)
+                or not pythonpath.startswith("/")
+                or any(c in pythonpath for c in ":\r\n\0")
+            ):
+                raise ValueError(
+                    "node pythonpath must be one absolute dependency directory"
+                )
             capabilities = node.get("capabilities", ["train", "npu_smoke"])
             if (
                 not isinstance(capabilities, list)

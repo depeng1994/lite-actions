@@ -36,6 +36,11 @@ def q(value: object) -> str:
     return shlex.quote(str(value))
 
 
+def pythonpath_export(node: dict) -> str:
+    dependency = q(node["pythonpath"]) + ":" if node.get("pythonpath") else ""
+    return f'export PYTHONPATH="$PWD":{dependency}"${{PYTHONPATH:-}}" && '
+
+
 def ssh(
     host: str, command: str, *, timeout: int = 90, check: bool = True
 ) -> subprocess.CompletedProcess:
@@ -224,8 +229,8 @@ def remote_command(
     inner = (
         f"cd {q(dest + '/repo')} && {setup}"
         f"export {exports} && "
-        f'export PYTHONPATH="$PWD:${{PYTHONPATH:-}}" && '
-        f"exec timeout --signal=TERM --kill-after=30s {int(timeout)}s {entry}"
+        + pythonpath_export(node)
+        + f"exec timeout --signal=TERM --kill-after=30s {int(timeout)}s {entry}"
     )
     # The previous `setsid ... & pid=$!` occasionally recorded a wrapper PID
     # instead of the process-group leader. Python's start_new_session creates
@@ -360,7 +365,7 @@ def verify(
         f"cd {q(dest + '/repo')} && "
         + f"source {q(runner['env_vars']['ASCEND_SET_ENV_PATH'])} >/dev/null 2>&1 && "
         + f"export {exported} && "
-        + 'export PYTHONPATH="$PWD:${PYTHONPATH:-}" && '
+        + pythonpath_export(node)
         + f"python3 -u -m tests.integration_tests.tools.lite_actions.entrypoint verify --test-id {q(test_case)} --output-dir {q(dest + '/output')} > {q(dest + '/verify.log')} 2>&1; "
         + f"rc=$?; if test $rc -ne 0; then cat {q(dest + '/verify.log')} >> {q(dest + '/run.log')}; fi; exit $rc"
     )

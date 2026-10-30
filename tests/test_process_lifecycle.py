@@ -33,6 +33,7 @@ class ProcessLifecycleTests(unittest.TestCase):
             ]:
                 (folder / "__init__.py").write_text("")
             (package / "entrypoint.py").write_text(
+                "import dependency_marker\n"
                 "import subprocess,time,pathlib\n"
                 'p=subprocess.Popen(["sleep","60"],start_new_session=True)\n'
                 'pathlib.Path("child.ready").write_text(str(p.pid))\n'
@@ -40,7 +41,15 @@ class ProcessLifecycleTests(unittest.TestCase):
             )
             setup = destination / "set_env.sh"
             setup.write_text("true\n")
-            node = dict(ssh="fixture", node_ip="192.0.2.10", devices=[0, 1])
+            dependency = destination / "private-dependency"
+            dependency.mkdir()
+            (dependency / "dependency_marker.py").write_text("")
+            node = dict(
+                ssh="fixture",
+                node_ip="192.0.2.10",
+                devices=[0, 1],
+                pythonpath=str(dependency),
+            )
             profile = dict(env_vars={"ASCEND_SET_ENV_PATH": str(setup)})
             marker = "isolated-" + destination.name
             command = remote_command(

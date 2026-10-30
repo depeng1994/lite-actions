@@ -14,6 +14,7 @@ LOSS = re.compile(r"\bloss\s*[:=]", re.I)
 ERROR = re.compile(
     r"Traceback|Error:|Exception:|RuntimeError|AssertionError|FAILED|fatal", re.I
 )
+EXCEPTION = re.compile(r"\b[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception):")
 RANK0 = re.compile(r"rank0\b|rank[_= ]0\b|global_rank_0", re.I)
 MAX_REMOTE_BYTES = 131072
 
@@ -71,12 +72,19 @@ def select_lines(data: str, exit_code: int, *, require_loss: bool = False) -> li
         ]
     matches = [i for i, line in enumerate(lines) if ERROR.search(line)]
     if matches:
+        causes = []
+        seen = set()
+        for i, line in enumerate(lines):
+            exception = EXCEPTION.search(line)
+            if exception and line[exception.start() :] not in seen:
+                seen.add(line[exception.start() :])
+                causes.append(i)
         selected = []
-        for i in matches[-3:]:
-            selected.extend(lines[max(0, i - 1) : min(len(lines), i + 4)])
+        for i in causes[:2] or matches[-2:]:
+            selected.extend(lines[max(0, i - 2) : min(len(lines), i + 3)])
         selected += lines[-8:]
         selected = list(dict.fromkeys(selected))
-        return [excerpt(line, ERROR) for line in selected[-20:]]
+        return [excerpt(line, ERROR) for line in selected[:20]]
     return [clean(line) for line in lines[-20:]] or [
         f"Process exited with {exit_code}, no diagnostics"
     ]

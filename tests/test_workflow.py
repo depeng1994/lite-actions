@@ -325,7 +325,9 @@ class WorkflowTests(unittest.TestCase):
         service = Service([definition("training")], self.root)
         router = self.router(service)
         diagnostic = (
-            "[rank0] RuntimeError: fixture kernel failed\n" + "shutdown noise\n" * 50
+            "[rank0] ModuleNotFoundError: missing_training_dependency\n"
+            + "shutdown noise\n" * 50
+            + "RuntimeError: 1 integration test(s) failed:\n"
         )
         with (
             service.connected(),
@@ -342,7 +344,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(result["status"], "FAIL")
         self.assertTrue(
             any(
-                "RuntimeError: fixture kernel failed" in line
+                "ModuleNotFoundError: missing_training_dependency" in line
                 for line in result["last_20_lines"]
             )
         )

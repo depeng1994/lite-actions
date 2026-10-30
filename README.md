@@ -186,6 +186,10 @@ selection, each node pins its container ID, image ID and actual `image_ref` unde
 that key. Runtime checks both the running container and the node's image reference;
 changing either identity requires an explicit new binding. Identical environment
 names do not certify identical dependencies or multi-node compatibility.
+An optional node `pythonpath` can point to an operator-provisioned, pinned dependency
+directory. It precedes inherited container overrides while preserving the staged
+model source first. This allows CI to use the model repository's required upstream
+checkout without replacing packages used by other tasks in the shared container.
 
 ## Development checks
 
