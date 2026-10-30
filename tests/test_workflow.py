@@ -181,8 +181,7 @@ class WorkflowTests(unittest.TestCase):
         service = Service([definition("training")], self.root)
         service.runs[20]["status"] = "queued"
         router = self.router(service)
-        original = service.ci_request
-        with patch.object(service, "ci_request", side_effect=[None, original(service.runs[20])]):
+        with patch.object(service, "ci_request", side_effect=[None, service.plans[20]]):
             router.receive(service.running_workflows())
             self.assertFalse(router.state.read())
             router.receive(service.running_workflows())
