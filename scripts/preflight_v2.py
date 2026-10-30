@@ -13,8 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ci_core.v2_config import execution_node, load
 from ci_core.transport import run
 
-IMAGE = "dsv4.1_train_torchtitan_a3:cann_master_newest_0916"
-INSPECT = """docker inspect --format '{"Id":{{json .Id}},"Image":{{json .Image}},"State":{"Running":{{json .State.Running}}}}' """
+IMAGE = "cann_master_torchtitan_master_xyj"
+INSPECT = """docker inspect --format '{"Id":{{json .Id}},"Image":{{json .Image}},"ImageRef":{{json .Config.Image}},"State":{"Running":{{json .State.Running}}}}' """
 
 
 def probe_node(node, image, *, container_ref=None):
@@ -26,30 +26,41 @@ def probe_node(node, image, *, container_ref=None):
     ).stdout.strip()
     if node.get("machine_fingerprint") and node["machine_fingerprint"] != identity:
         raise ValueError("PHYSICAL_NODE_IDENTITY_CHANGED")
-    image_id = run(
-        host,
-        "docker image inspect --format '{{.Id}}' " + shlex.quote(image),
-        timeout=45,
-    ).stdout.strip()
     configured = node.get("environments", {}).get(image)
     selected = container_ref or (configured or {}).get("container_id")
+    image_id = None
     if selected:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", selected):
             raise ValueError("invalid configured container")
         ids = [selected]
     else:
+        image_id = run(
+            host,
+            "docker image inspect --format '{{.Id}}' " + shlex.quote(image),
+            timeout=45,
+        ).stdout.strip()
         ids = run(host, "docker ps -q --no-trunc", timeout=45).stdout.split()
     matches = []
     for ident in ids:
         data = json.loads(run(host, INSPECT + shlex.quote(ident), timeout=30).stdout)
-        if data.get("Image") == image_id and data.get("State", {}).get("Running"):
+        if (image_id is None or data.get("Image") == image_id) and data.get(
+            "State", {}
+        ).get("Running"):
             matches.append(data)
     if len(matches) != 1:
         raise ValueError(
             f"Expected one explicitly selected running container for {image}; found {len(matches)}"
         )
-    binding = dict(container_id=matches[0]["Id"], image_id=image_id)
-    if configured and not container_ref and configured != binding:
+    binding = dict(
+        container_id=matches[0]["Id"],
+        image_id=matches[0]["Image"],
+        image_ref=matches[0]["ImageRef"],
+    )
+    if (
+        configured
+        and not container_ref
+        and any(binding.get(key) != value for key, value in configured.items())
+    ):
         raise ValueError("configured image/container identity changed")
     checked = {**node, "environments": {**node.get("environments", {}), image: binding}}
     execution_node(checked, image)
@@ -59,7 +70,11 @@ def probe_node(node, image, *, container_ref=None):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--worker-id", required=True)
-    p.add_argument("--image", default=IMAGE)
+    p.add_argument(
+        "--image",
+        default=IMAGE,
+        help="Workflow docker environment key; explicit bindings may use different per-node image references",
+    )
     p.add_argument(
         "--node", help="Canonical node ID; omit to verify all registered owned nodes"
     )

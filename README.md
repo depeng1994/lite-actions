@@ -46,7 +46,7 @@ The model repository exposes only `nightly_fulltests.yml` and
 ```yaml
 default_worker: blue
 default_target_pool: a3_shared_blue
-default_docker: dsv4.1_train_torchtitan_a3:cann_master_newest_0916
+default_docker: cann_master_torchtitan_master_xyj
 default_cases: '[{"suite":"a3_8p_tests"}]'
 ```
 
@@ -172,3 +172,8 @@ python3 scripts/preflight_v2.py --worker-id blue --node 113.46.17.205:153 \
 
 This is read-only with respect to execution hosts and does not enable a pool or
 start training. An existing pinned binding is verified rather than rediscovered.
+`docker` may also name a shared logical environment. With explicit container
+selection, each node pins its container ID, image ID and actual `image_ref` under
+that key. Runtime checks both the running container and the node's image reference;
+changing either identity requires an explicit new binding. Identical environment
+names do not certify identical dependencies or multi-node compatibility.

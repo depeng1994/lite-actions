@@ -67,11 +67,11 @@ YAML、格式、拼写、架构边界、OAT 等检查通过。**完整 Lint 未�
 - 当前 A3 唯一归属 blue；节点标识统一为 `113.46.17.205:153`、`113.46.17.205:154`。
 - ycy 已登记新 SSH 别名，复用既有已验证主机密钥。
 - 候选部署位于 ycy `/root/work/lite-actions-v2-candidate`、hwy `/home/developer/lite-actions-v2-candidate`；候选运行配置关闭全部训练池，未替换原生产部署。
-- `:153` 的指定镜像有两个运行容器，二者均具备当前 CANN、模型、checkpoint 与工作目录挂载：`torchtitan_debug_w00800020`、`zhaowei_torchtitan_dsv4_1`。二者都不是旧 CI 执行 PID namespace，不能自动推定唯一绑定。
-- `:154` 不存在指定镜像 `dsv4.1_train_torchtitan_a3:cann_master_newest_0916`。
+- 用户明确选择两节点已有容器 `cann_master_torchtitan_master_xyj`。Workflow 默认 `docker` 使用这个统一环境名，部署配置逐节点绑定容器 ID、镜像 ID 和实际 `image_ref`，不创建或重命名容器。
+- 两节点 TorchTitan 均为 0.3.0；`:153` 的 torch_npu 为 2.14.0.dev20261019，NumPy 为 1.26.4，`:154` 分别为 2.14.0.dev20260920、2.5.3。版本差异需要真实 16P 验证，不将同名环境视为配套相同。
 - yellow 的两个训练池保持禁用；A5 不声明已验收。
 
-下一阶段需要先确定容器绑定与第二节点环境，再保留/核对旧隔离记录、排空旧调度、切换新锁身份，依次执行 8P smoke、两条 DSV4 五步训练、16P smoke、并发和取消验收。通过后才能进行生产入口切换及 required checks 更新。
+下一阶段保留/核对旧隔离记录、排空旧调度、切换新锁身份，依次执行 8P smoke、两条 DSV4 五步训练、16P smoke、并发和取消验收。通过后才能进行生产入口切换及 required checks 更新。
 
 ## 最终回归与候选运行状态
 

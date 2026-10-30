@@ -56,7 +56,8 @@ def execution_node(node, image):
 
     actual = run(
         node["ssh"],
-        "docker image inspect --format '{{.Id}}' " + shlex.quote(image),
+        "docker image inspect --format '{{.Id}}' "
+        + shlex.quote(env.get("image_ref", image)),
         timeout=30,
     ).stdout.strip()
     if actual != env["image_id"]:
