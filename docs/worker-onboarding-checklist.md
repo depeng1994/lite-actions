@@ -75,6 +75,6 @@ Use this before adding a new A5 execution environment. Distinguish the Lite Acti
 - The resource pool referenced SSH aliases that did not exist in the Dispatcher account.
 - Host relay and Docker execution alias have different CANN mounts and PID namespaces.
 - npu-smi without sourcing Toolkit failed with missing libc_sec.so.
-- On A3-4, devices 0-7 were occupied by existing VLLM workers while devices 8-15 were free; the scheduler needed to probe each verified group rather than treating the entire host as busy.
+- On 113.46.17.205:154, devices 0-7 were occupied by existing VLLM workers while devices 8-15 were free; the scheduler needed to probe each verified group rather than treating the entire host as busy.
 - One run printed DISPATCH_SMOKE_PASS but was reported INFRA_ERROR because cleanup/release verification failed. The GitHub Actions run—not only the inner smoke log—must finish successfully.
 - Keep the A5 64P pool disabled until the actual 8-node topology, cross-node HCCL, cleanup, and capacity policy are verified.

@@ -47,15 +47,15 @@
    - 为避免 Host 端口及 NPU 根节点默认 `16666` 冲突，分配独立的通信端口 Slot（Slot 0 / Slot 1）。
    - 完整绑定并向 Rank 透传：`MASTER_PORT`（16000/16001）、`HCCL_IF_BASE_PORT`（20000/20064）、`HCCL_HOST_SOCKET_PORT_RANGE`（24000-24063 / 24128-24191）、`HCCL_NPU_SOCKET_PORT_RANGE`（28000-28063 / 28128-28191）。
 2. **跨 Host 2×8P 真实并发**：
-   - A3-3 与 A3-4 各承载 1 个 8P，时间真实重叠运行，各自 5 steps/TB 校验全绿（[Run 38147139071 Attempt 3](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38147139071)）。
-3. **同 Node 双 8P 并发与 A3-3 第二卡组解锁**：
-   - 实机验证了 A3-3 `8-15` 的独立健康度与可用性；A3-3、A3-4 均开放双 8P 组，Host 容量放量至 `max_jobs_per_host: 2`。
+   - 113.46.17.205:153 与 113.46.17.205:154 各承载 1 个 8P，时间真实重叠运行，各自 5 steps/TB 校验全绿（[Run 38147139071 Attempt 3](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38147139071)）。
+3. **同 Node 双 8P 并发与 113.46.17.205:153 第二卡组解锁**：
+   - 实机验证了 113.46.17.205:153 `8-15` 的独立健康度与可用性；113.46.17.205:153、113.46.17.205:154 均开放双 8P 组，Host 容量放量至 `max_jobs_per_host: 2`。
 4. **四路 8P 满载并发（N14 PASS，两机 32 卡满载）**：
    - 证据：[PR #6 Run 38176153053 Attempt 2](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38176153053) + [PR #8 Run 38176477643 Attempt 1](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38176477643)。
    - 成果：两台机器同时运行 4 组 8P 任务（113.46.17.205:153 `0-7`/`8-15`，113.46.17.205:154 `0-7`/`8-15`），4 个 Case 均 PASS，端口与资源完全隔离，任务完成后资源全部安全释放。
 5. **8P + 16P 同节点混部（N04 PASS）**：
    - 证据：[8P Run 38176153053 Attempt 1](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38176153053) + [16P Run 38176153109 Attempt 1](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38176153109)。
-   - 成果：A3-3 上 8P 与跨 A3-3/A3-4 的 16P 任务同时并发运行，3 个 Case 均 PASS，无重叠 DeviceSet，无端口冲突。
+   - 成果：113.46.17.205:153 上 8P 与跨 113.46.17.205:153/113.46.17.205:154 的 16P 任务同时并发运行，3 个 Case 均 PASS，无重叠 DeviceSet，无端口冲突。
 6. **双 16P 跨机并发（N05 PASS）**：
    - 证据：[PR #6 Run 38176153109 Attempt 2](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38176153109) + [PR #9 Run 38177027448 Attempt 1](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38177027448)。
    - 成果：两套 16P 任务使用互补双机组合 `(113.46.17.205:153: 0-7 + 113.46.17.205:154: 8-15)` 与 `(113.46.17.205:153: 8-15 + 113.46.17.205:154: 0-7)`，分别占用 Port Slot 0 与 Slot 1，重叠执行区间内均 PASS。
@@ -105,9 +105,9 @@
 | **F13** | 架构 | 双仓解耦与平滑回退 | 调度仓无冗余镜像，具备向后兼容与一键切回能力 | **PASS** | [Run 38060151936](https://github.com/depeng1994/torchtitan-npu/actions/runs/38060151936) |
 | **C01** | 并发 | 跨 Host 2×8P 并发 | 两机各承载 1 个 8P，时间真实重叠，双 PASS | **PASS** | [Run 38147139071](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38147139071) |
 | **C02** | 并发 | 全端口租约隔离 | Slot 0/1 绑定 Master/HCCL Base/Host/NPU Socket Range | **PASS** | 实机抓包与 Rank 环境变量验证 |
-| **C03** | 并发 | 同 Node 双 8P 真实并发 | A3-3 / A3-4 单机跑两个 8P，内存与端口互不冲突 | **PASS** | 独立探针与 N14 验证 |
+| **C03** | 并发 | 同 Node 双 8P 真实并发 | 113.46.17.205:153 / 113.46.17.205:154 单机跑两个 8P，内存与端口互不冲突 | **PASS** | 独立探针与 N14 验证 |
 | **C04** | 并发 | 4×8P 两机满载并发 (N14) | 两机 4 组 8P 同时并发运行，32 卡满载全绿 PASS | **PASS** | [Run 38176153053](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38176153053) + [38176477643](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38176477643) |
-| **C05** | 并发 | 8P + 16P 同机混部 (N04) | A3-3 上 8P 与跨机 16P 同时并发运行全绿 PASS | **PASS** | [Run 38176153053](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38176153053) + [38176153109](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38176153109) |
+| **C05** | 并发 | 8P + 16P 同机混部 (N04) | 113.46.17.205:153 上 8P 与跨机 16P 同时并发运行全绿 PASS | **PASS** | [Run 38176153053](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38176153053) + [38176153109](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38176153109) |
 | **C06** | 并发 | 双 16P 互补跨机并发 (N05) | 两组双机 16P 互补配对，Slot 0/1 重叠区间全绿 PASS | **PASS** | [Run 38176153109](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38176153109) + [38177027448](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38177027448) |
 | **C07** | 调度 | 64P > 16P > 8P 优先级 | 大任务意图预留，高优先级准入 | **PASS** | 调度器单测与调度逻辑闭环 |
 | **N10** | 容错 | 并发 Cancel 进程隔离 | 并发下取消单一 Case 不误杀同机其他 Case | **待专项压测** | 基础 Cancel 已通，并发压测待补 |
