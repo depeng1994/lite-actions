@@ -1,16 +1,18 @@
 """Small, counted GitHub REST client for outbound-only CI orchestration."""
+
 from __future__ import annotations
-import json
-import urllib.error
+
 import io
-import zipfile
+import json
 import os
-from pathlib import Path
 import subprocess
+import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 
-from ci_core.source_repo import REPO
+from ci_core.contract import REPO
+
 API = f"https://api.github.com/repos/{REPO}"
 
 
@@ -18,8 +20,9 @@ def authorization() -> str:
     token = os.environ.get("LITE_ACTIONS_GITHUB_TOKEN")
     if token:
         return token
-    proc = subprocess.run(["gh", "auth", "token"], capture_output=True,
-                          text=True, timeout=15)
+    proc = subprocess.run(
+        ["gh", "auth", "token"], capture_output=True, text=True, timeout=15
+    )
     if proc.returncode or not proc.stdout.strip():
         raise RuntimeError("gh auth token unavailable")
     return proc.stdout.strip()
@@ -35,8 +38,11 @@ class GitHubClient:
         if not path.startswith("/") or "://" in path:
             raise ValueError("relative GitHub API path required")
         url = API + path
-        payload = (json.dumps(data, separators=(",", ":"), ensure_ascii=False)
-                   .encode("utf-8") if data is not None else None)
+        payload = (
+            json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+            if data is not None
+            else None
+        )
         if payload is not None and len(payload) > 7000:
             raise ValueError("POST payload exceeds 7000 bytes")
         headers = {
@@ -48,19 +54,22 @@ class GitHubClient:
         if payload is not None:
             headers["Content-Type"] = "application/json"
         url_parts = urllib.parse.urlsplit(url)
-        head = f"{method} {url_parts.path}" + (
-            f"?{url_parts.query}" if url_parts.query else ""
-        ) + " HTTP/1.1\r\n"
+        head = (
+            f"{method} {url_parts.path}"
+            + (f"?{url_parts.query}" if url_parts.query else "")
+            + " HTTP/1.1\r\n"
+        )
         head += f"Host: {url_parts.netloc}\r\n"
-        head += "".join(f"{k}: {v}\r\n" for k,v in headers.items())
+        head += "".join(f"{k}: {v}\r\n" for k, v in headers.items())
         if payload is not None:
             head += f"Content-Length: {len(payload)}\r\n"
         head += "\r\n"
         uploaded = len(head.encode()) + len(payload or b"")
         self.sent_bytes += uploaded
         self.requests += 1
-        request = urllib.request.Request(url, data=payload, method=method,
-                                         headers=headers)
+        request = urllib.request.Request(
+            url, data=payload, method=method, headers=headers
+        )
         with urllib.request.urlopen(request, timeout=30) as response:
             data = response.read()
             return json.loads(data) if data else None
@@ -76,8 +85,7 @@ class GitHubClient:
         source = run.get("head_repository") or {}
         source_id = source.get("id")
         sha = run.get("head_sha")
-        if (not isinstance(sha, str) or len(sha) != 40
-                or type(source_id) is not int):
+        if not isinstance(sha, str) or len(sha) != 40 or type(source_id) is not int:
             return None
         if len(associated) > 1:
             return None
@@ -90,10 +98,12 @@ class GitHubClient:
                 if not isinstance(prs, list):
                     raise ValueError("unexpected PR listing")
                 for pr in prs:
-                    if (pr.get("head", {}).get("sha") == sha
-                            and pr.get("head", {}).get("repo", {}).get("id") == source_id
-                            and pr.get("base", {}).get("ref") == "master"
-                            and pr.get("base", {}).get("repo", {}).get("full_name") == REPO):
+                    if (
+                        pr.get("head", {}).get("sha") == sha
+                        and pr.get("head", {}).get("repo", {}).get("id") == source_id
+                        and pr.get("base", {}).get("ref") == "master"
+                        and pr.get("base", {}).get("repo", {}).get("full_name") == REPO
+                    ):
                         candidates.append(pr)
                 if len(prs) < 100:
                     break
@@ -106,11 +116,13 @@ class GitHubClient:
         if type(number) is not int or number < 1:
             return None
         pr = self.request("GET", f"/pulls/{number}")
-        if (pr.get("state") != "open"
-                or pr.get("base", {}).get("repo", {}).get("full_name") != REPO
-                or pr.get("base", {}).get("ref") != "master"
-                or pr.get("head", {}).get("repo", {}).get("id") != source_id
-                or pr.get("head", {}).get("sha") != sha):
+        if (
+            pr.get("state") != "open"
+            or pr.get("base", {}).get("repo", {}).get("full_name") != REPO
+            or pr.get("base", {}).get("ref") != "master"
+            or pr.get("head", {}).get("repo", {}).get("id") != source_id
+            or pr.get("head", {}).get("sha") != sha
+        ):
             return None
         if associated and associated[0].get("head", {}).get("sha") != sha:
             return None
@@ -119,8 +131,9 @@ class GitHubClient:
     def running_workflows(self) -> list[dict]:
         runs = []
         for event in ("workflow_dispatch", "pull_request"):
-            data = self.request("GET",
-                f"/actions/runs?event={event}&status=in_progress&per_page=100")
+            data = self.request(
+                "GET", f"/actions/runs?event={event}&status=in_progress&per_page=100"
+            )
             for run in data.get("workflow_runs", []):
                 if event == "pull_request":
                     run = self.normalize_pr_run(run)
@@ -141,13 +154,21 @@ class GitHubClient:
         polling will retry. Never put test choices in the run title.
         """
         run_id, attempt = run["id"], run.get("run_attempt", 1)
-        if type(run_id) is not int or type(attempt) is not int or run_id < 1 or attempt < 1:
+        if (
+            type(run_id) is not int
+            or type(attempt) is not int
+            or run_id < 1
+            or attempt < 1
+        ):
             raise ValueError("invalid run/attempt")
         name = f"lite-ci-request-{attempt}"
-        query = urllib.parse.urlencode({"name":name,"per_page":10})
+        query = urllib.parse.urlencode({"name": name, "per_page": 10})
         listing = self.request("GET", f"/actions/runs/{run_id}/artifacts?{query}")
-        matching = [a for a in listing.get("artifacts", [])
-                    if a.get("name") == name and not a.get("expired")]
+        matching = [
+            a
+            for a in listing.get("artifacts", [])
+            if a.get("name") == name and not a.get("expired")
+        ]
         if not matching:
             return None
         if len(matching) != 1:
@@ -159,14 +180,19 @@ class GitHubClient:
             raise ValueError("CI artifact does not belong to the selected run")
         artifact_id = artifact["id"]
         url = API + f"/actions/artifacts/{artifact_id}/zip"
-        req = urllib.request.Request(url, headers={
-            "Accept":"application/vnd.github+json",
-            "Authorization":f"Bearer {self.token}",
-            "User-Agent":"lite-actions-request/1",
-        })
+        req = urllib.request.Request(
+            url,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "Authorization": f"Bearer {self.token}",
+                "User-Agent": "lite-actions-request/1",
+            },
+        )
+
         class NoRedirect(urllib.request.HTTPRedirectHandler):
             def redirect_request(self, req, fp, code, msg, headers, newurl):
                 return None
+
         try:
             urllib.request.build_opener(NoRedirect).open(req, timeout=20)
             raise ValueError("artifact download did not redirect")
@@ -178,7 +204,9 @@ class GitHubClient:
         if parts.scheme != "https" or not parts.hostname:
             raise ValueError("invalid signed artifact download URL")
         # Signed URL is bearer access in itself. Never forward GitHub token.
-        with urllib.request.urlopen(urllib.request.Request(signed_url), timeout=25) as response:
+        with urllib.request.urlopen(
+            urllib.request.Request(signed_url), timeout=25
+        ) as response:
             payload = response.read(262145)
         if len(payload) > 262144:
             raise ValueError("downloaded CI request oversized")
@@ -190,21 +218,25 @@ class GitHubClient:
                 raise ValueError("CI request JSON too large")
             request_data = json.loads(archive.read(info))
         from ci_core.contract import parse_plan
-        parse_plan(request_data,run,run.get("path", "").rsplit("/",1)[-1])
+
+        parse_plan(request_data, run, run.get("path", "").rsplit("/", 1)[-1])
         return request_data
 
     def commit_comments(self, sha: str) -> list[dict]:
         comments = []
         for page in range(1, 21):
-            data = self.request(
-                "GET", f"/commits/{sha}/comments?per_page=100&page={page}") or []
+            data = (
+                self.request("GET", f"/commits/{sha}/comments?per_page=100&page={page}")
+                or []
+            )
             if not isinstance(data, list):
                 raise ValueError("invalid commit comments response")
             comments.extend(data)
             if len(data) < 100:
                 return comments
         raise RuntimeError(
-            "too many commit comments; cannot safely correlate prior result")
+            "too many commit comments; cannot safely correlate prior result"
+        )
 
     def send_result(self, sha: str, body: str):
         return self.request("POST", f"/commits/{sha}/comments", {"body": body})

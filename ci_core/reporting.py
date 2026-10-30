@@ -1,103 +1,93 @@
-"""Pure dispatcher-side Python result packaging and GitHub REST reporting.
+"""Identity-bound, byte-budgeted result outbox and metadata-only progress."""
 
-The Pull Agent only schedules this function; no AI agent API is involved.
-"""
-from __future__ import annotations
-
-from datetime import datetime, timezone
 import json
-import logging
-from pathlib import Path
 
-from ci_core.github import GitHubClient, authorization
-from ci_core.job_state import JobState
+from ci_core.contract import REPO
 from ci_core.logs import clean
-from ci_core.registry import workflow_label
-
-NAMES = {
-    "dispatcher-smoke": ("Dispatcher-Smoke",),
-    "a3-8p": ("A3-8p-CI-Example", "A3-8p-CI"),
-    "a3-16p": ("A3-16p-CI-Example", "A3-16p-CI"),
-    "a5-64p": ("A5-64p-CI",),
-}
 
 
-def job_key(run: dict) -> str:
-    return f"{run['id']}:{run.get('run_attempt', 1)}"
+def marker(run, item):
+    return f"Lite-CI-V3 {run['id']}:{run.get('run_attempt', 1)}:{item['case_id']}"
 
 
-def marker(case: dict, run: dict) -> str:
-    name = run.get("name", NAMES[case["name"]][0])
-    if name not in NAMES[case["name"]] and case["runner"]["kind"] == "ssh":
-        name = workflow_label(run)
-    if name not in NAMES[case["name"]]:
-        raise ValueError("unexpected workflow name")
-    return f"{name}-RESULT {job_key(run)}"
+def report(run, item, plan_digest, status, rc, lines, cleanup_verified=True):
+    return dict(
+        schema=3,
+        repo=REPO,
+        workflow=run["path"].rsplit("/", 1)[-1],
+        run_id=run["id"],
+        attempt=run.get("run_attempt", 1),
+        sha=run["head_sha"],
+        plan_digest=plan_digest,
+        case_id=item["case_id"],
+        test_id=item["test_id"],
+        worker=item["worker"],
+        target_pool=item["target_pool"],
+        docker=item["docker"],
+        resources=item["resources"],
+        status=status,
+        exit_code=rc,
+        cleanup_verified=cleanup_verified,
+        last_20_lines=[clean(x) for x in lines[:20]],
+    )
 
 
-def case_summary(log:Path|None,run:dict)->list[dict]:
-    """Extract bounded per-test results; missing events never imply PASS."""
-    import re
-    plan=[x['test_id'] for x in run.get('_ci_expanded_cases',[])]
-    results={}
-    if log is not None and log.is_file():
-        for line in log.read_text(encoding='utf-8',errors='replace').splitlines():
-            if line.startswith('CASE_PLAN '):
-                names=line[len('CASE_PLAN '):].split(',')
-                if not plan:plan=names
-            match=re.fullmatch(r'CASE_RESULT ([a-z][a-z0-9_]{0,79}) (PASS|FAIL) (\d+)',line)
-            if match:
-                name,status,rc=match.groups()
-                if name in plan and name not in results:
-                    results[name]={'test_name':name,'status':status,'exit_code':int(rc)}
-    if not plan and '_ci_request' in run:
-        plan=[row.get('test_id',row.get('suite','unknown')) for row in run['_ci_request'].get('cases',[])]
-    return [results.get(name,{'test_name':name,'status':'NOT_RUN','exit_code':None}) for name in plan]
+def body_for(run, item, result):
+    result = {**result, "last_20_lines": list(result["last_20_lines"])}
+    while True:
+        body = (
+            marker(run, item)
+            + "\n"
+            + json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+        )
+        request = json.dumps({"body": body}, separators=(",", ":"))
+        if len(body.encode()) <= 6100 and len(request.encode()) <= 7000:
+            return body
+        if not result["last_20_lines"]:
+            raise ValueError("metadata exceeds upload budget")
+        result["last_20_lines"].pop()
 
 
-def make_report(case: dict, run: dict, rc: int, excerpt: list[str], log:Path|None=None) -> dict:
-    if len(excerpt)>20 or not all(isinstance(x,str) for x in excerpt):
-        raise ValueError('invalid dispatcher excerpt')
-    cases=case_summary(log,run) if case.get('runner',{}).get('kind')=='ssh' else []
-    ok=rc==0 and (not cases or all(row['status']=='PASS' and row['exit_code']==0 for row in cases))
-    return {
-        'run_id':run['id'],'attempt':run.get('run_attempt',1),'sha':run['head_sha'],
-        'pipeline':case['pipeline_id'],'status':'PASS' if ok else 'FAIL',
-        'worker_id':case.get('runner', {}).get('worker_id'),
-        'exit_code':rc if rc!=0 else (0 if ok else 125),
-        'cases':cases,
-        'last_20_lines':[clean(x) for x in excerpt],
-    }
+def post(client, run, item, result, author):
+    body = body_for(run, item, result)
+    prefix = marker(run, item) + "\n"
+    prior = [
+        c
+        for c in client.commit_comments(run["head_sha"])
+        if c.get("user", {}).get("login") == author
+        and c.get("body", "").startswith(prefix)
+    ]
+    if prior:
+        if any(c["body"] != body for c in prior):
+            raise ValueError("conflicting existing result")
+        return
+    client.send_result(run["head_sha"], body)
 
 
-def report_payload(case: dict, run: dict, report: dict) -> str:
-    return marker(case, run) + "\n" + json.dumps(
-        report, ensure_ascii=False, separators=(",", ":"))
+def progress(client, run, item, digest, phase, comment_id=None):
+    body = "Lite-CI-PROGRESS " + json.dumps(
+        dict(
+            run_id=run["id"],
+            attempt=run.get("run_attempt", 1),
+            case_id=item["case_id"],
+            worker=item["worker"],
+            plan_digest=digest,
+            phase=phase,
+        ),
+        separators=(",", ":"),
+    )
+    if comment_id:
+        client.request("PATCH", f"/comments/{comment_id}", {"body": body})
+        return comment_id
+    return client.send_result(run["head_sha"], body)["id"]
 
 
-def post_result(case: dict, run: dict, report: dict, log_path: Path, state: JobState) -> None:
-    client = GitHubClient(authorization())
-    body = report_payload(case, run, report)
-    if len(body.encode("utf-8")) > 6100:
-        raise ValueError("GitHub result exceeds 6100-byte transport budget")
-    if not any((item.get("body") or "").startswith(marker(case, run) + "\n")
-               for item in client.commit_comments(run["head_sha"])):
-        client.send_result(run["head_sha"], body)
-    metrics = {
-        "time": datetime.now(timezone.utc).isoformat(),
-        "run_id": run["id"],
-        "attempt": run.get("run_attempt", 1),
-        "status": report["status"],
-        "final_post_body_bytes": len(json.dumps({"body": body},
-                             ensure_ascii=False, separators=(",", ":")).encode()),
-        "api_request_upload_bytes_estimate": client.sent_bytes,
-        "api_request_count": client.requests,
-        "full_log": str(log_path),
-        "note": "Excludes idle polls, proxy, TLS and TCP overhead",
-    }
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    (log_path.parent / "upload-metrics.json").write_text(
-        json.dumps(metrics, ensure_ascii=False, indent=2) + "\n")
-    state.update(job_key(run), phase="reported", result=report["status"])
-    logging.info("reported run=%s pipeline=%s %s",
-                 run["id"], case["name"], report["status"])
+def case_passed(log, test_id):
+    if not log.is_file():
+        return False
+    events = [
+        line
+        for line in log.read_text(errors="replace").splitlines()
+        if line.startswith("CASE_RESULT " + test_id + " ")
+    ]
+    return events == [f"CASE_RESULT {test_id} PASS 0"]

@@ -1,9 +1,13 @@
-# Lite Actions 2.0
+# Lite Actions
 
 GitHub Actions is the control console. Independent Pull workers run the same router,
 scheduler and executor to execute model-owned tests on leased NPU resources.
 Training nodes never receive GitHub credentials. Full logs stay inside the execution
 environment; each case publishes at most 20 diagnostic lines.
+
+Successful training returns LOSS lines (rank 0 preferred); failed execution returns
+the relevant error and traceback context. OS and communication smoke cases return
+their own diagnostics. A training case without LOSS evidence is not reported PASS.
 
 ## Deployment
 
@@ -36,6 +40,11 @@ No central push service or cross-region hardware lease is required: every physic
 node has one worker owner. Inventory validation rejects duplicate nodes/fingerprints.
 The model repository owns training arguments, CANN/assets and test verification.
 This repository owns topology, physical device IDs, container bindings and SSH.
+Optional per-node `capabilities` restricts admission to `train` and/or `npu_smoke`.
+Omitting it preserves both capabilities; an empty list disables admission on that
+node. All nodes in a multi-node allocation must support the case kind before any
+lease is taken. The current `:154` deployment is smoke-only until its training
+assets are configured; DSV4 cases queue on the asset-ready `:153` node.
 
 ## Workflow defaults and Python overrides
 
@@ -89,9 +98,9 @@ and current image tag before NPU admission. NPU execution requires root-level PI
 visibility in the execution namespace so cleanup can verify every marked descendant. Different jobs use isolated directories.
 
 ```bash
-python3 scripts/preflight_v2.py --worker-id blue
+python3 scripts/preflight.py --worker-id blue
 # After explicit container bindings are selected and all checks pass:
-python3 scripts/preflight_v2.py --worker-id blue --write-bindings
+python3 scripts/preflight.py --worker-id blue --write-bindings
 ```
 
 Batch SSH explicitly disables PTY allocation. Source synchronization uses SSH stdin streaming, avoiding SCP's ambiguity for aliases
@@ -116,7 +125,7 @@ fsynced before execution. Restart never blindly reruns a case; pending reports r
 without training. Unresolved allocations remain isolated until reconciliation:
 
 ```bash
-python3 scripts/reconcile_v2.py --worker-id blue --task-key '<persisted-task-key>'
+python3 scripts/reconcile.py --worker-id blue --task-key '<persisted-task-key>'
 ```
 
 The command checks owned processes and device occupancy before removing quarantine.
@@ -147,13 +156,13 @@ Yellow training pools remain disabled until independent hardware, container moun
 CANN, asset paths, network, device numbering and real smoke/training/cleanup checks
 have been accepted. A5 registration alone does not certify 64P capability.
 
-See [implementation validation](docs/V2_VALIDATION.md) for actual evidence and remaining gates.
+See [implementation validation](docs/validation.md) for actual evidence and remaining gates.
 
 Before the first hardware switch, preview legacy quarantine mapping without changing
 state or contacting devices:
 
 ```bash
-python3 scripts/migrate_v2_state.py --worker-id blue --legacy-root /root/work/lite-actions
+python3 scripts/import_quarantine.py --worker-id blue --legacy-root /root/work/lite-actions
 ```
 
 `--apply` is permitted only after every legacy task is terminal and the legacy
@@ -166,7 +175,7 @@ For an explicit selection when multiple containers share an image, use a trusted
 JSON file such as `{"113.46.17.205:153":"<existing-container-name-or-id>"}`:
 
 ```bash
-python3 scripts/preflight_v2.py --worker-id blue --node 113.46.17.205:153 \
+python3 scripts/preflight.py --worker-id blue --node 113.46.17.205:153 \
   --bindings-file /protected/path/container-bindings.json --write-bindings
 ```
 
@@ -177,3 +186,16 @@ selection, each node pins its container ID, image ID and actual `image_ref` unde
 that key. Runtime checks both the running container and the node's image reference;
 changing either identity requires an explicit new binding. Identical environment
 names do not certify identical dependencies or multi-node compatibility.
+
+## Development checks
+
+```bash
+python3 -m pip install -r requirements-dev.txt
+python3 scripts/lint.py
+python3 -m unittest discover -s tests
+```
+
+The lint command runs Ruff lint/format checks and requires `device_ids`/`devices`
+arrays in `config/pools.json` to remain on one line. Use `--fix` to format both.
+Pull requests run the same checks in GitHub Actions. See [test scope](docs/testing.md)
+before adding a scenario; configuration snapshots are not the test objective.

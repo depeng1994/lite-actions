@@ -3,6 +3,7 @@ logs/
 state/
 
 # Interpreter/build artifacts.
+.DS_Store
 __pycache__/
 *.py[cod]
 .pytest_cache/

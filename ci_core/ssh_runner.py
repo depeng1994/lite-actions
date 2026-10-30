@@ -3,28 +3,29 @@
 Only trusted local JSON selects the entrypoint. Training and validation live in
 model repository at the exact GitHub SHA. No GitHub credential reaches nodes.
 """
+
 from __future__ import annotations
 
-import fcntl
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import fcntl
 import gzip
-import os
-import shutil
 import json
-from pathlib import Path
+import os
 import re
-import signal
 import shlex
+import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
-from ci_core.config import load_config
-from ci_core.registry import inspect_archive, SELECTOR, parse_request, resolve_request
+from ci_core.contract import REPO as MODEL_REPO
+from ci_core.registry import SELECTOR, resolve_test
 
 ROOT = Path(__file__).resolve().parents[1]
-from ci_core.source_repo import REPO as MODEL_REPO
+
 REPO = f"https://github.com/{MODEL_REPO}.git"
 DEST_ROOT = "/mnt/share/ci_tests"
 SHA = re.compile(r"[0-9a-f]{40}\Z")
@@ -35,9 +36,12 @@ def q(value: object) -> str:
     return shlex.quote(str(value))
 
 
-def ssh(host: str, command: str, *, timeout: int = 90, check: bool = True) -> subprocess.CompletedProcess:
+def ssh(
+    host: str, command: str, *, timeout: int = 90, check: bool = True
+) -> subprocess.CompletedProcess:
     from ci_core.transport import run
-    return run(host,command,timeout=timeout,check=check)
+
+    return run(host, command, timeout=timeout, check=check)
 
 
 def model_archive(sha: str, work: Path) -> Path:
@@ -55,11 +59,17 @@ def model_archive(sha: str, work: Path) -> Path:
 
         repo = work / "repo"
         subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=25)
-        subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", REPO], check=True)
-        subprocess.run(["git", "-C", str(repo), "fetch", "--depth=1", "-q", "origin", sha],
-                       check=True, timeout=180)
+        subprocess.run(
+            ["git", "-C", str(repo), "remote", "add", "origin", REPO], check=True
+        )
+        subprocess.run(
+            ["git", "-C", str(repo), "fetch", "--depth=1", "-q", "origin", sha],
+            check=True,
+            timeout=180,
+        )
         actual = subprocess.check_output(
-            ["git", "-C", str(repo), "rev-parse", "FETCH_HEAD"], text=True).strip()
+            ["git", "-C", str(repo), "rev-parse", "FETCH_HEAD"], text=True
+        ).strip()
         if actual != sha:
             raise RuntimeError("GitHub SHA mismatch")
 
@@ -68,9 +78,12 @@ def model_archive(sha: str, work: Path) -> Path:
             with temp_archive.open("wb") as output:
                 pack = subprocess.Popen(
                     ["git", "-C", str(repo), "archive", "--format=tar", sha],
-                    stdout=subprocess.PIPE)
+                    stdout=subprocess.PIPE,
+                )
                 assert pack.stdout is not None
-                with gzip.GzipFile(fileobj=output, mode="wb", compresslevel=1) as zipped:
+                with gzip.GzipFile(
+                    fileobj=output, mode="wb", compresslevel=1
+                ) as zipped:
                     shutil.copyfileobj(pack.stdout, zipped)
                 pack.stdout.close()
                 if pack.wait(timeout=90) != 0:
@@ -83,8 +96,11 @@ def model_archive(sha: str, work: Path) -> Path:
 
         # Bound disk growth during iterative development while preserving the
         # current archive. The dispatcher serializes hardware jobs globally.
-        archives = sorted(cache_dir.glob("[0-9a-f]" * 40 + ".tar.gz"),
-                          key=lambda item: item.stat().st_mtime, reverse=True)
+        archives = sorted(
+            cache_dir.glob("[0-9a-f]" * 40 + ".tar.gz"),
+            key=lambda item: item.stat().st_mtime,
+            reverse=True,
+        )
         for stale in archives[20:]:
             if stale != cached:
                 stale.unlink(missing_ok=True)
@@ -98,11 +114,14 @@ def allocations(case: dict, pools: dict) -> list[dict]:
     for position, allocated in enumerate(case["allocation"]):
         node = lookup[allocated["host_id"]]
         if case.get("docker"):
-            from ci_core.v2_config import execution_node
+            from ci_core.config import execution_node
+
             node = execution_node(node, case["docker"])
         if not node.get("ssh") or not node.get("node_ip"):
             raise ValueError(f"missing SSH/HCCL address for {allocated['host_id']}")
-        nodes.append({**node, "devices": list(allocated["devices"]), "position": position})
+        nodes.append(
+            {**node, "devices": list(allocated["devices"]), "position": position}
+        )
     if not nodes or len({n["host_id"] for n in nodes}) != len(nodes):
         raise ValueError("empty or duplicate multi-node allocation")
     if len({len(n["devices"]) for n in nodes}) != 1:
@@ -113,26 +132,51 @@ def allocations(case: dict, pools: dict) -> list[dict]:
 def stage(node: dict, base: str, archive: Path, sha: str) -> str:
     host = node["ssh"]
     dest = f"{base}/node{node['position']}"
-    ssh(host, f"mkdir -p {q(base)} && mkdir {q(dest)} && mkdir {q(dest+'/repo')}")
+    ssh(host, f"mkdir -p {q(base)} && mkdir {q(dest)} && mkdir {q(dest + '/repo')}")
     from ci_core.transport import run as transport_run
+
     with archive.open("rb") as source:
-        transport_run(host,"cat > "+q(dest+"/source.tar.gz"),stdin=source,timeout=180)
+        transport_run(
+            host, "cat > " + q(dest + "/source.tar.gz"), stdin=source, timeout=180
+        )
     import hashlib
-    checksum=hashlib.sha256(archive.read_bytes()).hexdigest()
-    ssh(host,"test "+q(checksum)+" = \"$(sha256sum "+q(dest+"/source.tar.gz")+" | cut -d ' ' -f1)\"")
-    ssh(host, f"cd {q(dest)} && tar -xzf source.tar.gz -C repo && "
-              f"printf '%s\\n' {q(sha)} > source_sha.txt && "
-              f"test -f repo/tests/integration_tests/__init__.py")
+
+    checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
+    ssh(
+        host,
+        "test "
+        + q(checksum)
+        + ' = "$(sha256sum '
+        + q(dest + "/source.tar.gz")
+        + " | cut -d ' ' -f1)\"",
+    )
+    ssh(
+        host,
+        f"cd {q(dest)} && tar -xzf source.tar.gz -C repo && "
+        f"printf '%s\\n' {q(sha)} > source_sha.txt && "
+        f"test -f repo/tests/integration_tests/__init__.py",
+    )
     print(f"STAGED: {node['host_id']} SHA={sha[:12]} dir={dest}", flush=True)
     return dest
 
 
-def remote_command(node: dict, nodes: list[dict], runner: dict, dest: str,
-                   stamp: str, timeout: int, test_case: str) -> str:
+def remote_command(
+    node: dict,
+    nodes: list[dict],
+    runner: dict,
+    dest: str,
+    stamp: str,
+    timeout: int,
+    test_case: str,
+) -> str:
     """Remote job owns its own process group; its complete log stays remote."""
     # Generic, fixed model-owned entrypoint; never interpolate GitHub modules.
-    entry = ("python3 -u -m tests.integration_tests.tools.lite_actions.entrypoint launch --test-id "
-             + q(test_case) + " --output-dir " + q(dest + "/output"))
+    entry = (
+        "python3 -u -m tests.integration_tests.tools.lite_actions.entrypoint launch --test-id "
+        + q(test_case)
+        + " --output-dir "
+        + q(dest + "/output")
+    )
     env = {
         "NODE_IPS": ",".join(x["node_ip"] for x in nodes),
         "NGPU": str(len(node["devices"])),
@@ -152,15 +196,21 @@ def remote_command(node: dict, nodes: list[dict], runner: dict, dest: str,
             env[key] = str(port)
             # The 8P single-node runner inherits the standard environment,
             # whereas the 16P adapter applies LITE_CI_* after recipe defaults.
-            env["MASTER_PORT" if key == "LITE_CI_MASTER_PORT" else "HCCL_IF_BASE_PORT"] = str(port)
-    for key, hccl_key in (("LITE_CI_HCCL_HOST_PORT_RANGE", "HCCL_HOST_SOCKET_PORT_RANGE"),
-                          ("LITE_CI_HCCL_NPU_PORT_RANGE", "HCCL_NPU_SOCKET_PORT_RANGE")):
+            env[
+                "MASTER_PORT" if key == "LITE_CI_MASTER_PORT" else "HCCL_IF_BASE_PORT"
+            ] = str(port)
+    for key, hccl_key in (
+        ("LITE_CI_HCCL_HOST_PORT_RANGE", "HCCL_HOST_SOCKET_PORT_RANGE"),
+        ("LITE_CI_HCCL_NPU_PORT_RANGE", "HCCL_NPU_SOCKET_PORT_RANGE"),
+    ):
         if key in runner:
             value = runner[key]
-            if (not isinstance(value, str) or not re.fullmatch(r"[1-9][0-9]{3,4}-[1-9][0-9]{3,4}", value)):
+            if not isinstance(value, str) or not re.fullmatch(
+                r"[1-9][0-9]{3,4}-[1-9][0-9]{3,4}", value
+            ):
                 raise ValueError("invalid dispatcher-issued HCCL port range")
             start, end = map(int, value.split("-"))
-            if not (1024 <= start <= end <= 65535 and end-start >= 31):
+            if not (1024 <= start <= end <= 65535 and end - start >= 31):
                 raise ValueError("unsafe dispatcher-issued HCCL range")
             env[key] = value
             env[hccl_key] = value
@@ -171,10 +221,12 @@ def remote_command(node: dict, nodes: list[dict], runner: dict, dest: str,
     exports = " ".join(f"{key}={q(value)}" for key, value in env.items())
     # Source the selected CANN toolkit first, then apply trusted
     # NODE_IPS / HCCL / device variables so the toolkit cannot override them.
-    inner = (f"cd {q(dest+'/repo')} && {setup}"
-             f"export {exports} && "
-             f"export PYTHONPATH=\"$PWD:${{PYTHONPATH:-}}\" && "
-             f"exec timeout --signal=TERM --kill-after=30s {int(timeout)}s {entry}")
+    inner = (
+        f"cd {q(dest + '/repo')} && {setup}"
+        f"export {exports} && "
+        f'export PYTHONPATH="$PWD:${{PYTHONPATH:-}}" && '
+        f"exec timeout --signal=TERM --kill-after=30s {int(timeout)}s {entry}"
+    )
     # The previous `setsid ... & pid=$!` occasionally recorded a wrapper PID
     # instead of the process-group leader. Python's start_new_session creates
     # the exact PGID/PID that we persist and may safely cancel by job marker.
@@ -191,8 +243,10 @@ def remote_command(node: dict, nodes: list[dict], runner: dict, dest: str,
         "(dest/'exit_code.txt').write_text(str(rc)+'\\n'); "
         "print('NODE_EXIT:',rc,flush=True); sys.exit(rc)"
     )
-    return (f"cd {q(dest)} || exit 125; "
-            f"exec env LITE_CI_JOB_ID={q(stamp)} python3 -c {q(supervisor)} {q(dest)} {q(stamp)} {q(inner)}")
+    return (
+        f"cd {q(dest)} || exit 125; "
+        f"exec env LITE_CI_JOB_ID={q(stamp)} python3 -c {q(supervisor)} {q(dest)} {q(stamp)} {q(inner)}"
+    )
 
 
 def cancel(node: dict, dest: str, stamp: str) -> None:
@@ -290,56 +344,78 @@ for entry in Path('/proc').glob('[0-9]*'):
             raise SystemExit('owned process remains')
     except (FileNotFoundError,ProcessLookupError): pass
 """
-    ssh(node["ssh"],f"python3 -c {q(code)} {q(dest)} {q(stamp)}",timeout=30)
+    ssh(node["ssh"], f"python3 -c {q(code)} {q(dest)} {q(stamp)}", timeout=30)
 
 
-def verify(nodes: list[dict], runner: dict, base: str, timeout: int, test_case: str) -> int:
+def verify(
+    nodes: list[dict], runner: dict, base: str, timeout: int, test_case: str
+) -> int:
     if runner["mode"] != "distributed":
         return 0
     node = nodes[0]
     dest = base + "/node0"
     exports = runner["env_vars"]
     exported = " ".join(f"{key}={q(value)}" for key, value in exports.items())
-    command = (f"cd {q(dest+'/repo')} && "
-               + f"source {q(runner['env_vars']['ASCEND_SET_ENV_PATH'])} >/dev/null 2>&1 && "
-               + f"export {exported} && "
-               + f"export PYTHONPATH=\"$PWD:${{PYTHONPATH:-}}\" && "
-               + f"python3 -u -m tests.integration_tests.tools.lite_actions.entrypoint verify --test-id {q(test_case)} --output-dir {q(dest+'/output')} > {q(dest+'/verify.log')} 2>&1; "
-               + f"rc=$?; if test $rc -ne 0; then cat {q(dest+'/verify.log')} >> {q(dest+'/run.log')}; fi; exit $rc")
+    command = (
+        f"cd {q(dest + '/repo')} && "
+        + f"source {q(runner['env_vars']['ASCEND_SET_ENV_PATH'])} >/dev/null 2>&1 && "
+        + f"export {exported} && "
+        + 'export PYTHONPATH="$PWD:${PYTHONPATH:-}" && '
+        + f"python3 -u -m tests.integration_tests.tools.lite_actions.entrypoint verify --test-id {q(test_case)} --output-dir {q(dest + '/output')} > {q(dest + '/verify.log')} 2>&1; "
+        + f"rc=$?; if test $rc -ne 0; then cat {q(dest + '/verify.log')} >> {q(dest + '/run.log')}; fi; exit $rc"
+    )
     try:
         return ssh(node["ssh"], command, timeout=timeout, check=False).returncode
     except (OSError, subprocess.TimeoutExpired):
         return 124
 
 
-def run(case: dict, sha: str, stamp: str, *, test_case: str,
-        remote_dir: str | None = None, root: Path = ROOT) -> int:
+def run(
+    case: dict,
+    sha: str,
+    stamp: str,
+    *,
+    test_case: str,
+    remote_dir: str | None = None,
+    root: Path = ROOT,
+) -> int:
     # stamp is the internal immutable GitHub run identity used for safe process
     # termination; remote_dir is only the operator-facing folder name.
     remote_dir = remote_dir if remote_dir is not None else stamp
-    if (not STAMP.fullmatch(stamp) or not SHA.fullmatch(sha)
-            or not STAMP.fullmatch(remote_dir) or not SELECTOR.fullmatch(test_case)):
+    if (
+        not STAMP.fullmatch(stamp)
+        or not SHA.fullmatch(sha)
+        or not STAMP.fullmatch(remote_dir)
+        or not SELECTOR.fullmatch(test_case)
+    ):
         raise ValueError("unsafe run identifier / commit / execution directory")
     pools = json.loads((root / "config/pools.json").read_text())
     nodes = allocations(case, pools)
     base = f"{DEST_ROOT}/{remote_dir}"
     with tempfile.TemporaryDirectory(prefix="lite-ci-stage-") as tmp:
         archive = model_archive(sha, Path(tmp))
-        matches=resolve_request(archive,[{'test_id':test_case}],
-                               nodes=len(nodes),ngpu=len(nodes[0]['devices']))
-        if len(matches)!=1:raise ValueError('case selection changed')
+        definition = resolve_test(
+            archive, test_case, nodes=len(nodes), ngpu=len(nodes[0]["devices"])
+        )
         # These values are resolved from the pinned SHA's OverrideDefinitions.
         # The Lite Actions JSON has no testcase-owned environment fields.
-        runner={**case['runner'],
-                'mode':'single' if len(nodes)==1 else 'distributed',
-                'env_vars':matches[0]['env_vars'],
-                'LITE_CI_MASTER_PORT':case.get('master_port', 16000),
-                'LITE_CI_HCCL_IF_BASE_PORT':case.get('hccl_if_base_port', 20000),
-                'LITE_CI_HCCL_HOST_PORT_RANGE':case.get('hccl_host_port_range', '24000-24063'),
-                'LITE_CI_HCCL_NPU_PORT_RANGE':case.get('hccl_npu_port_range', '28000-28063')}
+        runner = {
+            "mode": "single" if len(nodes) == 1 else "distributed",
+            "env_vars": definition["env_vars"],
+            "LITE_CI_MASTER_PORT": case.get("master_port", 16000),
+            "LITE_CI_HCCL_IF_BASE_PORT": case.get("hccl_if_base_port", 20000),
+            "LITE_CI_HCCL_HOST_PORT_RANGE": case.get(
+                "hccl_host_port_range", "24000-24063"
+            ),
+            "LITE_CI_HCCL_NPU_PORT_RANGE": case.get(
+                "hccl_npu_port_range", "28000-28063"
+            ),
+        }
         dirs = {}
         with ThreadPoolExecutor(max_workers=len(nodes)) as executor:
-            futures = {executor.submit(stage, node, base, archive, sha): node for node in nodes}
+            futures = {
+                executor.submit(stage, node, base, archive, sha): node for node in nodes
+            }
             errors = []
             for future in as_completed(futures):
                 node = futures[future]
@@ -351,6 +427,7 @@ def run(case: dict, sha: str, stamp: str, *, test_case: str,
                 raise RuntimeError(f"staging failed: {errors}")
     results = {}
     first_error: tuple[str, int] | None = None
+
     def terminated(signum: int, _frame: object) -> None:
         raise KeyboardInterrupt(f"dispatcher signal {signum}; cancel owned ranks")
 
@@ -360,11 +437,24 @@ def run(case: dict, sha: str, stamp: str, *, test_case: str,
             futures = {}
             for node in nodes:
                 dest = dirs[node["host_id"]]
-                cmd = remote_command(node, nodes, runner, dest, stamp,
-                                     case["timeout_seconds"] - 120, test_case)
-                futures[executor.submit(ssh, node["ssh"], cmd,
-                                        timeout=case["timeout_seconds"] - 30,
-                                        check=False)] = node
+                cmd = remote_command(
+                    node,
+                    nodes,
+                    runner,
+                    dest,
+                    stamp,
+                    case["timeout_seconds"] - 120,
+                    test_case,
+                )
+                futures[
+                    executor.submit(
+                        ssh,
+                        node["ssh"],
+                        cmd,
+                        timeout=case["timeout_seconds"] - 30,
+                        check=False,
+                    )
+                ] = node
             try:
                 for future in as_completed(futures):
                     node = futures[future]
@@ -380,17 +470,31 @@ def run(case: dict, sha: str, stamp: str, *, test_case: str,
                         # An early rank failure can leave other nodes blocked in
                         # HCCL indefinitely. Stop siblings immediately, do not
                         # wait for their SSH timeouts to finish.
-                        pending = [other for other in nodes
-                                   if other["host_id"] not in results]
+                        pending = [
+                            other for other in nodes if other["host_id"] not in results
+                        ]
                         if pending:
-                            with ThreadPoolExecutor(max_workers=len(pending)) as cleaner:
-                                list(cleaner.map(lambda other: cancel(other,
-                                    dirs[other["host_id"]], stamp), pending))
+                            with ThreadPoolExecutor(
+                                max_workers=len(pending)
+                            ) as cleaner:
+                                list(
+                                    cleaner.map(
+                                        lambda other: cancel(
+                                            other, dirs[other["host_id"]], stamp
+                                        ),
+                                        pending,
+                                    )
+                                )
             except BaseException:
                 # Cleanup begins BEFORE the thread pool waits for SSH clients.
                 # Parallel SSH cancellation bounds eight-node cleanup latency.
                 with ThreadPoolExecutor(max_workers=len(nodes)) as cleaners:
-                    list(cleaners.map(lambda node: cancel(node, dirs[node["host_id"]], stamp), nodes))
+                    list(
+                        cleaners.map(
+                            lambda node: cancel(node, dirs[node["host_id"]], stamp),
+                            nodes,
+                        )
+                    )
                 raise
     finally:
         signal.signal(signal.SIGTERM, previous_term)
@@ -400,9 +504,13 @@ def run(case: dict, sha: str, stamp: str, *, test_case: str,
                 cancel(node, dirs[node["host_id"]], stamp)
     rc = first_error[1] if first_error else 0
     if rc == 0:
-        rc = verify(nodes, runner, base, min(360, case["timeout_seconds"] // 5), test_case)
+        rc = verify(
+            nodes, runner, base, min(360, case["timeout_seconds"] // 5), test_case
+        )
     # Dispatcher's log selector chooses a success/error excerpt from this path.
-    failed = next((n for n in nodes if first_error and n["host_id"] == first_error[0]), nodes[0])
+    failed = next(
+        (n for n in nodes if first_error and n["host_id"] == first_error[0]), nodes[0]
+    )
     path = dirs[failed["host_id"]] + "/run.log"
     print(f"RESULT_HOST: {failed['ssh']}", flush=True)
     print(f"RESULT_LOG: {path}", flush=True)
@@ -412,90 +520,32 @@ def run(case: dict, sha: str, stamp: str, *, test_case: str,
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--case")
-    parser.add_argument("--case-file")
-    parser.add_argument("--test-case")
-    parser.add_argument("--request-file")
-    parser.add_argument("--run-id", type=int)
-    parser.add_argument("--run-attempt", type=int)
+    parser.add_argument("--case-file", required=True)
+    parser.add_argument("--test-id", required=True)
     parser.add_argument("--sha", required=True)
     parser.add_argument("--stamp", required=True)
-    parser.add_argument("--remote-dir", required=True,
-                        help="Human-readable remote task directory")
-    parser.add_argument("--allocation-file", help="Trusted dispatcher allocation JSON")
+    parser.add_argument("--remote-dir", required=True)
     args = parser.parse_args()
-    if args.case_file:
-        case=json.loads(Path(args.case_file).read_text())
-    else:
-        case = load_config(ROOT).get(args.case)
-    if not case or not case["enabled"] or case["runner"]["kind"] != "ssh":
-        raise ValueError("unsupported or disabled SSH pipeline")
-    if "resources" in case:
-        if not args.allocation_file:
-            raise ValueError("dynamic CI requires runtime allocation")
-        from ci_core.scheduler import validate_allocation
-        runtime = json.loads(Path(args.allocation_file).read_text())
-        from ci_core.resources import port_profile
-        slot = runtime.get("port_slot")
-        approved = port_profile(slot)
-        if set(runtime) != {"allocation", *approved}:
-            raise ValueError("unrecognized allocation/port lease document")
-        if any(runtime.get(field) != value for field,value in approved.items()):
-            raise ValueError("untrusted allocation/port profile mismatch")
-        validate_allocation(case, json.loads((ROOT / "config/pools.json").read_text()),
-                            runtime["allocation"])
-        case = {**case, "allocation": runtime["allocation"], **approved}
-    elif args.allocation_file:
-        raise ValueError("unexpected dynamic allocation for static CI")
-    if args.request_file:
-        if args.test_case or not args.run_id or not args.run_attempt:
-            raise ValueError("manifest dispatch requires run_id and attempt, not test-case")
-        request = json.loads(Path(args.request_file).read_text())
-        items = parse_request(request, {"id": args.run_id,
-                                        "run_attempt": args.run_attempt,
-                                        "head_sha": args.sha})
-        # Resolve validated per-case environment before running. In particular,
-        # after a case exits, preflight uses its toolkit path and never a stale
-        # environment from a different suite member.
-        from ci_core.registry import resolve_request
-        with tempfile.TemporaryDirectory(prefix='lite-ci-resolve-plan-') as tmp:
-            archive=model_archive(args.sha,Path(tmp))
-            nodes=allocations(case,json.loads((ROOT/'config/pools.json').read_text()))
-            resolved=resolve_request(archive,items,nodes=len(nodes),
-                                     ngpu=len(nodes[0]['devices']))
-        print("CASE_PLAN " + ",".join(x['test_id'] for x in items),flush=True)
-        overall=0
-        for index,item in enumerate(items):
-            dirname=args.remote_dir if len(items)==1 else f"{args.remote_dir}_case-{index+1:02d}_{item['test_id']}"
-            print(f"CASE_START {index+1}/{len(items)} {item['test_id']}",flush=True)
-            try:
-                rc=run(case,args.sha,args.stamp,test_case=item['test_id'],
-                       remote_dir=dirname)
-            except Exception as exc:
-                print(f"CASE_EXCEPTION {item['test_id']} {type(exc).__name__}",flush=True)
-                rc=125
-            print(f"CASE_RESULT {item['test_id']} {'PASS' if rc==0 else 'FAIL'} {rc}",flush=True)
-            if rc!=0:
-                overall=1
-            if index+1 < len(items):
-                # Even a successful Python exit does not prove the model's NPU
-                # child processes are gone. Require an idle preflight before
-                # each next test under the same resource lease.
-                from ci_core.dispatch import remote_preflight
-                pools=json.loads((ROOT/'config/pools.json').read_text())
-                try:
-                    remote_preflight(case,pools,
-                                     ascend_env=resolved[index]['env_vars']['ASCEND_SET_ENV_PATH'])
-                except Exception:
-                    for remaining in items[index+1:]:
-                        print(f"CASE_NOT_RUN {remaining['test_id']}",flush=True)
-                    print('CASE_ABORT cleanup unverified',flush=True)
-                    return 125
-        return overall
-    if not args.test_case or not SELECTOR.fullmatch(args.test_case):
-        raise ValueError("missing registered CI test")
-    return run(case, args.sha, args.stamp, test_case=args.test_case,
-               remote_dir=args.remote_dir)
+    case = json.loads(Path(args.case_file).read_text())
+    if not case.get("enabled") or not SELECTOR.fullmatch(args.test_id):
+        raise ValueError("disabled or invalid test")
+    from ci_core.resources import port_profile
+    from ci_core.scheduler import validate_allocation
+
+    validate_allocation(
+        case, json.loads((ROOT / "config/pools.json").read_text()), case["allocation"]
+    )
+    approved = port_profile(case["port_slot"])
+    if any(case.get(field) != value for field, value in approved.items()):
+        raise ValueError("allocation/port lease mismatch")
+    print("CASE_START " + args.test_id, flush=True)
+    rc = run(
+        case, args.sha, args.stamp, test_case=args.test_id, remote_dir=args.remote_dir
+    )
+    print(
+        f"CASE_RESULT {args.test_id} {'PASS' if rc == 0 else 'FAIL'} {rc}", flush=True
+    )
+    return rc
 
 
 if __name__ == "__main__":

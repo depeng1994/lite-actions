@@ -1,7 +1,7 @@
 """Bounded remote log transfer; all content selection runs on dispatcher Python."""
+
 from __future__ import annotations
 
-from collections import deque
 import re
 import shlex
 import subprocess
@@ -10,19 +10,26 @@ from pathlib import Path
 ESCAPE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 SAFE_PATH = re.compile(r"^/mnt/share/ci_tests/[A-Za-z0-9_-]+/(?:node[0-9]+/)?run\.log$")
 METRIC = re.compile(r"tps\b|elapsed_time_per_step|\bstep:\s*[1-9]|\bloss:", re.I)
-ERROR = re.compile(r"Traceback|Error:|Exception:|RuntimeError|AssertionError|FAILED|fatal", re.I)
+LOSS = re.compile(r"\bloss\s*[:=]", re.I)
+ERROR = re.compile(
+    r"Traceback|Error:|Exception:|RuntimeError|AssertionError|FAILED|fatal", re.I
+)
 RANK0 = re.compile(r"rank0\b|rank[_= ]0\b|global_rank_0", re.I)
 MAX_REMOTE_BYTES = 131072
 
 
-def remote_excerpt(host: str, path: str, *, approved_hosts: set[str], runner=subprocess.run) -> str:
+def remote_excerpt(
+    host: str, path: str, *, approved_hosts: set[str], runner=subprocess.run
+) -> str:
     """Retrieve only the last 128 KiB from approved execution hosts."""
     if host not in approved_hosts or not SAFE_PATH.fullmatch(path):
         raise ValueError("untrusted execution log locator")
     command = "tail -c 131072 -- " + shlex.quote(path)
     result = runner(
-        __import__("ci_core.transport",fromlist=["command"]).command(host,command),
-        capture_output=True, timeout=45, check=False,
+        __import__("ci_core.transport", fromlist=["command"]).command(host, command),
+        capture_output=True,
+        timeout=45,
+        check=False,
     )
     if result.returncode:
         raise RuntimeError(f"remote log unavailable ({host}, rc={result.returncode})")
@@ -32,33 +39,63 @@ def remote_excerpt(host: str, path: str, *, approved_hosts: set[str], runner=sub
 
 
 def clean(line: str) -> str:
-    return "".join(ch if (ord(ch) >= 32 and ord(ch) != 127) else " "
-                   for ch in ESCAPE.sub("", line))[:180]
+    return "".join(
+        ch if (ord(ch) >= 32 and ord(ch) != 127) else " " for ch in ESCAPE.sub("", line)
+    )[:180]
 
 
-def select_lines(data: str, exit_code: int) -> list[str]:
+def select_lines(data: str, exit_code: int, *, require_loss: bool = False) -> list[str]:
     """Uniform dispatcher-side selection, never executed on training machines."""
-    lines = [clean(line) for line in data.splitlines() if line.strip()]
+    lines = [ESCAPE.sub("", line) for line in data.splitlines() if line.strip()]
+
+    def excerpt(line, pattern):
+        match = pattern.search(line)
+        if match and match.start() > 110:
+            line = "... " + line[max(0, match.start() - 50) :]
+        return clean(line)
+
     if exit_code == 0:
+        losses = [line for line in lines if LOSS.search(line)]
+        if losses:
+            selected = [line for line in losses if RANK0.search(line)] or losses
+            return [excerpt(line, LOSS) for line in selected[-20:]]
+        if require_loss:
+            raise ValueError(
+                "training completed without LOSS evidence in the bounded log"
+            )
         metric = [line for line in lines if METRIC.search(line) and RANK0.search(line)]
         if not metric:
             metric = [line for line in lines if METRIC.search(line)]
-        return metric[-20:] or lines[-20:] or ["Training finished without log content"]
+        return [clean(line) for line in (metric[-20:] or lines[-20:])] or [
+            "Execution finished without log content"
+        ]
     matches = [i for i, line in enumerate(lines) if ERROR.search(line)]
     if matches:
         selected = []
         for i in matches[-3:]:
-            selected.extend(lines[max(0, i - 1):min(len(lines), i + 4)])
+            selected.extend(lines[max(0, i - 1) : min(len(lines), i + 4)])
         selected += lines[-8:]
         selected = list(dict.fromkeys(selected))
-        return selected[-20:]
-    return lines[-20:] or [f"Process exited with {exit_code}, no diagnostics"]
+        return [excerpt(line, ERROR) for line in selected[-20:]]
+    return [clean(line) for line in lines[-20:]] or [
+        f"Process exited with {exit_code}, no diagnostics"
+    ]
 
 
-def select_remote(host: str, path: str, exit_code: int, *,
-                  approved_hosts: set[str], runner=subprocess.run) -> list[str]:
-    return select_lines(remote_excerpt(host, path, approved_hosts=approved_hosts,
-                                       runner=runner), exit_code)
+def select_remote(
+    host: str,
+    path: str,
+    exit_code: int,
+    *,
+    approved_hosts: set[str],
+    runner=subprocess.run,
+    require_loss: bool = False,
+) -> list[str]:
+    return select_lines(
+        remote_excerpt(host, path, approved_hosts=approved_hosts, runner=runner),
+        exit_code,
+        require_loss=require_loss,
+    )
 
 
 def metadata(log: Path) -> dict[str, str]:

@@ -3,14 +3,14 @@
 
 import argparse
 import json
-from pathlib import Path
 import shlex
 import sys
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from ci_core.config import execution_node, load
+from ci_core.executor import remote_preflight, task_dir
 from ci_core.job_state import JobState
-from ci_core.v2_config import load, execution_node
-from ci_core.dispatch import remote_preflight, task_dir
 from ci_core.transport import run
 
 
@@ -47,17 +47,10 @@ for p in pathlib.Path('/proc').glob('[0-9]*/environ'):
             "python3 -c " + shlex.quote(script) + " " + shlex.quote(stamp),
             timeout=30,
         )
-    from ci_core.dispatch import prepare_profile
+    from ci_core.executor import prepare_profile
 
-    request = dict(
-        schema=1,
-        run_id=subrun["id"],
-        attempt=subrun.get("run_attempt", 1),
-        sha=subrun["head_sha"],
-        cases=[dict(test_id=record["item"]["test_id"])],
-    )
-    _, profile = prepare_profile(runtime, {**subrun, "_ci_request": request})
-    remote_preflight(runtime, pools, ascend_env=profile["ascend_env"])
+    profile = prepare_profile(runtime, subrun)
+    remote_preflight(runtime, pools, ascend_env=profile["ASCEND_SET_ENV_PATH"])
     state.update(
         a.task_key,
         quarantined=False,

@@ -1,20 +1,8 @@
 {
   "blue": {
-    "enabled": true,
-    "transport": "local",
-    "capabilities": [
-      "worker_probe",
-      "train",
-      "npu_smoke"
-    ]
+    "enabled": true
   },
   "yellow": {
-    "enabled": true,
-    "transport": "local",
-    "capabilities": [
-      "worker_probe",
-      "train",
-      "npu_smoke"
-    ]
+    "enabled": true
   }
 }

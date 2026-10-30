@@ -5,12 +5,13 @@ import argparse
 import logging
 import os
 import signal
-from pathlib import Path
 import time
+from pathlib import Path
+
+from ci_core.config import load
 from ci_core.github import GitHubClient, authorization
-from ci_core.router import Router
 from ci_core.resources import single_agent
-from ci_core.v2_config import load
+from ci_core.router import Router
 
 ROOT = Path(__file__).resolve().parent
 
@@ -25,9 +26,11 @@ def main():
     if a.validate:
         print(f"Validated worker {a.worker_id}")
         return
+
     def stop(signum, frame):
         raise KeyboardInterrupt
-    signal.signal(signal.SIGTERM,stop)
+
+    signal.signal(signal.SIGTERM, stop)
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
     )

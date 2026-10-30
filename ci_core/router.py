@@ -1,32 +1,32 @@
 """Independent Pull workers sharing one schedule/execute implementation."""
 
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import ExitStack
 import logging
 import os
-from pathlib import Path
 import subprocess
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
+from pathlib import Path
 
-from ci_core.contract import parse_plan, WORKFLOWS, REPO
-from ci_core.v2_config import load, runtime_case
-from ci_core.v2_plan import verify_definition
-from ci_core.v2_reporting import report, post, progress
+from ci_core.config import load, runtime_case
+from ci_core.contract import REPO, WORKFLOWS, parse_plan
+from ci_core.executor import ExternalNpuOccupancy, execute
 from ci_core.job_state import JobState
+from ci_core.plan import verify_definition
+from ci_core.reporting import post, progress, report
 from ci_core.resources import (
-    reserve,
-    reserve_ports,
-    reserve_host_budget,
-    shared_resource_lock_root,
-    resource_keys,
     ResourceBusy,
+    reserve,
+    reserve_host_budget,
+    reserve_ports,
+    resource_keys,
+    shared_resource_lock_root,
 )
 from ci_core.scheduler import candidates
 from ci_core.ssh_runner import model_archive
-from ci_core.dispatch import execute, ExternalNpuOccupancy
-from ci_core.worker_runner import PROBE
+from ci_core.worker_probe import probe as probe_worker
 
 
 def task_key(run, item):
@@ -51,8 +51,6 @@ class Router:
         self.plans = {}
         # Unknown children survive a dispatcher crash. Fail closed before admitting overlap.
         for key, r in self.state.read().items():
-            if r.get("phase") == "RECEIVED":
-                self.state.update(key, phase="QUEUED")
             if r.get("phase") in {"RESERVED", "STAGING", "RUNNING", "CLEANING"}:
                 result = report(
                     r["run"],
@@ -144,8 +142,19 @@ class Router:
         options = candidates(case, self.pools)
         if not options:
             raise ValueError("NO_VERIFIED_TOPOLOGY")
+        inventory = {n["host_id"]: n for n in self.pools[case["pool"]]["nodes"]}
+        options = [
+            allocation
+            for allocation in options
+            if all(
+                case.get("kind", "train")
+                in inventory[n["host_id"]].get("capabilities", ["train", "npu_smoke"])
+                for n in allocation
+            )
+        ]
+        if not options:
+            raise ValueError("NO_CAPABLE_TOPOLOGY")
         if case.get("docker"):
-            inventory = {n["host_id"]: n for n in self.pools[case["pool"]]["nodes"]}
             options = [
                 a
                 for a in options
@@ -212,7 +221,7 @@ class Router:
         launched = False
         try:
             self.transition(key, "STAGING")
-            with tempfile.TemporaryDirectory(prefix="lite-v3-definition-") as tmp:
+            with tempfile.TemporaryDirectory(prefix="lite-definition-") as tmp:
                 archive = model_archive(run["head_sha"], Path(tmp))
                 verify_definition(archive, item, r["defaults"])
             if cancel.is_set():
@@ -220,9 +229,7 @@ class Router:
                 return
             if item["kind"] == "worker_probe":
                 self.transition(key, "RUNNING")
-                p = subprocess.run(
-                    ["bash", "-lc", PROBE], capture_output=True, text=True, timeout=90
-                )
+                p = probe_worker()
                 expected = self.workers[self.worker].get("expected_hostname")
                 if (
                     expected
@@ -240,13 +247,6 @@ class Router:
                 **run,
                 "_ci_test_id": item["test_id"],
                 "_ci_cancel_event": cancel,
-                "_ci_request": dict(
-                    schema=1,
-                    run_id=run["id"],
-                    attempt=run.get("run_attempt", 1),
-                    sha=run["head_sha"],
-                    cases=[{"test_id": item["test_id"]}],
-                ),
             }
 
             def on_phase(phase):
@@ -257,14 +257,11 @@ class Router:
                     self.transition(key, phase)
 
             subrun["_ci_phase_callback"] = on_phase
-            execution = execute(case, subrun, root=self.root, pre_reserved=True)
+            execution = execute(case, subrun, root=self.root)
             self.transition(key, "CLEANING")
-            from ci_core.reporting import case_summary
+            from ci_core.reporting import case_passed
 
-            checks = case_summary(
-                execution.log, {"_ci_expanded_cases": [{"test_id": item["test_id"]}]}
-            )
-            valid = len(checks) == 1 and checks[0]["status"] == "PASS"
+            valid = case_passed(execution.log, item["test_id"])
             status = (
                 "CANCELLED"
                 if execution.exit_code == 130

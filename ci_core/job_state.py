@@ -1,8 +1,9 @@
 """Durable run state shared by the poller and the dispatcher reporter."""
+
 import json
 import os
-from pathlib import Path
 import threading
+from pathlib import Path
 
 _MUTEX = threading.RLock()
 
@@ -28,6 +29,8 @@ class JobState:
                 f.flush()
                 os.fsync(f.fileno())
             tmp.replace(self.path)
-            fd=os.open(self.path.parent,os.O_RDONLY)
-            try: os.fsync(fd)
-            finally: os.close(fd)
+            fd = os.open(self.path.parent, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)

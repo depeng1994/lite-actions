@@ -1,8 +1,9 @@
 """Re-resolve the frozen model definition before accepting deployment routing."""
 
 from types import SimpleNamespace
-from ci_core.registry import inspect_archive
+
 from ci_core.contract import normalize
+from ci_core.registry import inspect_archive
 
 
 def verify_definition(archive, item, defaults):
