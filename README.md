@@ -161,3 +161,14 @@ process is stopped. Mapping uses the trusted node IP inventory, rejects unknown
 allocations, and preserves unscoped quarantine across the entire owned pool. Legacy
 guards retain their original job keys for manual evidence-based recovery; the normal
 v3 reconciliation command applies to v3 tasks with their persisted runtime records.
+
+For an explicit selection when multiple containers share an image, use a trusted
+JSON file such as `{"113.46.17.205:153":"<existing-container-name-or-id>"}`:
+
+```bash
+python3 scripts/preflight_v2.py --worker-id blue --node 113.46.17.205:153 \
+  --bindings-file /protected/path/container-bindings.json --write-bindings
+```
+
+This is read-only with respect to execution hosts and does not enable a pool or
+start training. An existing pinned binding is verified rather than rediscovered.

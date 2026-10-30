@@ -1,86 +1,74 @@
-# Lite Actions 2.0 validation record
+# Lite Actions 2.0 开发与验证记录
 
-## Code under validation
+## 当前结论
 
-Two independent workers share the common router/scheduler/executor. Schema-3 producer
-and consumer contract sources are identical. Workflow defaults support Python field
-coverrides, and the two actual DSV4 8P definitions are used unchanged.
+公共 Router / Scheduler / Executor、schema 3、Workflow 默认值与 Python 覆盖、已有容器绑定、结果预算及隔离迁移已实现。候选版本完成自动测试与两区真实 GitHub OS 闭环。**NPU 训练尚未验收，生产尚未切换，PR 保持 draft。**
 
-## Automated checks
+代码：
 
-- Model repository: 44 tests and 24 subtests passed on Python 3.12 before final cleanup.
-- Dispatcher: 99 tests and 61 subtests passed; five Linux/environment-specific tests
-  are deferred to the worker. Final Linux rerun is required after all code changes.
-- New regression coverage includes worker routing, source/plan identity, FIFO,
-  disjoint concurrent leases, host capacity, quarantine, cancellation, restart,
-  outbox retry, canonical SSH aliases and Unicode/JSON byte budgets.
+- [调度仓 PR #10](https://github.com/depeng1994/lite-actions/pull/10)
+- [模型仓 PR #11](https://github.com/torchtitan-npu/torchtitan-npu/pull/11)
 
-## Deployment preflight
+## 已执行验证
 
-- ycy and hwy both reached GitHub API and github.com.
-- Current physical A3 is owned exclusively by blue in the new inventory.
-- Canonical aliases on ycy were registered using the existing verified SSH host keys.
-- `113.46.17.205:153`: requested image exists, with two running container candidates;
-  explicit selection is required before training.
-- `113.46.17.205:154`: requested image is absent. The 16P hardware gate is pending.
-- Yellow training pools are disabled; OS probe is the first-release acceptance target.
+| 验证 | 实际结果 |
+| --- | --- |
+| 模型仓相关 CPU/tooling 测试 | 54 passed，24 subtests；不代表 NPU 训练或数值精度验证 |
+| 调度仓完整回归 | 已执行本地与两台 Linux worker 回归，最终命令与记录见下方 |
+| blue Linux 完整 PID 证明 | 活跃的带标记 CPU 初始化进程即使尚未占用 NPU，也会阻止释放 |
+| yellow PID 可见性边界 | NPU 清理要求完整 PID 可见性；yellow 首版只运行 OS 探测 |
+| 隔离迁移 dry-run | 保留 1 条隔离记录，映射到 `113.46.17.205:153` 的设备 `0–7`；未清除旧隔离记录 |
+| 独立只读复核 | 已修正未绑定节点选择、未分配节点影响日志、旧 attempt 继续运行、接单崩溃丢队列，以及仅凭 NPU 空闲释放资源的问题 |
 
-## Required live acceptance
+测试命令：
 
-1. Blue and yellow OS probes through immutable GitHub plans.
-2. 8P smoke and both five-step DSV4 cases on a pinned verified environment.
-3. 16P smoke after the second node's environment is ready.
-4. Two simultaneous users/runs, cancellation, cleanup, restart and report retry.
-5. Actual GitHub results: author/worker/SHA binding, <=20 log lines, byte limits.
-6. PR automatic execution and removal of obsolete Lite Actions entrypoints.
+```bash
+# 模型仓，Python 3.12
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 python -m pytest \
+  tests/unit_tests/tooling/lite_actions \
+  tests/unit_tests/test_lite_actions_dispatch_smoke.py \
+  tests/unit_tests/models/deepseek_v4/test_nightly_flash_recipes.py -q --tb=short
 
-No NPU training PASS is claimed by this record until the corresponding live evidence
-is appended. Existing historical production logs are preserved outside the new source.
+# 调度仓，本地
+python -m pytest tests -q --tb=short
 
-## Reviewed implementation and live GitHub evidence
+# 调度仓，ycy / hwy 的独立验证目录
+python3 -m unittest discover -s tests
+```
 
-The independent static review identified and fixed: unbound-node admission, log
-collection touching unallocated nodes, superseded-attempt cancellation, admission
-crash recovery, and release proof based on NPU idleness alone. The release proof
-now also requires durable launch/completion evidence and absence of marked processes.
-NPU execution requires root PID visibility; yellow's first-release scope is OS-only.
+Linux 的环境跳过包括：相邻模型 checkout 的可选归档测试；yellow 额外跳过要求 root 完整 PID 可见性的清理证明。该清理证明在 blue/root 实际执行，不能将 yellow 的跳过写为通过。
 
-- Model branch, after current-upstream integration: **54 passed, 24 subtests**.
-- Local dispatcher regression: **103 passed, 6 environment-specific skips, 61 subtests**.
-- Blue Linux reviewed build: **109 tests, OK, 1 skipped** (adjacent model checkout).
-- Yellow's full-PID proof regression requires blue/root privileges; its earlier
-  rootless failure was fail-closed on an unreadable `/proc` entry. That root-only
-  acceptance runs on blue; yellow OS routing does not use NPU cleanup.
+## GitHub 端到端证据
 
-Manual OS E2E: https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/41040977540
+[手动 Smoke 运行 41040977540](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/41040977540) 使用模型提交 `5e84f6610064a7092cc596a9f4c3bb64e521ed8c` 和调度仓候选构建 `37f0227`：Prepare、schema 3 Artifact、独立 worker Pull、逐 case Commit Comment、Waiter 及汇总全部通过。
 
-| Worker | Result | Diagnostic lines | Comment bytes | Serialized request bytes |
+| Worker | 结果 | 摘录行数 | Comment 字节数 | 序列化请求字节数 |
 | --- | --- | ---: | ---: | ---: |
 | blue / ycy | PASS | 13 | 872 | 988 |
 | yellow / hwy | PASS | 18 | 1172 | 1306 |
 
-The run executed model commit `5e84f6610064a7092cc596a9f4c3bb64e521ed8c` with the
-reviewed dispatcher candidate, schema 3 Artifact, two independent worker pickups,
-Commit Comments and successful exact-identity Waiters.
+保持原有每 case 最多 20 行、每行 180 字符、Comment 6100 字节和请求 7000 字节预算。Summary 只展示配置和状态，未追加完整日志或训练产物。
 
-PR #11 automatically triggered both workflows. OS cases passed. NPU cases returned
-`POOL_DISABLED` because candidate verification deliberately disables resource execution
-while the existing release remains responsible for real hardware. The aggregate checks
-correctly failed instead of falsely reporting an unexecuted training PASS.
+PR #11 也实际自动触发两个新入口：
 
-Draft changes:
-- https://github.com/depeng1994/lite-actions/pull/10
-- https://github.com/torchtitan-npu/torchtitan-npu/pull/11
+- [Nightly](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/41041716751)
+- [Dispatcher Smoke](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/41041716633)
 
-## Remaining gates
+OS case 通过。候选配置主动关闭训练资源，因此 NPU case 明确回报 `POOL_DISABLED`，汇总正确失败。**PR 自动触发已确认，完整 NPU CI 通过尚未确认。**
 
-The requested image is present on `:153` in two containers; binding selection is
-pending. The requested image is absent on `:154`. No DSV4 or NPU smoke PASS is claimed.
-The original release has one quarantine record, which must be preserved/mapped and
-reconciled before hardware ownership/lock migration; candidate OS verification does
-not clear it or take its devices.
+## Lint
 
-Full pre-commit has **not passed**. Local syntax/YAML/format/spelling/architecture
-checks passed; OAT processing and project-wide Pyrefly remain unsuccessful in the
-local stack. A matching Linux retry was blocked by its old system Git lacking
-`git ls-files --deduplicate`. These failures are recorded, not waived or reported green.
+已在 hwy 的匹配环境重跑完整 pre-commit：使用兼容系统 Git 的 pre-commit 4.0.1、仓库固定的 Pyrefly 0.45.1，以及 TorchTitan v0.3.0（提交 `086bf6c166ec85c1298eb5596fa9bf95f6a2d840`）。GitHub 与仓库约定的 GitCode mirror 标签 SHA 相同。
+
+YAML、格式、拼写、架构边界、OAT 等检查通过。**完整 Lint 未通过**：Pyrefly 报 192 个错误。对未修改上游基线 `8a71d8940e877cc9f2e5f4b977b4f18d48539592` 使用同一环境与配置复查，同样报 192 个错误，报错集合一致，没有新增错误。未将基线失败改写为绿色结果。
+
+## 部署与剩余条件
+
+- 当前 A3 唯一归属 blue；节点标识统一为 `113.46.17.205:153`、`113.46.17.205:154`。
+- ycy 已登记新 SSH 别名，复用既有已验证主机密钥。
+- 候选部署位于 ycy `/root/work/lite-actions-v2-candidate`、hwy `/home/developer/lite-actions-v2-candidate`；候选运行配置关闭全部训练池，未替换原生产部署。
+- `:153` 的指定镜像有两个运行容器，二者均具备当前 CANN、模型、checkpoint 与工作目录挂载：`torchtitan_debug_w00800020`、`zhaowei_torchtitan_dsv4_1`。二者都不是旧 CI 执行 PID namespace，不能自动推定唯一绑定。
+- `:154` 不存在指定镜像 `dsv4.1_train_torchtitan_a3:cann_master_newest_0916`。
+- yellow 的两个训练池保持禁用；A5 不声明已验收。
+
+下一阶段需要先确定容器绑定与第二节点环境，再保留/核对旧隔离记录、排空旧调度、切换新锁身份，依次执行 8P smoke、两条 DSV4 五步训练、16P smoke、并发和取消验收。通过后才能进行生产入口切换及 required checks 更新。
