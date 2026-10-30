@@ -50,7 +50,7 @@ RESERVED_RUNTIME_ENV = frozenset((
 CASE_ENV_KEY = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 
 
-def validate_case_environment(env: object) -> dict[str, str]:
+def validate_case_environment(env: object, *, kind: str = "train") -> dict[str, str]:
     """Validate trusted model-derived environment before SSH and preflight.
 
     An A5 case without configured assets remains discoverable with `inspect`,
@@ -63,7 +63,10 @@ def validate_case_environment(env: object) -> dict[str, str]:
                 or key in RESERVED_RUNTIME_ENV or not isinstance(value, str)
                 or "\x00" in value or "\n" in value or "\r" in value):
             raise ValueError("invalid/forbidden test-owned environment variable")
-    for key in ASSET_ENV_KEYS:
+    if kind not in {"train", "npu_smoke"}:
+        raise ValueError("unsupported NPU execution kind")
+    required = ASSET_ENV_KEYS if kind == "train" else ("ASCEND_SET_ENV_PATH",)
+    for key in required:
         path = env.get(key)
         if not isinstance(path, str) or not path.startswith("/"):
             raise ValueError(f"model test must define an absolute {key} in env_vars")
@@ -135,7 +138,7 @@ def resolve_request(archive:Path, selections:list[dict],*,nodes:int,ngpu:int)->l
                 raise ValueError('duplicate/invalid/disabled selected test')
             if (found.get('nnodes'),found.get('ngpu'))!=(nodes,ngpu):
                 raise ValueError('requested test topology does not match NPU allocation')
-            env_vars = validate_case_environment(found.get('env_vars'))
+            env_vars = validate_case_environment(found.get('env_vars'), kind=found.get('kind', 'train'))
             seen.add(name)
             expanded.append({'test_id': name, 'env_vars': env_vars})
     return expanded

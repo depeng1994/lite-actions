@@ -110,6 +110,25 @@ class SharedSshRunnerTests(unittest.TestCase):
             with self.subTest(extra=extra), self.assertRaises(ValueError):
                 validate_case_environment({**ASSET_ENV, **extra})
 
+    def test_pinned_npu_smoke_resolves_without_model_weights(self):
+        env = {'ASCEND_SET_ENV_PATH': '/usr/local/Ascend/ascend-toolkit/set_env.sh'}
+        definition = dict(test_id='dispatch_smoke_8p', nnodes=1, ngpu=8,
+                          kind='npu_smoke', env_vars=env)
+        with patch('ci_core.registry.inspect_archive', return_value=[definition]):
+            resolved = resolve_request(Path('/unused'), [{'test_id': 'dispatch_smoke_8p'}],
+                                       nodes=1, ngpu=8)
+        self.assertEqual(resolved, [dict(test_id='dispatch_smoke_8p', env_vars=env)])
+        with patch('ci_core.registry.inspect_archive', return_value=[{**definition, 'kind': 'train'}]):
+            with self.assertRaisesRegex(ValueError, 'HF_ASSETS_PATH'):
+                resolve_request(Path('/unused'), [{'test_id': 'dispatch_smoke_8p'}], nodes=1, ngpu=8)
+
+    def test_npu_smoke_still_requires_cann_and_reserved_environment_checks(self):
+        from ci_core.registry import validate_case_environment
+        for env in ({}, {'ASCEND_SET_ENV_PATH': 'relative'},
+                    {'ASCEND_SET_ENV_PATH': '/opt/cann/set_env.sh', 'NODE_IPS': 'evil'}):
+            with self.subTest(env=env), self.assertRaises(ValueError):
+                validate_case_environment(env, kind='npu_smoke')
+
     def test_discovery_archive_skips_links_and_keeps_path_traversal_guard(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)
