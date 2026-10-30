@@ -98,108 +98,201 @@ def remote_task_name(run: dict) -> str:
     return f"{local:%Y-%m-%d_%H-%M-%S}_run_{name}_{number}{suffix}"
 
 
-def process_evidence(output: str, devices: list[int], *, indexing: str) -> list[tuple[int, int]]:
-    """Return (allocated chip, container PID); reject ambiguous process rows."""
+def _process_rows(
+    output: str, devices: list[int], *, indexing: str
+) -> list[tuple[int, int, str]]:
+    """Return (chip, PID visible in the kill namespace, container PID evidence).
+
+    A5 "card" mode reports the *host* PID in column two, regardless of
+    whether the process belongs to the bound CI container. The last column
+    may be NA or a PID from a different container's namespace; never kill it.
+    Preserve the established A3 card-die PID and chip mapping.
+    """
     if "Process id in container" not in output:
         raise ValueError("npu-smi process table absent")
     if indexing not in ("card", "card-die"):
         raise ValueError("unknown NPU process index mapping")
+
     selected = set(devices)
-    rows = []
-    for line in output.split("Process id in container", 1)[1].splitlines():
-        if "No running processes found in NPU" in line:
-            continue
-        if not line.lstrip().startswith("|"):
-            continue
-        cells = [v.strip() for v in line.strip().strip("|").split("|")]
-        if indexing == "card-die":
+    rows: list[tuple[int, int, str]] = []
+    if indexing == "card-die":
+        for line in output.split("Process id in container")[-1].splitlines():
             match = CHIP_PROCESS.match(line)
             if match:
-                chip = int(match[1]) * 2 + int(match[2])
-                pid = int(match[3])
-                rows.append((chip, pid))
-            elif re.match(r"^\|\s*\d+", line):
+                chip = int(match.group(1)) * 2 + int(match.group(2))
+                pid = int(match.group(3))
+                rows.append((chip, pid, str(pid)))
+            elif re.match(r"^\|\s*\d+\s+\d+\s*\|", line):
                 raise ValueError("unrecognized NPU process row")
-        elif len(cells) == 5 and cells[0].isdigit() and cells[1].isdigit() and cells[-1].isdigit():
-            # Actual A5 row: NPU ID | host PID | name | memory | container PID.
-            rows.append((int(cells[0]), int(cells[-1])))
-        elif re.match(r"^\|\s*\d+", line):
-            raise ValueError("unrecognized NPU process row")
-    # Never kill a PID which also appears on an unallocated chip.
-    targets = {pid for chip, pid in rows if chip in selected}
-    if any(chip not in selected and pid in targets for chip, pid in rows):
+    else:
+        # Ignore the remainder of the header line; all following data rows
+        # must match the A5 five-column table. Unknown rows are not idle.
+        section = output.split("Process id in container", 1)[1]
+        for line in section.splitlines()[1:]:
+            line = line.strip()
+            if not line:
+                continue
+            if re.fullmatch(r"[+=-]+", line):
+                continue
+            if re.fullmatch(
+                r"\|\s*No running processes found in NPU \d+[^|]*\|", line
+            ):
+                continue
+            if not (line.startswith("|") and line.endswith("|")):
+                raise ValueError("unrecognized NPU process row")
+            cells = [part.strip() for part in line[1:-1].split("|")]
+            if (
+                len(cells) != 5
+                or not re.fullmatch(r"[0-9]+", cells[0])
+                or not re.fullmatch(r"[0-9]+", cells[1])
+                or int(cells[1]) <= 1
+                or not cells[2]
+                or not re.fullmatch(r"[0-9]+", cells[3])
+                or not (cells[4] == "NA" or re.fullmatch(r"[0-9]+", cells[4]))
+            ):
+                raise ValueError("unrecognized NPU process row")
+            rows.append((int(cells[0]), int(cells[1]), cells[4]))
+
+    # A shared process cannot be terminated if it also occupies a chip
+    # outside this lease. In A5 mode this is always the *host* PID.
+    targets = {pid for chip, pid, _ in rows if chip in selected}
+    if any(chip not in selected and pid in targets for chip, pid, _ in rows):
         raise ValueError("PID spans allocated and unallocated NPU devices")
-    if any(pid <= 1 for chip, pid in rows if chip in selected):
+    if any(pid <= 1 for chip, pid, _ in rows if chip in selected):
         raise ValueError("unsafe NPU process PID")
-    return [(chip, pid) for chip, pid in rows if chip in selected]
+    return [(chip, pid, container_pid) for chip, pid, container_pid in rows if chip in selected]
+
+
+def process_evidence(
+    output: str, devices: list[int], *, indexing: str
+) -> list[tuple[int, int]]:
+    """Selected (chip, kill PID): A5 host PID, A3 existing card-die PID."""
+    return [(chip, pid) for chip, pid, _ in _process_rows(
+        output, devices, indexing=indexing
+    )]
 
 
 def selected_processes(
     output: str, devices: list[int], *, indexing: str = "card-die"
 ) -> list[str]:
-    return [f"chip {chip}: pid {pid}" for chip, pid in process_evidence(output, devices, indexing=indexing)]
+    return [
+        f"chip {chip}: pid {pid}"
+        for chip, pid in process_evidence(output, devices, indexing=indexing)
+    ]
 
 
 def remote_preflight(
     case: dict, pools: dict, *, ascend_env: str | None = None,
     evidence=None,
 ) -> None:
-    """Inspect every allocated device; reclaim only for trusted yellow/A5 pools."""
+    """Probe through the CANN container; reclaim A5 host PIDs via host SSH only."""
     if not case.get("allocation"):
         return
     pool = pools[case["pool"]]
     reclaim = pool.get("force_reclaim", False)
-    if type(reclaim) is not bool or (reclaim and (pool.get("owner") != "yellow" or pool.get("type") != "ascend-a5")):
+    if type(reclaim) is not bool or (
+        reclaim and (pool.get("owner") != "yellow" or pool.get("type") != "ascend-a5")
+    ):
         raise ValueError("invalid force_reclaim pool")
     by_host = {x["host_id"]: x for x in pool["nodes"]}
     indexing = pool.get("process_indexing")
     if indexing not in ("card", "card-die"):
         raise ValueError("NPU process index mode must be configured")
+
     from ci_core.transport import run as transport_run
+
     for request in case["allocation"]:
         node = by_host[request["host_id"]]
-        host = node.get("ssh")
-        if not isinstance(host, str) or not host:
+        probe_host = node.get("ssh")
+        if not isinstance(probe_host, str) or not probe_host:
             raise ValueError("NPU preflight host SSH is not configured")
         command = "npu-smi info"
         if ascend_env:
-            command = "source " + shlex.quote(ascend_env) + " >/dev/null 2>&1 && npu-smi info"
+            command = (
+                "source " + shlex.quote(ascend_env) + " >/dev/null 2>&1 && npu-smi info"
+            )
         if case.get("docker"):
             from ci_core.config import execution_node
-            node = execution_node(node, case["docker"])
-            host = node["ssh"]
-        rounds = 4 if reclaim else 1
-        for attempt in range(rounds):
-            proc = transport_run(host, command, timeout=40, check=False)
+            probe_host = execution_node(node, case["docker"])["ssh"]
+
+        # The host PID has no meaning inside the bound container's PID
+        # namespace. Never pass /container to the signal transport.
+        kill_host = None
+        if reclaim:
+            kill_host = node.get("host_ssh") or node["ssh"]
+            if (
+                not isinstance(kill_host, str)
+                or not kill_host
+                or "/" in kill_host
+            ):
+                raise ValueError("NPU reclaim requires a host-only SSH alias")
+
+        def inspect(round_number: int, stage: str):
+            proc = transport_run(probe_host, command, timeout=40, check=False)
             if proc.returncode != 0:
-                raise RuntimeError(f"NPU occupancy query failed on {request['host_id']}")
-            found = process_evidence(proc.stdout, request["devices"], indexing=indexing)
+                raise RuntimeError(
+                    f"NPU occupancy query failed on {request['host_id']}"
+                )
+            found = _process_rows(proc.stdout, request["devices"], indexing=indexing)
             if evidence is not None:
-                evidence.write(f"RECLAIM_EVIDENCE host={request['host_id']} round={attempt} allocated={request['devices']} chips_pids={found}\\n")
+                details = [
+                    {"chip": chip, "host_pid": pid, "container_pid": container_pid}
+                    for chip, pid, container_pid in found
+                ]
+                evidence.write(
+                    f"RECLAIM_EVIDENCE host={request['host_id']} "
+                    f"round={round_number} stage={stage} "
+                    f"allocated={request['devices']} "
+                    f"processes={json.dumps(details, sort_keys=True)}\n"
+                )
                 evidence.flush()
+            return found
+
+        for attempt in range(4 if reclaim else 1):
+            found = inspect(attempt, "scan")
             if not found:
                 break
             if not reclaim:
-                raise ExternalNpuOccupancy(f"External NPU activity on {request['host_id']}: {found[:3]}")
-            # Recheck immediately before signalling; refuse PIDs on other chips.
-            verify = transport_run(host, command, timeout=40, check=False)
-            if verify.returncode != 0:
-                raise RuntimeError("NPU reclaim confirmation failed")
-            confirmed = process_evidence(verify.stdout, request["devices"], indexing=indexing)
-            for pid in sorted(set(pid for _, pid in found) & set(pid for _, pid in confirmed)):
-                result = transport_run(host, "kill -9 -- " + str(pid), timeout=20, check=False)
+                raise ExternalNpuOccupancy(
+                    f"External NPU activity on {request['host_id']}: "
+                    f"{[(chip, pid) for chip, pid, _ in found][:3]}"
+                )
+
+            # Verify same chip *and host PID* immediately before signalling.
+            # Respawns with new PIDs are handled by the next bounded round.
+            confirmed = inspect(attempt, "confirm")
+            stable = {(chip, pid) for chip, pid, _ in found} & {
+                (chip, pid) for chip, pid, _ in confirmed
+            }
+            for pid in sorted({pid for _, pid in stable}):
+                chips = sorted(chip for chip, p in stable if p == pid)
+                container_pids = sorted({
+                    cp for chip, p, cp in confirmed
+                    if p == pid and chip in chips
+                })
+                result = transport_run(
+                    kill_host, "kill -9 -- " + str(pid), timeout=20, check=False
+                )
                 if evidence is not None:
-                    evidence.write(f"RECLAIM_KILL host={request['host_id']} pid={pid} rc={result.returncode}\\n")
+                    evidence.write(
+                        f"RECLAIM_KILL host={request['host_id']} "
+                        f"ssh={kill_host} chips={chips} host_pid={pid} "
+                        f"container_pids={container_pids} rc={result.returncode}\n"
+                    )
                     evidence.flush()
                 if result.returncode != 0:
-                    raise RuntimeError(f"NPU reclaim kill failed on {request['host_id']} pid={pid}")
-            if attempt == rounds - 1:
-                # The final state must be verified, not assumed from kill status.
-                final = transport_run(host, command, timeout=40, check=False)
-                if final.returncode != 0 or process_evidence(final.stdout, request["devices"], indexing=indexing):
-                    raise RuntimeError(f"NPU reclaim not idle on {request['host_id']}")
+                    raise RuntimeError(
+                        f"NPU reclaim kill failed on {request['host_id']} "
+                        f"host_pid={pid}"
+                    )
+            if attempt == 3 and inspect(attempt, "final"):
+                raise RuntimeError(
+                    f"NPU reclaim not idle on {request['host_id']}"
+                )
         else:
-            raise RuntimeError(f"NPU reclaim attempts exhausted on {request['host_id']}")
+            raise RuntimeError(
+                f"NPU reclaim attempts exhausted on {request['host_id']}"
+            )
 
 
 def summarize(log: Path, rc: int) -> list[str]:
