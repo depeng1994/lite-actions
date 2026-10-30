@@ -277,6 +277,7 @@ import os
 from pathlib import Path
 import sys
 folder=Path(sys.argv[1]); marker=sys.argv[2]
+if os.geteuid()!=0: raise SystemExit('full PID visibility is required for NPU cleanup proof')
 if not (folder/'job.intent').exists() or (folder/'job.intent').read_text()!=marker:
     raise SystemExit('launch intent is unverified')
 finished=(folder/'exit_code.txt').exists()
@@ -285,7 +286,6 @@ if not (finished or cleaned): raise SystemExit('completion/cleanup acknowledgeme
 tag=('LITE_CI_JOB_ID='+marker).encode()
 for entry in Path('/proc').glob('[0-9]*'):
     try:
-        if entry.stat().st_uid!=os.geteuid() and os.geteuid()!=0: continue
         if tag in (entry/'environ').read_bytes().split(b'\x00'):
             raise SystemExit('owned process remains')
     except (FileNotFoundError,ProcessLookupError): pass

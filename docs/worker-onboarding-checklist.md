@@ -1,3 +1,12 @@
+# Lite Actions 2.0 onboarding
+
+The current business entries are `nightly_fulltests.yml` and
+`lite_actions_dispatcher_smoke.yml`. Workers blue/yellow independently Pull tasks
+and share one scheduling/execution implementation. Existing-container image bindings
+and root PID visibility are mandatory for NPU jobs. Yellow training pools remain
+disabled until independent hardware is accepted. See [README](../README.md) for the
+current schema, start commands, result limits and migration sequence.
+
 # Worker Onboarding & A5 Troubleshooting Checklist
 
 Use this before adding a new A5 execution environment. Distinguish the Lite Actions control-plane Dispatcher from the accelerator resource pool: a named CPU smoke worker is not the same thing as an A5 training node.
@@ -6,7 +15,7 @@ Use this before adding a new A5 execution environment. Distinguish the Lite Acti
 - Dispatcher / Host Server: receives GitHub Actions requests, validates them, schedules work, records state, and reports results.
 - Named worker registry (config/workers.json): intended for explicitly addressed lightweight worker probes, such as the depeng OS smoke.
 - Accelerator resource pool (config/pools.json): defines A3/A5 hosts, device IDs, verified allocation groups, SSH aliases, HCCL topology, and concurrency limits for training workflows.
-- For an A5 workflow, adding only an entry to workers.json is insufficient. Add and validate the A5 resource-pool topology and workflow profile.
+- For an A5 workflow, adding only an entry to workers.json is insufficient. Add and validate the A5 resource-pool topology and schema-3 case plan and owner mapping.
 
 ## 2. SSH aliases and execution context
 - Verify every alias from the Dispatcher account's SSH config; do not copy alias names from another machine.
@@ -43,8 +52,8 @@ Use this before adding a new A5 execution environment. Distinguish the Lite Acti
 - Cancellation must stop waiting/launching and must not leave remote children or stale leases.
 
 ## 7. GitHub Actions and result protocol
-- Keep the workflow filename exact; this repository uses underscore-separated names such as a3_8p_lite_actions.yml.
-- Match the workflow's test_id/suite/resource request with the trusted Dispatcher pipeline config.
+- Keep the workflow filename exact; this repository uses underscore-separated names such as nightly_fulltests.yml.
+- Match the workflow's test_id/suite/resource request with the trusted worker/pool ownership and schema-3 case definition.
 - Confirm the intended repository, branch, and actor are allowlisted in the Dispatcher environment.
 - Keep run ID, attempt, commit SHA, pipeline ID, test ID, and allocation consistent from request through result comment.
 - Fetch/checkout the requested commit SHA. Verify cached source archives against that SHA and publish cache entries atomically.

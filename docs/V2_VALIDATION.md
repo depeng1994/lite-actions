@@ -36,3 +36,51 @@ coverrides, and the two actual DSV4 8P definitions are used unchanged.
 
 No NPU training PASS is claimed by this record until the corresponding live evidence
 is appended. Existing historical production logs are preserved outside the new source.
+
+## Reviewed implementation and live GitHub evidence
+
+The independent static review identified and fixed: unbound-node admission, log
+collection touching unallocated nodes, superseded-attempt cancellation, admission
+crash recovery, and release proof based on NPU idleness alone. The release proof
+now also requires durable launch/completion evidence and absence of marked processes.
+NPU execution requires root PID visibility; yellow's first-release scope is OS-only.
+
+- Model branch, after current-upstream integration: **54 passed, 24 subtests**.
+- Local dispatcher regression: **103 passed, 6 environment-specific skips, 61 subtests**.
+- Blue Linux reviewed build: **109 tests, OK, 1 skipped** (adjacent model checkout).
+- Yellow's full-PID proof regression requires blue/root privileges; its earlier
+  rootless failure was fail-closed on an unreadable `/proc` entry. That root-only
+  acceptance runs on blue; yellow OS routing does not use NPU cleanup.
+
+Manual OS E2E: https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/41040977540
+
+| Worker | Result | Diagnostic lines | Comment bytes | Serialized request bytes |
+| --- | --- | ---: | ---: | ---: |
+| blue / ycy | PASS | 13 | 872 | 988 |
+| yellow / hwy | PASS | 18 | 1172 | 1306 |
+
+The run executed model commit `5e84f6610064a7092cc596a9f4c3bb64e521ed8c` with the
+reviewed dispatcher candidate, schema 3 Artifact, two independent worker pickups,
+Commit Comments and successful exact-identity Waiters.
+
+PR #11 automatically triggered both workflows. OS cases passed. NPU cases returned
+`POOL_DISABLED` because candidate verification deliberately disables resource execution
+while the existing release remains responsible for real hardware. The aggregate checks
+correctly failed instead of falsely reporting an unexecuted training PASS.
+
+Draft changes:
+- https://github.com/depeng1994/lite-actions/pull/10
+- https://github.com/torchtitan-npu/torchtitan-npu/pull/11
+
+## Remaining gates
+
+The requested image is present on `:153` in two containers; binding selection is
+pending. The requested image is absent on `:154`. No DSV4 or NPU smoke PASS is claimed.
+The original release has one quarantine record, which must be preserved/mapped and
+reconciled before hardware ownership/lock migration; candidate OS verification does
+not clear it or take its devices.
+
+Full pre-commit has **not passed**. Local syntax/YAML/format/spelling/architecture
+checks passed; OAT processing and project-wide Pyrefly remain unsuccessful in the
+local stack. A matching Linux retry was blocked by its old system Git lacking
+`git ls-files --deduplicate`. These failures are recorded, not waived or reported green.

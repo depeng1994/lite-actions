@@ -18,6 +18,7 @@ def command(host, script):
     )
     return [
         "ssh",
+        "-T",
         "-o",
         "BatchMode=yes",
         "-o",

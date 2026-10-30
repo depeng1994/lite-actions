@@ -85,7 +85,8 @@ resource leases are shared across checkouts of the same deployment user.
 `docker` is an image reference mapped by trusted per-node `environments` entries to
 an existing full container ID and image ID. The executor does not create containers,
 pull images, or choose among ambiguous candidates. It checks the running container
-and current image tag before NPU admission. Different jobs use isolated directories.
+and current image tag before NPU admission. NPU execution requires root-level PID
+visibility in the execution namespace so cleanup can verify every marked descendant. Different jobs use isolated directories.
 
 ```bash
 python3 scripts/preflight_v2.py --worker-id blue
@@ -93,7 +94,7 @@ python3 scripts/preflight_v2.py --worker-id blue
 python3 scripts/preflight_v2.py --worker-id blue --write-bindings
 ```
 
-Source synchronization uses SSH stdin streaming, avoiding SCP's ambiguity for aliases
+Batch SSH explicitly disables PTY allocation. Source synchronization uses SSH stdin streaming, avoiding SCP's ambiguity for aliases
 containing a colon. The archive checksum is verified remotely. All nodes must stage
 successfully before any rank launches. Test outputs remain below a per-run/attempt/
 case directory on the approved mount.

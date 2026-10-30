@@ -364,7 +364,8 @@ class RouterV3Tests(unittest.TestCase):
         self.assertEqual(restarted.state.read()[key]["phase"], "QUEUED")
 
     @unittest.skipUnless(
-        __import__("sys").platform == "linux", "Requires real Linux /proc"
+        __import__("sys").platform == "linux" and __import__("os").geteuid() == 0,
+        "Requires full host PID visibility on blue",
     )
     def test_cpu_initializing_child_blocks_release_even_with_exit_record(self):
         import os

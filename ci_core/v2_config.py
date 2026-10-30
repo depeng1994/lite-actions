@@ -45,7 +45,10 @@ def execution_node(node, image):
     container = env["container_id"]
     if not re.fullmatch(r"[a-f0-9]{12,64}", container):
         raise ValueError("container must be pinned by ID")
-    script = "docker inspect --format '{{json .}}' " + container
+    script = (
+        'docker inspect --format \'{"Image":{{json .Image}},"State":{"Running":{{json .State.Running}}}}\' '
+        + container
+    )
     data = json.loads(run(node["ssh"], script, timeout=30).stdout)
     if not data.get("State", {}).get("Running") or data.get("Image") != env["image_id"]:
         raise ValueError("CONTAINER_IDENTITY_MISMATCH")
@@ -58,7 +61,10 @@ def execution_node(node, image):
     ).stdout.strip()
     if actual != env["image_id"]:
         raise ValueError("IMAGE_TAG_CHANGED")
-    return {**node, "ssh": node["ssh"] + "/" + container}
+    execution_ssh = node["ssh"] + "/" + container
+    if run(execution_ssh, "id -u", timeout=30).stdout.strip() != "0":
+        raise ValueError("EXECUTION_PID_VISIBILITY_REQUIRED")
+    return {**node, "ssh": execution_ssh}
 
 
 def runtime_case(item, pools, worker):
