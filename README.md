@@ -22,6 +22,9 @@ These are canonical SSH aliases. Deployment SSH configuration maps each alias to
 verified host connection, port, key and relay. Container connections are separate
 from host PID / notification connections.
 
+Blue production service paths, supported model entry and operations are documented in
+[blue worker operations](docs/blue-worker.md).
+
 ## End-to-end flow
 
 ```text

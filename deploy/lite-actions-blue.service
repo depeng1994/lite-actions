@@ -1,0 +1,26 @@
+[Unit]
+Description=Lite Actions blue Pull worker
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/lite-actions/current
+EnvironmentFile=/etc/lite-actions/blue.env
+ExecStartPre=/usr/bin/python3 /opt/lite-actions/current/unified_router.py --worker-id blue --validate
+ExecStart=/usr/bin/flock --exclusive --nonblock --no-fork /root/.cache/lite-actions/phase1-agent.lock /usr/bin/python3 -u /opt/lite-actions/current/unified_router.py --worker-id blue
+Restart=on-failure
+RestartSec=10
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=900
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lite-actions-blue
+
+[Install]
+WantedBy=multi-user.target
