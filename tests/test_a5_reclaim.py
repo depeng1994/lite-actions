@@ -169,6 +169,26 @@ class ReclaimTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "kill failed"):
             self._run_with_outputs([EXTERNAL, EXTERNAL], kill_rc=1)
 
+    def test_reclaim_succeeds_on_fourth_round_only(self):
+        # Four complete scan/confirm rounds; final verification is idle.
+        # A successful fourth kill must not fall into for/else exhaustion.
+        evidence = io.StringIO()
+        commands = self._run_with_outputs(
+            [EXTERNAL, EXTERNAL, RESPAWN, RESPAWN, RESPAWN,
+             RESPAWN, EXTERNAL, EXTERNAL, EMPTY],
+            evidence=evidence,
+        )
+        kills = [(host, cmd) for host, cmd in commands
+                 if cmd.startswith("kill -9 --")]
+        self.assertEqual(kills, [
+            ("host-ssh:22", "kill -9 -- 2341399"),
+            ("host-ssh:22", "kill -9 -- 2341400"),
+            ("host-ssh:22", "kill -9 -- 2341400"),
+            ("host-ssh:22", "kill -9 -- 2341399"),
+        ])
+        self.assertIn("round=3 stage=final", evidence.getvalue())
+        self.assertIn("RECLAIM_EVIDENCE", evidence.getvalue())
+
     def test_persistent_respawn_fails_closed_after_four_rounds(self):
         commands = []
         def transport(host, script, **kwargs):

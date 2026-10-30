@@ -285,14 +285,14 @@ def remote_preflight(
                         f"NPU reclaim kill failed on {request['host_id']} "
                         f"host_pid={pid}"
                     )
-            if attempt == 3 and inspect(attempt, "final"):
-                raise RuntimeError(
-                    f"NPU reclaim not idle on {request['host_id']}"
-                )
-        else:
-            raise RuntimeError(
-                f"NPU reclaim attempts exhausted on {request['host_id']}"
-            )
+            if attempt == 3:
+                # Four rounds may be needed if the process is respawned.
+                # Successful final verification must exit the loop normally.
+                if inspect(attempt, "final"):
+                    raise RuntimeError(
+                        f"NPU reclaim not idle on {request['host_id']}"
+                    )
+                break
 
 
 def summarize(log: Path, rc: int) -> list[str]:
