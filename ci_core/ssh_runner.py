@@ -181,6 +181,7 @@ def remote_command(node: dict, nodes: list[dict], runner: dict, dest: str,
     supervisor = (
         "import os,pathlib,subprocess,sys; "
         "dest=pathlib.Path(sys.argv[1]); marker=sys.argv[2]; inner=sys.argv[3]; "
+        "(dest/'job.intent').write_text(marker); "
         "log=(dest/'run.log').open('wb'); "
         "env=dict(os.environ,LITE_CI_JOB_ID=marker); "
         "proc=subprocess.Popen(['bash','-lc',inner],stdout=log,"
@@ -191,7 +192,7 @@ def remote_command(node: dict, nodes: list[dict], runner: dict, dest: str,
         "print('NODE_EXIT:',rc,flush=True); sys.exit(rc)"
     )
     return (f"cd {q(dest)} || exit 125; "
-            f"python3 -c {q(supervisor)} {q(dest)} {q(stamp)} {q(inner)}")
+            f"exec env LITE_CI_JOB_ID={q(stamp)} python3 -c {q(supervisor)} {q(dest)} {q(stamp)} {q(inner)}")
 
 
 def cancel(node: dict, dest: str, stamp: str) -> None:
@@ -211,8 +212,8 @@ import time
 
 folder = Path(sys.argv[1])
 marker = sys.argv[2]
-leader = int((folder / 'job.pgid').read_text().strip())
-if leader <= 1:
+leader = int((folder / 'job.pgid').read_text().strip()) if (folder / 'job.pgid').exists() else None
+if leader is not None and leader <= 1:
     raise SystemExit('invalid recorded job pid')
 tag = b'LITE_CI_JOB_ID=' + marker.encode()
 
@@ -228,7 +229,7 @@ def identity(pid):
         return None
 
 # Never act on a reused launcher PID or any unverified foreign process.
-if Path(f'/proc/{leader}').exists() and identity(leader) is None:
+if leader is not None and Path(f'/proc/{leader}').exists() and identity(leader) is None:
     raise SystemExit('refuse reused/foreign launcher PID')
 owned = {}
 for entry in os.scandir('/proc'):
@@ -261,11 +262,35 @@ time.sleep(1)
 left = [pid for pid, start in owned.items() if identity(pid) == start]
 if left:
     raise SystemExit('owned process cleanup unverified: ' + str(left))
+if (folder / 'job.intent').exists() and (folder / 'job.intent').read_text() == marker:
+    (folder / 'cleanup_verified.txt').write_text(marker)
 """
     try:
         ssh(node["ssh"], f"python3 -c {q(code)} {q(dest)} {q(stamp)}", timeout=35)
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
         print(f"CLEANUP_UNVERIFIED: {node['host_id']} {type(exc).__name__}", flush=True)
+
+
+def owned_processes_gone(node, dest, stamp):
+    code = r"""
+import os
+from pathlib import Path
+import sys
+folder=Path(sys.argv[1]); marker=sys.argv[2]
+if not (folder/'job.intent').exists() or (folder/'job.intent').read_text()!=marker:
+    raise SystemExit('launch intent is unverified')
+finished=(folder/'exit_code.txt').exists()
+cleaned=(folder/'cleanup_verified.txt').exists() and (folder/'cleanup_verified.txt').read_text()==marker
+if not (finished or cleaned): raise SystemExit('completion/cleanup acknowledgement missing')
+tag=('LITE_CI_JOB_ID='+marker).encode()
+for entry in Path('/proc').glob('[0-9]*'):
+    try:
+        if entry.stat().st_uid!=os.geteuid() and os.geteuid()!=0: continue
+        if tag in (entry/'environ').read_bytes().split(b'\x00'):
+            raise SystemExit('owned process remains')
+    except (FileNotFoundError,ProcessLookupError): pass
+"""
+    ssh(node["ssh"],f"python3 -c {q(code)} {q(dest)} {q(stamp)}",timeout=30)
 
 
 def verify(nodes: list[dict], runner: dict, base: str, timeout: int, test_case: str) -> int:

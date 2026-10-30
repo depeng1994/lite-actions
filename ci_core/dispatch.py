@@ -369,6 +369,11 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
                     for retry in range(3):
                         try:
                             remote_preflight(case, pools, ascend_env=setup)
+                            if case.get("_v3"):
+                                from ci_core.ssh_runner import allocations, owned_processes_gone, DEST_ROOT
+                                for node in allocations(case,pools):
+                                    dest=f"{DEST_ROOT}/{remote_task_name(run)}/node{node['position']}"
+                                    owned_processes_gone(node,dest,log_dir.name)
                             idle = True
                             break
                         except (RuntimeError, subprocess.SubprocessError, ValueError):
@@ -400,7 +405,7 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
         try:
             location = metadata(logfile)
             from ci_core.v2_config import execution_node
-            approved = {(execution_node(node,case["docker"]) if case.get("docker") else node)["ssh"] for node in pools[case["pool"]]["nodes"] if node.get("ssh")}
+            approved = {(execution_node(node,case["docker"]) if case.get("docker") else node)["ssh"] for node in pools[case["pool"]]["nodes"] if node.get("ssh") and node["host_id"] in {n["host_id"] for n in case["allocation"]}}
             excerpt = select_remote(location["host"], location["path"], rc,
                                     approved_hosts=approved)
         except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:

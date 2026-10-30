@@ -51,6 +51,8 @@ class Router:
         self.plans = {}
         # Unknown children survive a dispatcher crash. Fail closed before admitting overlap.
         for key, r in self.state.read().items():
+            if r.get("phase") == "RECEIVED":
+                self.state.update(key, phase="QUEUED")
             if r.get("phase") in {"RESERVED", "STAGING", "RUNNING", "CLEANING"}:
                 result = report(
                     r["run"],
@@ -129,7 +131,7 @@ class Router:
                     continue
                 self.state.update(
                     key,
-                    phase="RECEIVED",
+                    phase="QUEUED",
                     run=run,
                     item=item,
                     digest=plan["plan_digest"],
@@ -142,6 +144,18 @@ class Router:
         options = candidates(case, self.pools)
         if not options:
             raise ValueError("NO_VERIFIED_TOPOLOGY")
+        if case.get("docker"):
+            inventory = {n["host_id"]: n for n in self.pools[case["pool"]]["nodes"]}
+            options = [
+                a
+                for a in options
+                if all(
+                    inventory[n["host_id"]].get("environments", {}).get(case["docker"])
+                    for n in a
+                )
+            ]
+            if not options:
+                raise ValueError("CONTAINER_BINDING_MISSING")
         blocked = set()
         for r in self.state.read().values():
             if r.get("quarantined"):
@@ -388,7 +402,11 @@ class Router:
             ident = r["run"]["id"]
             if ident not in statuses:
                 statuses[ident] = self.client.workflow_status(ident)
-            if statuses[ident].get("status") == "completed":
+            current = statuses[ident]
+            superseded = current.get("run_attempt", r["run"].get("run_attempt", 1)) > r[
+                "run"
+            ].get("run_attempt", 1)
+            if current.get("status") == "completed" or superseded:
                 if key in self.active:
                     self.active[key][1].set()
                 elif r["phase"] == "QUEUED":

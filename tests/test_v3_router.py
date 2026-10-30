@@ -92,6 +92,16 @@ class RouterV3Tests(unittest.TestCase):
         (self.root / "config").mkdir()
         for f in (ROOT / "config").glob("*.json"):
             (self.root / "config" / f.name).write_bytes(f.read_bytes())
+        path = self.root / "config/pools.json"
+        pools = json.loads(path.read_text())
+        for n in pools["a3_shared_blue"]["nodes"]:
+            n["environments"] = {
+                "image:tag": {
+                    "container_id": "a" * 64,
+                    "image_id": "sha256:" + "b" * 64,
+                }
+            }
+        path.write_text(json.dumps(pools))
         self.env = patch.dict(
             "os.environ",
             LITE_ACTIONS_ALLOWED_ACTORS="maintainer",
@@ -308,3 +318,84 @@ class RouterV3Tests(unittest.TestCase):
         path.write_text(json.dumps(p))
         with self.assertRaises(ValueError):
             load(self.root, "blue")
+
+    def test_unbound_unallocated_node_does_not_block_8p_admission(self):
+        run, p = make_plan()
+        r = self.router("blue", Client({20: p}))
+        r.pools["a3_shared_blue"]["nodes"][1]["environments"] = {}
+        case = runtime_case(p["cases"][0], r.pools, "blue")
+        lease, selected = r.claim(case)
+        try:
+            self.assertEqual(selected["allocation"][0]["host_id"], "113.46.17.205:153")
+        finally:
+            lease.close()
+
+    def test_missing_binding_fails_before_device_lock(self):
+        run, p = make_plan()
+        r = self.router("blue", Client({20: p}))
+        for n in r.pools["a3_shared_blue"]["nodes"]:
+            n["environments"] = {}
+        with self.assertRaisesRegex(ValueError, "CONTAINER_BINDING_MISSING"):
+            r.claim(runtime_case(p["cases"][0], r.pools, "blue"))
+        self.assertFalse((self.root / "leases/devices").exists())
+
+    def test_superseded_attempt_is_cancelled_before_new_launch(self):
+        run, p = make_plan()
+        c = Client({20: p})
+        r = self.router("blue", c)
+        r.receive([run])
+        with patch.object(
+            c, "workflow_status", return_value=dict(status="in_progress", run_attempt=2)
+        ):
+            r.tick()
+        record = next(iter(r.state.read().values()))
+        self.assertEqual(record["report"]["status"], "CANCELLED")
+        self.assertFalse(r.active)
+
+    def test_interrupted_admission_recovers_to_queue(self):
+        run, p = make_plan()
+        c = Client({20: p})
+        r = self.router("blue", c)
+        r.receive([run])
+        key = task_key(run, p["cases"][0])
+        r.state.update(key, phase="RECEIVED")
+        restarted = Router(r.root, "blue", c, "reporter")
+        self.routers.append(restarted)
+        self.assertEqual(restarted.state.read()[key]["phase"], "QUEUED")
+
+    @unittest.skipUnless(
+        __import__("sys").platform == "linux", "Requires real Linux /proc"
+    )
+    def test_cpu_initializing_child_blocks_release_even_with_exit_record(self):
+        import os
+        import subprocess
+        from ci_core.ssh_runner import owned_processes_gone
+
+        folder = self.root / "remote"
+        folder.mkdir()
+        marker = "isolated-v3-cleanup-test"
+        (folder / "job.intent").write_text(marker)
+        (folder / "exit_code.txt").write_text("0\n")
+        child = subprocess.Popen(
+            ["sleep", "30"], env={**os.environ, "LITE_CI_JOB_ID": marker}
+        )
+
+        def local_ssh(host, script, **kwargs):
+            completed = subprocess.run(
+                ["bash", "-lc", script], capture_output=True, text=True
+            )
+            if completed.returncode:
+                raise RuntimeError("owned process remains")
+            return completed
+
+        try:
+            with patch("ci_core.ssh_runner.ssh", side_effect=local_ssh):
+                with self.assertRaises(RuntimeError):
+                    owned_processes_gone({"ssh": "isolated"}, str(folder), marker)
+                child.terminate()
+                child.wait(5)
+                owned_processes_gone({"ssh": "isolated"}, str(folder), marker)
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait()
