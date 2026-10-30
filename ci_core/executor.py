@@ -118,12 +118,12 @@ def process_evidence(output: str, devices: list[int], *, indexing: str) -> list[
                 chip = int(match[1]) * 2 + int(match[2])
                 pid = int(match[3])
                 rows.append((chip, pid))
-            elif re.match(r"^\\|\\s*\\d+", line):
+            elif re.match(r"^\|\s*\d+", line):
                 raise ValueError("unrecognized NPU process row")
         elif len(cells) == 5 and cells[0].isdigit() and cells[1].isdigit() and cells[-1].isdigit():
             # Actual A5 row: NPU ID | host PID | name | memory | container PID.
             rows.append((int(cells[0]), int(cells[-1])))
-        elif re.match(r"^\\|\\s*\\d+", line):
+        elif re.match(r"^\|\s*\d+", line):
             raise ValueError("unrecognized NPU process row")
     # Never kill a PID which also appears on an unallocated chip.
     targets = {pid for chip, pid in rows if chip in selected}
