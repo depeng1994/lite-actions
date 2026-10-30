@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from ci_core.config import load
-from ci_core.executor import ExternalNpuOccupancy, process_evidence, remote_preflight
+from ci_core.executor import ExternalNpuOccupancy, process_evidence, remote_preflight, execute
 
 A5 = """| NPU ID | Process id | Process name | Process memory(MB) | Process id in container |
 +===========================+
@@ -77,6 +77,43 @@ class ReclaimTests(unittest.TestCase):
                 (root / "config/pools.json").write_text(json.dumps({"p": {"owner": owner, "type": kind, "force_reclaim": True, "nodes": []}}))
                 with self.assertRaises(ValueError):
                     load(root, "yellow")
+
+
+    def test_cleanup_rechecks_devices_before_verified_release(self):
+        from contextlib import ExitStack
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "config").mkdir()
+            (root / "config/pools.json").write_text(json.dumps({"a5": self.pool}))
+            case = dict(self.case, enabled=True, docker=None, kind="npu_smoke", resources={"nodes": 1, "devices_per_node": 1}, execution_timeout_seconds=30)
+            run = {"created_at": "2026-10-31T00:00:00Z", "id": 42, "name": "Smoke", "run_number": 1, "head_sha": "a" * 40, "_ci_test_id": "smoke"}
+            child = Mock()
+            child.poll.return_value = 0
+            child.returncode = 0
+            for cleanup_idle in (True, False):
+                calls = []
+                def preflight(*args, **kwargs):
+                    calls.append(kwargs)
+                    if len(calls) > 1 and not cleanup_idle:
+                        raise RuntimeError("still occupied")
+                with ExitStack() as stack:
+                    stack.enter_context(patch("ci_core.executor.prepare_profile", return_value={"ASCEND_SET_ENV_PATH": "/cann"}))
+                    stack.enter_context(patch("ci_core.scheduler.validate_allocation"))
+                    stack.enter_context(patch("ci_core.executor.remote_preflight", side_effect=preflight))
+                    stack.enter_context(patch("ci_core.executor.broadcast_job", return_value=[]))
+                    stack.enter_context(patch("ci_core.executor.subprocess.Popen", return_value=child))
+                    stack.enter_context(patch("ci_core.executor.time.sleep"))
+                    stack.enter_context(patch("ci_core.ssh_runner.allocations", return_value=[{"position": 0}]))
+                    stack.enter_context(patch("ci_core.ssh_runner.owned_processes_gone"))
+                    stack.enter_context(patch("ci_core.config.execution_node", return_value={"ssh": "host/container"}))
+                    stack.enter_context(patch("ci_core.executor.metadata", return_value={"host": "host/container", "path": "/log"}))
+                    stack.enter_context(patch("ci_core.executor.select_remote", return_value=["PASS"]))
+                    result = execute(case, run, root=root)
+                self.assertGreaterEqual(len(calls), 2)
+                self.assertEqual(result.release_verified, cleanup_idle)
+                if not cleanup_idle:
+                    self.assertNotEqual(result.exit_code, 0)
 
 if __name__ == "__main__":
     unittest.main()
