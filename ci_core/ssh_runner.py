@@ -36,15 +36,8 @@ def q(value: object) -> str:
 
 
 def ssh(host: str, command: str, *, timeout: int = 90, check: bool = True) -> subprocess.CompletedProcess:
-    result = subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
-         "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=25",
-         host, "bash -lc " + q(command)],
-        capture_output=True, text=True, timeout=timeout, check=False,
-    )
-    if check and result.returncode:
-        raise RuntimeError(f"SSH {host} failed ({result.returncode}): {result.stderr[-250:]}")
-    return result
+    from ci_core.transport import run
+    return run(host,command,timeout=timeout,check=check)
 
 
 def model_archive(sha: str, work: Path) -> Path:
@@ -104,6 +97,9 @@ def allocations(case: dict, pools: dict) -> list[dict]:
     nodes = []
     for position, allocated in enumerate(case["allocation"]):
         node = lookup[allocated["host_id"]]
+        if case.get("docker"):
+            from ci_core.v2_config import execution_node
+            node = execution_node(node, case["docker"])
         if not node.get("ssh") or not node.get("node_ip"):
             raise ValueError(f"missing SSH/HCCL address for {allocated['host_id']}")
         nodes.append({**node, "devices": list(allocated["devices"]), "position": position})
@@ -118,8 +114,12 @@ def stage(node: dict, base: str, archive: Path, sha: str) -> str:
     host = node["ssh"]
     dest = f"{base}/node{node['position']}"
     ssh(host, f"mkdir -p {q(base)} && mkdir {q(dest)} && mkdir {q(dest+'/repo')}")
-    subprocess.run(["scp", "-q", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", str(archive),
-                    f"{host}:{dest}/source.tar.gz"], check=True, timeout=180)
+    from ci_core.transport import run as transport_run
+    with archive.open("rb") as source:
+        transport_run(host,"cat > "+q(dest+"/source.tar.gz"),stdin=source,timeout=180)
+    import hashlib
+    checksum=hashlib.sha256(archive.read_bytes()).hexdigest()
+    ssh(host,"test "+q(checksum)+" = \"$(sha256sum "+q(dest+"/source.tar.gz")+" | cut -d ' ' -f1)\"")
     ssh(host, f"cd {q(dest)} && tar -xzf source.tar.gz -C repo && "
               f"printf '%s\\n' {q(sha)} > source_sha.txt && "
               f"test -f repo/tests/integration_tests/__init__.py")
@@ -387,7 +387,8 @@ def run(case: dict, sha: str, stamp: str, *, test_case: str,
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--case", required=True)
+    parser.add_argument("--case")
+    parser.add_argument("--case-file")
     parser.add_argument("--test-case")
     parser.add_argument("--request-file")
     parser.add_argument("--run-id", type=int)
@@ -398,7 +399,10 @@ def main() -> int:
                         help="Human-readable remote task directory")
     parser.add_argument("--allocation-file", help="Trusted dispatcher allocation JSON")
     args = parser.parse_args()
-    case = load_config(ROOT).get(args.case)
+    if args.case_file:
+        case=json.loads(Path(args.case_file).read_text())
+    else:
+        case = load_config(ROOT).get(args.case)
     if not case or not case["enabled"] or case["runner"]["kind"] != "ssh":
         raise ValueError("unsupported or disabled SSH pipeline")
     if "resources" in case:

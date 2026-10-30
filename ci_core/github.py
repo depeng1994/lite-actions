@@ -189,16 +189,8 @@ class GitHubClient:
             if info.file_size > 262144:
                 raise ValueError("CI request JSON too large")
             request_data = json.loads(archive.read(info))
-        if request_data.get("schema") != 2:
-            raise ValueError("unsupported CI request schema")
-        from ci_core.protocol import parse_plan
-        from ci_core.config import load_config
-        configs = load_config(Path(__file__).resolve().parents[1])
-        matching = [spec for spec in configs.values()
-                    if run.get("path") == ".github/workflows/" + spec["workflow"]]
-        if len(matching) != 1:
-            raise ValueError("unrecognized CI workflow path")
-        parse_plan(request_data, run, matching[0]["pipeline_id"])
+        from ci_core.contract import parse_plan
+        parse_plan(request_data,run,run.get("path", "").rsplit("/",1)[-1])
         return request_data
 
     def commit_comments(self, sha: str) -> list[dict]:

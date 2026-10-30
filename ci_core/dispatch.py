@@ -169,11 +169,12 @@ def remote_preflight(case: dict, pools: dict, *, ascend_env: str | None = None) 
             # the configured toolkit, npu-smi fails with missing libc_sec.so
             # and an otherwise-free host is incorrectly marked unavailable.
             command = "source " + shlex.quote(ascend_env) + " >/dev/null 2>&1 && npu-smi info"
-        proc = subprocess.run(
-            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
-             host, "bash -lc " + shlex.quote(command)],
-            capture_output=True, text=True, timeout=40,
-        )
+        if case.get("docker"):
+            from ci_core.v2_config import execution_node
+            node=execution_node(node,case["docker"])
+            host=node["ssh"]
+        from ci_core.transport import run as transport_run
+        proc=transport_run(host,command,timeout=40,check=False)
         if proc.returncode != 0:
             raise RuntimeError(f"NPU preflight failed on {request['host_id']}")
         found = selected_processes(proc.stdout, request["devices"], indexing=indexing)
@@ -263,6 +264,11 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
         cmd = [sys.executable, "-u", "-m", "ci_core.ssh_runner",
                "--case", case["name"], "--sha", run["head_sha"],
                "--stamp", log_dir.name, "--remote-dir", remote_task_name(run)]
+        if case.get("_v3"):
+            runtime_file=log_dir/"runtime-case.json"
+            runtime_file.write_text(json.dumps(case)+"\n")
+            index=cmd.index("--case")
+            cmd[index:index+2]=["--case-file",str(runtime_file)]
         if "_ci_request" in run:
             # The manifest below is resolved/validated by the dispatcher.
             manifest = log_dir / "ci-request.json"
@@ -302,6 +308,8 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
                     failures = broadcast_job(case, pools, run, "begin")
                     if failures:
                         raise RuntimeError("CI begin wall failed on " + ",".join(failures))
+                phase_callback=run.get("_ci_phase_callback")
+                if phase_callback: phase_callback("LAUNCHING")
                 proc = subprocess.Popen(
                     cmd, cwd=root, stdout=stream, stderr=subprocess.STDOUT,
                     start_new_session=True,
@@ -311,7 +319,17 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
                     budget = case["timeout_seconds"] * case_count
                     deadline = time.monotonic() + budget
                     cancel = run.get("_ci_cancel_event")
+                    staged=False
+                    staging_deadline=time.monotonic()+600
                     while True:
+                        if case.get("_v3") and not staged:
+                            stream.flush()
+                            staged=logfile.read_text(errors="replace").count("STAGED: ") >= len(case.get("allocation",[]))
+                            if staged:
+                                if phase_callback:phase_callback("RUNNING")
+                                deadline=time.monotonic()+case.get("execution_timeout_seconds",case["timeout_seconds"])
+                            elif time.monotonic()>staging_deadline:
+                                raise subprocess.TimeoutExpired(cmd,600)
                         if proc.poll() is not None:
                             rc = proc.returncode
                             break
@@ -343,6 +361,7 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
                 logging.exception("CI dispatcher failure run=%s", run["id"])
                 rc = 125
             finally:
+                if run.get("_ci_phase_callback"):run["_ci_phase_callback"]("CLEANING")
                 if announced:
                     # Exit broadcast must not falsely claim that remote ranks
                     # have released devices merely because SSH exited.
@@ -380,7 +399,8 @@ def execute(case: dict, run: dict, *, root: Path = BASE, lock_root: Path | None 
     else:
         try:
             location = metadata(logfile)
-            approved = {node["ssh"] for node in pools[case["pool"]]["nodes"] if node.get("ssh")}
+            from ci_core.v2_config import execution_node
+            approved = {(execution_node(node,case["docker"]) if case.get("docker") else node)["ssh"] for node in pools[case["pool"]]["nodes"] if node.get("ssh")}
             excerpt = select_remote(location["host"], location["path"], rc,
                                     approved_hosts=approved)
         except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:

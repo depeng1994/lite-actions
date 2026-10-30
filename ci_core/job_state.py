@@ -1,5 +1,6 @@
 """Durable run state shared by the poller and the dispatcher reporter."""
 import json
+import os
 from pathlib import Path
 import threading
 
@@ -22,5 +23,11 @@ class JobState:
             current[key] = item
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(current, ensure_ascii=False, indent=2) + "\n")
+            with tmp.open("w") as f:
+                f.write(json.dumps(current, ensure_ascii=False, indent=2) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
             tmp.replace(self.path)
+            fd=os.open(self.path.parent,os.O_RDONLY)
+            try: os.fsync(fd)
+            finally: os.close(fd)

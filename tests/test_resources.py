@@ -8,15 +8,15 @@ from ci_core.resources import (AgentAlreadyRunning, GlobalSlotBusy,
                                agent_lock_path, global_slot_path, reserve,
                                ResourceBusy, single_agent, wait_global_slot, reserve_ports,
                                shared_resource_lock_root, reserve_host_budget)
-from ci_core.config import load_config
+from tests.support import load_config
 
 
-A8 = [{"host_id": "a3-4", "devices": list(range(8))}]
+A8 = [{"host_id": "113.46.17.205:154", "devices": list(range(8))}]
 A16 = [
-    {"host_id": "a3-3", "devices": list(range(8))},
-    {"host_id": "a3-4", "devices": list(range(8, 16))},
+    {"host_id": "113.46.17.205:153", "devices": list(range(8))},
+    {"host_id": "113.46.17.205:154", "devices": list(range(8, 16))},
 ]
-OVERLAP = [{"host_id": "a3-4", "devices": [7, 8]}]
+OVERLAP = [{"host_id": "113.46.17.205:154", "devices": [7, 8]}]
 
 
 def other_process(lockdir, allocation, out):
@@ -47,9 +47,9 @@ class ResourceTests(unittest.TestCase):
                     pass
 
     def test_atomic_host_budget_and_slot_capacity(self):
-        a=[{"host_id":"a3-3","devices":list(range(8))}]
-        b=[{"host_id":"a3-3","devices":list(range(8,16))}]
-        two=[a[0],{"host_id":"a3-4","devices":list(range(8))}]
+        a=[{"host_id":"113.46.17.205:153","devices":list(range(8))}]
+        b=[{"host_id":"113.46.17.205:153","devices":list(range(8,16))}]
+        two=[a[0],{"host_id":"113.46.17.205:154","devices":list(range(8))}]
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)
             with reserve_host_budget(root,a,max_jobs_per_host=1):
@@ -57,17 +57,17 @@ class ResourceTests(unittest.TestCase):
                     with reserve_host_budget(root,b,max_jobs_per_host=1):pass
             with reserve_host_budget(root,a,max_jobs_per_host=2) as one:
                 with reserve_host_budget(root,b,max_jobs_per_host=2) as two_slots:
-                    self.assertNotEqual(one['a3-3'],two_slots['a3-3'])
+                    self.assertNotEqual(one['113.46.17.205:153'],two_slots['113.46.17.205:153'])
                     with self.assertRaises(ResourceBusy):
                         with reserve_host_budget(root,b,max_jobs_per_host=2):pass
             with reserve_host_budget(root,a,max_jobs_per_host=1):
                 with self.assertRaises(ResourceBusy):
                     with reserve_host_budget(root,two,max_jobs_per_host=1):pass
-                with reserve_host_budget(root,[{'host_id':'a3-4','devices':list(range(8))}],
+                with reserve_host_budget(root,[{'host_id':'113.46.17.205:154','devices':list(range(8))}],
                                          max_jobs_per_host=1):pass
 
     def test_hccl_port_profiles_include_disjoint_ranges(self):
-        one=[{"host_id":"a3-4","devices":list(range(8))}]
+        one=[{"host_id":"113.46.17.205:154","devices":list(range(8))}]
         with tempfile.TemporaryDirectory() as td:
             with reserve_ports(Path(td),one) as a:
                 with reserve_ports(Path(td),one) as b:
@@ -151,10 +151,10 @@ class ResourceTests(unittest.TestCase):
             root = Path(td)
             with reserve(root, A8):
                 with self.assertRaises(ResourceBusy):
-                    with reserve(root, [{"host_id":"a3-3","devices":[0]},
-                                        {"host_id":"a3-4","devices":[0]}]):
+                    with reserve(root, [{"host_id":"113.46.17.205:153","devices":[0]},
+                                        {"host_id":"113.46.17.205:154","devices":[0]}]):
                         pass
-                with reserve(root, [{"host_id":"a3-3","devices":[0]}]):
+                with reserve(root, [{"host_id":"113.46.17.205:153","devices":[0]}]):
                     pass
 
     def test_a5_64p_configured_as_shared_ssh_and_has_8x8_devices(self):

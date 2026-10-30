@@ -21,8 +21,7 @@ def remote_excerpt(host: str, path: str, *, approved_hosts: set[str], runner=sub
         raise ValueError("untrusted execution log locator")
     command = "tail -c 131072 -- " + shlex.quote(path)
     result = runner(
-        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=12",
-         host, command],
+        __import__("ci_core.transport",fromlist=["command"]).command(host,command),
         capture_output=True, timeout=45, check=False,
     )
     if result.returncode:

@@ -19,7 +19,7 @@
 | 模块 / 路径 | 当前代码实现与架构能力 | 运行状态 |
 | :--- | :--- | :---: |
 | **[`config/pipelines.json`](file:///Users/depeng/work/work/lite-actions/config/pipelines.json)** | 彻底移除旧版写死设备的 `allocation`，完全基于资源规格声明（`nodes/devices_per_node`），解耦通道与物理卡。 | 生产生效 |
-| **[`config/pools.json`](file:///Users/depeng/work/work/lite-actions/config/pools.json)** | 登记 `a3-shared`（`a3-3` 与 `a3-4`），各 16 个逻辑芯片（`card-die` 映射）。登记经实机验证的 4 组 8P Group（`0-7` 与 `8-15`）及 2 组互补双机 16P Bundle（对角配对）。配置 `max_jobs_per_host: 2` 与 4 组 PortProfile。 | 生产生效 |
+| **[`config/pools.json`](file:///Users/depeng/work/work/lite-actions/config/pools.json)** | 登记 `a3-shared`（`113.46.17.205:153` 与 `113.46.17.205:154`），各 16 个逻辑芯片（`card-die` 映射）。登记经实机验证的 4 组 8P Group（`0-7` 与 `8-15`）及 2 组互补双机 16P Bundle（对角配对）。配置 `max_jobs_per_host: 2` 与 4 组 PortProfile。 | 生产生效 |
 | **[`ci_core/scheduler.py`](file:///Users/depeng/work/work/lite-actions/ci_core/scheduler.py)** | 1. **候选组动态匹配**：单机 8P 动态选空闲 Host/Group，双机 16P 动态选互补 Bundle；<br>2. **复合原子租约**：同时锁定芯片文件锁、Host 预算（最多 2 任务/机）与通信端口 Slot；<br>3. **大任务优先**：实现 `64P > 16P > 8P` 的调度优先级准入与排队意图预留，防止小任务饥饿大任务。 | 生产生效 |
 | **[`ci_core/occupancy.py`](file:///Users/depeng/work/work/lite-actions/ci_core/occupancy.py)** | **宿主机命名空间级外部占用审计**：利用 `npu-smi` 关联 chip 与 PID，核对 `/proc/<pid>/cmdline`、UID 与启动时间；仅定点清理已授权的 `auto-occupy` 与 `vllm` 进程；普通用户进程等待/换卡，严禁误杀。清理后必须重检 NPU 空闲。 | 生产生效 |
 | **[`ci_core/dispatcher.py`](file:///Users/depeng/work/work/lite-actions/ci_core/dispatcher.py) & [`protocol.py`](file:///Users/depeng/work/work/lite-actions/ci_core/protocol.py)** | 1. 单个 GitHub Run 拆解为多个 Matrix Case Task，由线程池独立派发；<br>2. **Case 级独立上报**：按 Test ID 单独生成 Commit Comment，Matrix Waiter 独立结束；<br>3. 局部重跑防御，避免跨 Attempt 假 PASS。 | 生产生效 |
@@ -52,13 +52,13 @@
    - 实机验证了 A3-3 `8-15` 的独立健康度与可用性；A3-3、A3-4 均开放双 8P 组，Host 容量放量至 `max_jobs_per_host: 2`。
 4. **四路 8P 满载并发（N14 PASS，两机 32 卡满载）**：
    - 证据：[PR #6 Run 38176153053 Attempt 2](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38176153053) + [PR #8 Run 38176477643 Attempt 1](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38176477643)。
-   - 成果：两台机器同时运行 4 组 8P 任务（a3-3 `0-7`/`8-15`，a3-4 `0-7`/`8-15`），4 个 Case 均 PASS，端口与资源完全隔离，任务完成后资源全部安全释放。
+   - 成果：两台机器同时运行 4 组 8P 任务（113.46.17.205:153 `0-7`/`8-15`，113.46.17.205:154 `0-7`/`8-15`），4 个 Case 均 PASS，端口与资源完全隔离，任务完成后资源全部安全释放。
 5. **8P + 16P 同节点混部（N04 PASS）**：
    - 证据：[8P Run 38176153053 Attempt 1](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38176153053) + [16P Run 38176153109 Attempt 1](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38176153109)。
    - 成果：A3-3 上 8P 与跨 A3-3/A3-4 的 16P 任务同时并发运行，3 个 Case 均 PASS，无重叠 DeviceSet，无端口冲突。
 6. **双 16P 跨机并发（N05 PASS）**：
    - 证据：[PR #6 Run 38176153109 Attempt 2](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38176153109) + [PR #9 Run 38177027448 Attempt 1](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/38177027448)。
-   - 成果：两套 16P 任务使用互补双机组合 `(a3-3: 0-7 + a3-4: 8-15)` 与 `(a3-3: 8-15 + a3-4: 0-7)`，分别占用 Port Slot 0 与 Slot 1，重叠执行区间内均 PASS。
+   - 成果：两套 16P 任务使用互补双机组合 `(113.46.17.205:153: 0-7 + 113.46.17.205:154: 8-15)` 与 `(113.46.17.205:153: 8-15 + 113.46.17.205:154: 0-7)`，分别占用 Port Slot 0 与 Slot 1，重叠执行区间内均 PASS。
 7. **64P > 16P > 8P 统一优先级调度**：
    - 调度器准入按节点规模优先级排序与意图预留，单测与调度逻辑已闭环。
 

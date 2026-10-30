@@ -5,13 +5,13 @@ import unittest
 from unittest.mock import patch
 
 from ci_core import dispatch
-from ci_core.config import load_config
+from tests.support import load_config
 
 
 class DispatchTests(unittest.TestCase):
     def test_exact_port_profile_is_serialized_for_subprocess(self):
         from ci_core.resources import port_profile
-        case={"allocation": [{"host_id":"a3-3","devices":list(range(8))}],
+        case={"allocation": [{"host_id":"113.46.17.205:153","devices":list(range(8))}],
               **port_profile(2)}
         wire=dispatch.trusted_allocation_manifest(case)
         self.assertEqual(wire['port_slot'],2)
@@ -43,8 +43,8 @@ class DispatchTests(unittest.TestCase):
     def test_remote_preflight_uses_host_namespace_and_detects_selected_group(self):
         root=Path(__file__).resolve().parents[1]
         pools=json.loads((root/"config/pools.json").read_text())
-        case={"pool":"a3-shared","allocation":[{
-            "host_id":"a3-4","devices":list(range(8,16))}]}
+        case={"pool":"a3_shared_blue","allocation":[{
+            "host_id":"113.46.17.205:154","devices":list(range(8,16))}]}
         output=("Process id in container\n"
                 "| 4       0                 | 4567      | external     |\n")
         completed=dispatch.subprocess.CompletedProcess([],0,stdout=output,stderr="")
@@ -52,8 +52,7 @@ class DispatchTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,"chip 8: pid 4567"):
                 dispatch.remote_preflight(case,pools,ascend_env="/container/cann/set_env.sh")
         argv=run.call_args.args[0]
-        self.assertIn("a3-4-docker",argv)
-        self.assertNotIn("a3-4",argv)
+        self.assertIn("113.46.17.205:154",argv)
         self.assertIn("source",argv[-1])
 
     def test_late_external_occupancy_has_single_scoped_reclaim(self):
@@ -61,8 +60,8 @@ class DispatchTests(unittest.TestCase):
         root=Path(__file__).resolve().parents[1]
         pools=json.loads((root/"config/pools.json").read_text())
         case={**load_config(root)["a3-8p"],
-              "allocation":[{"host_id":"a3-4","devices":list(range(8))}]}
-        occupied=dispatch.ExternalNpuOccupancy("External NPU activity on a3-4")
+              "allocation":[{"host_id":"113.46.17.205:154","devices":list(range(8))}]}
+        occupied=dispatch.ExternalNpuOccupancy("External NPU activity on 113.46.17.205:154")
         with patch.dict("os.environ", {"LITE_ACTIONS_RECLAIM_EXTERNAL_PROCESSES":"1"}), \
              patch.object(dispatch,"remote_preflight",side_effect=[occupied,None]) as preflight, \
              patch.object(occupancy,"reclaim_candidate",return_value=True) as reclaim:
@@ -74,7 +73,7 @@ class DispatchTests(unittest.TestCase):
                  patch.dict("os.environ", {"LITE_ACTIONS_RECLAIM_EXTERNAL_PROCESSES":"1"}), \
                  patch.object(dispatch,"remote_preflight",side_effect=occupied), \
                  patch.object(occupancy,"reclaim_candidate") as reclaim:
-                other={**case,"pool":"a5-64p-lab"} if not allowed else case
+                other={**case,"pool":"a5_shared_yellow"} if not allowed else case
                 with self.assertRaises(dispatch.ExternalNpuOccupancy):
                     dispatch.preflight_before_launch(other,pools,ascend_env=None,
                                                      pre_reserved=not allowed)
@@ -91,7 +90,7 @@ class DispatchTests(unittest.TestCase):
         root=Path(__file__).resolve().parents[1]
         pools=json.loads((root/"config/pools.json").read_text())
         case={**load_config(root)["a3-8p"],
-              "allocation":[{"host_id":"a3-4","devices":list(range(8))}]}
+              "allocation":[{"host_id":"113.46.17.205:154","devices":list(range(8))}]}
         with patch.dict("os.environ", {"LITE_ACTIONS_RECLAIM_EXTERNAL_PROCESSES":"1"}), \
              patch.object(dispatch,"remote_preflight",
                           side_effect=dispatch.ExternalNpuOccupancy("occupied")) as preflight, \

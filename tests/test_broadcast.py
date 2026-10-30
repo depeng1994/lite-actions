@@ -8,7 +8,7 @@ from unittest.mock import patch
 import subprocess
 
 from ci_core.broadcast import broadcast_job, notification, device_range
-from ci_core.config import load_config
+from tests.support import load_config
 from ci_core import dispatch
 
 
@@ -69,23 +69,22 @@ class BroadcastTests(unittest.TestCase):
             calls.append((argv[-2], argv[-1], kwargs["input"]))
             return subprocess.CompletedProcess(argv,0,"","")
         allocated={**cases["a3-16p"],"allocation":[
-            {"host_id":"a3-3","devices":list(range(8))},
-            {"host_id":"a3-4","devices":list(range(8,16))}]}
+            {"host_id":"113.46.17.205:153","devices":list(range(8))},
+            {"host_id":"113.46.17.205:154","devices":list(range(8,16))}]}
         self.assertEqual(broadcast_job(allocated,pools,RUN,"begin",
                                        executor=remote),[])
         self.assertEqual([x[0] for x in calls],
-                         ["a3-3","a3-3-docker",
-                          "a3-4","a3-4-docker"])
+                         ["113.46.17.205:153","113.46.17.205:154"])
         self.assertTrue(all(x[1]=="wall -n" for x in calls))
         self.assertFalse(any("dispatcher" in x[0] for x in calls))
         self.assertTrue(all("actions/runs/37868722207" in x[2] for x in calls))
         # Each host and its CI container get only *their* allocated DeviceSet.
-        for target, _, payload in calls[:2]:
+        for target, _, payload in calls[:1]:
             self.assertIn("节点：Node 0", payload)
             self.assertIn("小网IP : 192.168.0.30", payload)
             self.assertIn("Device : 0-7（共8P）", payload)
             self.assertNotIn("Device : 8-15", payload)
-        for target, _, payload in calls[2:]:
+        for target, _, payload in calls[1:]:
             self.assertIn("节点：Node 1", payload)
             self.assertIn("小网IP : 192.168.0.107", payload)
             self.assertIn("Device : 8-15（共8P）", payload)
@@ -102,9 +101,9 @@ class BroadcastTests(unittest.TestCase):
                 def collect(argv, **kwargs):
                     messages.append(kwargs["input"])
                     return subprocess.CompletedProcess(argv, 0, "", "")
-                case = {**spec, "allocation": [{"host_id": "a3-3", "devices": group}]}
+                case = {**spec, "allocation": [{"host_id": "113.46.17.205:153", "devices": group}]}
                 self.assertEqual(broadcast_job(case, pools, RUN, "begin", executor=collect), [])
-                self.assertEqual(len(messages), 2)
+                self.assertEqual(len(messages), 1)
                 for msg in messages:
                     self.assertIn("nodes=1，ngpus_per_node=8", msg)
                     self.assertIn(f"Device : {device_range(group)}（共8P）", msg)
@@ -114,8 +113,8 @@ class BroadcastTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         pools = json.loads((root / "config/pools.json").read_text())
         case = {**load_config(root)["a3-16p"], "allocation": [
-            {"host_id": "a3-3", "devices": list(range(8, 16))},
-            {"host_id": "a3-4", "devices": list(range(8))}]}
+            {"host_id": "113.46.17.205:153", "devices": list(range(8, 16))},
+            {"host_id": "113.46.17.205:154", "devices": list(range(8))}]}
         def render(released):
             messages = {}
             def collect(argv, **kwargs):
@@ -125,10 +124,10 @@ class BroadcastTests(unittest.TestCase):
                                            executor=collect), [])
             return messages
         released = render(True)
-        self.assertIn("节点：Node 0", released["a3-3"])
-        self.assertIn("Device : 8-15（共8P）", released["a3-3"])
-        self.assertIn("节点：Node 1", released["a3-4"])
-        self.assertIn("Device : 0-7（共8P）", released["a3-4"])
+        self.assertIn("节点：Node 0", released["113.46.17.205:153"])
+        self.assertIn("Device : 8-15（共8P）", released["113.46.17.205:153"])
+        self.assertIn("节点：Node 1", released["113.46.17.205:154"])
+        self.assertIn("Device : 0-7（共8P）", released["113.46.17.205:154"])
         self.assertTrue(all("以上 Device 已释放" in msg for msg in released.values()))
         uncertain = render(False)
         self.assertTrue(all("释放尚未确认" in msg for msg in uncertain.values()))
@@ -145,11 +144,11 @@ class BroadcastTests(unittest.TestCase):
             calls.append(argv)
             return subprocess.CompletedProcess(argv, 0, "", "")
         broken = {**spec, "allocation": [
-            {"host_id": "a3-3", "devices": list(range(8))},
-            {"host_id": "a3-4", "devices": list(range(8, 12))}]}
+            {"host_id": "113.46.17.205:153", "devices": list(range(8))},
+            {"host_id": "113.46.17.205:154", "devices": list(range(8, 12))}]}
         with self.assertRaisesRegex(ValueError, "consistent devices"):
             broadcast_job(broken, pools, RUN, "begin", executor=remote)
-        node = pools["a3-shared"]["nodes"][1]
+        node = pools["a3_shared_blue"]["nodes"][1]
         old = node["node_ip"]
         node["node_ip"] = None
         try:
@@ -165,25 +164,25 @@ class BroadcastTests(unittest.TestCase):
         spec=load_config(root)["a3-8p"]
         pools=json.loads((root/"config/pools.json").read_text())
         def remote(argv, **kwargs):
-            return subprocess.CompletedProcess(argv,1 if argv[-2]=="a3-4" else 0,"","")
-        runtime={**spec,"allocation":[{"host_id":"a3-4","devices":list(range(8))}]}
+            return subprocess.CompletedProcess(argv,1 if argv[-2]=="113.46.17.205:154" else 0,"","")
+        runtime={**spec,"allocation":[{"host_id":"113.46.17.205:154","devices":list(range(8))}]}
         self.assertEqual(broadcast_job(runtime,pools,RUN,"begin",executor=remote),
-                         ["a3-4"])
+                         ["113.46.17.205:154"])
 
     def test_begin_then_end_while_device_lock_held(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)
             (root/"config").mkdir()
             (root/"config/pools.json").write_text(json.dumps({"test":{"type":"ascend-a3","nodes":[
-                {"host_id":"a3-4","ssh":"a3-4-docker","device_ids":[0],
-                 "broadcast_ssh":["a3-4","a3-4-docker"]}]}}))
+                {"host_id":"113.46.17.205:154","ssh":"113.46.17.205:154-docker","device_ids":[0],
+                 "broadcast_ssh":["113.46.17.205:154","113.46.17.205:154-docker"]}]}}))
             case={"name":"test-ci","runner":{"kind":"ssh"},"allocation":[
-                {"host_id":"a3-4","devices":[0]}],"pool":"test",
+                {"host_id":"113.46.17.205:154","devices":[0]}],"pool":"test",
                 "timeout_seconds":10,"enabled":True}
             events=[]
             def tell(*args, **kwargs):
                 # Resource still held for BOTH start and exit broadcasts.
-                lk=root/"state/device-locks/a3-4_chip-000.lock"
+                lk=root/("state/device-locks/"+__import__("hashlib").sha256(b"113.46.17.205:154").hexdigest()+"_chip-000.lock")
                 import fcntl
                 with lk.open("a+b") as fd:
                     try:
@@ -209,7 +208,7 @@ class BroadcastTests(unittest.TestCase):
                  patch.object(dispatch,"remote_preflight") as preflight, \
                  patch.object(dispatch,"broadcast_job",side_effect=tell), \
                  patch.object(dispatch.subprocess,"Popen",Runner), \
-                 patch.object(dispatch,"metadata",return_value={"host":"a3-4-docker","path":"/mnt/share/ci_tests/fake/run.log"}), \
+                 patch.object(dispatch,"metadata",return_value={"host":"113.46.17.205:154-docker","path":"/mnt/share/ci_tests/fake/run.log"}), \
                  patch.object(dispatch,"select_remote",return_value=["TRAINED"]):
                 result=dispatch.execute(case,RUN,root=root)
             self.assertEqual(result.exit_code,0)
@@ -223,12 +222,12 @@ class BroadcastTests(unittest.TestCase):
             (root/"config").mkdir()
             (root/"config/pools.json").write_text('{"test":{"type":"ascend-a3","nodes":[]}}')
             case={"name":"test-ci","runner":{"kind":"ssh"},"allocation":[
-                {"host_id":"a3-4","devices":[0]}],"pool":"test",
+                {"host_id":"113.46.17.205:154","devices":[0]}],"pool":"test",
                 "enabled":True,"timeout_seconds":10}
             events=[]
             def wall(*args, **kwargs):
                 events.append((args[-1], kwargs.get("released")))
-                return ["a3-4"] if args[-1]=="end" else []
+                return ["113.46.17.205:154"] if args[-1]=="end" else []
             class Runner:
                 def __init__(self,argv,**kwargs):kwargs["stdout"].write("CASE_RESULT approved PASS 0\n")
                 def poll(self):return None
@@ -239,7 +238,7 @@ class BroadcastTests(unittest.TestCase):
                  patch.object(dispatch,"broadcast_job",side_effect=wall), \
                  patch.object(dispatch.subprocess,"Popen",Runner), \
                  patch.object(dispatch,"metadata",
-                              return_value={"host":"a3-4-docker",
+                              return_value={"host":"113.46.17.205:154-docker",
                                             "path":"/mnt/share/ci_tests/fake/run.log"}), \
                  patch.object(dispatch,"select_remote",return_value=["step5 PASS"]):
                 execution=dispatch.execute(case,RUN,root=root)
@@ -249,7 +248,7 @@ class BroadcastTests(unittest.TestCase):
 
     def test_retry_transient_host_wall_only_before_training(self):
         cfg=Path(__file__).resolve().parents[1]
-        case={**load_config(cfg)["a3-8p"],"allocation":[{"host_id":"a3-4",
+        case={**load_config(cfg)["a3-8p"],"allocation":[{"host_id":"113.46.17.205:154",
                                                          "devices":list(range(8))}]}
         pools=json.loads((cfg/"config/pools.json").read_text())
         attempts=[]
@@ -259,8 +258,7 @@ class BroadcastTests(unittest.TestCase):
                                                "", "")
         with patch("ci_core.broadcast.time.sleep") as pause:
             self.assertEqual(broadcast_job(case,pools,RUN,"begin",executor=remote),[])
-        self.assertEqual(attempts,["a3-4","a3-4",
-                                    "a3-4-docker"])
+        self.assertEqual(attempts,["113.46.17.205:154","113.46.17.205:154"])
         pause.assert_called_once_with(2)
 
     def test_release_not_verified_warns_instead_of_falsely_free(self):
@@ -269,7 +267,7 @@ class BroadcastTests(unittest.TestCase):
             (root/"config").mkdir()
             (root/"config/pools.json").write_text('{"test":{"type":"ascend-a3","nodes":[]}}')
             case={"name":"test-ci","runner":{"kind":"ssh"},
-                  "allocation":[{"host_id":"a3-4","devices":[0]}],
+                  "allocation":[{"host_id":"113.46.17.205:154","devices":[0]}],
                   "pool":"test","enabled":True,"timeout_seconds":5}
             phases=[]
             releases=[]
@@ -301,12 +299,12 @@ class BroadcastTests(unittest.TestCase):
             root=Path(temp)
             (root/"config").mkdir()
             (root/"config/pools.json").write_text('{"test":{"type":"ascend-a3","nodes":[]}}')
-            case={"name":"test-ci","runner":{"kind":"ssh"},"allocation":[{"host_id":"a3-4","devices":[0]}],
+            case={"name":"test-ci","runner":{"kind":"ssh"},"allocation":[{"host_id":"113.46.17.205:154","devices":[0]}],
                   "pool":"test","enabled":True,"timeout_seconds":5}
             events=[]
             def wall(*args, **kwargs):
                 events.append(args[-1])
-                return ["a3-4"] if args[-1]=="begin" else []
+                return ["113.46.17.205:154"] if args[-1]=="begin" else []
             with patch.object(dispatch,"prepare_profile",return_value=("dsv4_flash_a3_16p_example",{"ascend_env":"/path/set_env.sh"})), \
                  patch.object(dispatch,"remote_preflight"), \
                  patch.object(dispatch,"broadcast_job",side_effect=wall):

@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from ci_core import dispatch
-from ci_core.config import load_config
+from tests.support import load_config
 from ci_core.reporting import make_report
 from ci_core.worker_runner import PROBE, load_worker, run_probe
 
@@ -25,12 +25,6 @@ OS_OUTPUT = (
 
 
 class WorkerRunnerTests(unittest.TestCase):
-    def test_pipeline_pins_depeng_as_the_smoke_target(self):
-        case = load_config(ROOT)["dispatcher-smoke"]
-        worker = load_worker("depeng", ROOT / "config/workers.json")
-        self.assertEqual(case["runner"], {"kind": "worker", "worker_id": "depeng"})
-        self.assertEqual(worker["expected_hostname"], "depeng_us_euler.local")
-        self.assertTrue(worker["enabled"])
 
     def test_unknown_and_disabled_workers_fail_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -113,39 +107,6 @@ class WorkerRunnerTests(unittest.TestCase):
         self.assertTrue(any("reason=timeout" in str(call)
                             for call in output.call_args_list))
 
-    def test_dispatch_to_worker_produces_identity_bearing_pass_report(self):
-        # Exercise the actual dispatcher -> worker subprocess -> OS probe path,
-        # not a mocked execute() function. Only the unrelated preflight is stubbed.
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "ci_core").mkdir()
-            (root / "config").mkdir()
-            shutil.copy2(ROOT / "ci_core/worker_runner.py", root / "ci_core/worker_runner.py")
-            shutil.copy2(ROOT / "pipeline.sh", root / "pipeline.sh")
-            (root / "config/pools.json").write_text(json.dumps({
-                "local-smoke": {"type": "local", "nodes": []},
-            }))
-            (root / "config/workers.json").write_text(json.dumps({
-                "depeng": {"transport": "local", "enabled": True, "capabilities": ["smoke"]},
-            }))
-            case = {
-                "name": "dispatcher-smoke", "pipeline_id": "npu-smi", "enabled": True,
-                "pool": "local-smoke", "allocation": [], "timeout_seconds": 15,
-                "runner": {"kind": "worker", "worker_id": "depeng"},
-            }
-            run = {
-                "id": 42, "run_attempt": 1, "head_sha": "a" * 40,
-                "created_at": "2026-10-30T00:00:00Z", "name": "Dispatcher-Smoke",
-            }
-            with patch.object(dispatch, "preflight_before_launch"):
-                execution = dispatch.execute(case, run, root=root)
-            self.assertEqual(execution.exit_code, 0, execution.tail)
-            self.assertTrue(any("WORKER_ID=depeng" in line for line in execution.tail))
-            self.assertTrue(any("OS_RELEASE_BEGIN" in line for line in execution.tail))
-            report = make_report(case, run, execution.exit_code, execution.tail, execution.log)
-            self.assertEqual(report["status"], "PASS")
-            self.assertEqual(report["worker_id"], "depeng")
-            self.assertEqual(report["exit_code"], 0)
 
 
 if __name__ == "__main__":

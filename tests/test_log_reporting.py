@@ -35,26 +35,26 @@ class TestDispatcherReporting(unittest.TestCase):
         def ssh(args, **kw):
             seen.append(args)
             return subprocess.CompletedProcess(args,0,b"[rank0] step: 5 loss: 12.1\n",b"")
-        result=logs.select_remote("a3-4-docker-relay",
+        result=logs.select_remote("113.46.17.205:154-docker-relay",
             "/mnt/share/ci_tests/2026-10-09_run-1_attempt-1/run.log",0,
-            approved_hosts={"a3-4-docker-relay"},runner=ssh)
+            approved_hosts={"113.46.17.205:154-docker-relay"},runner=ssh)
         self.assertEqual(len(result),1)
         self.assertIn("tail -c 131072",seen[0][-1])
         self.assertNotIn("grep",seen[0][-1])
         for host,path in (("other-host","/mnt/share/ci_tests/a/run.log"),
-                          ("a3-4-docker-relay","/etc/passwd"),
-                          ("a3-4-docker-relay","/mnt/share/ci_tests/a/../run.log")):
+                          ("113.46.17.205:154-docker-relay","/etc/passwd"),
+                          ("113.46.17.205:154-docker-relay","/mnt/share/ci_tests/a/../run.log")):
             with self.assertRaises(ValueError):
-                logs.remote_excerpt(host,path,approved_hosts={"a3-4-docker-relay"},runner=ssh)
+                logs.remote_excerpt(host,path,approved_hosts={"113.46.17.205:154-docker-relay"},runner=ssh)
 
     def test_dispatcher_refuses_false_pass_without_remote_log(self):
         with tempfile.TemporaryDirectory() as tmp:
             base=Path(tmp)
             p=base/"pipeline.log"
-            p.write_text("RESULT_HOST: a3-4-docker-relay\n"
+            p.write_text("RESULT_HOST: 113.46.17.205:154-docker-relay\n"
                          "RESULT_LOG: /mnt/share/ci_tests/valid/run.log\n")
             self.assertEqual(logs.metadata(p),{
-                "host":"a3-4-docker-relay",
+                "host":"113.46.17.205:154-docker-relay",
                 "path":"/mnt/share/ci_tests/valid/run.log",
             })
 

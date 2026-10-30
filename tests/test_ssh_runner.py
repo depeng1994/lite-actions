@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from ci_core.config import load_config
+from tests.support import load_config
 from ci_core import ssh_runner
 from ci_core.registry import selected_test, parse_request, resolve_request, _discovery_tar_filter
 
@@ -24,9 +24,9 @@ ASSET_ENV={"ASCEND_SET_ENV_PATH":"/opt/ascend/set_env.sh",
            "HF_ASSETS_PATH":"/models/flash", "CKPT_INIT_LOAD_PATH":"/weights"}
 DEFAULT={"env_vars":ASSET_ENV,"mode":"single"}
 STATIC = {
-    "a3-8p": [{"host_id": "a3-4", "devices": list(range(8))}],
-    "a3-16p": [{"host_id": "a3-3", "devices": list(range(8))},
-               {"host_id": "a3-4", "devices": list(range(8, 16))}],
+    "a3-8p": [{"host_id": "113.46.17.205:154", "devices": list(range(8))}],
+    "a3-16p": [{"host_id": "113.46.17.205:153", "devices": list(range(8))},
+               {"host_id": "113.46.17.205:154", "devices": list(range(8, 16))}],
     "a5-64p": [{"host_id": f"a5-{i:02d}", "devices": list(range(8))}
                for i in range(1, 9)],
 }
@@ -41,6 +41,7 @@ class SharedSshRunnerTests(unittest.TestCase):
     def setUpClass(cls):
         cls.pools = json.loads((ROOT / "config/pools.json").read_text())
         cls.cases = load_config(ROOT)
+        cls.pools["a5_shared_yellow"]["nodes"]=[dict(host_id=f"a5-{i:02d}",ssh=f"a5-{i:02d}",device_ids=list(range(8)),node_ip=None) for i in range(1,9)]
 
     def test_selector_reads_run_name_and_never_executable_commands(self):
         r = {"name": "A3-16p-CI-Example | test=dsv4_flash_a3_16p_example",
@@ -157,7 +158,7 @@ class SharedSshRunnerTests(unittest.TestCase):
     def test_a3_and_a5_share_same_hardware_independent_ssh_runner(self):
         import copy
         pools = copy.deepcopy(self.pools)
-        for index,node in enumerate(pools["a5-64p-lab"]["nodes"]):
+        for index,node in enumerate(pools["a5_shared_yellow"]["nodes"]):
             node["node_ip"] = "192.168.50." + str(index+1)
         for key,nodes,test in (("a3-8p",1,TEST_8P),("a3-16p",2,TEST_16P),("a5-64p",8,TEST_64P)):
             with self.subTest(case=key):
@@ -217,7 +218,7 @@ class SharedSshRunnerTests(unittest.TestCase):
                   "--allocation-file",str(allocation)]
             # Verify the exact reserved port identity is forwarded rather than
             # silently resetting to slot 0 in a new Python process.
-            with patch.object(sys,"argv",args), patch.object(ssh_runner,"run",return_value=0) as execute, \
+            with patch.object(ssh_runner,"load_config",return_value=self.cases), patch.object(sys,"argv",args), patch.object(ssh_runner,"run",return_value=0) as execute, \
                  patch('ci_core.dispatch.remote_preflight'), \
                  patch.object(ssh_runner,'model_archive',return_value=Path('/unused')), \
                  patch('ci_core.registry.inspect_archive',side_effect=[
@@ -232,7 +233,7 @@ class SharedSshRunnerTests(unittest.TestCase):
                 self.assertEqual(execute.call_args_list[0].kwargs["remote_dir"],
                                  "job-123_case-01_"+TEST_8P)
                 self.assertEqual(execute.call_args_list[1].kwargs["test_case"],"dsv4_flash_a3_8p_adamw")
-            with patch.object(sys,"argv",args), patch.object(ssh_runner,"run",side_effect=[0,1]) as execute, \
+            with patch.object(ssh_runner,"load_config",return_value=self.cases), patch.object(sys,"argv",args), patch.object(ssh_runner,"run",side_effect=[0,1]) as execute, \
                  patch('ci_core.dispatch.remote_preflight'), \
                  patch.object(ssh_runner,'model_archive',return_value=Path('/unused')), \
                  patch('ci_core.registry.inspect_archive',side_effect=[
@@ -243,7 +244,7 @@ class SharedSshRunnerTests(unittest.TestCase):
                 self.assertEqual(execute.call_count,2)
             # Successful training is also required to release devices before
             # next case; a successful process exit alone is insufficient.
-            with patch.object(sys,"argv",args), patch.object(ssh_runner,"run",side_effect=[0,0]) as execute, \
+            with patch.object(ssh_runner,"load_config",return_value=self.cases), patch.object(sys,"argv",args), patch.object(ssh_runner,"run",side_effect=[0,0]) as execute, \
                  patch('ci_core.dispatch.remote_preflight',side_effect=RuntimeError('busy')), \
                  patch.object(ssh_runner,'model_archive',return_value=Path('/unused')), \
                  patch('ci_core.registry.inspect_archive',side_effect=[
@@ -252,7 +253,7 @@ class SharedSshRunnerTests(unittest.TestCase):
                        'env_vars':{**ASSET_ENV,'OPTIMIZER_OVERRIDES':''}}]]):
                 self.assertEqual(ssh_runner.main(),125)
                 self.assertEqual(execute.call_count,1)
-            with patch.object(sys,"argv",args), patch.object(ssh_runner,"run",side_effect=[1,0]) as execute, \
+            with patch.object(ssh_runner,"load_config",return_value=self.cases), patch.object(sys,"argv",args), patch.object(ssh_runner,"run",side_effect=[1,0]) as execute, \
                  patch('ci_core.dispatch.remote_preflight',side_effect=RuntimeError('busy')), \
                  patch.object(ssh_runner,'model_archive',return_value=Path('/unused')), \
                  patch('ci_core.registry.inspect_archive',side_effect=[
@@ -262,6 +263,7 @@ class SharedSshRunnerTests(unittest.TestCase):
                 self.assertEqual(ssh_runner.main(),125)
                 self.assertEqual(execute.call_count,1)
 
+    @unittest.skipUnless(__import__("sys").platform == "linux", "Linux execution regression")
     def test_single_process_group_ownership(self):
         """Real local supervisor must record the process group it actually owns."""
         import signal

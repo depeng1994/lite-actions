@@ -1,10 +1,10 @@
 {
-  "a3-shared": {
+  "a3_shared_blue": {
     "type": "ascend-a3",
     "nodes": [
       {
-        "host_id": "a3-3",
-        "ssh": "a3-3-docker",
+        "host_id": "113.46.17.205:153",
+        "ssh": "113.46.17.205:153",
         "device_ids": [
           0,
           1,
@@ -24,8 +24,7 @@
           15
         ],
         "broadcast_ssh": [
-          "a3-3",
-          "a3-3-docker"
+          "113.46.17.205:153"
         ],
         "node_ip": "192.168.0.30",
         "network_interface": "enp23s0f3",
@@ -57,11 +56,13 @@
             "verified": true
           }
         ],
-        "priority": 1
+        "priority": 1,
+        "environments": {},
+        "host_ssh": "113.46.17.205:153"
       },
       {
-        "host_id": "a3-4",
-        "ssh": "a3-4-docker",
+        "host_id": "113.46.17.205:154",
+        "ssh": "113.46.17.205:154",
         "device_ids": [
           0,
           1,
@@ -81,8 +82,7 @@
           15
         ],
         "broadcast_ssh": [
-          "a3-4",
-          "a3-4-docker"
+          "113.46.17.205:154"
         ],
         "node_ip": "192.168.0.107",
         "network_interface": "enp23s0f3",
@@ -114,7 +114,9 @@
             "verified": true
           }
         ],
-        "priority": 0
+        "priority": 0,
+        "environments": {},
+        "host_ssh": "113.46.17.205:154"
       }
     ],
     "notes": "Chip IDs must be confirmed with npu-smi; 2 dies per physical card in this environment.",
@@ -122,7 +124,7 @@
     "verified_multinode_allocations": [
       [
         {
-          "host_id": "a3-3",
+          "host_id": "113.46.17.205:153",
           "devices": [
             0,
             1,
@@ -135,7 +137,7 @@
           ]
         },
         {
-          "host_id": "a3-4",
+          "host_id": "113.46.17.205:154",
           "devices": [
             8,
             9,
@@ -150,7 +152,7 @@
       ],
       [
         {
-          "host_id": "a3-3",
+          "host_id": "113.46.17.205:153",
           "devices": [
             8,
             9,
@@ -163,7 +165,7 @@
           ]
         },
         {
-          "host_id": "a3-4",
+          "host_id": "113.46.17.205:154",
           "devices": [
             0,
             1,
@@ -180,7 +182,7 @@
     "experimental_multinode_allocations": [
       [
         {
-          "host_id": "a3-3",
+          "host_id": "113.46.17.205:153",
           "devices": [
             0,
             1,
@@ -193,7 +195,7 @@
           ]
         },
         {
-          "host_id": "a3-4",
+          "host_id": "113.46.17.205:154",
           "devices": [
             0,
             1,
@@ -208,168 +210,24 @@
       ]
     ],
     "reclaim_external_processes": true,
-    "max_jobs_per_host": 2
+    "max_jobs_per_host": 2,
+    "owner": "blue",
+    "enabled": true
   },
-  "local-smoke": {
-    "type": "local",
-    "nodes": [
-      {
-        "host_id": "dispatcher",
-        "ssh": null,
-        "device_ids": []
-      }
-    ]
+  "a3_shared_yellow": {
+    "owner": "yellow",
+    "enabled": false,
+    "type": "ascend-a3",
+    "nodes": [],
+    "process_indexing": "card-die"
   },
-  "a5-64p-lab": {
+  "a5_shared_yellow": {
     "type": "ascend-a5",
-    "nodes": [
-      {
-        "host_id": "a5-01",
-        "ssh": "root@7.246.125.19",
-        "device_ids": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ],
-        "broadcast_ssh": [
-          "root@7.246.125.19"
-        ],
-        "node_ip": null
-      },
-      {
-        "host_id": "a5-02",
-        "ssh": "root@7.246.125.20",
-        "device_ids": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ],
-        "broadcast_ssh": [
-          "root@7.246.125.20"
-        ],
-        "node_ip": null
-      },
-      {
-        "host_id": "a5-03",
-        "ssh": "root@7.246.125.21",
-        "device_ids": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ],
-        "broadcast_ssh": [
-          "root@7.246.125.21"
-        ],
-        "node_ip": null
-      },
-      {
-        "host_id": "a5-04",
-        "ssh": "root@7.246.125.22",
-        "device_ids": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ],
-        "broadcast_ssh": [
-          "root@7.246.125.22"
-        ],
-        "node_ip": null
-      },
-      {
-        "host_id": "a5-05",
-        "ssh": "root@7.246.125.23",
-        "device_ids": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ],
-        "broadcast_ssh": [
-          "root@7.246.125.23"
-        ],
-        "node_ip": null
-      },
-      {
-        "host_id": "a5-06",
-        "ssh": "root@7.246.125.24",
-        "device_ids": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ],
-        "broadcast_ssh": [
-          "root@7.246.125.24"
-        ],
-        "node_ip": null
-      },
-      {
-        "host_id": "a5-07",
-        "ssh": "root@7.246.125.25",
-        "device_ids": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ],
-        "broadcast_ssh": [
-          "root@7.246.125.25"
-        ],
-        "node_ip": null
-      },
-      {
-        "host_id": "a5-08",
-        "ssh": "root@7.246.125.26",
-        "device_ids": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7
-        ],
-        "broadcast_ssh": [
-          "root@7.246.125.26"
-        ],
-        "node_ip": null
-      }
-    ],
+    "nodes": [],
     "notes": "Real addresses from operators. SSH, NPU numbering, broadcast and multi-node training are NOT hardware-verified; CI disabled.",
     "process_indexing": "card",
-    "reclaim_external_processes": false
+    "reclaim_external_processes": false,
+    "owner": "yellow",
+    "enabled": false
   }
 }

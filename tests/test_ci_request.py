@@ -44,12 +44,11 @@ class RequestTests(unittest.TestCase):
         listing={"artifacts":[{"name":"lite-ci-request-1","id":678,
                                "size_in_bytes":300,"expired":False,
                                "workflow_run":{"id":12345}}]}
-        case = {"test_id": TEST_8P, "nnodes": 1, "ngpu": 8,
-                "label": "Trusted 8P test"}
-        raw = {"schema": 2, "repo": SOURCE_REPO, "run_id": RUN["id"],
-               "attempt": RUN["run_attempt"], "sha": RUN["head_sha"],
-               "pipeline": "a3-8p", "cases": [case]}
-        trusted_plan = {**raw, "plan_digest": plan_digest(raw)}
+        from ci_core.contract import normalize,create_plan
+        from types import SimpleNamespace
+        defaults=dict(worker="blue",target_pool="a3_shared_blue",docker="image:tag")
+        case=normalize(SimpleNamespace(test_name=TEST_8P,test_descr="Trusted 8P test",ngpu=8,nnodes=1,timeout=7200),defaults,0)
+        trusted_plan=create_plan([case],run_id=RUN["id"],attempt=1,sha=RUN["head_sha"],workflow="nightly_fulltests.yml",defaults=defaults)
         binary=io.BytesIO()
         with zipfile.ZipFile(binary,"w") as z:
             z.writestr("ci-request.json",json.dumps(trusted_plan))
@@ -71,7 +70,7 @@ class RequestTests(unittest.TestCase):
         with patch.object(c,"request",return_value=listing), \
              patch("ci_core.github.urllib.request.build_opener",return_value=holder), \
              patch("ci_core.github.urllib.request.urlopen",side_effect=download):
-            self.assertEqual(c.ci_request({**RUN, "path": ".github/workflows/a3_8p_lite_actions.yml"}),trusted_plan)
+            self.assertEqual(c.ci_request({**RUN, "path": ".github/workflows/nightly_fulltests.yml"}),trusted_plan)
             self.assertIn("SECRET_TOKEN",holder.request.headers.get("Authorization",""))
 
     def test_commit_comment_lookup_is_bounded_and_paginated(self):

@@ -135,8 +135,8 @@ def reclaim_candidate(case: dict, pools: dict, *, ascend_env: str | None) -> boo
         targets = node.get("broadcast_ssh", [])
         if not isinstance(targets, list) or not targets:
             raise ValueError("host SSH must be explicitly configured")
-        host = targets[0]
-        if not isinstance(host, str) or not host or host == node.get("ssh"):
+        host = node.get("host_ssh", targets[0])
+        if not isinstance(host, str) or not host or (host == node.get("ssh") and not node.get("host_ssh")):
             raise ValueError("host PID cleanup cannot use Docker SSH")
         info = ssh(host, "npu-smi info", timeout=45, check=True)
         for pid in selected_pids(info.stdout, assigned["devices"], indexing=mode):

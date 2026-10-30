@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import fcntl
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -60,7 +61,7 @@ def resource_keys(resources: Iterable[Mapping]) -> tuple[tuple[str, int], ...]:
     keys = set()
     for node in resources:
         host = node["host_id"]
-        if not isinstance(host, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]{0,63}", host):
+        if not isinstance(host, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.:-]{0,79}", host):
             raise ValueError("invalid canonical host identifier")
         for device in node["devices"]:
             if isinstance(device, bool) or not isinstance(device, int) or not 0 <= device < 256:
@@ -77,7 +78,7 @@ def reserve(lock_root: Path, resources: Iterable[Mapping]) -> Iterator[tuple[tup
     held = []
     try:
         for host, device in devices:
-            fd = (lock_root / f"{host}_chip-{device:03d}.lock").open("a+b")
+            fd = (lock_root / f"{hashlib.sha256(host.encode()).hexdigest()}_chip-{device:03d}.lock").open("a+b")
             try:
                 fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as exc:
