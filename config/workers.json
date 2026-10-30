@@ -1,10 +1,8 @@
 {
-  "depeng": {
-    "transport": "local",
-    "enabled": true,
-    "expected_hostname": "depeng_us_euler.local",
-    "capabilities": [
-      "smoke"
-    ]
+  "blue": {
+    "enabled": true
+  },
+  "yellow": {
+    "enabled": true
   }
 }

@@ -1,101 +1,118 @@
-"""Validate trusted current pipeline and physical resource pool boundaries."""
-from __future__ import annotations
+"""Trusted worker ownership, canonical nodes, and existing-container bindings."""
 
 import json
-from pathlib import Path
 import re
 
+from ci_core.transport import run
 
-def load_config(root: Path) -> dict:
+
+def format_pools(pools):
+    text = json.dumps(pools, indent=2) + "\n"
+    return re.sub(
+        r'("(?:device_ids|devices)"\s*:\s*)(\[[^\]]*\])',
+        lambda match: match[1] + json.dumps(json.loads(match[2])),
+        text,
+    )
+
+
+def load(root, worker):
+    workers = json.loads((root / "config/workers.json").read_text())
     pools = json.loads((root / "config/pools.json").read_text())
-    pipelines = json.loads((root / "config/pipelines.json").read_text())
-    if not isinstance(pools, dict) or not isinstance(pipelines, dict):
-        raise ValueError("CI config must be JSON objects")
-    workflows, result = set(), {}
-    for name, spec in pipelines.items():
-        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", name):
-            raise ValueError(f"invalid pipeline ID: {name!r}")
-        workflow = spec["workflow"]
-        if (not re.fullmatch(r"[a-z0-9][a-z0-9_]+\.yml", workflow)
-                or workflow in workflows):
-            raise ValueError("invalid or duplicate workflow")
-        workflows.add(workflow)
-        pool_id = spec["pool"]
-        if pool_id not in pools:
-            raise ValueError("unknown pool")
-        pool = pools[pool_id]
-        cap = pool.get("max_jobs_per_host", 1)
-        if type(cap) is not int or cap not in (1, 2):
-            raise ValueError("unsupported per-host job capacity")
-        if type(pool.get("reclaim_external_processes", False)) is not bool:
-            raise ValueError("pool reclaim_external_processes must be boolean")
-        hosts = {node["host_id"]: node for node in pool["nodes"]}
-        if len(hosts) != len(pool["nodes"]):
-            raise ValueError("duplicate physical host")
-        for host in hosts.values():
-            ids = host["device_ids"]
-            if (not isinstance(ids, list) or len(set(ids)) != len(ids)
-                    or any(type(x) is not int or x < 0 or x >= 256 for x in ids)):
-                raise ValueError("invalid physical Device IDs")
-            for group in host.get("allocation_groups", []):
-                group_ids = group["devices"]
-                if (not isinstance(group.get("verified"), bool)
-                        or not isinstance(group_ids, list) or not group_ids
-                        or len(group_ids) != len(set(group_ids))
-                        or not set(group_ids) <= set(ids)):
-                    raise ValueError("invalid verified allocation group")
-        runner = spec["runner"]
-        if runner["kind"] not in {"ssh", "local", "worker"}:
-            raise ValueError("unknown trusted runner")
-        has_static = "allocation" in spec
-        has_dynamic = "resources" in spec
-        if has_static == has_dynamic:
-            raise ValueError("exactly one of allocation/resources required")
-        if has_static:
-            allocation = spec["allocation"]
-            for item in allocation:
-                if (item["host_id"] not in hosts or not item["devices"]
-                        or len(set(item["devices"])) != len(item["devices"])
-                        or not set(item["devices"]) <= set(hosts[item["host_id"]]["device_ids"])):
-                    raise ValueError("invalid static allocation")
-        else:
-            resources = spec["resources"]
-            if set(resources) != {"nodes", "devices_per_node"}:
-                raise ValueError("unexpected resource specification")
-            nodes, per_node = resources["nodes"], resources["devices_per_node"]
-            if (type(nodes) is not int or type(per_node) is not int
-                    or not 1 <= nodes <= 16 or not 1 <= per_node <= 256):
-                raise ValueError("invalid resource request")
-            if spec["enabled"] and runner["kind"] == "ssh":
-                from ci_core.scheduler import candidates
-                if not candidates(spec, pools):
-                    raise ValueError("enabled pool has no verified topology")
-        if runner["kind"] == "worker":
-            if set(runner) != {"kind", "worker_id"}:
-                raise ValueError("worker runner requires only worker_id")
-            worker_id = runner["worker_id"]
-            if not isinstance(worker_id, str) or not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", worker_id):
-                raise ValueError("invalid worker ID")
-            worker_file = root / "config/workers.json"
-            if not worker_file.is_file():
-                raise ValueError("worker registry missing")
-            worker_registry = json.loads(worker_file.read_text())
-            if worker_id not in worker_registry or worker_registry[worker_id].get("enabled") is not True:
-                raise ValueError("pipeline references an unregistered/disabled worker")
-        if runner["kind"] == "ssh":
-            if set(runner) != {"kind"}:
-                raise ValueError("SSH pipeline must be generic")
-            if has_static and not spec["allocation"]:
-                raise ValueError("SSH must allocate devices")
-            for host in hosts.values():
-                if not host.get("ssh"):
-                    raise ValueError("missing SSH address")
-            if spec["enabled"]:
-                active_hosts = (hosts.values() if has_dynamic else
-                                (hosts[x["host_id"]] for x in spec["allocation"]))
-                if any(not host.get("node_ip") for host in active_hosts):
-                    raise ValueError("enabled pool requires HCCL node_ip")
-        if type(spec["timeout_seconds"]) is not int or spec["timeout_seconds"] < 1:
-            raise ValueError("invalid timeout")
-        result[name] = {**spec, "name": name}
-    return result
+    if worker not in workers or not workers[worker].get("enabled"):
+        raise ValueError("unknown/disabled worker")
+    seen = {}
+    fingerprints = {}
+    for name, pool in pools.items():
+        if pool.get("owner") not in workers:
+            raise ValueError("unknown pool owner")
+        for node in pool["nodes"]:
+            pythonpath = node.get("pythonpath")
+            if pythonpath is not None and (
+                not isinstance(pythonpath, str)
+                or not pythonpath.startswith("/")
+                or any(c in pythonpath for c in ":\r\n\0")
+            ):
+                raise ValueError(
+                    "node pythonpath must be one absolute dependency directory"
+                )
+            capabilities = node.get("capabilities", ["train", "npu_smoke"])
+            if (
+                not isinstance(capabilities, list)
+                or any(
+                    not isinstance(k, str) or k not in {"train", "npu_smoke"}
+                    for k in capabilities
+                )
+                or len(capabilities) != len(set(capabilities))
+            ):
+                raise ValueError("invalid node capabilities")
+            ident = node["host_id"]
+            if not re.fullmatch(
+                r"(?:[0-9]{1,3}\.){3}[0-9]{1,3}:[1-9][0-9]{0,4}", ident
+            ):
+                raise ValueError("canonical node must be IPv4:port")
+            import ipaddress
+
+            address, port = ident.rsplit(":", 1)
+            ipaddress.ip_address(address)
+            if int(port) > 65535:
+                raise ValueError("invalid node port")
+            if ident in seen:
+                raise ValueError("duplicate physical node")
+            seen[ident] = pool["owner"]
+            fp = node.get("machine_fingerprint")
+            if fp:
+                if fp in fingerprints:
+                    raise ValueError("duplicate physical fingerprint")
+                fingerprints[fp] = ident
+    return workers, pools
+
+
+def execution_node(node, environment):
+    env = node.get("environments", {}).get(environment)
+    if not env or not all(
+        env.get(k) for k in ("container_id", "image_id", "image_ref")
+    ):
+        raise ValueError("CONTAINER_BINDING_MISSING")
+    container = env["container_id"]
+    if not re.fullmatch(r"[a-f0-9]{64}", container):
+        raise ValueError("container must be pinned by ID")
+    script = (
+        'docker inspect --format \'{"Image":{{json .Image}},"State":{"Running":{{json .State.Running}}}}\' '
+        + container
+    )
+    data = json.loads(run(node["ssh"], script, timeout=30).stdout)
+    if not data.get("State", {}).get("Running") or data.get("Image") != env["image_id"]:
+        raise ValueError("CONTAINER_IDENTITY_MISMATCH")
+    import shlex
+
+    actual = run(
+        node["ssh"],
+        "docker image inspect --format '{{.Id}}' " + shlex.quote(env["image_ref"]),
+        timeout=30,
+    ).stdout.strip()
+    if actual != env["image_id"]:
+        raise ValueError("IMAGE_TAG_CHANGED")
+    execution_ssh = node["ssh"] + "/" + container
+    if run(execution_ssh, "id -u", timeout=30).stdout.strip() != "0":
+        raise ValueError("EXECUTION_PID_VISIBILITY_REQUIRED")
+    return {**node, "ssh": execution_ssh}
+
+
+def runtime_case(item, pools, worker):
+    pool = pools.get(item["target_pool"])
+    if not pool:
+        raise ValueError("UNKNOWN_POOL")
+    if pool["owner"] != worker:
+        raise ValueError("POOL_OWNER_MISMATCH")
+    if not pool.get("enabled"):
+        raise ValueError("POOL_DISABLED")
+    return dict(
+        name=item["case_id"],
+        pool=item["target_pool"],
+        resources=item["resources"],
+        enabled=True,
+        docker=item["docker"],
+        kind=item["kind"],
+        timeout_seconds=item["execution_timeout_seconds"] + 780,
+        execution_timeout_seconds=item["execution_timeout_seconds"],
+    )

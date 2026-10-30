@@ -3,6 +3,7 @@
 Prefer execution hosts for human sessions; also cover their CI containers.
 No dispatcher-local terminal notification.
 """
+
 from __future__ import annotations
 
 import datetime as dt
@@ -10,8 +11,8 @@ import logging
 import subprocess
 import time
 from ipaddress import ip_address
-from ci_core.source_repo import REPO
 
+from ci_core.contract import REPO
 
 BEIJING = dt.timezone(dt.timedelta(hours=8))
 BORDER = "*" * 80
@@ -19,8 +20,11 @@ BORDER = "*" * 80
 
 def device_range(devices: list[int]) -> str:
     """Compact a trusted physical DeviceSet without hiding gaps in its IDs."""
-    if (not devices or any(type(device) is not int or device < 0 for device in devices)
-            or len(set(devices)) != len(devices)):
+    if (
+        not devices
+        or any(type(device) is not int or device < 0 for device in devices)
+        or len(set(devices)) != len(devices)
+    ):
         raise ValueError("invalid broadcast device allocation")
     result = []
     ordered = sorted(devices)
@@ -35,7 +39,6 @@ def device_range(devices: list[int]) -> str:
     return ",".join(result)
 
 
-
 def action_url(run: dict) -> str:
     ident = int(run["id"])
     if ident <= 0:
@@ -44,10 +47,18 @@ def action_url(run: dict) -> str:
     return f"https://github.com/{REPO}/actions/runs/{ident}"
 
 
-def notification(run: dict, phase: str, *, node_rank: int,
-                 node_ip: str, devices: list[int], nnodes: int,
-                 ngpus_per_node: int, released: bool | None = None,
-                 now: dt.datetime | None = None) -> str:
+def notification(
+    run: dict,
+    phase: str,
+    *,
+    node_rank: int,
+    node_ip: str,
+    devices: list[int],
+    nnodes: int,
+    ngpus_per_node: int,
+    released: bool | None = None,
+    now: dt.datetime | None = None,
+) -> str:
     """Render one wall notice for the current job's actual local DeviceSet.
 
     `end` is the only exit event. Never state "released" without a successful
@@ -80,25 +91,33 @@ def notification(run: dict, phase: str, *, node_rank: int,
         section = "本机资源状态"
         advice = "CI 验证已结束，但 Device 释放尚未确认，请勿占用。"
 
-    return (f"************** TorchTitan CI · {title} {timestamp} **************\n"
-            f"\n"
-            f"【任务ID】：{int(run['id'])}\n"
-            f"{action_url(run)}\n"
-            f"\n"
-            f"【任务总体资源】：nodes={nnodes}，ngpus_per_node={ngpus_per_node}\n"
-            f"\n"
-            f"【{section}】：\n"
-            f"节点：Node {node_rank}\n"
-            f"小网IP : {node_ip}\n"
-            f"Device : {device_range(devices)}（共{len(devices)}P）\n"
-            f"\n"
-            f"{advice}\n"
-            f"{BORDER}\n")
+    return (
+        f"************** TorchTitan CI · {title} {timestamp} **************\n"
+        f"\n"
+        f"【任务ID】：{int(run['id'])}\n"
+        f"{action_url(run)}\n"
+        f"\n"
+        f"【任务总体资源】：nodes={nnodes}，ngpus_per_node={ngpus_per_node}\n"
+        f"\n"
+        f"【{section}】：\n"
+        f"节点：Node {node_rank}\n"
+        f"小网IP : {node_ip}\n"
+        f"Device : {device_range(devices)}（共{len(devices)}P）\n"
+        f"\n"
+        f"{advice}\n"
+        f"{BORDER}\n"
+    )
 
 
-def broadcast_job(case: dict, pools: dict, run: dict, phase: str,
-                  *, released: bool | None = None,
-                  executor=subprocess.run) -> list[str]:
+def broadcast_job(
+    case: dict,
+    pools: dict,
+    run: dict,
+    phase: str,
+    *,
+    released: bool | None = None,
+    executor=subprocess.run,
+) -> list[str]:
     """Broadcast once per assigned host, to host user sessions and CI container.
 
     The execution host endpoint is mandatory. Container broadcast is best-effort
@@ -118,11 +137,19 @@ def broadcast_job(case: dict, pools: dict, run: dict, phase: str,
         node = nodes[allocated["host_id"]]
         destinations = list(dict.fromkeys(node.get("broadcast_ssh", [])))
         if not destinations:
-            raise ValueError(f"no host broadcast SSH configured for {allocated['host_id']}")
-        msg = notification(run, phase, node_rank=node_rank,
-                           node_ip=node.get("node_ip"), devices=allocated["devices"],
-                           nnodes=len(requests), ngpus_per_node=ngpus_per_node,
-                           released=released)
+            raise ValueError(
+                f"no host broadcast SSH configured for {allocated['host_id']}"
+            )
+        msg = notification(
+            run,
+            phase,
+            node_rank=node_rank,
+            node_ip=node.get("node_ip"),
+            devices=allocated["devices"],
+            nnodes=len(requests),
+            ngpus_per_node=ngpus_per_node,
+            released=released,
+        )
         deliveries.append((destinations, msg))
     failures = []
     for destinations, msg in deliveries:
@@ -135,21 +162,43 @@ def broadcast_job(case: dict, pools: dict, run: dict, phase: str,
             for attempt in range(retries):
                 try:
                     finished = executor(
-                        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-                         "-o", "ServerAliveInterval=10", target, "wall -n"],
-                        input=msg, text=True, capture_output=True, timeout=22,
+                        [
+                            "ssh",
+                            "-o",
+                            "BatchMode=yes",
+                            "-o",
+                            "ConnectTimeout=10",
+                            "-o",
+                            "ServerAliveInterval=10",
+                            target,
+                            "wall -n",
+                        ],
+                        input=msg,
+                        text=True,
+                        capture_output=True,
+                        timeout=22,
                         check=False,
                     )
                     if finished.returncode:
                         raise RuntimeError(f"wall exited {finished.returncode}")
                     delivered = True
-                    logging.info("CI %s wall delivered run=%s target=%s",
-                                 phase, run["id"], target)
+                    logging.info(
+                        "CI %s wall delivered run=%s target=%s",
+                        phase,
+                        run["id"],
+                        target,
+                    )
                     break
                 except (subprocess.SubprocessError, OSError, RuntimeError) as exc:
-                    logging.warning("CI %s wall attempt=%s/%s failed run=%s target=%s: %s",
-                                    phase, attempt + 1, retries, run["id"],
-                                    target, type(exc).__name__)
+                    logging.warning(
+                        "CI %s wall attempt=%s/%s failed run=%s target=%s: %s",
+                        phase,
+                        attempt + 1,
+                        retries,
+                        run["id"],
+                        target,
+                        type(exc).__name__,
+                    )
                     if attempt + 1 < retries:
                         time.sleep(2)
             if not delivered and n == 0:
