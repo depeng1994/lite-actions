@@ -94,7 +94,7 @@ def main():
             state.update(key, **value)
         source = a.legacy_root / "state/unified-jobs.json"
         if source.exists():
-            backup = target / "state/migration-backups"
+            backup = state.path.parent / "migration-backups"
             backup.mkdir(parents=True, exist_ok=True)
             content = source.read_bytes()
             (backup / (hashlib.sha256(content).hexdigest() + ".json")).write_bytes(

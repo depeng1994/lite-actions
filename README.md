@@ -79,6 +79,7 @@ Use a fixed result-author identity and repository-authorized credentials:
 export LITE_ACTIONS_RESULT_AUTHOR=<configured-result-login>
 export LITE_ACTIONS_ALLOWED_ACTORS=<comma-separated-authorized-logins>
 export LITE_ACTIONS_ALLOWED_BRANCHES=master
+export LITE_ACTIONS_STATE_DIR=/var/lib/lite-actions/blue
 # Set LITE_ACTIONS_GITHUB_TOKEN securely, or authenticate gh on this worker.
 python3 unified_router.py --worker-id blue --validate
 python3 -m unittest discover -s tests
@@ -88,6 +89,12 @@ python3 -m unittest discover -s tests
 Use `--worker-id yellow` on hwy. Run in the deployment supervisor or redirect stdout
 to a protected system log. The process uses a worker-host single-instance lock;
 resource leases are shared across checkouts of the same deployment user.
+
+Keep `LITE_ACTIONS_STATE_DIR` at one absolute, worker-specific location across
+releases. The worker and management commands must use the same value. State updates
+take a process lock before reading and writing, so reconciliation cannot overwrite
+another task's progress or pending result. Without this setting, state stays under
+the checkout's `state/` directory for local development.
 
 ## Existing-container onboarding
 
