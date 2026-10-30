@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from ci_core.config import execution_node, load
+from ci_core.config import execution_node, format_pools, load
 from ci_core.transport import run
 
 IMAGE = "cann_master_torchtitan_master_xyj"
@@ -145,7 +145,7 @@ def main():
     if a.write_bindings and changed and not failed:
         path = root / "config/pools.json"
         temp = path.with_suffix(".tmp")
-        temp.write_text(json.dumps(pools, indent=2) + "\n")
+        temp.write_text(format_pools(pools))
         temp.replace(path)
     return 1 if failed else 0
 

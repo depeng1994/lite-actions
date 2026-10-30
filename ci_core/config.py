@@ -6,6 +6,15 @@ import re
 from ci_core.transport import run
 
 
+def format_pools(pools):
+    text = json.dumps(pools, indent=2) + "\n"
+    return re.sub(
+        r'("(?:device_ids|devices)"\s*:\s*)(\[[^\]]*\])',
+        lambda match: match[1] + json.dumps(json.loads(match[2])),
+        text,
+    )
+
+
 def load(root, worker):
     workers = json.loads((root / "config/workers.json").read_text())
     pools = json.loads((root / "config/pools.json").read_text())
