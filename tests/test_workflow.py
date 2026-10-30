@@ -165,6 +165,37 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(len(seen["communication"]), 2)
         self.assertTrue(all(x["status"] == "PASS" for x in service.results()))
 
+
+    def test_queued_run_with_artifact_is_admitted_once(self):
+        service = Service([definition("training")], self.root)
+        service.runs[20]["status"] = "queued"
+        router = self.router(service)
+        with service.connected(), patch("ci_core.router.execute", side_effect=lambda case, run, **kw: completed_execution(router.root, case, run)) as execution:
+            router.tick()
+            router.tick()
+            self.drain(router)
+        self.assertEqual(execution.call_count, 1)
+        self.assertEqual(service.results()[0]["status"], "PASS")
+
+    def test_queued_run_without_artifact_retries_next_poll(self):
+        service = Service([definition("training")], self.root)
+        service.runs[20]["status"] = "queued"
+        router = self.router(service)
+        original = service.ci_request
+        with patch.object(service, "ci_request", side_effect=[None, original(service.runs[20])]):
+            router.receive(service.running_workflows())
+            self.assertFalse(router.state.read())
+            router.receive(service.running_workflows())
+            self.assertEqual(len(router.state.read()), 1)
+
+    def test_running_workflows_deduplicates_queued_and_in_progress(self):
+        service = Service([definition("training")], self.root)
+        run = dict(service.runs[20])
+        with patch.object(service, "request", side_effect=lambda method, path, data=None: {"workflow_runs": [dict(run, status="queued")] if "status=queued" in path else [dict(run, status="in_progress")] if "status=in_progress" in path else []}):
+            runs = service.running_workflows()
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]["status"], "in_progress")
+
     def test_busy_external_devices_retry_without_quarantine_or_false_failure(self):
         service = Service([definition("training")], self.root)
         router = self.router(service)

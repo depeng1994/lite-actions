@@ -145,7 +145,7 @@ class Service(GitHubClient):
                 workflow_runs=[
                     r
                     for r in self.runs.values()
-                    if r["status"] == "in_progress" and r["event"] == event
+                    if r["status"] == ("queued" if "status=queued" in path else "in_progress") and r["event"] == event
                 ]
             )
         if path.startswith("/actions/runs/"):

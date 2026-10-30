@@ -98,76 +98,108 @@ def remote_task_name(run: dict) -> str:
     return f"{local:%Y-%m-%d_%H-%M-%S}_run_{name}_{number}{suffix}"
 
 
-def selected_processes(
-    output: str, devices: list[int], *, indexing: str = "card-die"
-) -> list[str]:
-    """Fail closed if NPU process table is unrecognizable.
-
-    This particular A3 environment exposes two physical chip IDs per card;
-    npu-smi reports (card, die, PID) in its process section.
-    """
+def process_evidence(output: str, devices: list[int], *, indexing: str) -> list[tuple[int, int]]:
+    """Return (allocated chip, container PID); reject ambiguous process rows."""
     if "Process id in container" not in output:
         raise ValueError("npu-smi process table absent")
     if indexing not in ("card", "card-die"):
         raise ValueError("unknown NPU process index mapping")
     selected = set(devices)
-    processes = []
-    for line in output.split("Process id in container")[-1].splitlines():
-        match = CHIP_PROCESS.match(line)
-        if match:
-            chip_id = (
-                int(match.group(1)) * 2 + int(match.group(2))
-                if indexing == "card-die"
-                else int(match.group(1))
-            )
-            if chip_id in selected:
-                processes.append(f"chip {chip_id}: pid {match.group(3)}")
-        elif re.match(r"^\|\s*\d+\s+\d+\s*\|", line):
-            # An unknown process-row format cannot safely imply that chips are idle.
+    rows = []
+    for line in output.split("Process id in container", 1)[1].splitlines():
+        if "No running processes found in NPU" in line:
+            continue
+        if not line.lstrip().startswith("|"):
+            continue
+        cells = [v.strip() for v in line.strip().strip("|").split("|")]
+        if indexing == "card-die":
+            match = CHIP_PROCESS.match(line)
+            if match:
+                chip = int(match[1]) * 2 + int(match[2])
+                pid = int(match[3])
+                rows.append((chip, pid))
+            elif re.match(r"^\\|\\s*\\d+", line):
+                raise ValueError("unrecognized NPU process row")
+        elif len(cells) == 5 and cells[0].isdigit() and cells[1].isdigit() and cells[-1].isdigit():
+            # Actual A5 row: NPU ID | host PID | name | memory | container PID.
+            rows.append((int(cells[0]), int(cells[-1])))
+        elif re.match(r"^\\|\\s*\\d+", line):
             raise ValueError("unrecognized NPU process row")
-    return processes
+    # Never kill a PID which also appears on an unallocated chip.
+    targets = {pid for chip, pid in rows if chip in selected}
+    if any(chip not in selected and pid in targets for chip, pid in rows):
+        raise ValueError("PID spans allocated and unallocated NPU devices")
+    if any(pid <= 1 for chip, pid in rows if chip in selected):
+        raise ValueError("unsafe NPU process PID")
+    return [(chip, pid) for chip, pid in rows if chip in selected]
 
 
-def remote_preflight(case: dict, pools: dict, *, ascend_env: str | None = None) -> None:
-    """Read-only external occupancy precheck; no preemption."""
+def selected_processes(
+    output: str, devices: list[int], *, indexing: str = "card-die"
+) -> list[str]:
+    return [f"chip {chip}: pid {pid}" for chip, pid in process_evidence(output, devices, indexing=indexing)]
+
+
+def remote_preflight(
+    case: dict, pools: dict, *, ascend_env: str | None = None,
+    evidence=None,
+) -> None:
+    """Inspect every allocated device; reclaim only for trusted yellow/A5 pools."""
     if not case.get("allocation"):
         return
     pool = pools[case["pool"]]
+    reclaim = pool.get("force_reclaim", False)
+    if type(reclaim) is not bool or (reclaim and (pool.get("owner") != "yellow" or pool.get("type") != "ascend-a5")):
+        raise ValueError("invalid force_reclaim pool")
     by_host = {x["host_id"]: x for x in pool["nodes"]}
     indexing = pool.get("process_indexing")
     if indexing not in ("card", "card-die"):
         raise ValueError("NPU process index mode must be configured")
+    from ci_core.transport import run as transport_run
     for request in case["allocation"]:
         node = by_host[request["host_id"]]
-        # Preflight needs the configured CANN runtime, which is available
-        # through the Docker execution alias. Host notifications use
-        # broadcast_ssh separately. External tasks are never reclaimed.
         host = node.get("ssh")
         if not isinstance(host, str) or not host:
             raise ValueError("NPU preflight host SSH is not configured")
         command = "npu-smi info"
         if ascend_env:
-            # Some relay shells do not load CANN by default; without sourcing
-            # the configured toolkit, npu-smi fails with missing libc_sec.so
-            # and an otherwise-free host is incorrectly marked unavailable.
-            command = (
-                "source " + shlex.quote(ascend_env) + " >/dev/null 2>&1 && npu-smi info"
-            )
+            command = "source " + shlex.quote(ascend_env) + " >/dev/null 2>&1 && npu-smi info"
         if case.get("docker"):
             from ci_core.config import execution_node
-
             node = execution_node(node, case["docker"])
             host = node["ssh"]
-        from ci_core.transport import run as transport_run
-
-        proc = transport_run(host, command, timeout=40, check=False)
-        if proc.returncode != 0:
-            raise RuntimeError(f"NPU preflight failed on {request['host_id']}")
-        found = selected_processes(proc.stdout, request["devices"], indexing=indexing)
-        if found:
-            raise ExternalNpuOccupancy(
-                f"External NPU activity on {request['host_id']}: {found[:3]}"
-            )
+        rounds = 4 if reclaim else 1
+        for attempt in range(rounds):
+            proc = transport_run(host, command, timeout=40, check=False)
+            if proc.returncode != 0:
+                raise RuntimeError(f"NPU occupancy query failed on {request['host_id']}")
+            found = process_evidence(proc.stdout, request["devices"], indexing=indexing)
+            if evidence is not None:
+                evidence.write(f"RECLAIM_EVIDENCE host={request['host_id']} round={attempt} allocated={request['devices']} chips_pids={found}\\n")
+                evidence.flush()
+            if not found:
+                break
+            if not reclaim:
+                raise ExternalNpuOccupancy(f"External NPU activity on {request['host_id']}: {found[:3]}")
+            # Recheck immediately before signalling; refuse PIDs on other chips.
+            verify = transport_run(host, command, timeout=40, check=False)
+            if verify.returncode != 0:
+                raise RuntimeError("NPU reclaim confirmation failed")
+            confirmed = process_evidence(verify.stdout, request["devices"], indexing=indexing)
+            for pid in sorted(set(pid for _, pid in found) & set(pid for _, pid in confirmed)):
+                result = transport_run(host, "kill -9 -- " + str(pid), timeout=20, check=False)
+                if evidence is not None:
+                    evidence.write(f"RECLAIM_KILL host={request['host_id']} pid={pid} rc={result.returncode}\\n")
+                    evidence.flush()
+                if result.returncode != 0:
+                    raise RuntimeError(f"NPU reclaim kill failed on {request['host_id']} pid={pid}")
+            if attempt == rounds - 1:
+                # The final state must be verified, not assumed from kill status.
+                final = transport_run(host, command, timeout=40, check=False)
+                if final.returncode != 0 or process_evidence(final.stdout, request["devices"], indexing=indexing):
+                    raise RuntimeError(f"NPU reclaim not idle on {request['host_id']}")
+        else:
+            raise RuntimeError(f"NPU reclaim attempts exhausted on {request['host_id']}")
 
 
 def summarize(log: Path, rc: int) -> list[str]:
@@ -215,7 +247,6 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
     from ci_core.scheduler import validate_allocation
 
     validate_allocation(case, pools, case["allocation"])
-    remote_preflight(case, pools, ascend_env=setup)
     log_dir = task_dir(run, root)
     log_dir.mkdir(parents=True, exist_ok=True)
     logfile = log_dir / "pipeline.log"
@@ -240,9 +271,12 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
     callback = run.get("_ci_phase_callback", lambda phase: None)
     release_verified = False
     announced = False
+    reclaim_started = False
     with logfile.open("w", encoding="utf-8") as stream:
         rc = 125
         try:
+            reclaim_started = True
+            remote_preflight(case, pools, ascend_env=setup, evidence=stream)
             failures = broadcast_job(case, pools, run, "begin")
             if failures:
                 raise RuntimeError("CI begin wall failed on " + ",".join(failures))
@@ -302,7 +336,7 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
             rc = 125
         finally:
             callback("CLEANING")
-            if announced:
+            if announced or reclaim_started:
                 from ci_core.ssh_runner import (
                     DEST_ROOT,
                     allocations,
@@ -311,17 +345,19 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
 
                 for attempt in range(3):
                     try:
-                        remote_preflight(case, pools, ascend_env=setup)
-                        for node in allocations(case, pools):
-                            destination = f"{DEST_ROOT}/{remote_task_name(run)}/node{node['position']}"
-                            owned_processes_gone(node, destination, log_dir.name)
+                        remote_preflight(case, pools, ascend_env=setup, evidence=stream)
+                        if announced:
+                            for node in allocations(case, pools):
+                                destination = f"{DEST_ROOT}/{remote_task_name(run)}/node{node['position']}"
+                                owned_processes_gone(node, destination, log_dir.name)
                         release_verified = True
                         break
                     except (RuntimeError, subprocess.SubprocessError, ValueError):
                         if attempt < 2:
                             time.sleep(2)
                 try:
-                    broadcast_job(case, pools, run, "end", released=release_verified)
+                    if announced:
+                        broadcast_job(case, pools, run, "end", released=release_verified)
                 except Exception:
                     logging.exception("CI exit notification failed")
                 if not release_verified:

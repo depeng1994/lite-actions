@@ -25,6 +25,9 @@ def load(root, worker):
     for name, pool in pools.items():
         if pool.get("owner") not in workers:
             raise ValueError("unknown pool owner")
+        reclaim = pool.get("force_reclaim", False)
+        if type(reclaim) is not bool or (reclaim and (pool["owner"] != "yellow" or pool.get("type") != "ascend-a5")):
+            raise ValueError("force_reclaim requires yellow ascend-a5 pool")
         for node in pool["nodes"]:
             pythonpath = node.get("pythonpath")
             if pythonpath is not None and (
@@ -115,4 +118,5 @@ def runtime_case(item, pools, worker):
         kind=item["kind"],
         timeout_seconds=item["execution_timeout_seconds"] + 780,
         execution_timeout_seconds=item["execution_timeout_seconds"],
+        force_reclaim=pool.get("force_reclaim", False),
     )

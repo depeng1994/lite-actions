@@ -129,18 +129,24 @@ class GitHubClient:
         return {**run, "head_sha": sha, "_ci_pr_number": number}
 
     def running_workflows(self) -> list[dict]:
-        runs = []
+        runs = {}
         for event in ("workflow_dispatch", "pull_request"):
-            data = self.request(
-                "GET", f"/actions/runs?event={event}&status=in_progress&per_page=100"
-            )
-            for run in data.get("workflow_runs", []):
-                if event == "pull_request":
-                    run = self.normalize_pr_run(run)
-                    if run is None:
+            for status in ("queued", "in_progress"):
+                data = self.request(
+                    "GET", f"/actions/runs?event={event}&status={status}&per_page=100"
+                )
+                for run in data.get("workflow_runs", []):
+                    if event == "pull_request":
+                        run = self.normalize_pr_run(run)
+                        if run is None:
+                            continue
+                    if run.get("status") not in {"queued", "in_progress"}:
                         continue
-                runs.append(run)
-        return runs
+                    identity = (run["id"], run.get("run_attempt", 1))
+                    # Prefer the more advanced state when GitHub search views lag.
+                    if identity not in runs or run["status"] == "in_progress":
+                        runs[identity] = run
+        return list(runs.values())
 
     def workflow_status(self, run_id: int) -> dict:
         if type(run_id) is not int or run_id < 1:
