@@ -281,7 +281,14 @@ class RecoveryTests(unittest.TestCase):
                                start_new_session=True)
         foreign=subprocess.Popen(["sleep","60"],start_new_session=True)
         try:
-            time.sleep(.15)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if (Path(f"/proc/{owned.pid}/cmdline").read_bytes()
+                        .split(b'\0', 1)[0] == b'VLLM::Worker_TP0'):
+                    break
+                time.sleep(.02)
+            else:
+                self.fail("disposable worker did not finish exec before classification")
             result=subprocess.run([sys.executable,"-c",occupancy._REMOTE_TERMINATE,
                                    str(owned.pid)],
                                   capture_output=True,text=True,timeout=12)
