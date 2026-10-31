@@ -5,7 +5,24 @@
       {
         "host_id": "113.46.17.205:153",
         "ssh": "113.46.17.205:153",
-        "device_ids": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        "device_ids": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
         "broadcast_ssh": [
           "113.46.17.205:153"
         ],
@@ -13,11 +30,29 @@
         "network_interface": "enp23s0f3",
         "allocation_groups": [
           {
-            "devices": [0, 1, 2, 3, 4, 5, 6, 7],
+            "devices": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7
+            ],
             "verified": true
           },
           {
-            "devices": [8, 9, 10, 11, 12, 13, 14, 15],
+            "devices": [
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15
+            ],
             "verified": true
           }
         ],
@@ -32,7 +67,24 @@
       {
         "host_id": "113.46.17.205:154",
         "ssh": "113.46.17.205:154",
-        "device_ids": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        "device_ids": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
         "broadcast_ssh": [
           "113.46.17.205:154"
         ],
@@ -40,11 +92,29 @@
         "network_interface": "enp23s0f3",
         "allocation_groups": [
           {
-            "devices": [8, 9, 10, 11, 12, 13, 14, 15],
+            "devices": [
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15
+            ],
             "verified": true
           },
           {
-            "devices": [0, 1, 2, 3, 4, 5, 6, 7],
+            "devices": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7
+            ],
             "verified": true
           }
         ],
@@ -62,21 +132,57 @@
       [
         {
           "host_id": "113.46.17.205:153",
-          "devices": [0, 1, 2, 3, 4, 5, 6, 7]
+          "devices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ]
         },
         {
           "host_id": "113.46.17.205:154",
-          "devices": [8, 9, 10, 11, 12, 13, 14, 15]
+          "devices": [
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ]
         }
       ],
       [
         {
           "host_id": "113.46.17.205:153",
-          "devices": [8, 9, 10, 11, 12, 13, 14, 15]
+          "devices": [
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ]
         },
         {
           "host_id": "113.46.17.205:154",
-          "devices": [0, 1, 2, 3, 4, 5, 6, 7]
+          "devices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ]
         }
       ]
     ],
@@ -93,10 +199,257 @@
   },
   "a5_shared_yellow": {
     "type": "ascend-a5",
-    "nodes": [],
+    "nodes": [
+      {
+        "host_id": "7.246.125.19:22",
+        "ssh": "7.246.125.19:22",
+        "host_ssh": "7.246.125.19:22",
+        "broadcast_ssh": [
+          "7.246.125.19:22"
+        ],
+        "node_ip": "7.246.125.19",
+        "network_interface": "enp34s0f1",
+        "device_ids": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "allocation_groups": [
+          {
+            "devices": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7
+            ],
+            "verified": true
+          }
+        ],
+        "capabilities": [
+          "npu_smoke"
+        ],
+        "priority": 0,
+        "machine_fingerprint": "0192c27a43edb442740091fcc1c237a0ba9114513fe147565210ab5ad1fdd3c9",
+        "environments": {
+          "vllm-kimi-wangjinyin": {
+            "container_id": "9b9aab0c58ab6a3334f64e40bfbf385bca7e7c2c92e413226c58f9cda8801c65",
+            "image_id": "sha256:b690a99231f131737f473edb2af43b3a2306f6a21fa7746ec3eb2fda1743dee0",
+            "image_ref": "cann9.3-kimi:v2"
+          }
+        }
+      },
+      {
+        "host_id": "7.246.125.20:22",
+        "ssh": "7.246.125.20:22",
+        "host_ssh": "7.246.125.20:22",
+        "broadcast_ssh": [
+          "7.246.125.20:22"
+        ],
+        "node_ip": "7.246.125.20",
+        "network_interface": "enp34s0f1",
+        "device_ids": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "allocation_groups": [
+          {
+            "devices": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7
+            ],
+            "verified": true
+          }
+        ],
+        "capabilities": [
+          "npu_smoke"
+        ],
+        "priority": 0,
+        "machine_fingerprint": "2a310c4aafef2bbd51abda7843ec9636ef18899aebd5c518f868d12c487468bb",
+        "environments": {
+          "vllm-kimi-wangjinyin": {
+            "container_id": "2f3500cee80d97d48de9d1ed72295256df2c759b72e382dcb8bb73dbf3fe241e",
+            "image_id": "sha256:b690a99231f131737f473edb2af43b3a2306f6a21fa7746ec3eb2fda1743dee0",
+            "image_ref": "cann9.3-kimi:v2"
+          }
+        }
+      },
+      {
+        "host_id": "7.246.125.21:22",
+        "ssh": "7.246.125.21:22",
+        "host_ssh": "7.246.125.21:22",
+        "broadcast_ssh": [
+          "7.246.125.21:22"
+        ],
+        "node_ip": "7.246.125.21",
+        "network_interface": "enp34s0f1",
+        "device_ids": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "allocation_groups": [
+          {
+            "devices": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7
+            ],
+            "verified": true
+          }
+        ],
+        "capabilities": [
+          "npu_smoke"
+        ],
+        "priority": 0,
+        "machine_fingerprint": "6fb34178b51e807a078a9505ac217fbf7539ae3d62308b6085e1ce83fd6f9c08",
+        "environments": {
+          "vllm-kimi-wangjinyin": {
+            "container_id": "d1027c39cd2463214e2f23048ab5c7aabbbd864438705e1732695a526aa6bd7f",
+            "image_id": "sha256:b690a99231f131737f473edb2af43b3a2306f6a21fa7746ec3eb2fda1743dee0",
+            "image_ref": "cann9.3-kimi:v2"
+          }
+        }
+      },
+      {
+        "host_id": "7.246.125.26:22",
+        "ssh": "7.246.125.26:22",
+        "host_ssh": "7.246.125.26:22",
+        "broadcast_ssh": [
+          "7.246.125.26:22"
+        ],
+        "node_ip": "7.246.125.26",
+        "network_interface": "enp34s0f1",
+        "device_ids": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "allocation_groups": [
+          {
+            "devices": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7
+            ],
+            "verified": true
+          }
+        ],
+        "capabilities": [
+          "npu_smoke"
+        ],
+        "priority": 0,
+        "machine_fingerprint": "a713acdb210c8f4fdf9a3f0f99937523769db8b39caf610e1ff3220492f6c6fd",
+        "environments": {
+          "vllm-kimi-wangjinyin": {
+            "container_id": "3fc1fce4c6a112b3ae4073e7003ced8f3a9943d5d1edf9c70a1255d304e0b6d4",
+            "image_id": "sha256:b690a99231f131737f473edb2af43b3a2306f6a21fa7746ec3eb2fda1743dee0",
+            "image_ref": "cann9.3-kimi:v2"
+          }
+        }
+      }
+    ],
     "notes": "Real addresses from operators. SSH, NPU numbering, broadcast and multi-node training are NOT hardware-verified; CI disabled.",
     "process_indexing": "card",
     "owner": "yellow",
-    "enabled": false
+    "enabled": false,
+    "max_jobs_per_host": 1,
+    "force_reclaim": true,
+    "verified_multinode_allocations": [
+      [
+        {
+          "host_id": "7.246.125.19:22",
+          "devices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ]
+        },
+        {
+          "host_id": "7.246.125.20:22",
+          "devices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ]
+        },
+        {
+          "host_id": "7.246.125.21:22",
+          "devices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ]
+        },
+        {
+          "host_id": "7.246.125.26:22",
+          "devices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ]
+        }
+      ]
+    ]
   }
 }

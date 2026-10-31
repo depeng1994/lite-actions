@@ -12,9 +12,34 @@ import re
 
 # A distinct worker process can serve vLLM, sharing physical resource locks
 # with the existing TorchTitan worker. The default remains backwards compatible.
-REPO = os.environ.get("LITE_ACTIONS_MODEL_REPO", "torchtitan-npu/torchtitan-npu")
-if REPO not in {"torchtitan-npu/torchtitan-npu", "torchtitan-npu/vllm-ascend"}:
+TORCHTITAN_REPO = "torchtitan-npu/torchtitan-npu"
+VLLM_REPO = "torchtitan-npu/vllm-ascend"
+SUPPORTED_REPOS = frozenset({TORCHTITAN_REPO, VLLM_REPO})
+REPO = os.environ.get("LITE_ACTIONS_MODEL_REPO", TORCHTITAN_REPO)
+if REPO not in SUPPORTED_REPOS:
     raise ValueError("unsupported model repository")
+
+
+def configured_repos():
+    """Explicit dual mode, backwards compatible single-repo setting."""
+    multi = os.environ.get("LITE_ACTIONS_MODEL_REPOS")
+    if multi is None:
+        single = os.environ.get("LITE_ACTIONS_MODEL_REPO", REPO)
+        if single not in SUPPORTED_REPOS:
+            raise ValueError("unsupported single repository")
+        return (single,)
+    repos = tuple(x.strip() for x in multi.split(","))
+    if (
+        not repos
+        or any(x not in SUPPORTED_REPOS for x in repos)
+        or len(set(repos)) != len(repos)
+    ):
+        raise ValueError("invalid/duplicate LITE_ACTIONS_MODEL_REPOS")
+    if os.environ.get("LITE_ACTIONS_MODEL_REPO") not in (None, TORCHTITAN_REPO):
+        raise ValueError("unset LITE_ACTIONS_MODEL_REPO in multi-repo mode")
+    return repos
+
+
 WORKFLOWS = {"nightly_fulltests.yml", "lite_actions_dispatcher_smoke.yml"}
 WORKERS = {"blue", "yellow"}
 TEST = re.compile(r"[a-z][a-z0-9_]{0,79}\Z")
@@ -129,11 +154,15 @@ def create_plan(cases, *, run_id, attempt, sha, workflow, defaults, repo=REPO):
         cases=cases,
     )
     plan["plan_digest"] = digest(plan)
-    parse_plan(plan, dict(id=run_id, run_attempt=attempt, head_sha=sha), workflow)
+    parse_plan(
+        plan, dict(id=run_id, run_attempt=attempt, head_sha=sha), workflow, repo=repo
+    )
     return plan
 
 
-def parse_plan(plan, run, workflow):
+def parse_plan(plan, run, workflow, *, repo=REPO):
+    if repo not in SUPPORTED_REPOS:
+        raise ValueError("unsupported plan repository")
     if not isinstance(plan, dict) or set(plan) != {
         "schema",
         "repo",
@@ -148,7 +177,7 @@ def parse_plan(plan, run, workflow):
         raise ValueError("invalid plan structure")
     if (
         plan["schema"] != 3
-        or plan["repo"] != REPO
+        or plan["repo"] != repo
         or workflow not in WORKFLOWS
         or plan["workflow"] != workflow
         or type(plan["run_id"]) is not int

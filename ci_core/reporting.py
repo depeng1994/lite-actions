@@ -13,7 +13,7 @@ def marker(run, item):
 def report(run, item, plan_digest, status, rc, lines, cleanup_verified=True):
     return dict(
         schema=3,
-        repo=REPO,
+        repo=run.get("_ci_repo", REPO),
         workflow=run["path"].rsplit("/", 1)[-1],
         run_id=run["id"],
         attempt=run.get("run_attempt", 1),

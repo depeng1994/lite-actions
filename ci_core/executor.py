@@ -58,13 +58,18 @@ def task_dir(run: dict, root: Path) -> Path:
         if not isinstance(test_id, str) or not SELECTOR.fullmatch(test_id):
             raise ValueError("invalid CI task Test ID")
         suffix = f"_test-{test_id}"
-    return (
-        root
-        / "logs/runs"
-        / (
-            f"{local:%Y-%m-%d_%H-%M-%S}_run-{int(run['id'])}"
-            f"_attempt-{int(run.get('run_attempt', 1))}{suffix}"
-        )
+    source_repo = run.get("_ci_repo", "torchtitan-npu/torchtitan-npu")
+    if source_repo not in (
+        "torchtitan-npu/torchtitan-npu",
+        "torchtitan-npu/vllm-ascend",
+    ):
+        raise ValueError("untrusted model repo")
+    logs = root / "logs/runs"
+    if source_repo == "torchtitan-npu/vllm-ascend":
+        logs = logs / "vllm-ascend"
+    return logs / (
+        f"{local:%Y-%m-%d_%H-%M-%S}_run-{int(run['id'])}"
+        f"_attempt-{int(run.get('run_attempt', 1))}{suffix}"
     )
 
 
@@ -95,79 +100,262 @@ def remote_task_name(run: dict) -> str:
         if not isinstance(test_id, str) or not SELECTOR.fullmatch(test_id):
             raise ValueError("invalid CI test ID")
         suffix += f"_test-{test_id}"
-    return f"{local:%Y-%m-%d_%H-%M-%S}_run_{name}_{number}{suffix}"
+    prefix = "vllm_" if run.get("_ci_repo") == "torchtitan-npu/vllm-ascend" else ""
+    return f"{prefix}{local:%Y-%m-%d_%H-%M-%S}_run_{name}_{number}{suffix}"
 
 
-def selected_processes(
-    output: str, devices: list[int], *, indexing: str = "card-die"
-) -> list[str]:
-    """Fail closed if NPU process table is unrecognizable.
+def _process_rows(
+    output: str, devices: list[int], *, indexing: str
+) -> list[tuple[int, int, str]]:
+    """Return (chip, PID visible in the kill namespace, container PID evidence).
 
-    This particular A3 environment exposes two physical chip IDs per card;
-    npu-smi reports (card, die, PID) in its process section.
+    A5 "card" mode reports the *host* PID in column two, regardless of
+    whether the process belongs to the bound CI container. The last column
+    may be NA or a PID from a different container's namespace; never kill it.
+    Preserve the established A3 card-die PID and chip mapping.
     """
     if "Process id in container" not in output:
         raise ValueError("npu-smi process table absent")
     if indexing not in ("card", "card-die"):
         raise ValueError("unknown NPU process index mapping")
+
     selected = set(devices)
-    processes = []
-    for line in output.split("Process id in container")[-1].splitlines():
-        match = CHIP_PROCESS.match(line)
-        if match:
-            chip_id = (
-                int(match.group(1)) * 2 + int(match.group(2))
-                if indexing == "card-die"
-                else int(match.group(1))
-            )
-            if chip_id in selected:
-                processes.append(f"chip {chip_id}: pid {match.group(3)}")
-        elif re.match(r"^\|\s*\d+\s+\d+\s*\|", line):
-            # An unknown process-row format cannot safely imply that chips are idle.
-            raise ValueError("unrecognized NPU process row")
-    return processes
+    rows: list[tuple[int, int, str]] = []
+    if indexing == "card-die":
+        for line in output.split("Process id in container")[-1].splitlines():
+            match = CHIP_PROCESS.match(line)
+            if match:
+                chip = int(match.group(1)) * 2 + int(match.group(2))
+                pid = int(match.group(3))
+                rows.append((chip, pid, str(pid)))
+            elif re.match(r"^\|\s*\d+\s+\d+\s*\|", line):
+                raise ValueError("unrecognized NPU process row")
+    else:
+        # Ignore the remainder of the header line; all following data rows
+        # must match the A5 five-column table. Unknown rows are not idle.
+        section = output.split("Process id in container", 1)[1]
+        for line in section.splitlines()[1:]:
+            line = line.strip()
+            if not line:
+                continue
+            if re.fullmatch(r"[+=-]+", line):
+                continue
+            if re.fullmatch(r"\|\s*No running processes found in NPU \d+[^|]*\|", line):
+                continue
+            if not (line.startswith("|") and line.endswith("|")):
+                raise ValueError("unrecognized NPU process row")
+            cells = [part.strip() for part in line[1:-1].split("|")]
+            if (
+                len(cells) != 5
+                or not re.fullmatch(r"[0-9]+", cells[0])
+                or not re.fullmatch(r"[0-9]+", cells[1])
+                or int(cells[1]) <= 1
+                or not cells[2]
+                or not re.fullmatch(r"[0-9]+", cells[3])
+                or not (cells[4] == "NA" or re.fullmatch(r"[0-9]+", cells[4]))
+            ):
+                raise ValueError("unrecognized NPU process row")
+            rows.append((int(cells[0]), int(cells[1]), cells[4]))
+
+    # A shared process cannot be terminated if it also occupies a chip
+    # outside this lease. In A5 mode this is always the *host* PID.
+    targets = {pid for chip, pid, _ in rows if chip in selected}
+    if any(chip not in selected and pid in targets for chip, pid, _ in rows):
+        raise ValueError("PID spans allocated and unallocated NPU devices")
+    if any(pid <= 1 for chip, pid, _ in rows if chip in selected):
+        raise ValueError("unsafe NPU process PID")
+    return [
+        (chip, pid, container_pid)
+        for chip, pid, container_pid in rows
+        if chip in selected
+    ]
 
 
-def remote_preflight(case: dict, pools: dict, *, ascend_env: str | None = None) -> None:
-    """Read-only external occupancy precheck; no preemption."""
+def process_evidence(
+    output: str, devices: list[int], *, indexing: str
+) -> list[tuple[int, int]]:
+    """Selected (chip, kill PID): A5 host PID, A3 existing card-die PID."""
+    return [
+        (chip, pid)
+        for chip, pid, _ in _process_rows(output, devices, indexing=indexing)
+    ]
+
+
+def selected_processes(
+    output: str, devices: list[int], *, indexing: str = "card-die"
+) -> list[str]:
+    return [
+        f"chip {chip}: pid {pid}"
+        for chip, pid in process_evidence(output, devices, indexing=indexing)
+    ]
+
+
+def remote_preflight(
+    case: dict,
+    pools: dict,
+    *,
+    ascend_env: str | None = None,
+    evidence=None,
+) -> None:
+    """Probe through the CANN container; reclaim A5 host PIDs via host SSH only."""
     if not case.get("allocation"):
         return
     pool = pools[case["pool"]]
+    reclaim = pool.get("force_reclaim", False)
+    if type(reclaim) is not bool or (
+        reclaim and (pool.get("owner") != "yellow" or pool.get("type") != "ascend-a5")
+    ):
+        raise ValueError("invalid force_reclaim pool")
     by_host = {x["host_id"]: x for x in pool["nodes"]}
     indexing = pool.get("process_indexing")
     if indexing not in ("card", "card-die"):
         raise ValueError("NPU process index mode must be configured")
+
+    from ci_core.transport import run as transport_run
+
     for request in case["allocation"]:
         node = by_host[request["host_id"]]
-        # Preflight needs the configured CANN runtime, which is available
-        # through the Docker execution alias. Host notifications use
-        # broadcast_ssh separately. External tasks are never reclaimed.
-        host = node.get("ssh")
-        if not isinstance(host, str) or not host:
+        probe_host = node.get("ssh")
+        if not isinstance(probe_host, str) or not probe_host:
             raise ValueError("NPU preflight host SSH is not configured")
         command = "npu-smi info"
         if ascend_env:
-            # Some relay shells do not load CANN by default; without sourcing
-            # the configured toolkit, npu-smi fails with missing libc_sec.so
-            # and an otherwise-free host is incorrectly marked unavailable.
             command = (
                 "source " + shlex.quote(ascend_env) + " >/dev/null 2>&1 && npu-smi info"
             )
+        # The host PID has no meaning inside the bound container's PID
+        # namespace. Never pass /container to the signal transport.
+        kill_host = None
+        if reclaim:
+            kill_host = node.get("host_ssh") or node["ssh"]
+            if not isinstance(kill_host, str) or not kill_host or "/" in kill_host:
+                raise ValueError("NPU reclaim requires a host-only SSH alias")
+
         if case.get("docker"):
             from ci_core.config import execution_node
 
-            node = execution_node(node, case["docker"])
-            host = node["ssh"]
-        from ci_core.transport import run as transport_run
+            probe_host = execution_node(node, case["docker"])["ssh"]
 
-        proc = transport_run(host, command, timeout=40, check=False)
-        if proc.returncode != 0:
-            raise RuntimeError(f"NPU preflight failed on {request['host_id']}")
-        found = selected_processes(proc.stdout, request["devices"], indexing=indexing)
-        if found:
-            raise ExternalNpuOccupancy(
-                f"External NPU activity on {request['host_id']}: {found[:3]}"
+        def inspect(round_number: int, stage: str):
+            proc = transport_run(probe_host, command, timeout=40, check=False)
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    f"NPU occupancy query failed on {request['host_id']}"
+                )
+            found = _process_rows(proc.stdout, request["devices"], indexing=indexing)
+            if evidence is not None:
+                details = [
+                    {"chip": chip, "host_pid": pid, "container_pid": container_pid}
+                    for chip, pid, container_pid in found
+                ]
+                evidence.write(
+                    f"RECLAIM_EVIDENCE host={request['host_id']} "
+                    f"round={round_number} stage={stage} "
+                    f"allocated={request['devices']} "
+                    f"processes={json.dumps(details, sort_keys=True)}\n"
+                )
+                evidence.flush()
+            return found
+
+        for attempt in range(4 if reclaim else 1):
+            found = inspect(attempt, "scan")
+            if not found:
+                break
+            if not reclaim:
+                raise ExternalNpuOccupancy(
+                    f"External NPU activity on {request['host_id']}: "
+                    f"{[(chip, pid) for chip, pid, _ in found][:3]}"
+                )
+
+            # Verify same chip *and host PID* immediately before signalling.
+            # Respawns with new PIDs are handled by the next bounded round.
+            confirmed = inspect(attempt, "confirm")
+            stable = {(chip, pid) for chip, pid, _ in found} & {
+                (chip, pid) for chip, pid, _ in confirmed
+            }
+            for pid in sorted({pid for _, pid in stable}):
+                chips = sorted(chip for chip, p in stable if p == pid)
+                container_pids = sorted(
+                    {cp for chip, p, cp in confirmed if p == pid and chip in chips}
+                )
+                result = transport_run(
+                    kill_host, "kill -9 -- " + str(pid), timeout=20, check=False
+                )
+                if evidence is not None:
+                    evidence.write(
+                        f"RECLAIM_KILL host={request['host_id']} "
+                        f"ssh={kill_host} chips={chips} host_pid={pid} "
+                        f"container_pids={container_pids} rc={result.returncode}\n"
+                    )
+                    evidence.flush()
+                if result.returncode != 0:
+                    # ESRCH race: the process can exit after confirmation but
+                    # before kill reaches the host. Re-read allocated chips
+                    # rather than trusting the nonzero exit status alone.
+                    remaining = inspect(attempt, "post_kill_nonzero")
+                    if any(host_pid == pid for _, host_pid, _ in remaining):
+                        raise RuntimeError(
+                            f"NPU reclaim kill failed on {request['host_id']} "
+                            f"host_pid={pid}"
+                        )
+            if attempt == 3:
+                # Four rounds may be needed if the process is respawned.
+                # Successful final verification must exit the loop normally.
+                if inspect(attempt, "final"):
+                    raise RuntimeError(f"NPU reclaim not idle on {request['host_id']}")
+                break
+
+
+def check_a5_multinode_rootinfo(case: dict, pools: dict) -> None:
+    """Fail before any NPU reclaim/launch if any multi-node A5 rootinfo is broken."""
+    if len(case.get("allocation", [])) <= 1:
+        return
+    pool = pools[case["pool"]]
+    if pool.get("type") != "ascend-a5":
+        return
+    from ci_core.config import execution_node
+    from ci_core.transport import run as ssh_run
+
+    nodes = {n["host_id"]: n for n in pool["nodes"]}
+    checker = (
+        "import json,sys; "
+        "p='/etc/hccl_rootinfo.json'; "
+        "d=json.load(open(p)); "
+        "n=d.get('rank_count') if isinstance(d,dict) else None; "
+        "assert type(n) in (int,str) and str(n)=='8', "
+        "f'rank_count expected 8, got {n!r}'"
+    )
+    failures = []
+    for allocated in case["allocation"]:
+        host_id = allocated["host_id"]
+        node = nodes[host_id]
+        binding = node.get("environments", {}).get(case.get("docker"), {})
+        container_id = binding.get("container_id", "UNBOUND")
+        try:
+            # execution_node validates the pinned container and tag first.
+            bound = execution_node(node, case["docker"])
+            proc = ssh_run(
+                bound["ssh"],
+                "python3 -c " + shlex.quote(checker),
+                timeout=30,
+                check=False,
             )
+            if proc.returncode:
+                failures.append(
+                    f"{host_id} container={container_id[:16]}: "
+                    f"invalid /etc/hccl_rootinfo.json ({proc.stderr.strip()[:120]})"
+                )
+        except (ValueError, OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            failures.append(
+                f"{host_id} container={container_id[:16]}: "
+                f"rootinfo validation failed: {type(exc).__name__}: {str(exc)[:100]}"
+            )
+    if failures:
+        raise ValueError(
+            "A5_MULTI_NODE_ROOTINFO_INVALID: /etc/hccl_rootinfo.json must have "
+            "valid JSON rank_count=8. FIX: restore inside listed A5 Docker "
+            "containers, then rerun; " + "; ".join(failures)
+        )
 
 
 def summarize(log: Path, rc: int) -> list[str]:
@@ -193,12 +381,14 @@ def prepare_profile(case: dict, run: dict) -> dict:
     from ci_core.ssh_runner import model_archive
 
     with tempfile.TemporaryDirectory(prefix="lite-model-") as tmp:
-        archive = model_archive(run["head_sha"], Path(tmp))
+        source_repo = run.get("_ci_repo", "torchtitan-npu/torchtitan-npu")
+        archive = model_archive(run["head_sha"], Path(tmp), source_repo=source_repo)
         definition = resolve_test(
             archive,
             run["_ci_test_id"],
             nodes=case["resources"]["nodes"],
             ngpu=case["resources"]["devices_per_node"],
+            repo=source_repo,
         )
     return definition["env_vars"]
 
@@ -215,7 +405,6 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
     from ci_core.scheduler import validate_allocation
 
     validate_allocation(case, pools, case["allocation"])
-    remote_preflight(case, pools, ascend_env=setup)
     log_dir = task_dir(run, root)
     log_dir.mkdir(parents=True, exist_ok=True)
     logfile = log_dir / "pipeline.log"
@@ -240,9 +429,13 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
     callback = run.get("_ci_phase_callback", lambda phase: None)
     release_verified = False
     announced = False
+    reclaim_started = False
     with logfile.open("w", encoding="utf-8") as stream:
         rc = 125
         try:
+            check_a5_multinode_rootinfo(case, pools)
+            reclaim_started = True
+            remote_preflight(case, pools, ascend_env=setup, evidence=stream)
             failures = broadcast_job(case, pools, run, "begin")
             if failures:
                 raise RuntimeError("CI begin wall failed on " + ",".join(failures))
@@ -253,6 +446,12 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
                 cwd=root,
                 stdout=stream,
                 stderr=subprocess.STDOUT,
+                env={
+                    **os.environ,
+                    "LITE_ACTIONS_MODEL_REPO": run.get(
+                        "_ci_repo", "torchtitan-npu/torchtitan-npu"
+                    ),
+                },
                 start_new_session=True,
             )
             try:
@@ -297,12 +496,16 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
                     f"ERROR: case interrupted rc={rc}; verifying remote cleanup\n"
                 )
         except Exception as exc:
-            stream.write(f"ERROR: {type(exc).__name__}: {str(exc)[:240]}\n")
+            if "A5_MULTI_NODE_ROOTINFO_INVALID" in str(exc):
+                for line in str(exc).replace("; ", "\n").splitlines():
+                    stream.write("ERROR: " + line[:175] + "\n")
+            else:
+                stream.write(f"ERROR: {type(exc).__name__}: {str(exc)[:240]}\n")
             logging.exception("case execution failed run=%s", run["id"])
             rc = 125
         finally:
             callback("CLEANING")
-            if announced:
+            if announced or reclaim_started:
                 from ci_core.ssh_runner import (
                     DEST_ROOT,
                     allocations,
@@ -311,17 +514,21 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
 
                 for attempt in range(3):
                     try:
-                        remote_preflight(case, pools, ascend_env=setup)
-                        for node in allocations(case, pools):
-                            destination = f"{DEST_ROOT}/{remote_task_name(run)}/node{node['position']}"
-                            owned_processes_gone(node, destination, log_dir.name)
+                        remote_preflight(case, pools, ascend_env=setup, evidence=stream)
+                        if announced:
+                            for node in allocations(case, pools):
+                                destination = f"{DEST_ROOT}/{remote_task_name(run)}/node{node['position']}"
+                                owned_processes_gone(node, destination, log_dir.name)
                         release_verified = True
                         break
                     except (RuntimeError, subprocess.SubprocessError, ValueError):
                         if attempt < 2:
                             time.sleep(2)
                 try:
-                    broadcast_job(case, pools, run, "end", released=release_verified)
+                    if announced:
+                        broadcast_job(
+                            case, pools, run, "end", released=release_verified
+                        )
                 except Exception:
                     logging.exception("CI exit notification failed")
                 if not release_verified:

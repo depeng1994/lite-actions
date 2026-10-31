@@ -9,7 +9,8 @@ import time
 from pathlib import Path
 
 from ci_core.config import load
-from ci_core.github import GitHubClient, authorization
+from ci_core.contract import configured_repos
+from ci_core.github import GitHubClient, MultiRepoGitHubClient, authorization
 from ci_core.resources import single_agent
 from ci_core.router import Router
 
@@ -23,8 +24,9 @@ def main():
     p.add_argument("--once", action="store_true")
     a = p.parse_args()
     load(ROOT, a.worker_id)
+    repos = configured_repos()
     if a.validate:
-        print(f"Validated worker {a.worker_id}")
+        print(f"Validated worker {a.worker_id} repositories: {', '.join(repos)}")
         return
 
     def stop(signum, frame):
@@ -35,10 +37,16 @@ def main():
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
     )
     with single_agent():
+        token = authorization()
+        client = (
+            MultiRepoGitHubClient(token, repos)
+            if len(repos) > 1
+            else GitHubClient(token, repos[0])
+        )
         router = Router(
             ROOT,
             a.worker_id,
-            GitHubClient(authorization()),
+            client,
             os.environ.get("LITE_ACTIONS_RESULT_AUTHOR"),
         )
         try:

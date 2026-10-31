@@ -6,8 +6,8 @@ from ci_core.contract import normalize
 from ci_core.registry import inspect_archive
 
 
-def verify_definition(archive, item, defaults):
-    rows = inspect_archive(archive, {"test_id": item["test_id"]})
+def verify_definition(archive, item, defaults, *, repo=None):
+    rows = inspect_archive(archive, {"test_id": item["test_id"]}, repo=repo)
     if len(rows) != 1:
         raise ValueError("missing pinned definition")
     r = rows[0]

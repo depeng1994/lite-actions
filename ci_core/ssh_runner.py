@@ -50,11 +50,13 @@ def ssh(
     return run(host, command, timeout=timeout, check=check)
 
 
-def model_archive(sha: str, work: Path) -> Path:
+def model_archive(sha: str, work: Path, *, source_repo: str = MODEL_REPO) -> Path:
     """Return a SHA-verified source archive, cached to avoid double Git fetches."""
-    if not SHA.fullmatch(sha):
-        raise ValueError("invalid commit SHA")
-    cache_dir = ROOT / "cache" / "model-archives"
+    from ci_core.contract import SUPPORTED_REPOS
+
+    if not SHA.fullmatch(sha) or source_repo not in SUPPORTED_REPOS:
+        raise ValueError("invalid commit SHA / model repository")
+    cache_dir = ROOT / "cache" / "model-archives" / source_repo
     cache_dir.mkdir(parents=True, exist_ok=True)
     cached = cache_dir / f"{sha}.tar.gz"
     lock_path = cache_dir / f"{sha}.lock"
@@ -66,7 +68,16 @@ def model_archive(sha: str, work: Path) -> Path:
         repo = work / "repo"
         subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=25)
         subprocess.run(
-            ["git", "-C", str(repo), "remote", "add", "origin", REPO], check=True
+            [
+                "git",
+                "-C",
+                str(repo),
+                "remote",
+                "add",
+                "origin",
+                f"https://github.com/{source_repo}.git",
+            ],
+            check=True,
         )
         try:
             subprocess.run(
@@ -76,7 +87,7 @@ def model_archive(sha: str, work: Path) -> Path:
                 capture_output=True,
             )
         except subprocess.CalledProcessError:
-            if not VLLM:
+            if source_repo != "torchtitan-npu/vllm-ascend":
                 raise
             # The PR source SHA might be unreachable via the base repository.
             # This fallback is a fixed, trusted Fork checked by PR admission.
