@@ -31,8 +31,9 @@ export LITE_ACTIONS_ALLOWED_BRANCHES=main
 export LITE_ACTIONS_RESULT_AUTHOR=depeng1994
 export LITE_ACTIONS_STATE_DIR=/var/lib/lite-actions/vllm-a5-yellow
 export LITE_ACTIONS_AGENT_LOCK=/var/lock/lite-actions-vllm-a5-yellow.lock
-# MUST be identical for both Yellow worker processes:
-export LITE_ACTIONS_RESOURCE_LOCK_ROOT=/var/lock/lite-actions-resources
+# MUST use the same shared lease directory as the already-running Yellow process.
+# If the original worker leaves this variable unset, leave it unset here too.
+# export LITE_ACTIONS_RESOURCE_LOCK_ROOT=<original-worker-value>
 # Set to the verified CANN toolkit path INSIDE the pinned A5 container:
 export LITE_ACTIONS_VLLM_ASCEND_SET_ENV_PATH=/usr/local/Ascend/ascend-toolkit/set_env.sh
 # Set authorized GitHub credential in the protected process environment.
