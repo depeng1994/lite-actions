@@ -7,9 +7,14 @@
 
 import hashlib
 import json
+import os
 import re
 
-REPO = "torchtitan-npu/torchtitan-npu"
+# A distinct worker process can serve vLLM, sharing physical resource locks
+# with the existing TorchTitan worker. The default remains backwards compatible.
+REPO = os.environ.get("LITE_ACTIONS_MODEL_REPO", "torchtitan-npu/torchtitan-npu")
+if REPO not in {"torchtitan-npu/torchtitan-npu", "torchtitan-npu/vllm-ascend"}:
+    raise ValueError("unsupported model repository")
 WORKFLOWS = {"nightly_fulltests.yml", "lite_actions_dispatcher_smoke.yml"}
 WORKERS = {"blue", "yellow"}
 TEST = re.compile(r"[a-z][a-z0-9_]{0,79}\Z")

@@ -78,6 +78,15 @@ def inspect_archive(archive: Path, selection: dict) -> list[dict]:
     This is not a security sandbox: actor/branch/SHA authorization remains the
     prerequisite; a Python build_test_list runs trusted repository code.
     """
+    from ci_core.contract import REPO
+
+    if REPO == "torchtitan-npu/vllm-ascend":
+        from ci_core.vllm_ascend import definition
+
+        if "test_id" in selection:
+            return [definition(selection["test_id"])]
+        raise ValueError("vLLM only accepts fixed trusted smoke test IDs")
+
     import os
     import subprocess
     import sys

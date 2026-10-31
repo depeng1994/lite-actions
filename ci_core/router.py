@@ -80,7 +80,7 @@ class Router:
             )
         )
         event = run.get("event")
-        if event == "pull_request":
+        if event in ("pull_request", "pull_request_target"):
             admitted = (
                 type(run.get("_ci_pr_number")) is int
                 and run.get("actor", {}).get("login") in allowed

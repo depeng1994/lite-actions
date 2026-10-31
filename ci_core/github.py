@@ -13,6 +13,8 @@ import zipfile
 
 from ci_core.contract import REPO
 
+VLLM_REPO = "torchtitan-npu/vllm-ascend"
+
 API = f"https://api.github.com/repos/{REPO}"
 
 
@@ -128,17 +130,58 @@ class GitHubClient:
             return None
         return {**run, "head_sha": sha, "_ci_pr_number": number}
 
+    def normalize_target_pr_run(self, run: dict) -> dict | None:
+        """Resolve a default-branch pull_request_target run to an exact PR head."""
+        import re
+
+        title = run.get("display_title") or ""
+        match = re.fullmatch(r"lite-a5-pr-(\d+)-([0-9a-f]{40})", title)
+        if (
+            not match
+            or run.get("path", "").rsplit("/", 1)[-1]
+            != "lite_actions_dispatcher_smoke.yml"
+        ):
+            return None
+        pr_number, sha = int(match[1]), match[2]
+        if run.get("actor", {}).get("login") != "depeng1994":
+            return None
+        pr = self.request("GET", f"/pulls/{pr_number}")
+        target = pr.get("base", {}).get("ref", "")
+        if (
+            pr.get("state") != "open"
+            or pr.get("draft")
+            or pr.get("base", {}).get("repo", {}).get("full_name") != REPO
+            or not (
+                target == "main"
+                or target.startswith("releases/")
+                or target.endswith("-dev")
+            )
+            or pr.get("head", {}).get("repo", {}).get("full_name")
+            != "depeng1994/vllm-ascend"
+            or pr.get("user", {}).get("login") != "depeng1994"
+            or pr.get("head", {}).get("sha") != sha
+        ):
+            return None
+        return {**run, "head_sha": sha, "_ci_pr_number": pr_number}
+
     def running_workflows(self) -> list[dict]:
         runs = []
-        for event in ("workflow_dispatch", "pull_request"):
+        events = (
+            ("workflow_dispatch", "pull_request_target")
+            if REPO == VLLM_REPO
+            else ("workflow_dispatch", "pull_request")
+        )
+        for event in events:
             data = self.request(
                 "GET", f"/actions/runs?event={event}&status=in_progress&per_page=100"
             )
             for run in data.get("workflow_runs", []):
                 if event == "pull_request":
                     run = self.normalize_pr_run(run)
-                    if run is None:
-                        continue
+                elif event == "pull_request_target":
+                    run = self.normalize_target_pr_run(run)
+                if run is None:
+                    continue
                 runs.append(run)
         return runs
 
