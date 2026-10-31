@@ -27,6 +27,7 @@ from ci_core.registry import SELECTOR, resolve_test
 ROOT = Path(__file__).resolve().parents[1]
 
 REPO = f"https://github.com/{MODEL_REPO}.git"
+VLLM = MODEL_REPO == "torchtitan-npu/vllm-ascend"
 DEST_ROOT = "/mnt/share/ci_tests"
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 STAMP = re.compile(r"[0-9A-Za-z_-]+\Z")
@@ -49,11 +50,13 @@ def ssh(
     return run(host, command, timeout=timeout, check=check)
 
 
-def model_archive(sha: str, work: Path) -> Path:
+def model_archive(sha: str, work: Path, *, source_repo: str = MODEL_REPO) -> Path:
     """Return a SHA-verified source archive, cached to avoid double Git fetches."""
-    if not SHA.fullmatch(sha):
-        raise ValueError("invalid commit SHA")
-    cache_dir = ROOT / "cache" / "model-archives"
+    from ci_core.contract import SUPPORTED_REPOS
+
+    if not SHA.fullmatch(sha) or source_repo not in SUPPORTED_REPOS:
+        raise ValueError("invalid commit SHA / model repository")
+    cache_dir = ROOT / "cache" / "model-archives" / source_repo
     cache_dir.mkdir(parents=True, exist_ok=True)
     cached = cache_dir / f"{sha}.tar.gz"
     lock_path = cache_dir / f"{sha}.lock"
@@ -65,13 +68,44 @@ def model_archive(sha: str, work: Path) -> Path:
         repo = work / "repo"
         subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=25)
         subprocess.run(
-            ["git", "-C", str(repo), "remote", "add", "origin", REPO], check=True
-        )
-        subprocess.run(
-            ["git", "-C", str(repo), "fetch", "--depth=1", "-q", "origin", sha],
+            [
+                "git",
+                "-C",
+                str(repo),
+                "remote",
+                "add",
+                "origin",
+                f"https://github.com/{source_repo}.git",
+            ],
             check=True,
-            timeout=180,
         )
+        try:
+            subprocess.run(
+                ["git", "-C", str(repo), "fetch", "--depth=1", "-q", "origin", sha],
+                check=True,
+                timeout=180,
+                capture_output=True,
+            )
+        except subprocess.CalledProcessError:
+            if source_repo != "torchtitan-npu/vllm-ascend":
+                raise
+            # The PR source SHA might be unreachable via the base repository.
+            # This fallback is a fixed, trusted Fork checked by PR admission.
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(repo),
+                    "fetch",
+                    "--depth=1",
+                    "-q",
+                    "https://github.com/depeng1994/vllm-ascend.git",
+                    sha,
+                ],
+                check=True,
+                timeout=180,
+                capture_output=True,
+            )
         actual = subprocess.check_output(
             ["git", "-C", str(repo), "rev-parse", "FETCH_HEAD"], text=True
         ).strip()
@@ -159,7 +193,7 @@ def stage(node: dict, base: str, archive: Path, sha: str) -> str:
         host,
         f"cd {q(dest)} && tar -xzf source.tar.gz -C repo && "
         f"printf '%s\\n' {q(sha)} > source_sha.txt && "
-        f"test -f repo/tests/integration_tests/__init__.py",
+        f"test -f repo/{'.github/scripts/lite_actions/a5_smoke.py' if VLLM else 'tests/integration_tests/__init__.py'}",
     )
     print(f"STAGED: {node['host_id']} SHA={sha[:12]} dir={dest}", flush=True)
     return dest
@@ -176,12 +210,29 @@ def remote_command(
 ) -> str:
     """Remote job owns its own process group; its complete log stays remote."""
     # Generic, fixed model-owned entrypoint; never interpolate GitHub modules.
-    entry = (
-        "python3 -u -m tests.integration_tests.tools.lite_actions.entrypoint launch --test-id "
-        + q(test_case)
-        + " --output-dir "
-        + q(dest + "/output")
-    )
+    if VLLM:
+        entry = (
+            "python3 -u -m torch.distributed.run"
+            + f" --nnodes={len(nodes)} --nproc-per-node={len(node['devices'])}"
+            + f" --node-rank={node['position']}"
+            + " --master-addr="
+            + q(nodes[0]["node_ip"])
+            + " --master-port="
+            + q(runner.get("LITE_CI_MASTER_PORT", 16000))
+            + " --max-restarts=0"
+            + " .github/scripts/lite_actions/a5_smoke.py"
+            + " --test-id="
+            + q(test_case)
+            + " --output-dir="
+            + q(dest + "/output")
+        )
+    else:
+        entry = (
+            "python3 -u -m tests.integration_tests.tools.lite_actions.entrypoint launch --test-id "
+            + q(test_case)
+            + " --output-dir "
+            + q(dest + "/output")
+        )
     env = {
         "NODE_IPS": ",".join(x["node_ip"] for x in nodes),
         "NGPU": str(len(node["devices"])),
@@ -193,6 +244,10 @@ def remote_command(
     }
     if node.get("network_interface"):
         env["Network_Interface"] = node["network_interface"]
+        if VLLM:
+            env["HCCL_SOCKET_IFNAME"] = "=" + node["network_interface"]
+            env["GLOO_SOCKET_IFNAME"] = "=" + node["network_interface"]
+            env["HCCL_IF_IP"] = node["node_ip"]
     for key in ("LITE_CI_MASTER_PORT", "LITE_CI_HCCL_IF_BASE_PORT"):
         if key in runner:
             port = runner[key]
@@ -355,6 +410,25 @@ for entry in Path('/proc').glob('[0-9]*'):
 def verify(
     nodes: list[dict], runner: dict, base: str, timeout: int, test_case: str
 ) -> int:
+    if VLLM:
+        # rank 0 writes evidence only after all ranks completed collective.
+        node = nodes[0]
+        evidence = base + "/node0/output/a5-smoke-evidence.json"
+        command = (
+            "python3 -c "
+            + q(
+                "import json,sys; d=json.load(open(sys.argv[1])); "
+                "assert d['status']=='PASS' and d['world_size']==int(sys.argv[2])"
+            )
+            + " "
+            + q(evidence)
+            + " "
+            + str(len(nodes) * len(node["devices"]))
+        )
+        try:
+            return ssh(node["ssh"], command, timeout=30, check=False).returncode
+        except (OSError, subprocess.TimeoutExpired):
+            return 124
     if runner["mode"] != "distributed":
         return 0
     node = nodes[0]

@@ -3,6 +3,7 @@
     "enabled": true
   },
   "yellow": {
-    "enabled": true
+    "enabled": true,
+    "expected_hostname": "szvphisprk55067"
   }
 }

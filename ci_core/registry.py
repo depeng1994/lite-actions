@@ -72,12 +72,23 @@ def _discovery_tar_filter(member: tarfile.TarInfo, path: str):
     return tarfile.data_filter(member, path)
 
 
-def inspect_archive(archive: Path, selection: dict) -> list[dict]:
+def inspect_archive(archive: Path, selection: dict, *, repo=None) -> list[dict]:
     """Import only trusted pinned-SHA model definitions in an isolated tmpdir.
 
     This is not a security sandbox: actor/branch/SHA authorization remains the
     prerequisite; a Python build_test_list runs trusted repository code.
     """
+    from ci_core.contract import REPO
+
+    repo = REPO if repo is None else repo
+
+    if repo == "torchtitan-npu/vllm-ascend":
+        from ci_core.vllm_ascend import definition
+
+        if "test_id" in selection:
+            return [definition(selection["test_id"])]
+        raise ValueError("vLLM only accepts fixed trusted smoke test IDs")
+
     import os
     import subprocess
     import sys
@@ -110,8 +121,10 @@ def inspect_archive(archive: Path, selection: dict) -> list[dict]:
         return rows
 
 
-def resolve_test(archive: Path, test_id: str, *, nodes: int, ngpu: int) -> dict:
-    rows = inspect_archive(archive, {"test_id": test_id})
+def resolve_test(
+    archive: Path, test_id: str, *, nodes: int, ngpu: int, repo=None
+) -> dict:
+    rows = inspect_archive(archive, {"test_id": test_id}, repo=repo)
     if len(rows) != 1 or rows[0].get("test_id") != test_id:
         raise ValueError("missing or ambiguous pinned test")
     found = rows[0]

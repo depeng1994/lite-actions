@@ -11,7 +11,9 @@ import urllib.parse
 import urllib.request
 import zipfile
 
-from ci_core.contract import REPO
+from ci_core.contract import REPO, SUPPORTED_REPOS
+
+VLLM_REPO = "torchtitan-npu/vllm-ascend"
 
 API = f"https://api.github.com/repos/{REPO}"
 
@@ -29,7 +31,11 @@ def authorization() -> str:
 
 
 class GitHubClient:
-    def __init__(self, token: str):
+    def __init__(self, token: str, repo: str = REPO):
+        if repo not in SUPPORTED_REPOS:
+            raise ValueError("untrusted GitHub repository")
+        self.repo = repo
+        self.api = f"https://api.github.com/repos/{repo}"
         self.token = token
         self.sent_bytes = 0
         self.requests = 0
@@ -37,7 +43,7 @@ class GitHubClient:
     def request(self, method: str, path: str, data: dict | None = None):
         if not path.startswith("/") or "://" in path:
             raise ValueError("relative GitHub API path required")
-        url = API + path
+        url = self.api + path
         payload = (
             json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
             if data is not None
@@ -102,7 +108,8 @@ class GitHubClient:
                         pr.get("head", {}).get("sha") == sha
                         and pr.get("head", {}).get("repo", {}).get("id") == source_id
                         and pr.get("base", {}).get("ref") == "master"
-                        and pr.get("base", {}).get("repo", {}).get("full_name") == REPO
+                        and pr.get("base", {}).get("repo", {}).get("full_name")
+                        == self.repo
                     ):
                         candidates.append(pr)
                 if len(prs) < 100:
@@ -118,7 +125,7 @@ class GitHubClient:
         pr = self.request("GET", f"/pulls/{number}")
         if (
             pr.get("state") != "open"
-            or pr.get("base", {}).get("repo", {}).get("full_name") != REPO
+            or pr.get("base", {}).get("repo", {}).get("full_name") != self.repo
             or pr.get("base", {}).get("ref") != "master"
             or pr.get("head", {}).get("repo", {}).get("id") != source_id
             or pr.get("head", {}).get("sha") != sha
@@ -128,19 +135,62 @@ class GitHubClient:
             return None
         return {**run, "head_sha": sha, "_ci_pr_number": number}
 
+    def normalize_target_pr_run(self, run: dict) -> dict | None:
+        """Resolve a default-branch pull_request_target run to an exact PR head."""
+        import re
+
+        title = run.get("display_title") or ""
+        match = re.fullmatch(r"lite-a5-pr-(\d+)-([0-9a-f]{40})", title)
+        if (
+            not match
+            or run.get("path", "").rsplit("/", 1)[-1]
+            != "lite_actions_dispatcher_smoke.yml"
+        ):
+            return None
+        pr_number, sha = int(match[1]), match[2]
+        if run.get("actor", {}).get("login") != "depeng1994":
+            return None
+        pr = self.request("GET", f"/pulls/{pr_number}")
+        target = pr.get("base", {}).get("ref", "")
+        if (
+            pr.get("state") != "open"
+            or pr.get("draft")
+            or pr.get("base", {}).get("repo", {}).get("full_name") != self.repo
+            or target != "main"
+            or pr.get("head", {}).get("repo", {}).get("full_name")
+            != "depeng1994/vllm-ascend"
+            or pr.get("user", {}).get("login") != "depeng1994"
+            or pr.get("head", {}).get("sha") != sha
+        ):
+            return None
+        return {**run, "head_sha": sha, "_ci_pr_number": pr_number}
+
     def running_workflows(self) -> list[dict]:
-        runs = []
-        for event in ("workflow_dispatch", "pull_request"):
-            data = self.request(
-                "GET", f"/actions/runs?event={event}&status=in_progress&per_page=100"
-            )
-            for run in data.get("workflow_runs", []):
-                if event == "pull_request":
-                    run = self.normalize_pr_run(run)
-                    if run is None:
+        runs = {}
+        events = (
+            ("workflow_dispatch", "pull_request_target")
+            if self.repo == VLLM_REPO
+            else ("workflow_dispatch", "pull_request")
+        )
+        for event in events:
+            for status in ("queued", "in_progress"):
+                data = self.request(
+                    "GET", f"/actions/runs?event={event}&status={status}&per_page=100"
+                )
+                for run in data.get("workflow_runs", []):
+                    if event == "pull_request":
+                        run = self.normalize_pr_run(run)
+                    elif event == "pull_request_target":
+                        run = self.normalize_target_pr_run(run)
+                    if run is None or run.get("status") not in {
+                        "queued",
+                        "in_progress",
+                    }:
                         continue
-                runs.append(run)
-        return runs
+                    identity = (run["id"], run.get("run_attempt", 1))
+                    if identity not in runs or run["status"] == "in_progress":
+                        runs[identity] = {**run, "_ci_repo": self.repo}
+        return list(runs.values())
 
     def workflow_status(self, run_id: int) -> dict:
         if type(run_id) is not int or run_id < 1:
@@ -179,7 +229,7 @@ class GitHubClient:
         if artifact.get("workflow_run", {}).get("id", run_id) != run_id:
             raise ValueError("CI artifact does not belong to the selected run")
         artifact_id = artifact["id"]
-        url = API + f"/actions/artifacts/{artifact_id}/zip"
+        url = self.api + f"/actions/artifacts/{artifact_id}/zip"
         req = urllib.request.Request(
             url,
             headers={
@@ -219,7 +269,9 @@ class GitHubClient:
             request_data = json.loads(archive.read(info))
         from ci_core.contract import parse_plan
 
-        parse_plan(request_data, run, run.get("path", "").rsplit("/", 1)[-1])
+        parse_plan(
+            request_data, run, run.get("path", "").rsplit("/", 1)[-1], repo=self.repo
+        )
         return request_data
 
     def commit_comments(self, sha: str) -> list[dict]:
@@ -240,3 +292,19 @@ class GitHubClient:
 
     def send_result(self, sha: str, body: str):
         return self.request("POST", f"/commits/{sha}/comments", {"body": body})
+
+
+class MultiRepoGitHubClient:
+    """One poller returns runs from all configured repositories."""
+
+    def __init__(self, token: str, repos: tuple[str, ...]):
+        self.clients = {repo: GitHubClient(token, repo) for repo in repos}
+
+    def for_repo(self, repo: str) -> GitHubClient:
+        return self.clients[repo]
+
+    def running_workflows(self) -> list[dict]:
+        runs = []
+        for client in self.clients.values():
+            runs.extend(client.running_workflows())
+        return sorted(runs, key=lambda r: (r.get("created_at", ""), r["id"]))

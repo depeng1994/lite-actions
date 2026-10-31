@@ -11,7 +11,7 @@ from contextlib import ExitStack
 from pathlib import Path
 
 from ci_core.config import load, runtime_case
-from ci_core.contract import REPO, WORKFLOWS, parse_plan
+from ci_core.contract import REPO, TORCHTITAN_REPO, VLLM_REPO, WORKFLOWS, parse_plan
 from ci_core.executor import ExternalNpuOccupancy, execute
 from ci_core.job_state import JobState
 from ci_core.plan import verify_definition
@@ -30,7 +30,7 @@ from ci_core.worker_probe import probe as probe_worker
 
 
 def task_key(run, item):
-    return f"{REPO}:{run['id']}:{run.get('run_attempt', 1)}:{item['case_id']}"
+    return f"{run.get('_ci_repo', REPO)}:{run['id']}:{run.get('run_attempt', 1)}:{item['case_id']}"
 
 
 class Router:
@@ -68,22 +68,46 @@ class Router:
                     report=result,
                 )
 
+    def client_for(self, run):
+        repo = run.get("_ci_repo", REPO)
+        if hasattr(self.client, "for_repo"):
+            return self.client.for_repo(repo)
+        if getattr(self.client, "repo", repo) != repo:
+            raise ValueError("run belongs to another GitHub repository")
+        return self.client
+
     def eligible(self, run):
+        repo = run.get("_ci_repo", REPO)
         filename = (run.get("path") or "").rsplit("/", 1)[-1]
-        allowed = set(
-            filter(None, os.environ.get("LITE_ACTIONS_ALLOWED_ACTORS", "").split(","))
-        )
-        branches = set(
-            filter(
-                None,
-                os.environ.get("LITE_ACTIONS_ALLOWED_BRANCHES", "master").split(","),
+        if repo == VLLM_REPO:
+            actors_value = os.environ.get(
+                "LITE_ACTIONS_VLLM_ALLOWED_ACTORS", "depeng1994"
             )
-        )
+            branches_value = os.environ.get(
+                "LITE_ACTIONS_VLLM_ALLOWED_BRANCHES", "main"
+            )
+        elif repo == TORCHTITAN_REPO:
+            actors_value = os.environ.get(
+                "LITE_ACTIONS_TORCHTITAN_ALLOWED_ACTORS",
+                os.environ.get("LITE_ACTIONS_ALLOWED_ACTORS", ""),
+            )
+            branches_value = os.environ.get(
+                "LITE_ACTIONS_TORCHTITAN_ALLOWED_BRANCHES",
+                os.environ.get("LITE_ACTIONS_ALLOWED_BRANCHES", "master"),
+            )
+        else:
+            return False
+        allowed = set(filter(None, actors_value.split(",")))
+        branches = set(filter(None, branches_value.split(",")))
         event = run.get("event")
-        if event == "pull_request":
+        if event in ("pull_request", "pull_request_target"):
             admitted = (
                 type(run.get("_ci_pr_number")) is int
                 and run.get("actor", {}).get("login") in allowed
+                and (
+                    (repo == VLLM_REPO and event == "pull_request_target")
+                    or (repo == TORCHTITAN_REPO and event == "pull_request")
+                )
             )
         else:
             admitted = (
@@ -91,14 +115,18 @@ class Router:
                 and run.get("head_branch") in branches
                 and run.get("actor", {}).get("login") in allowed
             )
-        return admitted and filename in WORKFLOWS and run.get("status") == "in_progress"
+        return (
+            admitted
+            and filename in WORKFLOWS
+            and run.get("status") in {"queued", "in_progress"}
+        )
 
     def transition(self, key, phase, **fields):
         self.state.update(key, phase=phase, **fields)
         r = self.state.read()[key]
         try:
             ident = progress(
-                self.client,
+                self.client_for(r["run"]),
                 r["run"],
                 r["item"],
                 r["digest"],
@@ -113,13 +141,23 @@ class Router:
         for run in sorted(runs, key=lambda r: (r.get("created_at", ""), r["id"])):
             if not self.eligible(run):
                 continue
-            identity = (run["id"], run.get("run_attempt", 1), run["head_sha"])
+            identity = (
+                run.get("_ci_repo", REPO),
+                run["id"],
+                run.get("run_attempt", 1),
+                run["head_sha"],
+            )
             plan = self.plans.get(identity)
             if plan is None:
-                plan = self.client.ci_request(run)
+                plan = self.client_for(run).ci_request(run)
                 if plan is None:
                     continue
-                parse_plan(plan, run, run["path"].rsplit("/", 1)[-1])
+                parse_plan(
+                    plan,
+                    run,
+                    run["path"].rsplit("/", 1)[-1],
+                    repo=run.get("_ci_repo", REPO),
+                )
                 self.plans[identity] = plan
             for item in plan["cases"]:
                 if item["worker"] != self.worker:
@@ -130,6 +168,7 @@ class Router:
                 self.state.update(
                     key,
                     phase="QUEUED",
+                    repo=run.get("_ci_repo", REPO),
                     run=run,
                     item=item,
                     digest=plan["plan_digest"],
@@ -222,8 +261,11 @@ class Router:
         try:
             self.transition(key, "STAGING")
             with tempfile.TemporaryDirectory(prefix="lite-definition-") as tmp:
-                archive = model_archive(run["head_sha"], Path(tmp))
-                verify_definition(archive, item, r["defaults"])
+                source_repo = run.get("_ci_repo", REPO)
+                archive = model_archive(
+                    run["head_sha"], Path(tmp), source_repo=source_repo
+                )
+                verify_definition(archive, item, r["defaults"], repo=source_repo)
             if cancel.is_set():
                 self.finish(key, "CANCELLED", 130, ["Cancelled before launch"])
                 return
@@ -378,7 +420,13 @@ class Router:
             if r.get("phase") != "PENDING_REPORT":
                 continue
             try:
-                post(self.client, r["run"], r["item"], r["report"], self.author)
+                post(
+                    self.client_for(r["run"]),
+                    r["run"],
+                    r["item"],
+                    r["report"],
+                    self.author,
+                )
                 self.state.update(key, phase="REPORTED")
             except Exception:
                 logging.warning("result remains pending: %s", key)
@@ -396,9 +444,10 @@ class Router:
                 "CLEANING",
             }:
                 continue
-            ident = r["run"]["id"]
+            run = r["run"]
+            ident = (run.get("_ci_repo", REPO), run["id"])
             if ident not in statuses:
-                statuses[ident] = self.client.workflow_status(ident)
+                statuses[ident] = self.client_for(run).workflow_status(run["id"])
             current = statuses[ident]
             superseded = current.get("run_attempt", r["run"].get("run_attempt", 1)) > r[
                 "run"
