@@ -81,6 +81,35 @@ class ContainerIdentityTests(unittest.TestCase):
                 {"host_id": self.node["host_id"], "environments": {}}
             )
 
+    def test_existing_execution_node_uses_and_captures_the_verified_container(self):
+        import json
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from ci_core.config import execution_node
+
+        node = {**self.node, "ssh": "192.0.2.1:153"}
+        replies = [
+            SimpleNamespace(stdout=json.dumps(self.inspect)),
+            SimpleNamespace(stdout=self.inspect["Image"]),
+            SimpleNamespace(stdout="0"),
+        ]
+        with patch("ci_core.config.run", side_effect=replies):
+            selected = execution_node(node, "vllm_hccl_smoke")
+        self.assertEqual(selected["ssh"], "192.0.2.1:153/" + "a" * 64)
+        self.assertEqual(selected["container_binding"], self.binding.metadata())
+        self.assertEqual(selected["host_ssh"], node["ssh"])
+        replaced = {**self.inspect, "Id": "c" * 64}
+        with patch(
+            "ci_core.config.run",
+            side_effect=[
+                SimpleNamespace(stdout=json.dumps(replaced)),
+                SimpleNamespace(stdout=self.inspect["Image"]),
+            ],
+        ):
+            with self.assertRaisesRegex(EnvironmentError, "IDENTITY_MISMATCH"):
+                execution_node(node, "vllm_hccl_smoke")
+
     def test_same_host_devices_share_lock_across_containers(self):
         a = [
             {

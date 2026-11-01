@@ -304,6 +304,14 @@ class CheckRunChannel:
             ):
                 return check
             raise ChannelError("TERMINAL_CHECK_RESULT_IMMUTABLE")
+        phases = {
+            "SLOT_CREATED": 0,
+            "ADMITTED": 1,
+            "CASE_RESULT": 2,
+            "AGGREGATE_RESULT": 2,
+        }
+        if phases.get(current.get("phase"), -1) > phases.get(payload.get("phase"), -1):
+            raise ChannelError("CHECK_PHASE_REGRESSION")
         if current.get("phase") == "SLOT_CREATED":
             expected = {
                 "schema": 4,

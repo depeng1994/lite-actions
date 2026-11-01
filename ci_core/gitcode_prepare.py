@@ -27,8 +27,12 @@ class PreparationError(ValueError):
 
 
 def verify_control_release(
-    policy: ControlPolicy, *, upstream: dict, repository: dict,
-    branch: dict, workflow: dict,
+    policy: ControlPolicy,
+    *,
+    upstream: dict,
+    repository: dict,
+    branch: dict,
+    workflow: dict,
 ) -> None:
     """Require actual published GitCode U == GitHub default-branch C.
 
@@ -54,9 +58,14 @@ def verify_control_release(
 
 
 def prepare_pr_source(
-    client: GitCodeClient, number: int, destination: Path, *,
-    allowed_base_refs: tuple[str, ...], allowed_actors: tuple[str, ...],
-    expected_git_version: str, expected_identity: dict | None = None,
+    client: GitCodeClient,
+    number: int,
+    destination: Path,
+    *,
+    allowed_base_refs: tuple[str, ...],
+    allowed_actors: tuple[str, ...],
+    expected_git_version: str,
+    expected_identity: dict | None = None,
     optional_gitlinks: dict[str, str] | None = None,
     builder_factory=MergeSourceBuilder,
 ) -> tuple[SourceHandle, dict]:
@@ -67,34 +76,45 @@ def prepare_pr_source(
     Dependency exceptions must be reviewed deployment data, not caller payload.
     """
     before = client.open_pull_snapshot(
-        number, allowed_base_refs=allowed_base_refs, allowed_actors=allowed_actors,
+        number,
+        allowed_base_refs=allowed_base_refs,
+        allowed_actors=allowed_actors,
     )
     shape(before, {"identity", "state", "authorized"})
     identity = validate_pr(
-        before["identity"], allowed_repo_id=client.repo_id,
+        before["identity"],
+        allowed_repo_id=client.repo_id,
         allowed_refs=allowed_base_refs,
     )
     if before["state"] != "open" or before["authorized"] is not True:
         raise PreparationError("PR_SOURCE_NOT_AUTHORIZED")
-    if expected_identity is not None and canonical(identity) != canonical(expected_identity):
+    if expected_identity is not None and canonical(identity) != canonical(
+        expected_identity
+    ):
         raise PreparationError("DISPATCH_SNAPSHOT_NO_LONGER_CURRENT")
     metadata = client.repository()
     builder = builder_factory(
-        Path(destination), expected_git_version=expected_git_version,
+        Path(destination),
+        expected_git_version=expected_git_version,
         allowed_urls=(metadata["clone_url"],),
     )
     try:
         for role in ("base", "head"):
             builder.fetch_ref(
-                url=metadata["clone_url"], ref=identity[role + "_ref"],
-                expected_sha=identity[role + "_sha"], role=role,
+                url=metadata["clone_url"],
+                ref=identity[role + "_ref"],
+                expected_sha=identity[role + "_sha"],
+                role=role,
             )
         handle = builder.build(
-            head_sha=identity["head_sha"], base_sha=identity["base_sha"],
+            head_sha=identity["head_sha"],
+            base_sha=identity["base_sha"],
             optional_gitlinks=optional_gitlinks,
         )
         after = client.open_pull_snapshot(
-            number, allowed_base_refs=allowed_base_refs, allowed_actors=allowed_actors,
+            number,
+            allowed_base_refs=allowed_base_refs,
+            allowed_actors=allowed_actors,
         )
         if canonical(before) != canonical(after) or client.repository() != metadata:
             raise PreparationError("PR_SOURCE_CHANGED_DURING_PREPARATION")
@@ -107,8 +127,14 @@ def prepare_pr_source(
 
 
 def manifest_for_source(
-    handle: SourceHandle, *, pr: dict, merge: dict, control: dict,
-    github_run_id: int, run_attempt: int, source_artifact_id: int,
+    handle: SourceHandle,
+    *,
+    pr: dict,
+    merge: dict,
+    control: dict,
+    github_run_id: int,
+    run_attempt: int,
+    source_artifact_id: int,
 ) -> dict:
     """Create Manifest 2 after uploading the source, before sealing the Plan.
 
@@ -134,9 +160,14 @@ def manifest_for_source(
     ):
         raise SourceError("SOURCE_HANDLE_MANIFEST_IDENTITY_MISMATCH")
     result = {
-        "schema": 2, "source_provider": "gitcode", "test_mode": "merge_result",
-        "pr": pr, "merge": merge, "control": control,
-        "github_run_id": github_run_id, "run_attempt": run_attempt,
+        "schema": 2,
+        "source_provider": "gitcode",
+        "test_mode": "merge_result",
+        "pr": pr,
+        "merge": merge,
+        "control": control,
+        "github_run_id": github_run_id,
+        "run_attempt": run_attempt,
         "source_artifact_id": source_artifact_id,
         "bundle_sha256": handle.bundle_sha256,
         "dependencies": list(handle.dependencies),
@@ -156,16 +187,24 @@ def main(argv=None) -> int:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     handle, identity = prepare_pr_source(
-        GitCodeClient.from_environment(args.repo, args.repo_id), args.pr, args.output,
-        allowed_base_refs=tuple(args.base_ref), allowed_actors=tuple(args.actor),
+        GitCodeClient.from_environment(args.repo, args.repo_id),
+        args.pr,
+        args.output,
+        allowed_base_refs=tuple(args.base_ref),
+        allowed_actors=tuple(args.actor),
         expected_git_version=args.git_version,
     )
     observation = {
-        "validation_scope": "SOURCE_PREPARATION_ONLY", "identity": identity,
-        "source": handle.metadata(), "hardware_execution": "NOT_RUN",
-        "event_revision_proof": "NOT_ESTABLISHED", "merge_gate": "NOT_PROVIDED",
+        "validation_scope": "SOURCE_PREPARATION_ONLY",
+        "identity": identity,
+        "source": handle.metadata(),
+        "hardware_execution": "NOT_RUN",
+        "event_revision_proof": "NOT_ESTABLISHED",
+        "merge_gate": "NOT_PROVIDED",
     }
-    (args.output / "source-observation.json").write_bytes(canonical(observation) + b"\n")
+    (args.output / "source-observation.json").write_bytes(
+        canonical(observation) + b"\n"
+    )
     print(json.dumps(observation, sort_keys=True, ensure_ascii=False))
     return 0
 

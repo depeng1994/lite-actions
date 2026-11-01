@@ -365,8 +365,9 @@ class MergeSourceBuilder:
                         content = self._git(
                             "cat-file", "blob", oid, max_output=self.max_file_bytes
                         )
-                        if content.startswith(
-                            b"version https://git-lfs.github.com/spec/v1\n"
+                        if (
+                            content.partition(b"\n")[0].rstrip(b"\r")
+                            == b"version https://git-lfs.github.com/spec/v1"
                         ):
                             raise SourceError("UNMATERIALIZED_LFS_OBJECT")
                         info = tarfile.TarInfo(name)
@@ -380,6 +381,20 @@ class MergeSourceBuilder:
         finally:
             temporary.unlink(missing_ok=True)
         return dependencies
+
+
+class BoundedTarInfo(tarfile.TarInfo):
+    """Reject oversized PAX/GNU metadata before tarfile allocates its body."""
+
+    def _proc_pax(self, archive):
+        if self.size > 64 * 1024:
+            raise SourceError("SOURCE_ARCHIVE_METADATA_LIMIT")
+        return super()._proc_pax(archive)
+
+    def _proc_gnulong(self, archive):
+        if self.size > 64 * 1024:
+            raise SourceError("SOURCE_ARCHIVE_METADATA_LIMIT")
+        return super()._proc_gnulong(archive)
 
 
 def extract_verified_source(
@@ -405,7 +420,7 @@ def extract_verified_source(
     seen: set[str] = set()
     total = 0
     try:
-        with tarfile.open(bundle, "r|gz") as archive:
+        with tarfile.open(bundle, "r|gz", tarinfo=BoundedTarInfo) as archive:
             for member in archive:
                 path = safe_path(member.name)
                 if member.name in seen or len(seen) >= max_files:

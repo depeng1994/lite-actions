@@ -267,6 +267,23 @@ class MergeSourceTests(unittest.TestCase):
                 max_unpacked_bytes=1,
             )
 
+    def test_crlf_lfs_pointer_and_oversized_pax_metadata_are_rejected(self):
+        self.write(
+            "lfs.bin",
+            "version https://git-lfs.github.com/spec/v1\r\noid sha256:"
+            + "a" * 64
+            + "\r\nsize 1\r\n",
+        )
+        head = self.commit("CRLF LFS pointer")
+        with self.assertRaisesRegex(SourceError, "UNMATERIALIZED_LFS_OBJECT"):
+            self.builder().build(head_sha=head, base_sha=self.initial)
+        file = tarfile.TarInfo("file")
+        file.pax_headers = {"comment": "a" * 100_000}
+        handle = self.malicious_handle([(file, b"")])
+        with self.assertRaisesRegex(SourceError, "METADATA_LIMIT"):
+            extract_verified_source(handle, self.root / "pax-bomb")
+        self.assertFalse((self.root / "pax-bomb").exists())
+
     def test_existing_destination_is_not_overwritten(self):
         handle = self.builder().build(head_sha=self.initial, base_sha=self.initial)
         dest = self.root / "occupied"

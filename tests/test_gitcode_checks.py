@@ -214,6 +214,15 @@ class CheckChannelTests(unittest.TestCase):
         check = self.channel.publish_case(self.plan, receipt, result)
         self.assertEqual(check["conclusion"], "failure")
 
+    def test_late_admission_retry_cannot_regress_aggregate_phase(self):
+        receipt = self.ready()
+        self.channel.publish_receipt(self.plan, receipt)
+        self.channel.publish_aggregate(
+            self.plan, receipt, [self.result(receipt)], current=True
+        )
+        with self.assertRaisesRegex(ChannelError, "PHASE_REGRESSION"):
+            self.channel.publish_receipt(self.plan, receipt)
+
     def test_duplicate_receipt_requires_canonical_pointer(self):
         receipt = self.ready()
         receipt["duplicate"] = True

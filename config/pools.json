@@ -22,7 +22,13 @@
           }
         ],
         "priority": 1,
-        "environments": {},
+        "environments": {
+          "vllm_hccl_smoke": {
+            "container_id": "a7af292308d526be3dbea52439b15df01e70b978242dd3d888e272d4fb013053",
+            "image_id": "sha256:f81de6249765738a06b5c187dcf0968dfd0ce828e8b6b16a2771de2b0e78217c",
+            "image_ref": "quay.io/ascend/vllm-ascend:v0.23.0-a3-openeuler"
+          }
+        },
         "host_ssh": "113.46.17.205:153",
         "capabilities": [
           "train",
@@ -49,7 +55,13 @@
           }
         ],
         "priority": 0,
-        "environments": {},
+        "environments": {
+          "vllm_hccl_smoke": {
+            "container_id": "384504e60112f8ada3522e47af43847d20e9f55f07988f55f27c2bacfe90cae1",
+            "image_id": "sha256:f81de6249765738a06b5c187dcf0968dfd0ce828e8b6b16a2771de2b0e78217c",
+            "image_ref": "quay.io/ascend/vllm-ascend:v0.23.0-a3-openeuler"
+          }
+        },
         "host_ssh": "113.46.17.205:154",
         "capabilities": [
           "train",

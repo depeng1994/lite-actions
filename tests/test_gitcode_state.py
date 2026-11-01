@@ -363,6 +363,14 @@ class CoordinatorTests(unittest.TestCase):
         self.coordinator.acknowledge(record["id"], record["payload_digest"])
         self.assertEqual(Coordinator(self.path).pending_outbox(), [])
 
+    def test_existing_receipt_cannot_be_reissued_after_revocation(self):
+        self.admitted()
+        self.coordinator.reconcile(
+            "42", 1, lambda: Authority(self.authority.pr, 2, state="closed"), now=1102
+        )
+        with self.assertRaisesRegex(StateError, "EXISTING_ADMISSION_REVOKED"):
+            self.claim()
+
     def test_authority_unavailable_and_stale_block_new_launches(self):
         admission = self.admitted()
         eid = admission.receipt["canonical_execution_id"]

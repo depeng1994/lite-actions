@@ -489,6 +489,8 @@ class Coordinator:
                 execution = connection.execute(
                     "SELECT * FROM executions WHERE id=?", (existing["execution_id"],)
                 ).fetchone()
+                if not self._current(connection, execution, now=now):
+                    raise StateError("EXISTING_ADMISSION_REVOKED")
                 return self._admission(json.loads(existing["receipt_json"]), execution)
             if intent["revoked"]:
                 raise StateError("REVOKED_INTENT_CANNOT_REVIVE")
