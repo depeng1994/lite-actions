@@ -6,7 +6,7 @@ a second worker. No edits to `torchtitan-npu/vllm-ascend` main are required.
 
 ## Deployment invariants
 
-- Use `LITE_ACTIONS_MODEL_REPOS=torchtitan-npu/torchtitan-npu,torchtitan-npu/vllm-ascend`.
+- Use `LITE_ACTIONS_MODEL_REPOS=cann-framework/torchtitan-npu,torchtitan-npu/vllm-ascend`.
   Leave `LITE_ACTIONS_MODEL_REPO` unset in dual mode. The original
   `LITE_ACTIONS_MODEL_REPO=<one repository>` mode is retained for tests.
 - Keep `LITE_ACTIONS_STATE_DIR=/var/lib/lite-actions/yellow` unchanged.
@@ -35,7 +35,7 @@ Retain all existing environment entries and secrets, and add just these new
 entries (adjust the CANN path to the verified live container):
 
 ```diff
-+LITE_ACTIONS_MODEL_REPOS=torchtitan-npu/torchtitan-npu,torchtitan-npu/vllm-ascend
++LITE_ACTIONS_MODEL_REPOS=cann-framework/torchtitan-npu,torchtitan-npu/vllm-ascend
 +LITE_ACTIONS_VLLM_ALLOWED_ACTORS=depeng1994
 +LITE_ACTIONS_VLLM_ALLOWED_BRANCHES=main
 +LITE_ACTIONS_VLLM_ASCEND_SET_ENV_PATH=/usr/local/Ascend/ascend-toolkit/set_env.sh

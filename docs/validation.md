@@ -1,29 +1,31 @@
-# 验证记录
+> 本页保留此前固定 SHA 的历史验收，不代表最新发布结果。当前发布 SHA、模型分支及最新验收以 `/etc/lite-actions/blue-deployment.json` 和对应 PR 的验收记录为准。
+
+# 历史验收：验证记录
 
 blue 已从 Lite Actions main 发布为 systemd 生产服务，运行代码 `2c5adbf934a65442e6aaffe4cf7a936ea9468265`。模型仓 PR 保持 draft，按用户选择通过现有 PR 分支调用，尚未切换模型仓 master 与 required checks。运行路径与命令见 [blue 运维](blue-worker.md)。
 
 - [调度仓 #10](https://github.com/depeng1994/lite-actions/pull/10)，已合入
 - [状态保护 #11](https://github.com/depeng1994/lite-actions/pull/11)，已合入
-- [模型仓 #11](https://github.com/torchtitan-npu/torchtitan-npu/pull/11)
+- [模型仓 #11](https://github.com/cann-framework/torchtitan-npu/pull/11)
 
 ## 清理后的真实执行证据
 
 | 场景 | 运行与结果 |
 | --- | --- |
-| blue 生产 Nightly | [41087053317](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/41087053317)，模型 SHA `9fff6877e1a9c3388e922297b4dbd518caaa543c`，正式服务执行 Muon/AdamW 五步均 PASS，释放已确认，各回传 5 行 rank 0 LOSS（12.25646 → 12.11268、12.31840 → 10.52505） |
-| blue 生产 Smoke | [41086146251](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/41086146251)，正式 systemd 服务执行 blue 系统探测、8P 和 16P，均 PASS、释放已确认；不包含尚未上线的 yellow |
+| blue 生产 Nightly | [41087053317](https://github.com/cann-framework/torchtitan-npu/actions/runs/41087053317)，模型 SHA `9fff6877e1a9c3388e922297b4dbd518caaa543c`，正式服务执行 Muon/AdamW 五步均 PASS，释放已确认，各回传 5 行 rank 0 LOSS（12.25646 → 12.11268、12.31840 → 10.52505） |
+| blue 生产 Smoke | [41086146251](https://github.com/cann-framework/torchtitan-npu/actions/runs/41086146251)，正式 systemd 服务执行 blue 系统探测、8P 和 16P，均 PASS、释放已确认；不包含尚未上线的 yellow |
 | 空闲服务故障拉起 | 在全部任务已报告后终止本服务主进程，systemd 自动拉起，持久任务状态字节一致、原有 1 条隔离保留；这不代替硬件执行期间的 worker 崩溃验收 |
-| 候选阶段完整 Smoke | [41062066103](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/41062066103)，blue/yellow 系统探测、8P、16P 均 PASS，释放已确认 |
-| 实际并发 | [41064741967](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/41064741967)，完整 Smoke 成功；8P 使用 `:154` 设备 8–15，16P 使用 `:153` 设备 8–15 与 `:154` 设备 0–7，端口租约不同。按同一节点的远端任务起止记录，执行生命周期重叠 25.39 秒；不将其解释为逐个 kernel 的重叠测量 |
-| 失败报错回传 | [41063913729](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/41063913729)，DSV4 真实失败，18 行摘录包含 `ModuleNotFoundError: No module named 'torchtitan.components.checkpointer'`，释放已确认；[41064744199](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/41064744199) 保留旧 SDK 的真实 `seqUsedQ should be nullptr now` 报错 |
-| DSV4 五步训练 | [41068456622](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/41068456622)，模型提交 `37c1ed93a6a1478246b8071af0a310bb090acd2e`。Muon/AdamW 均完成五步并 PASS，Actions 实际各显示 5 行 rank 0 LOSS（12.27908 → 12.14706、12.23797 → 10.85831），释放已确认；两条 Comment/请求大小分别为 1515/1595、1509/1589 字节 |
-| 运行中取消 | [41072934315](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/41072934315)，取消前 8 个 NPU PID 均匹配本任务标记；取消后任务所属进程数和所选 NPU 进程数均为 0，CANCELLED、cleanup_verified=true，无新增隔离。20 行为真实执行机摘录，不再出现缺失远端日志位置的调度器 traceback |
-| 取消后的同组设备复用 | [41073332553](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/41073332553)，取消用例与后续 8P smoke 均使用 `:153` 设备 8–15，后续 PASS、all-reduce sum=28、cleanup_verified=true。验收时临时停止 `:154` 的新任务准入以固定复用目标；未清除 `:153` 原有设备隔离 |
+| 候选阶段完整 Smoke | [41062066103](https://github.com/cann-framework/torchtitan-npu/actions/runs/41062066103)，blue/yellow 系统探测、8P、16P 均 PASS，释放已确认 |
+| 实际并发 | [41064741967](https://github.com/cann-framework/torchtitan-npu/actions/runs/41064741967)，完整 Smoke 成功；8P 使用 `:154` 设备 8–15，16P 使用 `:153` 设备 8–15 与 `:154` 设备 0–7，端口租约不同。按同一节点的远端任务起止记录，执行生命周期重叠 25.39 秒；不将其解释为逐个 kernel 的重叠测量 |
+| 失败报错回传 | [41063913729](https://github.com/cann-framework/torchtitan-npu/actions/runs/41063913729)，DSV4 真实失败，18 行摘录包含 `ModuleNotFoundError: No module named 'torchtitan.components.checkpointer'`，释放已确认；[41064744199](https://github.com/cann-framework/torchtitan-npu/actions/runs/41064744199) 保留旧 SDK 的真实 `seqUsedQ should be nullptr now` 报错 |
+| DSV4 五步训练 | [41068456622](https://github.com/cann-framework/torchtitan-npu/actions/runs/41068456622)，模型提交 `37c1ed93a6a1478246b8071af0a310bb090acd2e`。Muon/AdamW 均完成五步并 PASS，Actions 实际各显示 5 行 rank 0 LOSS（12.27908 → 12.14706、12.23797 → 10.85831），释放已确认；两条 Comment/请求大小分别为 1515/1595、1509/1589 字节 |
+| 运行中取消 | [41072934315](https://github.com/cann-framework/torchtitan-npu/actions/runs/41072934315)，取消前 8 个 NPU PID 均匹配本任务标记；取消后任务所属进程数和所选 NPU 进程数均为 0，CANCELLED、cleanup_verified=true，无新增隔离。20 行为真实执行机摘录，不再出现缺失远端日志位置的调度器 traceback |
+| 取消后的同组设备复用 | [41073332553](https://github.com/cann-framework/torchtitan-npu/actions/runs/41073332553)，取消用例与后续 8P smoke 均使用 `:153` 设备 8–15，后续 PASS、all-reduce sum=28、cleanup_verified=true。验收时临时停止 `:154` 的新任务准入以固定复用目标；未清除 `:153` 原有设备隔离 |
 | 调度仓 CI | [41085433626](https://github.com/depeng1994/lite-actions/actions/runs/41085433626)，Ruff、Device ID 单行检查和生命周期测试通过 |
 
 Smoke 验证通信与调度，不证明训练通过。训练成功必须有 LOSS；失败摘录优先保留最早的去重异常及上下文，避免根因被 torchrun 收尾信息覆盖。每 case 最多 20 行、每行 180 字符，Comment/请求上限为 6100/7000 字节。Summary 仅元数据与状态。
 
-早期的 [8P](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/41056010151) 与 [16P](https://github.com/torchtitan-npu/torchtitan-npu/actions/runs/41056178876) 已验证外部占卡等待及预启动取消，cleanup_verified=true，无新增隔离；它们不证明运行中 ranks 的取消。
+早期的 [8P](https://github.com/cann-framework/torchtitan-npu/actions/runs/41056010151) 与 [16P](https://github.com/cann-framework/torchtitan-npu/actions/runs/41056178876) 已验证外部占卡等待及预启动取消，cleanup_verified=true，无新增隔离；它们不证明运行中 ranks 的取消。
 
 ## 部署与依赖
 
