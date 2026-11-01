@@ -79,7 +79,7 @@
 | Q07 Artifact 消费 | 当前 Worker `model_archive()` 直接 GitHub fetch | GitCode 转发路径消费 Prepare 的 Source Bundle；原生 GitHub 路径保持旧逻辑，阶段式上线 |
 | Q08 Blue 资源权限 | NPU 多用户共享、隔离记录 | 只允许 `worker=blue`、`pool=a3_shared_blue`、受信 Case；不改资源抢占、设备释放逻辑 |
 | Q09 GitCode 结果正确性 | 旧 PR 版本完成后可能误判 | GitHub Run 到终态后再次查询 GitCode PR Head/Base；不同则 STALE/FAIL，不写当前 PR PASS |
-| Q10 真正端到端验收 | CPU 模拟不能证明跨平台能运行 | E2E-01～E2E-06 均需真实 GitCode PR 页面、GitHub Run、Blue 证据、回写状态 |
+| Q10 真正端到端验收 | CPU 模拟不能证明跨平台能运行 | TorchTitan E2E-01～06 + vLLM E2E-07～12 均需真实 GitCode PR、正确 GitHub Run、Blue 证据和 GitCode Check |
 | Q11 GitHub 组织更名 | 多个代码常量仍为 `torchtitan-npu/` | 统一目标 `cann-framework`、稳定 repo ID 校验、全链路 CI 回归 |
 | Q12 镜像双写与状态恢复 | Github 同步会删分支、Blue 有运行中状态 | 不依赖 PR 镜像分支；Blue drain、同一状态目录、升级回滚与 pending report 恢复 |
 | Q13 vLLM 现有入口只支持 A5 | Blue 选择器无法准入或错误派发 Yellow | vLLM 受信 Smoke Workflow/测试注册表增加 Blue OS/A3 8P/16P；新 Provider 默认 Blue |
@@ -467,6 +467,8 @@ Blue 仍保持唯一 systemd 服务，使用现有 `/var/lib/lite-actions/blue` 
 vLLM 的 GitHub Hosted Prepare 从 **GitCode vLLM 个人仓的 PR API** 再次查证提交并按已验证的来源 fetch 到精确 `source_sha`；生成与 TorchTitan 同规范的 Source Bundle、SHA256、Manifest、可信 Case Plan，绑定 `control_repo_id=1438625957`、GitCode Repo ID、Run、Attempt、Case Plan digest。执行端必须校验每个字节摘要与所有身份字段。实际执行脚本来自经 Prepare 固定的该 GitCode SHA，不允许执行未经审批的 PR Workflow YAML。
 
 vLLM `wait_result.py` / `prepare_request.py` 目前硬编码旧组织名，必须更新并保留原 GitHub-only 兼容路径；不能把 vLLM Run 的 Comment 按 TorchTitan 的 GitHub 仓库查询。GitCode Bridge 结束时重新检查 PR Head/Base，过期成功标记 STALE/非 0，而非给最新 PR 绿灯。
+
+**源码完整性注意**：vLLM 仓含 `csrc/third_party/catlass` Git Submodule；普通 `git archive` 不会自动包含该 Submodule 的实际文件。本期 Blue HCCL Smoke 若不依赖 catlass，可在受信 Manifest 中声明未包含的 Submodule 及固定 Gitlink SHA；如实际依赖 catlass，Prepare 必须拉取其受控提交并校验，而不能让执行机自行拉取浮动分支。
 
 ### VL-06｜vLLM 开发文件、阶段与发布门槛
 
