@@ -128,8 +128,7 @@ flowchart LR
   U["不可信输入\nGitCode PR 源码 / 分支名 / 测试参数"] --> G["可信控制域\n个人仓 base Bridge + GitHub master Prepare"]
   G -->|"权限审查 / SHA / digest / allowlist"| A["准入后的源码与 Plan"]
   A --> B["Blue Worker\n固定 NPU 池、已有资源锁"]
-  T["GitHub/GitCode Token"] -.-> G
-  T -. "禁止凭据进入执行端" .-> B
+  T["GitHub/GitCode Token"] -->|仅供可信控制面| G
   U -.-X T
 ```
 
