@@ -27,8 +27,8 @@ blue 在 `ssh ycy` 上由 `lite-actions-blue.service` 管理，已设置开机�
 
 ```bash
 MODEL_CI_REF=$(python3 -c 'import json; print(json.load(open("/etc/lite-actions/blue-deployment.json"))["model_branch"])')
-gh workflow run nightly_fulltests.yml -R torchtitan-npu/torchtitan-npu --ref "$MODEL_CI_REF"
-gh workflow run lite_actions_dispatcher_smoke.yml -R torchtitan-npu/torchtitan-npu --ref "$MODEL_CI_REF" \
+gh workflow run nightly_fulltests.yml -R cann-framework/torchtitan-npu --ref "$MODEL_CI_REF"
+gh workflow run lite_actions_dispatcher_smoke.yml -R cann-framework/torchtitan-npu --ref "$MODEL_CI_REF" \
   -f 'test_cases=[{"test_id":"worker_os_blue"},{"test_id":"dispatch_smoke_8p"},{"test_id":"dispatch_smoke_16p"}]'
 ```
 

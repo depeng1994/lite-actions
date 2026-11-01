@@ -37,6 +37,16 @@ def make_case(test_id, worker="yellow"):
 
 
 class MultiRepoWorkerTests(unittest.TestCase):
+    def test_migrated_torchtitan_identity_rejects_old_org(self):
+        self.assertEqual(TORCHTITAN_REPO, "cann-framework/torchtitan-npu")
+        with self.assertRaises(ValueError):
+            GitHubClient("fake", "torchtitan-npu/torchtitan-npu")
+        with patch.dict(
+            os.environ, {"LITE_ACTIONS_MODEL_REPO": "torchtitan-npu/torchtitan-npu"}, clear=True
+        ):
+            with self.assertRaises(ValueError):
+                configured_repos()
+
     def test_env_modes_reject_duplicate_and_unsupported(self):
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(configured_repos(), (TORCHTITAN_REPO,))

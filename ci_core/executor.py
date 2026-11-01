@@ -58,9 +58,9 @@ def task_dir(run: dict, root: Path) -> Path:
         if not isinstance(test_id, str) or not SELECTOR.fullmatch(test_id):
             raise ValueError("invalid CI task Test ID")
         suffix = f"_test-{test_id}"
-    source_repo = run.get("_ci_repo", "torchtitan-npu/torchtitan-npu")
+    source_repo = run.get("_ci_repo", "cann-framework/torchtitan-npu")
     if source_repo not in (
-        "torchtitan-npu/torchtitan-npu",
+        "cann-framework/torchtitan-npu",
         "torchtitan-npu/vllm-ascend",
     ):
         raise ValueError("untrusted model repo")
@@ -381,7 +381,7 @@ def prepare_profile(case: dict, run: dict) -> dict:
     from ci_core.ssh_runner import model_archive
 
     with tempfile.TemporaryDirectory(prefix="lite-model-") as tmp:
-        source_repo = run.get("_ci_repo", "torchtitan-npu/torchtitan-npu")
+        source_repo = run.get("_ci_repo", "cann-framework/torchtitan-npu")
         archive = model_archive(run["head_sha"], Path(tmp), source_repo=source_repo)
         definition = resolve_test(
             archive,
@@ -449,7 +449,7 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
                 env={
                     **os.environ,
                     "LITE_ACTIONS_MODEL_REPO": run.get(
-                        "_ci_repo", "torchtitan-npu/torchtitan-npu"
+                        "_ci_repo", "cann-framework/torchtitan-npu"
                     ),
                 },
                 start_new_session=True,

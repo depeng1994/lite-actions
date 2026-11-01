@@ -12,7 +12,7 @@ import re
 
 # A distinct worker process can serve vLLM, sharing physical resource locks
 # with the existing TorchTitan worker. The default remains backwards compatible.
-TORCHTITAN_REPO = "torchtitan-npu/torchtitan-npu"
+TORCHTITAN_REPO = "cann-framework/torchtitan-npu"
 VLLM_REPO = "torchtitan-npu/vllm-ascend"
 SUPPORTED_REPOS = frozenset({TORCHTITAN_REPO, VLLM_REPO})
 REPO = os.environ.get("LITE_ACTIONS_MODEL_REPO", TORCHTITAN_REPO)
