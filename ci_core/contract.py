@@ -3,7 +3,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Pure schema-3 contract, mirrored byte-for-byte in the two repositories."""
+"""Independent schema-3 consumer validation for supported model repositories."""
 
 import hashlib
 import json

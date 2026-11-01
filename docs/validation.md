@@ -1,4 +1,6 @@
-# 验证记录
+> 本页保留此前固定 SHA 的历史验收，不代表最新发布结果。当前发布 SHA、模型分支及最新验收以 `/etc/lite-actions/blue-deployment.json` 和对应 PR 的验收记录为准。
+
+# 历史验收：验证记录
 
 blue 已从 Lite Actions main 发布为 systemd 生产服务，运行代码 `2c5adbf934a65442e6aaffe4cf7a936ea9468265`。模型仓 PR 保持 draft，按用户选择通过现有 PR 分支调用，尚未切换模型仓 master 与 required checks。运行路径与命令见 [blue 运维](blue-worker.md)。
 

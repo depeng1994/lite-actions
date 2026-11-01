@@ -42,10 +42,22 @@ class MultiRepoWorkerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             GitHubClient("fake", "torchtitan-npu/torchtitan-npu")
         with patch.dict(
-            os.environ, {"LITE_ACTIONS_MODEL_REPO": "torchtitan-npu/torchtitan-npu"}, clear=True
+            os.environ,
+            {"LITE_ACTIONS_MODEL_REPO": "torchtitan-npu/torchtitan-npu"},
+            clear=True,
         ):
             with self.assertRaises(ValueError):
                 configured_repos()
+
+    def test_executor_default_remains_torchtitan_under_vllm_environment(self):
+        run = dict(id=7, run_attempt=1, created_at="2026-11-01T00:00:00Z")
+        with patch.dict(os.environ, {"LITE_ACTIONS_MODEL_REPO": VLLM_REPO}):
+            default = task_dir(run, Path("/tmp/work"))
+            explicit = task_dir({**run, "_ci_repo": TORCHTITAN_REPO}, Path("/tmp/work"))
+            self.assertEqual(default, explicit)
+            self.assertNotEqual(
+                default, task_dir({**run, "_ci_repo": VLLM_REPO}, Path("/tmp/work"))
+            )
 
     def test_env_modes_reject_duplicate_and_unsupported(self):
         with patch.dict(os.environ, {}, clear=True):
