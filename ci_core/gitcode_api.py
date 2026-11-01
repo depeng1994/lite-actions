@@ -47,8 +47,15 @@ def repository_id(value) -> str:
 
 
 class GitCodeClient:
-    def __init__(self, repo: str, repo_id: str, *, token: str | None = None,
-                 transport: Callable[[str], dict] | None = None, timeout: int = 15):
+    def __init__(
+        self,
+        repo: str,
+        repo_id: str,
+        *,
+        token: str | None = None,
+        transport: Callable[[str], dict] | None = None,
+        timeout: int = 15,
+    ):
         if not isinstance(repo, str) or not REPOSITORY.fullmatch(repo):
             raise GitCodeAPIError("INVALID_GITCODE_REPOSITORY_PATH")
         self.repo, self.repo_id = repo, repository_id(repo_id)
@@ -57,19 +64,29 @@ class GitCodeClient:
         positive(timeout)
         self.timeout = min(timeout, 30)
         self._opener = urllib.request.build_opener(NoRedirect())
-        if transport is None and (not isinstance(token, str) or not token or "\n" in token or "\r" in token):
+        if transport is None and (
+            not isinstance(token, str) or not token or "\n" in token or "\r" in token
+        ):
             raise GitCodeAPIError("GITCODE_READ_CREDENTIAL_REQUIRED")
 
     @classmethod
     def from_environment(cls, repo: str, repo_id: str):
-        token = os.environ.get("LITE_ACTIONS_GITCODE_TOKEN") or os.environ.get("GITCODE_API_TOKEN")
+        token = os.environ.get("LITE_ACTIONS_GITCODE_TOKEN") or os.environ.get(
+            "GITCODE_API_TOKEN"
+        )
         return cls(repo, repo_id, token=token)
 
     def __repr__(self):
         return f"GitCodeClient(repo={self.repo!r}, repo_id={self.repo_id!r})"
 
     def _get(self, path: str) -> dict:
-        if not path.startswith("/") or path.startswith("//") or "://" in path or ".." in path or "\\" in path:
+        if (
+            not path.startswith("/")
+            or path.startswith("//")
+            or "://" in path
+            or ".." in path
+            or "\\" in path
+        ):
             raise GitCodeAPIError("UNSAFE_GITCODE_API_PATH")
         if self._transport is not None:
             result = self._transport(path)
@@ -77,10 +94,15 @@ class GitCodeClient:
                 raise GitCodeAPIError("INVALID_GITCODE_API_RESPONSE")
             return result
         for attempt in range(3):
-            request = urllib.request.Request(API_ROOT + path, headers={
-                "Authorization": "Bearer " + self._token,
-                "Accept": "application/json", "User-Agent": "lite-actions-gitcode-v4",
-            }, method="GET")
+            request = urllib.request.Request(
+                API_ROOT + path,
+                headers={
+                    "Authorization": "Bearer " + self._token,
+                    "Accept": "application/json",
+                    "User-Agent": "lite-actions-gitcode-v4",
+                },
+                method="GET",
+            )
             try:
                 with self._opener.open(request, timeout=self.timeout) as response:
                     payload = response.read(4 * 1024**2 + 1)
@@ -91,7 +113,9 @@ class GitCodeClient:
                 if status in (429, 500, 502, 503, 504) and attempt < 2:
                     time.sleep(2**attempt)
                     continue
-                raise GitCodeAPIError("GITCODE_AUTHORITY_HTTP_ERROR", status=status) from None
+                raise GitCodeAPIError(
+                    "GITCODE_AUTHORITY_HTTP_ERROR", status=status
+                ) from None
             except (OSError, TimeoutError):
                 if attempt < 2:
                     time.sleep(2**attempt)
@@ -102,15 +126,24 @@ class GitCodeClient:
 
     def repository(self) -> dict:
         data = self._get("/repos/" + self.repo)
-        if repository_id(data.get("id")) != self.repo_id or data.get("full_name") != self.repo:
+        if (
+            repository_id(data.get("id")) != self.repo_id
+            or data.get("full_name") != self.repo
+        ):
             raise GitCodeAPIError("GITCODE_REPOSITORY_IDENTITY_CHANGED")
         default_ref = require_ref(data.get("default_branch"))
-        return {"repo_id": self.repo_id, "repo": self.repo, "default_ref": default_ref,
-                "clone_url": "https://gitcode.com/" + self.repo + ".git"}
+        return {
+            "repo_id": self.repo_id,
+            "repo": self.repo,
+            "default_ref": default_ref,
+            "clone_url": "https://gitcode.com/" + self.repo + ".git",
+        }
 
     def branch(self, ref: str) -> str:
         require_ref(ref)
-        data = self._get("/repos/" + self.repo + "/branches/" + urllib.parse.quote(ref, safe=""))
+        data = self._get(
+            "/repos/" + self.repo + "/branches/" + urllib.parse.quote(ref, safe="")
+        )
         commit = data.get("commit")
         if data.get("name") != ref or not isinstance(commit, dict):
             raise GitCodeAPIError("GITCODE_BRANCH_IDENTITY_MISMATCH")
@@ -126,7 +159,13 @@ class GitCodeClient:
             raise GitCodeAPIError("GITCODE_PR_NUMBER_MISMATCH")
         return data
 
-    def _pull_identity(self, pr: dict, *, allowed_base_refs: tuple[str, ...], allowed_actors: tuple[str, ...]):
+    def _pull_identity(
+        self,
+        pr: dict,
+        *,
+        allowed_base_refs: tuple[str, ...],
+        allowed_actors: tuple[str, ...],
+    ):
         if pr.get("state") != "open" or pr.get("merged_at"):
             raise GitCodeAPIError("GITCODE_PR_NOT_OPEN")
         if (pr.get("user") or {}).get("login") not in allowed_actors:
@@ -146,10 +185,20 @@ class GitCodeClient:
         require_sha(head.get("sha"))
         if not allowed_base_refs or base["ref"] not in allowed_base_refs:
             raise GitCodeAPIError("GITCODE_BASE_REF_NOT_AUTHORIZED")
-        return {"head_ref": head["ref"], "head_sha": head["sha"], "base_ref": base["ref"],
-                "actor": pr["user"]["login"]}
+        return {
+            "head_ref": head["ref"],
+            "head_sha": head["sha"],
+            "base_ref": base["ref"],
+            "actor": pr["user"]["login"],
+        }
 
-    def open_pull_snapshot(self, number: int, *, allowed_base_refs: tuple[str, ...], allowed_actors: tuple[str, ...]) -> dict:
+    def open_pull_snapshot(
+        self,
+        number: int,
+        *,
+        allowed_base_refs: tuple[str, ...],
+        allowed_actors: tuple[str, ...],
+    ) -> dict:
         """Read an open same-repository PR and its CURRENT branch heads.
 
         This brackets the branch reads with PR reads, but is not an atomic
@@ -157,17 +206,34 @@ class GitCodeClient:
         re-read at admission, launch and publication boundaries.
         """
         self.repository()
-        before = self._pull_identity(self.pull(number), allowed_base_refs=allowed_base_refs, allowed_actors=allowed_actors)
+        before = self._pull_identity(
+            self.pull(number),
+            allowed_base_refs=allowed_base_refs,
+            allowed_actors=allowed_actors,
+        )
         head_sha = self.branch(before["head_ref"])
         base_sha = self.branch(before["base_ref"])
-        after = self._pull_identity(self.pull(number), allowed_base_refs=allowed_base_refs, allowed_actors=allowed_actors)
+        after = self._pull_identity(
+            self.pull(number),
+            allowed_base_refs=allowed_base_refs,
+            allowed_actors=allowed_actors,
+        )
         self.repository()
         if canonical(before) != canonical(after) or head_sha != after["head_sha"]:
             raise GitCodeAPIError("GITCODE_PR_CHANGED_DURING_READ")
-        identity = {"repo_id": self.repo_id, "number": number, "head_repo_id": self.repo_id,
-                    "head_ref": after["head_ref"], "head_sha": head_sha,
-                    "base_repo_id": self.repo_id, "base_ref": after["base_ref"], "base_sha": base_sha}
-        validate_pr(identity, allowed_repo_id=self.repo_id, allowed_refs=allowed_base_refs)
+        identity = {
+            "repo_id": self.repo_id,
+            "number": number,
+            "head_repo_id": self.repo_id,
+            "head_ref": after["head_ref"],
+            "head_sha": head_sha,
+            "base_repo_id": self.repo_id,
+            "base_ref": after["base_ref"],
+            "base_sha": base_sha,
+        }
+        validate_pr(
+            identity, allowed_repo_id=self.repo_id, allowed_refs=allowed_base_refs
+        )
         return {"identity": identity, "state": "open", "authorized": True}
 
     def control_tip(self) -> dict:
@@ -179,7 +245,9 @@ class GitCodeClient:
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="Read-only GitCode PR authority inspection; no dispatch or device access")
+    parser = argparse.ArgumentParser(
+        description="Read-only GitCode PR authority inspection; no dispatch or device access"
+    )
     parser.add_argument("--repo", required=True)
     parser.add_argument("--repo-id", required=True)
     parser.add_argument("--pr", type=int)
@@ -187,10 +255,26 @@ def main(argv=None) -> int:
     parser.add_argument("--actor", action="append", default=[])
     args = parser.parse_args(argv)
     client = GitCodeClient.from_environment(args.repo, args.repo_id)
-    result = client.control_tip() if args.pr is None else client.open_pull_snapshot(
-        args.pr, allowed_base_refs=tuple(args.base_ref), allowed_actors=tuple(args.actor))
-    print(json.dumps({"observation": result, "event_revision_proof": "NOT_ESTABLISHED",
-                      "merge_gate": "NOT_PROVIDED"}, ensure_ascii=False, sort_keys=True))
+    result = (
+        client.control_tip()
+        if args.pr is None
+        else client.open_pull_snapshot(
+            args.pr,
+            allowed_base_refs=tuple(args.base_ref),
+            allowed_actors=tuple(args.actor),
+        )
+    )
+    print(
+        json.dumps(
+            {
+                "observation": result,
+                "event_revision_proof": "NOT_ESTABLISHED",
+                "merge_gate": "NOT_PROVIDED",
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
     return 0
 
 

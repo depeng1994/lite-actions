@@ -10,10 +10,27 @@ from ci_core.gitcode_api import GitCodeAPIError, GitCodeClient, repository_id
 class FixtureTransport:
     def __init__(self):
         self.repo = "depeng1994/torchtitan-npu"
-        self.metadata = {"id": 9075802, "full_name": self.repo, "default_branch": "master"}
-        self.pr = {"number": 7, "state": "open", "merged_at": None, "user": {"login": "depeng1994"},
-                   "head": {"ref": "feature/change", "sha": "a" * 40, "repo": {"full_name": self.repo}},
-                   "base": {"ref": "master", "sha": "c" * 40, "repo": {"full_name": self.repo}}}
+        self.metadata = {
+            "id": 9075802,
+            "full_name": self.repo,
+            "default_branch": "master",
+        }
+        self.pr = {
+            "number": 7,
+            "state": "open",
+            "merged_at": None,
+            "user": {"login": "depeng1994"},
+            "head": {
+                "ref": "feature/change",
+                "sha": "a" * 40,
+                "repo": {"full_name": self.repo},
+            },
+            "base": {
+                "ref": "master",
+                "sha": "c" * 40,
+                "repo": {"full_name": self.repo},
+            },
+        }
         self.branches = {"feature/change": "a" * 40, "master": "b" * 40}
         self.calls, self.pr_reads = [], 0
         self.change_second_read = False
@@ -37,10 +54,14 @@ class FixtureTransport:
 class GitCodeAPITests(unittest.TestCase):
     def setUp(self):
         self.transport = FixtureTransport()
-        self.client = GitCodeClient(self.transport.repo, "9075802", transport=self.transport)
+        self.client = GitCodeClient(
+            self.transport.repo, "9075802", transport=self.transport
+        )
 
     def snapshot(self):
-        return self.client.open_pull_snapshot(7, allowed_base_refs=("master",), allowed_actors=("depeng1994",))
+        return self.client.open_pull_snapshot(
+            7, allowed_base_refs=("master",), allowed_actors=("depeng1994",)
+        )
 
     def test_missing_embedded_repo_ids_are_independently_resolved(self):
         result = self.snapshot()
@@ -52,8 +73,13 @@ class GitCodeAPITests(unittest.TestCase):
     def test_cached_pr_base_sha_is_never_used_as_current_base(self):
         result = self.snapshot()
         self.assertEqual(result["identity"]["base_sha"], "b" * 40)
-        self.assertNotEqual(result["identity"]["base_sha"], self.transport.pr["base"]["sha"])
-        self.assertIn("/repos/" + self.transport.repo + "/branches/feature%2Fchange", self.transport.calls)
+        self.assertNotEqual(
+            result["identity"]["base_sha"], self.transport.pr["base"]["sha"]
+        )
+        self.assertIn(
+            "/repos/" + self.transport.repo + "/branches/feature%2Fchange",
+            self.transport.calls,
+        )
 
     def test_repository_path_cannot_be_reassigned_to_another_numeric_id(self):
         self.transport.metadata["id"] = 999
@@ -70,7 +96,12 @@ class GitCodeAPITests(unittest.TestCase):
         self.transport.pr["head"]["repo"]["html_url"] = "https://evil.invalid/steal"
         with self.assertRaisesRegex(GitCodeAPIError, "EXTERNAL_FORK"):
             self.snapshot()
-        self.assertTrue(all("external" not in path and "evil" not in path for path in self.transport.calls))
+        self.assertTrue(
+            all(
+                "external" not in path and "evil" not in path
+                for path in self.transport.calls
+            )
+        )
 
     def test_head_change_between_reads_and_branch_pr_lag_are_rejected(self):
         self.transport.change_second_read = True
@@ -82,7 +113,10 @@ class GitCodeAPITests(unittest.TestCase):
             self.snapshot()
 
     def test_closed_merged_wrong_actor_and_retarget_are_not_admitted(self):
-        for field, value in (("state", "closed"), ("merged_at", "2026-11-01T00:00:00Z")):
+        for field, value in (
+            ("state", "closed"),
+            ("merged_at", "2026-11-01T00:00:00Z"),
+        ):
             before = copy.deepcopy(self.transport.pr)
             self.transport.pr[field] = value
             with self.assertRaisesRegex(GitCodeAPIError, "PR_NOT_OPEN"):
@@ -103,9 +137,17 @@ class GitCodeAPITests(unittest.TestCase):
 
     def test_invalid_id_and_repository_path(self):
         for value in (True, None, 0, "0", "../1", "1.2"):
-            with self.subTest(value=value), self.assertRaises((GitCodeAPIError, ValueError)):
+            with (
+                self.subTest(value=value),
+                self.assertRaises((GitCodeAPIError, ValueError)),
+            ):
                 repository_id(value)
-        for repo in ("../repo", "owner/repo?token=x", "https://gitcode.com/o/r", "o/r/extra"):
+        for repo in (
+            "../repo",
+            "owner/repo?token=x",
+            "https://gitcode.com/o/r",
+            "o/r/extra",
+        ):
             with self.assertRaises(GitCodeAPIError):
                 GitCodeClient(repo, "9075802", transport=self.transport)
 
