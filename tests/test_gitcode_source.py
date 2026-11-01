@@ -33,11 +33,17 @@ class MergeSourceTests(unittest.TestCase):
         self.commit("initial")
         self.initial = self.sha()
         self.git("branch", "head")
-        self.version = subprocess.check_output(["git", "--version"], text=True).strip().removeprefix("git version ")
+        self.version = (
+            subprocess.check_output(["git", "--version"], text=True)
+            .strip()
+            .removeprefix("git version ")
+        )
         self.counter = 0
 
     def git(self, *args):
-        return subprocess.check_output(["git", "-C", str(self.repo), *args], stderr=subprocess.DEVNULL, text=True).strip()
+        return subprocess.check_output(
+            ["git", "-C", str(self.repo), *args], stderr=subprocess.DEVNULL, text=True
+        ).strip()
 
     def sha(self):
         return self.git("rev-parse", "HEAD")
@@ -54,10 +60,24 @@ class MergeSourceTests(unittest.TestCase):
 
     def builder(self, **kwargs):
         self.counter += 1
-        builder = MergeSourceBuilder(self.root / f"build-{self.counter}", expected_git_version=self.version, **kwargs)
+        builder = MergeSourceBuilder(
+            self.root / f"build-{self.counter}",
+            expected_git_version=self.version,
+            **kwargs,
+        )
         # Local-object injection is test-only; production fetch_ref rejects file URLs.
-        subprocess.run(["git", "--git-dir=" + str(builder.repo), "fetch", "--no-tags", str(self.repo),
-                        "+refs/heads/*:refs/heads/*"], check=True, capture_output=True)
+        subprocess.run(
+            [
+                "git",
+                "--git-dir=" + str(builder.repo),
+                "fetch",
+                "--no-tags",
+                str(self.repo),
+                "+refs/heads/*:refs/heads/*",
+            ],
+            check=True,
+            capture_output=True,
+        )
         return builder
 
     def branches(self):
@@ -96,7 +116,11 @@ class MergeSourceTests(unittest.TestCase):
     def test_equal_head_base_has_one_parent_and_exact_tree(self):
         builder = self.builder()
         handle = builder.build(head_sha=self.initial, base_sha=self.initial)
-        parents = builder._git("show", "-s", "--format=%P", handle.tested_merge_sha).decode().strip()
+        parents = (
+            builder._git("show", "-s", "--format=%P", handle.tested_merge_sha)
+            .decode()
+            .strip()
+        )
         self.assertEqual(parents, self.initial)
         self.assertEqual(handle.tested_tree_sha, self.git("rev-parse", "HEAD^{tree}"))
 
@@ -106,11 +130,17 @@ class MergeSourceTests(unittest.TestCase):
         builder = self.builder()
         handle = builder.build(head_sha=head, base_sha=self.initial)
         self.assertEqual(handle.tested_tree_sha, self.git("rev-parse", "HEAD^{tree}"))
-        parents = builder._git("show", "-s", "--format=%P", handle.tested_merge_sha).decode().strip()
+        parents = (
+            builder._git("show", "-s", "--format=%P", handle.tested_merge_sha)
+            .decode()
+            .strip()
+        )
         self.assertEqual(parents, self.initial + " " + head)
 
     def test_export_attributes_cannot_hide_or_substitute_payload(self):
-        self.write(".gitattributes", "payload.py export-ignore\nversion.txt export-subst\n")
+        self.write(
+            ".gitattributes", "payload.py export-ignore\nversion.txt export-subst\n"
+        )
         self.write("payload.py", "raise RuntimeError('must not execute')\n")
         self.write("version.txt", "$Format:%H$\n")
         head = self.commit("hostile export attributes")
@@ -141,18 +171,42 @@ class MergeSourceTests(unittest.TestCase):
         with self.assertRaisesRegex(SourceError, "GIT_VERSION_NOT_PINNED"):
             MergeSourceBuilder(self.root / "bad-version", expected_git_version="0.0.0")
         builder = self.builder()
-        for url in ("file:///tmp/repo", "https://evil.invalid/a/b.git", "https://user:secret@gitcode.com/a/b.git"):
-            with self.subTest(url=url), self.assertRaisesRegex(SourceError, "UNTRUSTED_GIT_REMOTE"):
-                builder.fetch_ref(url=url, ref="head", expected_sha=self.initial, role="head")
+        for url in (
+            "file:///tmp/repo",
+            "https://evil.invalid/a/b.git",
+            "https://user:secret@gitcode.com/a/b.git",
+        ):
+            with (
+                self.subTest(url=url),
+                self.assertRaisesRegex(SourceError, "UNTRUSTED_GIT_REMOTE"),
+            ):
+                builder.fetch_ref(
+                    url=url, ref="head", expected_sha=self.initial, role="head"
+                )
 
     def test_ref_rejects_git_syntax_and_traversal(self):
-        for ref in ("--upload-pack=bad", "a..b", "a//b", "a.lock", ".hidden", "x/", "a^{}", "a\\b", "a/../b"):
+        for ref in (
+            "--upload-pack=bad",
+            "a..b",
+            "a//b",
+            "a.lock",
+            ".hidden",
+            "x/",
+            "a^{}",
+            "a\\b",
+            "a/../b",
+        ):
             with self.subTest(ref=ref), self.assertRaises(SourceError):
                 require_ref(ref)
         self.assertEqual(require_ref("feature/change-1"), "feature/change-1")
 
     def test_lfs_and_symlinks_fail_closed(self):
-        self.write("lfs.bin", "version https://git-lfs.github.com/spec/v1\noid sha256:" + "a" * 64 + "\nsize 1\n")
+        self.write(
+            "lfs.bin",
+            "version https://git-lfs.github.com/spec/v1\noid sha256:"
+            + "a" * 64
+            + "\nsize 1\n",
+        )
         head = self.commit("lfs")
         with self.assertRaisesRegex(SourceError, "UNMATERIALIZED_LFS_OBJECT"):
             self.builder().build(head_sha=head, base_sha=self.initial)
@@ -164,7 +218,9 @@ class MergeSourceTests(unittest.TestCase):
 
     def test_content_limits_and_cache_digest(self):
         with self.assertRaisesRegex(SourceError, "SOURCE_SIZE_LIMIT"):
-            self.builder(max_file_bytes=1).build(head_sha=self.initial, base_sha=self.initial)
+            self.builder(max_file_bytes=1).build(
+                head_sha=self.initial, base_sha=self.initial
+            )
         handle = self.builder().build(head_sha=self.initial, base_sha=self.initial)
         Path(handle.bundle_path).write_bytes(b"corrupt")
         with self.assertRaisesRegex(SourceError, "SOURCE_BUNDLE_DIGEST_MISMATCH"):
@@ -174,7 +230,10 @@ class MergeSourceTests(unittest.TestCase):
     def malicious_handle(self, entries):
         handle = self.builder().build(head_sha=self.initial, base_sha=self.initial)
         bundle = Path(handle.bundle_path)
-        with bundle.open("wb") as out, gzip.GzipFile(fileobj=out, mode="wb", mtime=0) as zipped:
+        with (
+            bundle.open("wb") as out,
+            gzip.GzipFile(fileobj=out, mode="wb", mtime=0) as zipped,
+        ):
             with tarfile.open(fileobj=zipped, mode="w|") as archive:
                 for entry, content in entries:
                     archive.addfile(entry, io.BytesIO(content))
@@ -191,13 +250,22 @@ class MergeSourceTests(unittest.TestCase):
         link.type = tarfile.SYMTYPE
         link.linkname = "../../outside"
         with self.assertRaisesRegex(SourceError, "UNSAFE_ARCHIVE_MEMBER"):
-            extract_verified_source(self.malicious_handle([(link, b"")]), self.root / "linkbad")
+            extract_verified_source(
+                self.malicious_handle([(link, b"")]), self.root / "linkbad"
+            )
         file = tarfile.TarInfo("file")
         with self.assertRaisesRegex(SourceError, "SOURCE_DUPLICATE"):
-            extract_verified_source(self.malicious_handle([(file, b""), (file, b"")]), self.root / "duplicate")
+            extract_verified_source(
+                self.malicious_handle([(file, b""), (file, b"")]),
+                self.root / "duplicate",
+            )
         file.size = 4
         with self.assertRaisesRegex(SourceError, "SOURCE_SIZE_LIMIT"):
-            extract_verified_source(self.malicious_handle([(file, b"data")]), self.root / "bomb", max_unpacked_bytes=1)
+            extract_verified_source(
+                self.malicious_handle([(file, b"data")]),
+                self.root / "bomb",
+                max_unpacked_bytes=1,
+            )
 
     def test_existing_destination_is_not_overwritten(self):
         handle = self.builder().build(head_sha=self.initial, base_sha=self.initial)

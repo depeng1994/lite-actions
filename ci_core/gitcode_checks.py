@@ -42,7 +42,9 @@ class CreationJournal:
             if version not in (0, 1):
                 raise ChannelError("UNKNOWN_CHECK_JOURNAL_VERSION")
             if version == 0:
-                if connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchone():
+                if connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchone():
                     raise ChannelError("UNVERSIONED_CHECK_JOURNAL")
                 connection.executescript("""
                     BEGIN IMMEDIATE;
@@ -70,13 +72,19 @@ class CreationJournal:
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
-                row = connection.execute("SELECT * FROM creations WHERE identity=?", (identity,)).fetchone()
+                row = connection.execute(
+                    "SELECT * FROM creations WHERE identity=?", (identity,)
+                ).fetchone()
                 if row:
                     connection.commit()
-                    return False, json.loads(row["slot_json"]) if row["slot_json"] else None
+                    return False, json.loads(row["slot_json"]) if row[
+                        "slot_json"
+                    ] else None
                 # Persist UNKNOWN before POST. A crash here may lose liveness,
                 # but can never cause an automatic second create request.
-                connection.execute("INSERT INTO creations VALUES(?,'UNKNOWN',NULL)", (identity,))
+                connection.execute(
+                    "INSERT INTO creations VALUES(?,'UNKNOWN',NULL)", (identity,)
+                )
                 connection.commit()
                 return True, None
             except BaseException:
@@ -88,10 +96,17 @@ class CreationJournal:
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
-                row = connection.execute("SELECT * FROM creations WHERE identity=?", (identity,)).fetchone()
-                if row is None or (row["slot_json"] is not None and row["slot_json"] != encoded):
+                row = connection.execute(
+                    "SELECT * FROM creations WHERE identity=?", (identity,)
+                ).fetchone()
+                if row is None or (
+                    row["slot_json"] is not None and row["slot_json"] != encoded
+                ):
                     raise ChannelError("CHECK_SLOT_BINDING_IMMUTABLE")
-                connection.execute("UPDATE creations SET stage='BOUND',slot_json=? WHERE identity=?", (encoded, identity))
+                connection.execute(
+                    "UPDATE creations SET stage='BOUND',slot_json=? WHERE identity=?",
+                    (encoded, identity),
+                )
                 connection.commit()
             except BaseException:
                 connection.rollback()
@@ -99,7 +114,14 @@ class CreationJournal:
 
 
 class CheckRunChannel:
-    def __init__(self, client, *, repo_id: int, app_id: int, journal: CreationJournal | None = None):
+    def __init__(
+        self,
+        client,
+        *,
+        repo_id: int,
+        app_id: int,
+        journal: CreationJournal | None = None,
+    ):
         positive(app_id)
         if repo_id not in MODEL_REPOSITORIES:
             raise ChannelError("CHECK_REPOSITORY_NOT_AUTHORIZED")
@@ -111,7 +133,11 @@ class CheckRunChannel:
 
     def _plan(self, plan):
         gh = plan["github"]
-        if gh["repo_id"] != self.repo_id or gh["repo"] != self.client.repo or gh["run_attempt"] != 1:
+        if (
+            gh["repo_id"] != self.repo_id
+            or gh["repo"] != self.client.repo
+            or gh["run_attempt"] != 1
+        ):
             raise ChannelError("CHECK_PLAN_IDENTITY_MISMATCH")
         positive(gh["run_id"])
 
@@ -126,23 +152,33 @@ class CheckRunChannel:
         if case_id not in {"aggregate"} | {c["case_id"] for c in plan["cases"]}:
             raise ChannelError("CHECK_CASE_NOT_PLANNED")
         gh = plan["github"]
-        return {"id": check_id, "app_id": self.app_id, "repo_id": self.repo_id,
-                "control_sha": plan["control"]["control_sha"], "run_id": gh["run_id"],
-                "run_attempt": gh["run_attempt"], "case_id": case_id,
-                "external_id": external_id(plan, case_id)}
+        return {
+            "id": check_id,
+            "app_id": self.app_id,
+            "repo_id": self.repo_id,
+            "control_sha": plan["control"]["control_sha"],
+            "run_id": gh["run_id"],
+            "run_attempt": gh["run_attempt"],
+            "case_id": case_id,
+            "external_id": external_id(plan, case_id),
+        }
 
     def _observe(self, plan, case_id, check, *, expected_id=None):
         if not isinstance(check, dict) or type(check.get("id")) is not int:
             raise ChannelError("INVALID_CHECK_RESPONSE")
         slot = self._binding(plan, case_id, check["id"])
-        if (check.get("name") != self.name(plan, case_id)
-                or check.get("head_sha") != slot["control_sha"]
-                or (check.get("app") or {}).get("id") != self.app_id
-                or check.get("external_id") != slot["external_id"]
-                or (expected_id is not None and check["id"] != expected_id)):
+        if (
+            check.get("name") != self.name(plan, case_id)
+            or check.get("head_sha") != slot["control_sha"]
+            or (check.get("app") or {}).get("id") != self.app_id
+            or check.get("external_id") != slot["external_id"]
+            or (expected_id is not None and check["id"] != expected_id)
+        ):
             raise ChannelError("CHECK_SLOT_IDENTITY_MISMATCH")
         # The REST response URL must be this repository, not a caller-supplied URL.
-        expected_url = f"https://api.github.com/repos/{self.client.repo}/check-runs/{check['id']}"
+        expected_url = (
+            f"https://api.github.com/repos/{self.client.repo}/check-runs/{check['id']}"
+        )
         if check.get("url") != expected_url:
             raise ChannelError("CHECK_REPOSITORY_RESPONSE_MISMATCH")
         return slot
@@ -151,14 +187,27 @@ class CheckRunChannel:
         sha = plan["control"]["control_sha"]
         # GitHub truncates the reference endpoint above 1000 suites. Do not
         # mistake a truncated name-filtered response for a complete search.
-        suites = self.client.request("GET", f"/commits/{sha}/check-suites?per_page=1&page=1")
+        suites = self.client.request(
+            "GET", f"/commits/{sha}/check-suites?per_page=1&page=1"
+        )
         count = suites.get("total_count") if isinstance(suites, dict) else None
         if type(count) is not int or not 0 <= count < 1000:
             raise ChannelError("CHECK_RECOVERY_SCOPE_NOT_PROVABLY_COMPLETE")
-        query = urlencode({"check_name": self.name(plan, case_id), "app_id": self.app_id,
-                           "filter": "all", "per_page": 100, "page": 1})
+        query = urlencode(
+            {
+                "check_name": self.name(plan, case_id),
+                "app_id": self.app_id,
+                "filter": "all",
+                "per_page": 100,
+                "page": 1,
+            }
+        )
         data = self.client.request("GET", f"/commits/{sha}/check-runs?{query}")
-        if not isinstance(data, dict) or type(data.get("total_count")) is not int or not isinstance(data.get("check_runs"), list):
+        if (
+            not isinstance(data, dict)
+            or type(data.get("total_count")) is not int
+            or not isinstance(data.get("check_runs"), list)
+        ):
             raise ChannelError("INVALID_CHECK_RECOVERY_RESPONSE")
         checks = data["check_runs"]
         if data["total_count"] != len(checks) or len(checks) != 1:
@@ -169,8 +218,14 @@ class CheckRunChannel:
         self._plan(plan)
         if self.journal is None:
             raise ChannelError("DURABLE_CREATION_JOURNAL_REQUIRED")
-        identity = digest({"repo_id": self.repo_id, "control_sha": plan["control"]["control_sha"],
-                           "app_id": self.app_id, "external_id": external_id(plan, case_id)})
+        identity = digest(
+            {
+                "repo_id": self.repo_id,
+                "control_sha": plan["control"]["control_sha"],
+                "app_id": self.app_id,
+                "external_id": external_id(plan, case_id),
+            }
+        )
         owns_post, slot = self.journal.begin(identity)
         if slot is not None:
             check = self.client.request("GET", f"/check-runs/{slot['id']}")
@@ -180,13 +235,25 @@ class CheckRunChannel:
             return slot
         if owns_post:
             gh = plan["github"]
-            payload = {"name": self.name(plan, case_id), "head_sha": plan["control"]["control_sha"],
-                       "external_id": external_id(plan, case_id), "status": "queued",
-                       "details_url": f"https://github.com/{self.client.repo}/actions/runs/{gh['run_id']}",
-                       "output": {"title": "Awaiting verified Blue admission", "summary": canonical({
-                           "schema": 4, "phase": "SLOT_CREATED", "request_id": request_id(plan),
-                           "case_id": case_id, "request_spec_digest": plan["request_spec_digest"],
-                       }).decode()}}
+            payload = {
+                "name": self.name(plan, case_id),
+                "head_sha": plan["control"]["control_sha"],
+                "external_id": external_id(plan, case_id),
+                "status": "queued",
+                "details_url": f"https://github.com/{self.client.repo}/actions/runs/{gh['run_id']}",
+                "output": {
+                    "title": "Awaiting verified Blue admission",
+                    "summary": canonical(
+                        {
+                            "schema": 4,
+                            "phase": "SLOT_CREATED",
+                            "request_id": request_id(plan),
+                            "case_id": case_id,
+                            "request_spec_digest": plan["request_spec_digest"],
+                        }
+                    ).decode(),
+                },
+            }
             try:
                 check = self.client.request("POST", "/check-runs", payload)
             except (OSError, TimeoutError):
@@ -231,20 +298,38 @@ class CheckRunChannel:
             if canonical(current.get("receipt")) != canonical(payload.get("receipt")):
                 raise ChannelError("CHECK_RECEIPT_BINDING_IMMUTABLE")
         if check.get("status") == "completed":
-            if canonical(current) == canonical(payload) and check.get("conclusion") == conclusion:
+            if (
+                canonical(current) == canonical(payload)
+                and check.get("conclusion") == conclusion
+            ):
                 return check
             raise ChannelError("TERMINAL_CHECK_RESULT_IMMUTABLE")
         if current.get("phase") == "SLOT_CREATED":
-            expected = {"schema": 4, "phase": "SLOT_CREATED", "request_id": request_id(plan),
-                        "case_id": case_id, "request_spec_digest": plan["request_spec_digest"]}
+            expected = {
+                "schema": 4,
+                "phase": "SLOT_CREATED",
+                "request_id": request_id(plan),
+                "case_id": case_id,
+                "request_spec_digest": plan["request_spec_digest"],
+            }
             if canonical(current) != canonical(expected):
                 raise ChannelError("CREATED_SLOT_ENVELOPE_MISMATCH")
-        patch = {"status": "completed" if terminal else "in_progress", "output": {
-            "title": "Versioned merge-result test (not atomic merge permission)",
-            "summary": canonical(payload, limit=32 * 1024).decode(),
-        }}
+        patch = {
+            "status": "completed" if terminal else "in_progress",
+            "output": {
+                "title": "Versioned merge-result test (not atomic merge permission)",
+                "summary": canonical(payload, limit=32 * 1024).decode(),
+            },
+        }
         if terminal:
-            if conclusion not in ("success", "failure", "cancelled", "timed_out", "action_required", "neutral"):
+            if conclusion not in (
+                "success",
+                "failure",
+                "cancelled",
+                "timed_out",
+                "action_required",
+                "neutral",
+            ):
                 raise ChannelError("INVALID_CHECK_CONCLUSION")
             patch["conclusion"] = conclusion
         updated = self.client.request("PATCH", f"/check-runs/{check['id']}", patch)
@@ -256,12 +341,19 @@ class CheckRunChannel:
     def publish_receipt(self, plan, receipt, *, canonical_execution=None):
         validate_receipt(plan, receipt)
         if receipt["duplicate"]:
-            if not isinstance(canonical_execution, dict) or set(canonical_execution) != {"request_id", "plan_digest", "github", "result_slots"}:
+            if not isinstance(canonical_execution, dict) or set(
+                canonical_execution
+            ) != {"request_id", "plan_digest", "github", "result_slots"}:
                 raise ChannelError("CANONICAL_RESULT_POINTER_REQUIRED")
         elif canonical_execution is not None:
             raise ChannelError("UNEXPECTED_CANONICAL_POINTER")
-        payload = {"schema": 4, "phase": "ADMITTED", "plan_digest": plan["plan_digest"],
-                   "receipt": receipt, "canonical": canonical_execution}
+        payload = {
+            "schema": 4,
+            "phase": "ADMITTED",
+            "plan_digest": plan["plan_digest"],
+            "receipt": receipt,
+            "canonical": canonical_execution,
+        }
         return self._publish(plan, "aggregate", payload)
 
     def read_receipt(self, plan):
@@ -269,7 +361,11 @@ class CheckRunChannel:
         payload = self._payload(check)
         if payload.get("phase") == "SLOT_CREATED":
             return None
-        if payload.get("schema") != 4 or payload.get("phase") not in ("ADMITTED", "AGGREGATE_RESULT") or payload.get("plan_digest") != plan["plan_digest"]:
+        if (
+            payload.get("schema") != 4
+            or payload.get("phase") not in ("ADMITTED", "AGGREGATE_RESULT")
+            or payload.get("plan_digest") != plan["plan_digest"]
+        ):
             raise ChannelError("INVALID_ADMISSION_ENVELOPE")
         validate_receipt(plan, payload["receipt"])
         return payload
@@ -278,19 +374,36 @@ class CheckRunChannel:
         aggregate_results(plan, receipt, [result], current=False)
         case_id = result["case_id"]
         status = result["status"]
-        conclusion = "success" if status == "PASS" and result["cleanup_verified"] else {
-            "CANCELLED": "cancelled", "TIMED_OUT": "timed_out", "NOT_RUN": "action_required",
-        }.get(status, "failure")
-        payload = {"schema": 4, "phase": "CASE_RESULT", "plan_digest": plan["plan_digest"],
-                   "receipt": receipt, "result": result}
-        return self._publish(plan, case_id, payload, terminal=True, conclusion=conclusion)
+        conclusion = (
+            "success"
+            if status == "PASS" and result["cleanup_verified"]
+            else {
+                "CANCELLED": "cancelled",
+                "TIMED_OUT": "timed_out",
+                "NOT_RUN": "action_required",
+            }.get(status, "failure")
+        )
+        payload = {
+            "schema": 4,
+            "phase": "CASE_RESULT",
+            "plan_digest": plan["plan_digest"],
+            "receipt": receipt,
+            "result": result,
+        }
+        return self._publish(
+            plan, case_id, payload, terminal=True, conclusion=conclusion
+        )
 
     def read_case(self, plan, receipt, case_id):
         check = self.read_slot(plan, case_id)
         payload = self._payload(check)
         if check.get("status") != "completed":
             return None
-        if payload.get("schema") != 4 or payload.get("phase") != "CASE_RESULT" or payload.get("plan_digest") != plan["plan_digest"]:
+        if (
+            payload.get("schema") != 4
+            or payload.get("phase") != "CASE_RESULT"
+            or payload.get("plan_digest") != plan["plan_digest"]
+        ):
             raise ChannelError("INVALID_CASE_RESULT_ENVELOPE")
         if canonical(payload.get("receipt")) != canonical(receipt):
             raise ChannelError("CHECK_RECEIPT_BINDING_IMMUTABLE")
@@ -305,8 +418,20 @@ class CheckRunChannel:
 
     def publish_aggregate(self, plan, receipt, results, *, current):
         outcome = aggregate_results(plan, receipt, results, current=current)
-        payload = {"schema": 4, "phase": "AGGREGATE_RESULT", "plan_digest": plan["plan_digest"],
-                   "receipt": receipt, "outcome": outcome, "identity": source_identity(plan)}
+        payload = {
+            "schema": 4,
+            "phase": "AGGREGATE_RESULT",
+            "plan_digest": plan["plan_digest"],
+            "receipt": receipt,
+            "outcome": outcome,
+            "identity": source_identity(plan),
+        }
         terminal = outcome["test_result"] != "PENDING"
-        conclusion = None if not terminal else ("success" if outcome["test_result"] == "PASS" else "failure")
-        return self._publish(plan, "aggregate", payload, terminal=terminal, conclusion=conclusion)
+        conclusion = (
+            None
+            if not terminal
+            else ("success" if outcome["test_result"] == "PASS" else "failure")
+        )
+        return self._publish(
+            plan, "aggregate", payload, terminal=terminal, conclusion=conclusion
+        )

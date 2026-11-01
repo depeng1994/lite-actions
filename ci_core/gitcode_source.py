@@ -17,6 +17,7 @@ import signal
 import subprocess
 import tarfile
 import tempfile
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
@@ -40,7 +41,9 @@ def require_ref(value: str) -> str:
         not isinstance(value, str)
         or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}", value)
         or any(x in value for x in ("..", "//", "@{"))
-        or any(p.startswith(".") or p.endswith((".", ".lock")) for p in value.split("/"))
+        or any(
+            p.startswith(".") or p.endswith((".", ".lock")) for p in value.split("/")
+        )
         or value.endswith("/")
     ):
         raise SourceError("INVALID_BRANCH_REF")
@@ -94,7 +97,12 @@ class SourceHandle:
     def verify(self) -> Path:
         if self.provider != "gitcode" or self.merge_policy != MERGE_POLICY:
             raise SourceError("SOURCE_HANDLE_PROVIDER_MISMATCH")
-        for sha in (self.head_sha, self.base_sha, self.tested_merge_sha, self.tested_tree_sha):
+        for sha in (
+            self.head_sha,
+            self.base_sha,
+            self.tested_merge_sha,
+            self.tested_tree_sha,
+        ):
             require_sha(sha)
         path = Path(self.bundle_path)
         if (
@@ -129,6 +137,7 @@ class MergeSourceBuilder:
         self.max_unpacked_bytes = max_unpacked_bytes
         self.max_file_bytes = max_file_bytes
         self.timeout_seconds = timeout_seconds
+        self.expires_at = time.monotonic() + timeout_seconds
         self.allowed_urls = frozenset(allowed_urls)
         self.git = shutil.which("git")
         if not self.git:
@@ -143,7 +152,9 @@ class MergeSourceBuilder:
             "GIT_NO_REPLACE_OBJECTS": "1",
             "GIT_TERMINAL_PROMPT": "0",
         }
-        self.git_version = self._git("--version").decode().strip().removeprefix("git version ")
+        self.git_version = (
+            self._git("--version").decode().strip().removeprefix("git version ")
+        )
         if self.git_version != expected_git_version:
             raise SourceError("GIT_VERSION_NOT_PINNED")
         for url in self.allowed_urls:
@@ -162,33 +173,56 @@ class MergeSourceBuilder:
         ):
             raise SourceError("UNTRUSTED_GIT_REMOTE")
 
-    def _git(self, *args: str, data: bytes | None = None, extra_env: dict | None = None,
-             allow_conflict: bool = False, max_output: int = 16 * 1024**2) -> bytes:
+    def _git(
+        self,
+        *args: str,
+        data: bytes | None = None,
+        extra_env: dict | None = None,
+        allow_conflict: bool = False,
+        max_output: int = 16 * 1024**2,
+    ) -> bytes:
+        remaining = self.expires_at - time.monotonic()
+        if remaining <= 0:
+            raise SourceError("SOURCE_BUILD_DEADLINE_EXPIRED")
         command = [
             self.git,
-            "-c", "core.hooksPath=/dev/null",
-            "-c", "credential.helper=",
-            "-c", "protocol.allow=never",
-            "-c", "protocol.https.allow=always",
-            "-c", "http.followRedirects=false",
-            "-c", "core.attributesFile=/dev/null",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "credential.helper=",
+            "-c",
+            "protocol.allow=never",
+            "-c",
+            "protocol.https.allow=always",
+            "-c",
+            "http.followRedirects=false",
+            "-c",
+            "core.attributesFile=/dev/null",
         ]
         if self.repo.exists():
             command += ["--git-dir=" + str(self.repo)]
         command += list(args)
         with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
             process = subprocess.Popen(
-                command, stdin=subprocess.PIPE, stdout=out, stderr=err,
-                env={**self.env, **(extra_env or {})}, start_new_session=True,
+                command,
+                stdin=subprocess.PIPE,
+                stdout=out,
+                stderr=err,
+                env={**self.env, **(extra_env or {})},
+                start_new_session=True,
             )
             try:
-                process.communicate(data, timeout=self.timeout_seconds)
+                process.communicate(data, timeout=remaining)
             except subprocess.TimeoutExpired as exc:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
                 raise SourceError("GIT_OPERATION_TIMEOUT") from exc
             if process.returncode:
-                code = "MERGE_CONFLICT" if allow_conflict and process.returncode == 1 else "GIT_OPERATION_FAILED"
+                code = (
+                    "MERGE_CONFLICT"
+                    if allow_conflict and process.returncode == 1
+                    else "GIT_OPERATION_FAILED"
+                )
                 # Do not print command output: fetched commit metadata is untrusted.
                 raise SourceError(code)
             if out.tell() > max_output:
@@ -203,13 +237,23 @@ class MergeSourceBuilder:
         require_ref(ref)
         require_sha(expected_sha)
         target = "refs/heads/input-" + role
-        self._git("fetch", "--no-tags", "--no-recurse-submodules", url,
-                  "+refs/heads/" + ref + ":" + target)
+        self._git(
+            "fetch",
+            "--no-tags",
+            "--no-recurse-submodules",
+            url,
+            "+refs/heads/" + ref + ":" + target,
+        )
         if self._git("rev-parse", "--verify", target).decode().strip() != expected_sha:
             raise SourceError("FETCHED_REF_SHA_MISMATCH")
 
-    def build(self, *, head_sha: str, base_sha: str,
-              optional_gitlinks: dict[str, str] | None = None) -> SourceHandle:
+    def build(
+        self,
+        *,
+        head_sha: str,
+        base_sha: str,
+        optional_gitlinks: dict[str, str] | None = None,
+    ) -> SourceHandle:
         head_sha, base_sha = require_sha(head_sha), require_sha(base_sha)
         if (self.repo / "shallow").exists():
             raise SourceError("SHALLOW_HISTORY_UNSUPPORTED")
@@ -218,11 +262,21 @@ class MergeSourceBuilder:
                 raise SourceError("SOURCE_NOT_COMMIT")
         # Requiring a merge base rejects unrelated and incomplete histories.
         self._git("merge-base", base_sha, head_sha)
-        tree = self._git("merge-tree", "--write-tree", base_sha, head_sha,
-                         allow_conflict=True).decode().splitlines()[0]
+        tree = (
+            self._git(
+                "merge-tree", "--write-tree", base_sha, head_sha, allow_conflict=True
+            )
+            .decode()
+            .splitlines()[0]
+        )
         require_sha(tree)
-        timestamp = max(int(self._git("show", "-s", "--format=%ct", sha))
-                        for sha in (base_sha, head_sha)) + 1
+        timestamp = (
+            max(
+                int(self._git("show", "-s", "--format=%ct", sha))
+                for sha in (base_sha, head_sha)
+            )
+            + 1
+        )
         identity = {
             "GIT_AUTHOR_NAME": "Lite Actions Merge Builder",
             "GIT_AUTHOR_EMAIL": "ci@lite-actions.invalid",
@@ -233,17 +287,34 @@ class MergeSourceBuilder:
         }
         parents = ["-p", base_sha] + (["-p", head_sha] if head_sha != base_sha else [])
         message = f"lite-actions merge-result\npolicy={MERGE_POLICY}\nbase={base_sha}\nhead={head_sha}\n"
-        merge = self._git("commit-tree", tree, *parents, data=message.encode(), extra_env=identity).decode().strip()
+        merge = (
+            self._git(
+                "commit-tree", tree, *parents, data=message.encode(), extra_env=identity
+            )
+            .decode()
+            .strip()
+        )
         require_sha(merge)
         bundle = self.root / "source.tar.gz"
         if bundle.exists():
             raise SourceError("SOURCE_ALREADY_BUILT")
         dependencies = self._archive_tree(tree, bundle, optional_gitlinks or {})
-        return SourceHandle("gitcode", head_sha, base_sha, merge, tree,
-                            sha256_file(bundle), str(bundle), MERGE_POLICY,
-                            self.git_version, tuple(dependencies))
+        return SourceHandle(
+            "gitcode",
+            head_sha,
+            base_sha,
+            merge,
+            tree,
+            sha256_file(bundle),
+            str(bundle),
+            MERGE_POLICY,
+            self.git_version,
+            tuple(dependencies),
+        )
 
-    def _archive_tree(self, tree: str, output: Path, optional_gitlinks: dict[str, str]) -> list[dict]:
+    def _archive_tree(
+        self, tree: str, output: Path, optional_gitlinks: dict[str, str]
+    ) -> list[dict]:
         """Archive literal blobs: git archive honors PR-controlled export-ignore/subst."""
         raw = self._git("ls-tree", "-rz", "--full-tree", tree)
         records = [entry for entry in raw.split(b"\0") if entry]
@@ -254,8 +325,15 @@ class MergeSourceBuilder:
         total = 0
         temporary = output.with_suffix(".partial")
         try:
-            with temporary.open("xb") as stream, gzip.GzipFile(filename="", fileobj=stream, mode="wb", mtime=0) as zipped:
-                with tarfile.open(fileobj=zipped, mode="w|", format=tarfile.PAX_FORMAT) as archive:
+            with (
+                temporary.open("xb") as stream,
+                gzip.GzipFile(
+                    filename="", fileobj=stream, mode="wb", mtime=0
+                ) as zipped,
+            ):
+                with tarfile.open(
+                    fileobj=zipped, mode="w|", format=tarfile.PAX_FORMAT
+                ) as archive:
                     for record in records:
                         meta, name = record.split(b"\t", 1)
                         mode, kind, oid = meta.decode().split()
@@ -265,17 +343,31 @@ class MergeSourceBuilder:
                             if optional_gitlinks.get(name) != oid:
                                 raise SourceError("UNMATERIALIZED_DEPENDENCY")
                             seen_dependencies.add(name)
-                            dependencies.append({"path": name, "kind": "gitlink", "sha": oid, "materialized": False})
+                            dependencies.append(
+                                {
+                                    "path": name,
+                                    "kind": "gitlink",
+                                    "sha": oid,
+                                    "materialized": False,
+                                }
+                            )
                             continue
                         if kind != "blob" or mode not in ("100644", "100755"):
                             # Conservative initial policy: no symlinks, devices or hardlinks.
                             raise SourceError("UNSUPPORTED_SOURCE_FILE_MODE")
                         size = int(self._git("cat-file", "-s", oid))
                         total += size
-                        if size > self.max_file_bytes or total > self.max_unpacked_bytes:
+                        if (
+                            size > self.max_file_bytes
+                            or total > self.max_unpacked_bytes
+                        ):
                             raise SourceError("SOURCE_SIZE_LIMIT")
-                        content = self._git("cat-file", "blob", oid, max_output=self.max_file_bytes)
-                        if content.startswith(b"version https://git-lfs.github.com/spec/v1\n"):
+                        content = self._git(
+                            "cat-file", "blob", oid, max_output=self.max_file_bytes
+                        )
+                        if content.startswith(
+                            b"version https://git-lfs.github.com/spec/v1\n"
+                        ):
                             raise SourceError("UNMATERIALIZED_LFS_OBJECT")
                         info = tarfile.TarInfo(name)
                         info.size = size
@@ -291,8 +383,12 @@ class MergeSourceBuilder:
 
 
 def extract_verified_source(
-    handle: SourceHandle, destination: Path, *, max_files: int = 100_000,
-    max_unpacked_bytes: int = 2 * 1024**3, max_bundle_bytes: int = 512 * 1024**2,
+    handle: SourceHandle,
+    destination: Path,
+    *,
+    max_files: int = 100_000,
+    max_unpacked_bytes: int = 2 * 1024**3,
+    max_bundle_bytes: int = 512 * 1024**2,
 ) -> Path:
     """Extract into a new private directory, atomically or not at all.
 

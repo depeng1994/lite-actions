@@ -25,8 +25,13 @@ class FakeAPI:
         self.calls.append((method, path, copy.deepcopy(data)))
         if method == "POST":
             ident = 1000 + len(self.checks)
-            check = {**copy.deepcopy(data), "id": ident, "app": {"id": 81}, "conclusion": None,
-                     "url": f"https://api.github.com/repos/{self.repo}/check-runs/{ident}"}
+            check = {
+                **copy.deepcopy(data),
+                "id": ident,
+                "app": {"id": 81},
+                "conclusion": None,
+                "url": f"https://api.github.com/repos/{self.repo}/check-runs/{ident}",
+            }
             self.checks[ident] = check
             if self.lose_create_response:
                 self.lose_create_response = False
@@ -38,7 +43,11 @@ class FakeAPI:
             args = parse_qs(urlsplit(path).query)
             assert args["filter"] == ["all"]
             assert args["app_id"] == ["81"]
-            checks = [copy.deepcopy(v) for v in self.checks.values() if v["name"] == args["check_name"][0]]
+            checks = [
+                copy.deepcopy(v)
+                for v in self.checks.values()
+                if v["name"] == args["check_name"][0]
+            ]
             if self.invisible:
                 checks = []
             return {"total_count": len(checks), "check_runs": checks}
@@ -56,8 +65,12 @@ class CheckChannelTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / "slots.sqlite3"
         self.api = FakeAPI()
-        self.channel = CheckRunChannel(self.api, repo_id=self.api.repo_id, app_id=81,
-                                       journal=CreationJournal(self.path))
+        self.channel = CheckRunChannel(
+            self.api,
+            repo_id=self.api.repo_id,
+            app_id=81,
+            journal=CreationJournal(self.path),
+        )
         self.plan, _ = fixture()
 
     def ready(self):
@@ -66,9 +79,14 @@ class CheckChannelTests(unittest.TestCase):
         return receipt_for(self.plan)
 
     def result(self, receipt, index=0):
-        return {"case_id": self.plan["cases"][index]["case_id"], "receipt": receipt,
-                "identity": source_identity(self.plan), "status": "PASS", "cleanup_verified": True,
-                "summary": ["fixture passed and cleaned"]}
+        return {
+            "case_id": self.plan["cases"][index]["case_id"],
+            "receipt": receipt,
+            "identity": source_identity(self.plan),
+            "status": "PASS",
+            "cleanup_verified": True,
+            "summary": ["fixture passed and cleaned"],
+        }
 
     def test_slots_are_created_once_and_read_by_bound_ids(self):
         self.ready()
@@ -90,8 +108,12 @@ class CheckChannelTests(unittest.TestCase):
         self.api.invisible = True
         with self.assertRaisesRegex(ChannelError, "UNKNOWN_OR_AMBIGUOUS"):
             self.channel.create_slot(self.plan, "aggregate")
-        restored = CheckRunChannel(self.api, repo_id=self.api.repo_id, app_id=81,
-                                   journal=CreationJournal(self.path))
+        restored = CheckRunChannel(
+            self.api,
+            repo_id=self.api.repo_id,
+            app_id=81,
+            journal=CreationJournal(self.path),
+        )
         with self.assertRaisesRegex(ChannelError, "UNKNOWN_OR_AMBIGUOUS"):
             restored.create_slot(self.plan, "aggregate")
         self.assertEqual(sum(c[0] == "POST" for c in self.api.calls), 1)
@@ -122,8 +144,12 @@ class CheckChannelTests(unittest.TestCase):
         self.ready()
         ident = self.plan["result_slots"]["aggregate"]["id"]
         original = copy.deepcopy(self.api.checks[ident])
-        for patch in ({"app": {"id": 99}}, {"head_sha": "0" * 40}, {"external_id": "wrong"},
-                      {"url": "https://api.github.com/repos/other/repo/check-runs/1000"}):
+        for patch in (
+            {"app": {"id": 99}},
+            {"head_sha": "0" * 40},
+            {"external_id": "wrong"},
+            {"url": "https://api.github.com/repos/other/repo/check-runs/1000"},
+        ):
             self.api.checks[ident] = {**original, **patch}
             with self.subTest(patch=patch), self.assertRaises(ChannelError):
                 self.channel.read_slot(self.plan, "aggregate")
@@ -135,7 +161,9 @@ class CheckChannelTests(unittest.TestCase):
         self.assertEqual(self.channel.read_receipt(self.plan)["receipt"], receipt)
         result = self.result(receipt)
         self.channel.publish_case(self.plan, receipt, result)
-        self.assertEqual(self.channel.read_case(self.plan, receipt, result["case_id"]), result)
+        self.assertEqual(
+            self.channel.read_case(self.plan, receipt, result["case_id"]), result
+        )
         wrong = {**receipt, "pr_generation": 2}
         with self.assertRaisesRegex(ChannelError, "RECEIPT_BINDING"):
             self.channel.read_case(self.plan, wrong, result["case_id"])
@@ -155,20 +183,29 @@ class CheckChannelTests(unittest.TestCase):
         receipt = self.ready()
         self.channel.publish_receipt(self.plan, receipt)
         with self.assertRaisesRegex(ChannelError, "RECEIPT_BINDING"):
-            self.channel.publish_receipt(self.plan, {**receipt, "execution_generation": 2})
+            self.channel.publish_receipt(
+                self.plan, {**receipt, "execution_generation": 2}
+            )
 
     def test_aggregate_waits_for_all_and_records_no_atomic_merge_guarantee(self):
         receipt = self.ready()
         self.channel.publish_receipt(self.plan, receipt)
         first = self.result(receipt)
-        check = self.channel.publish_aggregate(self.plan, receipt, [first], current=True)
+        check = self.channel.publish_aggregate(
+            self.plan, receipt, [first], current=True
+        )
         self.assertEqual(check["status"], "in_progress")
         results = [first, self.result(receipt, 1)]
         for result in results:
             self.channel.publish_case(self.plan, receipt, result)
-        check = self.channel.publish_aggregate(self.plan, receipt, results, current=True)
+        check = self.channel.publish_aggregate(
+            self.plan, receipt, results, current=True
+        )
         self.assertEqual(check["conclusion"], "success")
-        self.assertEqual(self.channel.read_receipt(self.plan)["outcome"]["merge_gate"], "NOT_PROVIDED")
+        self.assertEqual(
+            self.channel.read_receipt(self.plan)["outcome"]["merge_gate"],
+            "NOT_PROVIDED",
+        )
 
     def test_success_with_unclean_evidence_is_failure_not_green(self):
         receipt = self.ready()
