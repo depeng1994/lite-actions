@@ -1,5 +1,7 @@
 # GitCode → GitHub Actions 双仓合并结果 CI：详细设计
 
+> **2026-11-02 范围修订（优先适用）**：vLLM Ascend 只验收 GitHub 原生链路，不再要求 GitCode 个人仓、Bridge、状态回写或 GitCode 控制源同步。TorchTitan GitCode 链路不变。详见 [范围修订与已有 PR 实证](gitcode-forward-scope-20261102.md)；其中同时区分已通过的 Yellow A5 8P 与待验收的 Blue A3。下文相冲突的双 GitCode 仓要求以该修订为准。
+
 > **版本**：V3.1 · 已确认调试同步、vLLM 容器与门禁策略 / 待实现及端到端验收  
 > **更新**：2026-11-01（北京时间）  
 > **设计分支**：depeng1994/lite-actions:gitcode-forward  
