@@ -1,23 +1,25 @@
 # GitCode → GitHub Actions 双仓合并结果 CI：详细设计
 
-> **版本**：V3.0 · 已确认治理与验收语义 / 待实现及端到端验收  
+> **版本**：V3.1 · 已确认调试同步、vLLM 容器与门禁策略 / 待实现及端到端验收  
 > **更新**：2026-11-01（北京时间）  
 > **设计分支**：depeng1994/lite-actions:gitcode-forward  
 > **目标 CI 仓**：cann-framework/torchtitan-npu（master）、cann-framework/vllm-ascend（main）  
 > **执行仓**：depeng1994/lite-actions；唯一 Blue Worker  
-> **本次变更**：将用户拍板的三项决定及 review 修正落入设计；没有部署、触发训练或修改模型仓/上游。
+> **本次变更**：允许本次调试手动同步 GitCode 控制代码；固定 vLLM Blue Smoke 容器为 vllm_hccl_smoke；确定测试状态与合入保证的分层策略。本次刷新文档，代码绑定和实机证据仍待实施。
 
 ## 0. 已拍板决策与实施边界
 
-### 0.1 用户确认的三项决定（2026-11-01）
+### 0.1 用户确认与授权确定的决定（2026-11-01）
 
 | 决策 | 本期必须实现的行为 | 对旧设计的替换 |
 |---|---|---|
-| D01 控制面由 GitCode 上游维护 | 两个 GitHub 模型仓保持与各自 GitCode 上游一致的默认分支；用户在 GitCode 修改、审查、合入 Workflow，再自动同步到 GitHub 验证 | 不在 GitHub 保留独有 CI 补丁，不创建或依赖专用 CI 控制分支；删除旧的分支联调退路 |
+| D01 控制面由 GitCode 上游维护，调试允许手动同步 | 两个 GitHub 模型仓保持与各自 GitCode 上游一致的默认分支；控制代码在 GitCode 修改、审查、合入。常态自动同步；本次调试可将可信 GitCode 控制提交手动同步到对应 GitHub 默认分支，核验后立即联调 | 不再因等待自动同步任务阻塞本次调试；不新增专用 CI 分支，不在 GitHub 形成独有控制补丁 |
 | D02 绿色证明与最新 Base 的合并结果通过 | 固定真实 PR Head H 与该 PR 目标分支最新 Base B，测试其合并结果 M/T；门禁绑定相同版本 | 不再把 PR Head 本身当作实际被测源码；Head-only 成功不能满足本期要求 |
 | D03 最新提交优先 | 新 Head 到来主动撤销旧代际的排队/启动权，取消旧运行并清理；新版优先调度 | 不能只等待旧任务结束后标记 STALE；旧任务不得复活或污染新版结果 |
+| D04 vLLM Blue Smoke 固定容器 | vLLM Ascend Blue 8P/16P Smoke 的受信 Case、Plan、节点绑定和真实执行必须使用 Docker 容器 vllm_hccl_smoke；落实为代码校验 | 删除复用 TorchTitan 容器的方案；OS Probe 仍不启动 Docker，既有 A5 路径不作全局替换 |
+| D05 门禁边界由助手确定 | 本期交付固定 H/B 的合并测试状态与更新后失效重测；原生原子合入保证可用则验证后接入，缺少时采用明确标示版本的受限模式继续调试 | 不再等待用户选择；不额外开发合入服务/改写分支治理，不把测试 PASS 冒充原子合入许可 |
 
-D02 同时要求处理 **Base 前进、PR 改目标分支和旧绿灯失效**。只监听 Head 更新不能满足“最新 Base”。本期测试语义已确认；“用户实际合入瞬间仍为已测 Base”的平台原子保证须在 P0 核验，不能把“最后再 GET 一次”当作原子保证。若原生能力不足，是否扩大到受控合入入口/分支写入治理须另行拍板，不能自动扩为本期已确认范围。
+D02 同时要求处理 **Base 前进、PR 改目标分支和旧绿灯失效**。只监听 Head 更新不能满足“最新 Base”。D05 已确定首期采用“版本化合并测试结果 + 事件/轮询失效”的交付边界；P0 依据实证选择 §4.6 的原生或受限模式，无须再次请用户选择。不把最后一次 GET 当作原子合入保证，也不把缺少该保证扩展成新合入系统。
 
 “无专用 CI 分支”的约束针对两个 GitHub 模型镜像仓。独立的 Lite Actions 实现/设计分支流程继续保留，本文件仍在既有 gitcode-forward 分支维护。
 
@@ -25,8 +27,8 @@ D02 同时要求处理 **Base 前进、PR 改目标分支和旧绿灯失效**。
 
 | 对象 | 权威来源 | 写入/消费规则 |
 |---|---|---|
-| TorchTitan 可信控制代码 | GitCode cann/torchtitan-npu 的默认分支，核对实际镜像配置 | Workflow、Prepare、Waiter、可信执行器与注册表由用户在 GitCode 合入后同步 |
-| vLLM 可信控制代码 | 实际 GitCode 镜像源仓及默认分支；URL、Repo ID、分支待核验 | 不根据 GitHub 仓名推测源仓；映射确认后采用相同上游合入流程 |
+| TorchTitan 可信控制代码 | GitCode cann/torchtitan-npu 的默认分支，核对实际镜像配置 | Workflow、Prepare、Waiter、可信执行器与注册表在 GitCode 合入后自动同步；本次调试允许按 §0.4 手动同步 |
+| vLLM 可信控制代码 | 实际 GitCode 镜像源仓及默认分支；URL、Repo ID、分支待核验 | 不根据 GitHub 仓名推测源仓；映射确认后采用相同上游合入及自动/本次手动同步流程 |
 | GitHub TorchTitan | Repo ID 1210038933；默认 master | 只从已同步、已核验的默认分支派发 |
 | GitHub vLLM | Repo ID 1438625957；默认 main | 只从已同步、已核验的默认分支派发 |
 | 本期业务 PR | GitCode depeng1994 的两个个人仓中的真实 PR | 分别核验项目 ID、Head 来源、目标分支、账号与权限；外部 Fork 默认拒绝 |
@@ -46,6 +48,7 @@ D02 同时要求处理 **Base 前进、PR 改目标分支和旧绿灯失效**。
 | 对象 | 快照 | 已确认事实 |
 |---|---|---|
 | 旧设计 V2.2 | lite-actions 5d01fe9b8a0a7fddfe7cf3bd2d65a41b66ad456a | 原设计只封装 Head，需要整体迁移为合并结果 |
+| 上一版设计 V3.0 | lite-actions a10da23cb11388bb1dc30b13bb95d8bd61237622 | 已收敛合并结果/取消协议；本版补充手动同步、固定容器及已选门禁模式 |
 | Lite Actions main | 9b881db9c541d589dd57564eef2b41b3ee78d4d6 | schema 3、多仓支持、Blue/Yellow、持久化状态均已存在；GitCode 合并源尚未实现 |
 | TorchTitan master | 8a71d8940e877cc9f2e5f4b977b4f18d48539592 | 当前同步器强制同步上游分支，并清理上游不存在的分支，仅豁免 gh-pages |
 | TorchTitan Draft PR #11 | 016a031081482c366d7c8f575da530a673b8699c | 统一 Nightly/Smoke 的实现参考；不能直接合入 GitHub 作为本期控制面发布 |
@@ -63,6 +66,18 @@ D01 使镜像成为正式发布途径，而不是绕过对象。PR #11 的必要
 - vLLM 的 A5 脚本、证据路径及模块级仓库判断需要按任务扩展；两个模型仓不能串结果。
 - 生产 Blue 实际发布、在途任务、绑定与隔离状态仍须现场只读盘点；历史成功不是本轮证据。
 
+### 0.4 本次调试的手动同步例外
+
+用户已允许本次调试临时手动同步 GitCode 代码到 GitHub，无须等待定时自动同步。手动与自动同步采用相同的可信源和发布核验：
+
+1. 明确 GitCode 控制源 Repo ID、默认 ref 和可信提交 U，包含 Workflow 及全部依赖脚本；被测 PR 的 Workflow 不因本例外成为控制代码。
+2. 同步至对应 GitHub 默认分支：TorchTitan master、vLLM main。原样同步 Git 提交，核验 C=U、所需文件完整、Workflow 已注册；不通过复制文件后新建独有 GitHub 提交实现临时补丁。
+3. 记录 sync_mode=manual、源/目标仓与 ref、U/C、操作者、时间、同步前目标 SHA 和相关 Run。同步与自动任务不得同时改同一目标 ref；存在非快进差异时先核对两侧与在途版本，不将本例外解释为无条件强推许可。
+4. 核验通过即可开展本次 Workflow/Blue 联调。自动同步延迟不再是调试阻断项；可信源、身份或文件核验失败仍不能派发。
+5. 手动同步期间仍固定每次 Run 的 C；后续同步不得让已经生成的 Plan/Bundle 改用浮动分支。调试结束交接回常态自动同步并核对单一写入者；本次手动 E2E 证据与自动同步恢复证据分别记录。
+
+本例外只改变控制代码的同步方式。PR 的 H/B、合并结果测试、可信代码审查及资源/取消规则继续适用；不新增专用 CI 分支。
+
 ## 1. 需求目标与工程约束
 
 ### 1.1 目标
@@ -71,16 +86,16 @@ D01 使镜像成为正式发布途径，而不是绕过对象。PR #11 的必要
 |---|---|---|
 | G01 | GitCode PR 自动触发 GitHub CI | 两个个人仓各有真实 PR/Action、准确的 GitHub Run 链接 |
 | G02 | 实际测试合并结果 | H/B 来自真实 PR，T=Merge(B,H).tree，Blue 执行 M/T 对应 Bundle |
-| G03 | 控制面可信且来源唯一 | 用户 GitCode 上游合入 U → GitHub 默认分支镜像 C；实际控制代码固定 C |
+| G03 | 控制面可信且来源唯一 | GitCode 上游 U 经自动或本次手动同步到 GitHub 默认分支 C；C=U、方式可追溯，实际控制代码固定 C |
 | G04 | Prepare 成功后才接单 | Prepare Job 成功、全部产物和身份可验证，才允许资源准入 |
 | G05 | Blue 结果闭环 | 对应 GitHub Run、必需 Case、清理及 GitCode 当前版本门禁一致 |
 | G06 | 失败/过期不误绿 | 冲突、SHA/Tree 错误、取消、超时、漏 Case、清理不明均非成功 |
 | G07 | 兼容原 GitHub CI | schema 3 原有 SHA 与结果语义不被破坏，改名和状态迁移可验证 |
-| G08 | Yellow/Native 边界 | Yellow 服务和资源保持当前状态；原生 Self-hosted 仅预留 |
+| G08 | Yellow / Self-hosted 边界 | Yellow 服务和资源保持当前状态；原生 Self-hosted Adapter 仅预留，与 §4.6 的原生门禁模式分开 |
 | G09 | vLLM 双平台闭环 | vLLM 个人 PR 合并结果经对应 GitHub 仓、同一 Blue 返回结果 |
-| G10 | vLLM Blue OS/8P/16P | OS 不占卡；真实 HCCL 8P=28、16P=120，逐节点清理 |
+| G10 | vLLM Blue OS/8P/16P | OS 不进 Docker/不占卡；8P/16P 实际使用 vllm_hccl_smoke，HCCL 分别为 28/120，逐节点清理 |
 | G11 | 双仓共享资源但故障隔离 | 同一物理锁；无串仓/重复租约；一仓失败不阻断另一仓清理 |
-| G12 | 最新 Base 测试状态 | Base 更新使旧版本状态失效并重测；实际合入时的原子保证按 §4.6 单独核验并声明边界 |
+| G12 | 最新 Base 测试状态 | Base 更新使旧版本状态失效并重测；test_result 与 merge_gate 分开，按 §4.6 已选原生/受限模式验收，不强制另建原子合入系统 |
 | G13 | 最新版本优先 | Head/Base 变化后主动取消旧代际，旧启动/回报/释放不能操作新任务 |
 | G14 | 可恢复与可审计 | 请求认领、取消、回报和隔离持久化；重启与回滚不丢状态 |
 
@@ -91,7 +106,7 @@ D01 使镜像成为正式发布途径，而不是绕过对象。PR #11 的必要
 | Q01 | 两个 GitCode 个人仓身份/权限 | 在用户指定的非 depeng 第二台远端环境只读核验；不输出凭据 |
 | Q02 | PR 与 Secret 隔离 | 可信 Bridge/Prepare/Worker；PR Python 不在控制机执行 |
 | Q03 | Dispatch 关联/未知响应 | 稳定 nonce、持久化映射、DISPATCH_UNKNOWN 恢复 |
-| Q04 | 统一 Workflow 未在默认镜像上线 | 用户 GitCode 上游合入并同步后再联调；没有 CI 分支兜底 |
+| Q04 | 统一 Workflow 未在默认镜像上线 | GitCode 控制提交就绪后，可自动或本次手动同步并核验，再联调；没有 CI 分支兜底 |
 | Q05 | Head/Base 可获取性 | 按权威 repo/ref 获取 H/B，核对实际对象及合并所需历史 |
 | Q06 | 版本身份与兼容 | 显式区分 H、B、M、T、C；保留旧 schema 3 语义 |
 | Q07 | Artifact 消费 | 一次解析 SourceHandle，全链路禁止 GitCode 路径回退 GitHub 源码 |
@@ -99,14 +114,14 @@ D01 使镜像成为正式发布途径，而不是绕过对象。PR #11 的必要
 | Q09 | 旧结果与最新门禁 | 代际失效、平台版本绑定；区分测试通过与合入时原子保证 |
 | Q10 | 实机证明 | 保留双仓 12 项主链路，增加合并/镜像/取消/门禁场景 |
 | Q11 | 组织改名 | 稳定 Repo ID + 受控名称映射 + 状态迁移 |
-| Q12 | 上游与镜像发布 | GitCode 为唯一控制代码写入源；镜像延迟明确等待/拒绝 |
+| Q12 | 上游与镜像发布 | GitCode 为唯一控制代码写入源；本次自动同步延迟可走 §0.4 手动路径，记录并避免双写 |
 | Q13 | vLLM 入口只支持 A5 | 增加受信 Blue OS/A3 Case，GitCode Provider 拒绝 Yellow |
 | Q14 | 执行脚本 A5 硬编码 | 按每任务 repo/Case/硬件分发，A5 兼容保留 |
 | Q15 | 双仓隔离 | 一个 Router、共享物理锁、按仓/Run 隔离故障 |
 | Q16 | vLLM GitCode 路由未确认 | 分别核实业务个人仓和控制上游源仓，不用 GitHub Fork 替代 |
 | Q17 | 合并结果构造 | 固定合并策略/Git 版本，验证 H/B→M/T；冲突零调度 |
 | Q18 | Base-only 更新 | 目标分支 push + 可信 reconciler，失效并重新规划相关开放 PR |
-| Q19 | 平台原子门禁未知 | P0 实证；未证明不能宣称“最新 Base 可合并”已交付，额外治理改造另行决策 |
+| Q19 | 平台原子门禁未知 | P0 实证选原生或受限模式；缺少时继续版本化合并测试，不宣称原子可合并、不增建合入服务 |
 | Q20 | 新版本取消与旧回调 | 持久化 generation、取消意图、lease_id/fencing_token |
 | Q21 | 结果通道容量 | 按确定 ID 取结果，明确权限/留存；不扫描控制提交全部评论 |
 | Q22 | 安全恢复 | 清理资料启动前落盘，恢复不依赖 Artifact 或源仓仍在线 |
@@ -125,7 +140,7 @@ D01 使镜像成为正式发布途径，而不是绕过对象。PR #11 的必要
 | Blue 控制协调器 | 唯一 Blue systemd 服务 | 串行更新每 PR 代际、持久化认领、资源调度、监督、恢复 |
 | Blue 执行域 | 已绑定 A3 节点/容器 | 执行 M/T 的测试载荷；不接收 GitHub/GitCode 凭据 |
 | Result Channel/Waiter | Blue + GitHub + Bridge | 精确身份的回报、聚合与当前门禁 |
-| GitCode 原生门禁 | 目标项目 | 绑定 H/B 或预合并版本，Base 变化后禁止旧结果放行 |
+| GitCode 状态/原生门禁 | 目标项目 | test_result 绑定 H/B；原生能力已验证才提供 merge_gate，否则按 §4.6 受限模式展示 |
 
 Blue 的控制协调逻辑与既有 Router 在同一服务中运行，使用同一持久化目录和资源锁；不得另起一个可调度同一 NPU 的进程。控制机可配置最小权限的 GitCode 只读元数据凭据，用于独立核对当前 PR/Base、补偿事件和取消；该凭据绝不进入训练环境。其网络和权限是 P0 验证项。
 
@@ -133,7 +148,7 @@ Blue 的控制协调逻辑与既有 Router 在同一服务中运行，使用同�
 
 ```mermaid
 flowchart TB
-  U["用户在 GitCode 上游合入控制代码"] --> S["自动同步并核验 GitHub 默认分支 C"]
+  U["用户在 GitCode 上游合入控制代码"] --> S["自动或本次手动同步，核验默认分支 C"]
   T["TorchTitan 个人 PR：H / B"] --> P["可信 Prepare：验证身份并合并"]
   V["vLLM 个人 PR：H / B"] --> P
   S --> P
@@ -142,7 +157,7 @@ flowchart TB
   A --> W["唯一 Blue：代际核对、认领、共享锁"]
   W --> N["Blue A3：OS / 8P / 16P / Nightly"]
   N --> R["Case 结果与清理证据"]
-  R --> G["当前 H / B 门禁"]
+  R --> G["H / B 测试状态与合入保证"]
   E["Head 或 Base 更新"] --> X["撤销旧代际并持久化取消"]
   X --> W
   X --> G
@@ -167,7 +182,7 @@ SHA/摘要不是恶意代码隔离机制；本期只准入明确授权的个人�
 
 ### 3.1 单次执行流程
 
-1. **控制发布就绪**：用户上游提交 U 已同步为 GitHub 默认分支 C，必要文件/权限/版本核验通过。
+1. **控制发布就绪**：用户上游提交 U 已自动或按 §0.4 手动同步为 GitHub 默认分支 C，必要文件/权限/版本核验通过；本次调试不等待自动任务。
 2. **事件与快照**：Bridge 读取事件身份，再查询真实 PR、Head 仓/引用及目标分支，固定 H/B；迟到事件不得静默改测另一个 Head。
 3. **派发**：只向映射的 GitHub 默认分支触发 Smoke/Nightly，传固定版本、选择器、不可复用快照/意图与 nonce；保存 Run ID。可信 Prepare 先发布不可执行的 dispatch-intent，Blue 沿用 Pull 通道尽早登记在途任务。
 4. **固定控制版本**：获取实际 Run/Workflow 身份，Prepare/Waiter 均 checkout 同一不可变 C；发布版本不符则拒绝或重新规划。
@@ -394,9 +409,9 @@ Blue 控制协调器在一个事务中更新 PR 当前版本/代际、撤销旧�
 
 重复/乱序通知不能降低代际。短时密集更新可合并触发，但必须先失效旧门禁，且不能借此延后旧任务取消。记录发现更新、发起取消、远端停止、释放/隔离的时间及超时原因。
 
-### 4.6 GitCode 绿色与合并门禁：确认范围与能力边界
+### 4.6 GitCode 绿色与合并门禁：已确定的分层策略
 
-**已确认的测试语义：** 固定当前 H/B，执行合并结果 M/T；Head/Base 变化后失效、取消并重测。发布该版本“合并测试通过”必须同时满足：
+**本期交付的测试语义：** 固定当前 H/B，执行合并结果 M/T；Head/Base 变化后失效、取消并重测。Check 命名为“合并结果测试”，详情显示 H、B、T、验证时间与 Run；绿色表示该明确版本的测试成功，不承诺任意未来时刻 Base 都不变。发布该版本“合并测试通过”必须同时满足：
 
 - 全部必需 Case 集合与 Plan 一致并成功，身份、摘要、M/T 及清理证据有效；
 - PR 仍 open，发布前查询的 Head/Base、目标引用与已测版本相同，代际有效；
@@ -406,11 +421,21 @@ Blue 控制协调器在一个事务中更新 PR 当前版本/代际、撤销旧�
 
 无法确认当前 H/B、版本已失效或结果身份不全时保持 PENDING/BLOCKED 或明确失败。指定 H/B 的历史 PASS 可保留，但不得冒充当前版本的成功。
 
-**需要单独核验的合入保证：** 最终 GET 与状态发布之间仍可有更新，绿色之后、用户合入之前也可能更新 Base。再次 GET、轮询、事件补偿和普通 PR 级状态覆盖不能证明“实际合入瞬间仍是已测 Base”。该保证需要平台原子核对版本条件、自动使旧结果不再满足门禁，或提供等价保证的合并队列。
+**单独核验的合入保证：** 最终 GET 与状态发布之间仍可有更新，绿色之后、用户合入之前也可能更新 Base。再次 GET、轮询、事件补偿和普通 PR 级状态覆盖不能证明“实际合入瞬间仍是已测 Base”。该保证需要平台原子核对版本条件、自动使旧结果不再满足门禁，或提供等价保证的合并队列。
 
 P0 必须在目标项目记录原生 Check 的提交/预合并绑定、Base 更新失效、受保护分支的合入条件及原子验证/合并队列能力，覆盖上述竞争窗口。如果只支持事件后异步失效，必须明确可观测延迟，不能写成无窗口保证。2026-11-01 核对的 [GitCode 公开合并 API](https://docs.gitcode.com/docs/apis/put-api-v-5-repos-owner-repo-pulls-number-merge/) 没有文档化 expected_head_sha/expected_base_sha/CAS 参数；这不足以断言平台不支持，也不足以假定普通 Merge API 已提供保证。
 
-**尚未拍板的扩展范围：** 若原生能力不足，选择“接受明确标示版本与时效边界的测试状态”或“增加受控合入入口/约束所有写入者”需带平台实证再请用户决定。本文件不自动引入合入服务或改分支保护。此前可展示指定 H/B 的测试结果，但代表“当前可合并”的门禁不得给绿；若平台只能展示一个混合状态，先保持 BLOCKED/PENDING，不静默降低 D02。G12 的平台边界与上线结论在完成该验证/决策前保持未关闭。
+**D05 已选方案：** P0 根据实证记录 merge_gate_mode=native 或 versioned_only；默认不假定存在原子能力。首期不新增受控合入服务、不约束全部分支写入者，不因缺少该能力停止源码、Workflow 或 Blue 调试，也不再为这一范围选择询问用户。
+
+| 模式 | 测试结果 test_result | 合入保证 merge_gate | 本期处理 |
+|---|---|---|---|
+| native | 满足上述版本/Case/清理条件才 PASS | 原生版本绑定、Base 自动失效及原子合入检查/等价队列均有实证后，才可记 VERIFIED | 使用原生能力，E2E-17 验证旧 H/B 不能放行；未满足条件则 BLOCKED |
+| versioned_only | 发布明确 H/B/T/时间的版本化 PASS，发现变化立即 STALE/PENDING 并重测 | NOT_PROVIDED：不声明“当前可安全合入” | 合并测试与调试继续，记录发现/失效时延和窗口；不把该 Check 新配置成唯一合入许可 |
+| 平台无法分开表达测试与合入许可 | PASS 只展示在明确的执行详情中 | 对会被解释为合入许可的混合状态保持 BLOCKED/PENDING | 允许完成测试与调试；记录 TEST_PASS + GATE_BLOCKED，不能伪装为完整原子门禁通过 |
+
+test_result 与 merge_gate 分字段存储、展示和验收；受限模式不把门禁能力缺失伪报成测试失败，也不让测试 PASS 掩盖门禁限制。Head/Base 的已知变化仍须先撤销旧状态与启动权，取消并重测；轮询/事件补偿须记录发现、失效和停止延迟。平台失联、无法确认版本或状态发布失败时，不新增当前 PASS，现存历史结果保留其版本与验证时间。
+
+G12 以“平台能力有证据、所选模式符合上述合同、版本失效/重测验证通过”关闭；不要求平台必须具备原子合入功能。正式交接明确所用模式及是否提供原子合入保证，不能把受限模式写成无限期有效的最新 Base 绿灯。
 
 ### 4.7 结果通道与状态恢复
 
@@ -444,7 +469,7 @@ GitHub 官方 Checks 创建/更新要求 GitHub App 身份及 Checks: write；�
 
 发布执行 drain → 核验 → 快照 → 停旧实例 → 原目录事务迁移 → 校验 → 启新实例；真实候选硬件验证同样独占生产锁和已知隔离状态。无硬件的 Mock/静态检查可以使用独立目录，不能用空白候选状态绕开真实隔离。
 
-回滚不能直接丢弃新版状态并恢复旧快照。保留新增取消、隔离和 outbox；旧二进制不支持新 state_version 时必须拒绝启动，完成经验证的兼容迁移后再回退。模型控制代码回滚也由用户在 GitCode 上游回退并同步；GitHub 不补独有回滚提交。
+回滚不能直接丢弃新版状态并恢复旧快照。保留新增取消、隔离和 outbox；旧二进制不支持新 state_version 时必须拒绝启动，完成经验证的兼容迁移后再回退。模型控制代码回滚选择明确的可信 GitCode 回退提交，常态从上游回退后自动同步；本次调试可按 §0.4 手动同步并核验，GitHub 不补独有回滚提交。
 
 ### 4.9 超时、权限与故障隔离
 
@@ -467,7 +492,7 @@ GitHub 官方 Checks 创建/更新要求 GitHub App 身份及 Checks: write；�
 
 ### R01｜上游控制面发布与镜像核验
 
-模型 Workflow、Prepare、Waiter、注册表和执行器变更在实际 GitCode 上游准备，由用户审查并合入默认分支。按镜像配置核对 U→C（原样同步必须相等）、Repo ID、默认分支名、所需文件/Workflow 注册及发布策略，确认同步入口本身不会被覆盖丢失。只对已同步的默认分支联调；同步失败或延迟明确等待/失败。
+模型 Workflow、Prepare、Waiter、注册表和执行器变更在实际 GitCode 上游准备，由用户审查并合入默认分支。按镜像配置核对 U→C（原样同步必须相等）、Repo ID、默认分支名、所需文件/Workflow 注册及发布策略，确认同步入口本身不会被覆盖丢失。常态自动同步；本次调试按 §0.4 手动同步并核验后即可联调，不等待自动任务。只有源、版本、文件或注册核验不满足时才拒绝派发。
 
 GitHub Draft PR #11 仅作为移植实现参考，不作为直接上线入口。旧独立 YAML 的移除必须与调用者/旧门禁迁移分开安排；本轮不删除模型仓文件、不更改 Required Checks。
 
@@ -495,7 +520,7 @@ Router、Executor、SSH 子进程使用同一已验证 SourceHandle；禁止把�
 
 ### R07｜当前版本门禁与结果通道
 
-实现由 Prepare 预创建结果槽、Plan 固定 ID、Blue 回报 AdmissionReceipt/Case 的 schema 4 ResultChannel，聚合完整 Case 和清理证据，绑定 H/B/M/T/C、代际与发布权。GitCode 发布器区分历史结果、当前测试状态与原子合入条件；平台边界/上线决策未关闭前不能宣称“当前可合并”。旧 STALE/FAIL、旧规格或重复 Run 不得覆盖当前结果。
+实现由 Prepare 预创建结果槽、Plan 固定 ID、Blue 回报 AdmissionReceipt/Case 的 schema 4 ResultChannel，聚合完整 Case 和清理证据，绑定 H/B/M/T/C、代际与发布权。GitCode 发布器按 §4.6 分开 test_result、merge_gate 与 merge_gate_mode；原子能力不足采用 versioned_only 继续调试，不等待新增合入服务。旧 STALE/FAIL、旧规格或重复 Run 不得覆盖当前结果。
 
 ### R08｜状态迁移、Blue 升级与回滚
 
@@ -525,21 +550,35 @@ GitCode depeng1994 vLLM 个人仓作为首期 PR 入口，其 Repo ID/URL/目标
 
 ### VL-03｜受信 Case 与真实测试载荷
 
-| Case ID（拟） | 类型 | Worker/Pool | 验收 |
-|---|---|---|---|
-| vllm_worker_os_blue | worker_probe | Blue，无 Pool | 接单/身份/回报，不启动 Docker、不占 NPU |
-| dispatch_smoke_a3_8p | npu_smoke | Blue / a3_shared_blue | 1×8，WORLD_SIZE=8，all_reduce_sum=28 |
-| dispatch_smoke_a3_16p | npu_smoke | Blue / a3_shared_blue | 2×8，WORLD_SIZE=16，all_reduce_sum=120 |
+| Case ID（拟） | 类型 | Worker/Pool | Plan 的 docker | 验收 |
+|---|---|---|---|---|
+| vllm_worker_os_blue | worker_probe | Blue，无 Pool | None | 接单/身份/回报，不启动 Docker、不占 NPU |
+| dispatch_smoke_a3_8p | npu_smoke | Blue / a3_shared_blue | vllm_hccl_smoke | 1×8，WORLD_SIZE=8，all_reduce_sum=28 |
+| dispatch_smoke_a3_16p | npu_smoke | Blue / a3_shared_blue | vllm_hccl_smoke | 2×8，WORLD_SIZE=16，all_reduce_sum=120 |
 
 可信注册表限定拓扑、环境、入口、时限，默认 OS+8P，16P 显式选择。通用 HCCL 执行监督与证据校验来自 C，待测的已批准 Smoke 载荷来自 M/T；资源决策不依赖 PR Python。载荷缺失或适配版本不符在 Prepare 拒绝。
 
-优先复用已有 Blue 逻辑环境 cann_master_torchtitan_master_xyj；两节点实际容器/镜像 ID、torch_npu/CANN/HCCL、设备与网络仍须 preflight。8P/16P 的预期值来自受信规格，rank0 证据需和全部 rank/进程退出及清理一致。原 A5 8P/32P 可保留兼容包装，但本期不启动。
+**固定容器，必须落实到代码：** vLLM Blue 8P/16P 统一使用 Docker 容器 vllm_hccl_smoke。受信 vLLM Case 定义设置单一常量 VLLM_BLUE_SMOKE_DOCKER = "vllm_hccl_smoke"，两个 Case 的 docker 字段与最终 Plan 均使用此值；Worker 再独立校验，不允许 PR、Dispatch 选择器或临时环境变量覆盖该绑定。
+
+每个选中节点的 environments["vllm_hccl_smoke"] 必须绑定该节点真实同名容器的不可变 container_id、image_id、image_ref。预检核对 Docker Name（规范化前导斜杠）、ID、Running 与镜像身份，缺失、停机、旧容器误绑定或镜像不符均拒绝；不得回退到 TorchTitan 容器 cann_master_torchtitan_master_xyj。16P 两节点分别核验，容器名相同不意味着容器 ID 相同。
+
+stage、run、verify、cancel、cleanup 与恢复均使用启动前持久化的同一节点/容器 ID 绑定；容器被重建后，不重新按同名容器猜测清理目标。仍须检查 torch_npu/CANN/HCCL、设备与网络；8P/16P 预期值来自受信规格，rank0 证据与全部 rank/进程退出及清理一致。OS Probe 保持 docker=None；TorchTitan 及既有 A5 8P/32P 的容器定义不作全局替换，本期不启动 A5。
+
+| 代码/配置责任 | 必须实现的行为 |
+|---|---|
+| 可信 vLLM Case 定义 / ci_core/vllm_ascend.py | Blue 8P/16P 固定 docker="vllm_hccl_smoke"，保持既有 A5 定义 |
+| 模型 Prepare / ci_core/contract.py / plan.py / registry.py | Plan 写入固定值，禁止输入覆盖；Worker 独立验证模型、Case 与容器匹配 |
+| ci_core/config.py / config/pools.json | 受信节点 environments 绑定真实同名容器，预检 Name/ID/Running/镜像，错误绑定失败 |
+| ci_core/executor.py / ssh_runner.py / reconcile 与持久化状态 | 全阶段使用同一捕获绑定，恢复不误选重建容器 |
+| ci_core/resources.py | 继续按宿主机物理设备/端口共享锁，容器名不形成第二个资源锁域 |
+
+此处是本轮写入设计的强制代码要求；仅文档出现容器名不算实现完成，须由代码校验与 E2E 容器证据验收。
 
 **范围：** Check 名称标明 Bridge/HCCL Smoke。该用例证明合并测试载荷、调度与通信，不等于 vLLM 完整推理或所有业务代码功能通过。
 
 ### VL-04｜同一 Blue 的双仓执行
 
-继续一个 systemd 服务和 /var/lib/lite-actions/blue，受信配置启用两个模型仓，同一设备/端口锁和隔离记录。按每次任务的 Repo ID、Provider、Case、Pool 与硬件类型选择入口/证据，不依赖常驻模块级 VLLM 默认值。
+继续一个 systemd 服务和 /var/lib/lite-actions/blue，受信配置启用两个模型仓，同一设备/端口锁和隔离记录。vLLM 使用 vllm_hccl_smoke、TorchTitan 使用其既有环境，也必须争用同一宿主机物理设备锁，不能按容器名隔离锁。按每次任务的 Repo ID、Provider、Case、Pool 与硬件类型选择入口/证据，不依赖常驻模块级 VLLM 默认值。
 
 A3 不进入 A5 rootinfo 或回收逻辑；取消一个仓的旧任务不能误杀另一仓进程。除共享锁互斥，还必须通过“一仓 403/坏 Plan，另一仓继续完成和清理”的测试。
 
@@ -553,9 +592,9 @@ vLLM 使用同一 H/B→M/T、Manifest 2 和 schema 4；Control Repo ID 固定�
 |---|---|
 | GitCode vLLM 个人仓可信 Base | Bridge、Base 更新/周期补偿、版本状态发布与测试 |
 | 实际 GitCode vLLM 上游 | Workflow、Prepare、Waiter、合并源模块、可信 HCCL 控制器/目录、必要源码载荷接口 |
-| GitHub vLLM 默认 main | 自动同步后的只读核验和 Workflow 验证，不直接补丁 |
-| Lite Actions | vllm_ascend、contract、registry、github、router、executor、ssh_runner、结果/状态/SourceProvider 与测试 |
-| Blue 部署 | 双仓 Poller、单一代际账本和共享资源；Yellow 不变 |
+| GitHub vLLM 默认 main | 自动或本次手动同步后的核验和 Workflow 验证，不形成独有补丁 |
+| Lite Actions | vllm_ascend、contract、plan、registry、config、resources、github、router、executor、ssh_runner、结果/状态/SourceProvider 与测试；按 VL-03 固定容器 |
+| Blue 部署 | 双仓 Poller、单一代际账本、各节点 vllm_hccl_smoke 的真实容器绑定和共享物理资源锁；Yellow 不变 |
 
 先完成本地实现、协议/Mock 与权限预检，再按 §6.4 完成用户上游合入/镜像和兼容 Blue 就绪，随后验证 OS、8P、16P、取消/STALE/真失败、跨仓互斥和故障隔离。旧 vLLM PR #2 的 Yellow A5 证据不能计入 Blue 本期验收。
 
@@ -571,7 +610,7 @@ vLLM 使用同一 H/B→M/T、Manifest 2 和 schema 4；Control Repo ID 固定�
 - .gitcode/tests/：重复、乱序、过期、Base 推进、原子门禁和 API 故障。
 - .gitcode/README-ci-bridge.md：凭据、映射、整单重跑、门禁限制和恢复操作。
 
-### 6.2 GitCode 上游模型仓（用户合入，再自动同步）
+### 6.2 GitCode 上游模型仓（用户合入；自动或本次手动同步）
 
 | 文件/模块 | TorchTitan | vLLM |
 |---|---|---|
@@ -588,7 +627,7 @@ vLLM 使用同一 H/B→M/T、Manifest 2 和 schema 4；Control Repo ID 固定�
 
 ### 6.3 Lite Actions
 
-必改范围：ci_core/contract.py、registry.py、github.py、router.py、executor.py、ssh_runner.py、reporting.py、job_state.py、vllm_ascend.py、scripts/reconcile.py。新增 source_provider/merge-source 身份、PR 协调器、事务存储、ResultChannel 的具体模块名由实现确定，但接口和责任按本文件锁定。
+必改范围：ci_core/contract.py、plan.py、registry.py、config.py、resources.py、github.py、router.py、executor.py、ssh_runner.py、reporting.py、job_state.py、vllm_ascend.py、scripts/reconcile.py 及受信节点配置 config/pools.json。vllm_hccl_smoke 固定字段、真实容器身份核验和恢复绑定按 VL-03 落实；resources 的物理锁语义保持。新增 source_provider/merge-source 身份、PR 协调器、事务存储、ResultChannel 的具体模块名由实现确定，但接口和责任按本文件锁定。
 
 测试扩展到现有 tests/test_workflow.py、test_multi_repo_worker.py、test_process_lifecycle.py 及新的源码/协议/状态测试；README、docs/blue-worker.md 和验证记录同时更新。测试目标为行为不变量，不以配置快照代替跨阶段验证。
 
@@ -596,21 +635,21 @@ vLLM 使用同一 H/B→M/T、Manifest 2 和 schema 4；Control Repo ID 固定�
 
 | 阶段 | 交付 | 退出标准 |
 |---|---|---|
-| P0 事实与能力 | 两类 GitCode 源仓映射、权限/事件/网络、事件历史/账本、门禁能力、Checks App 能力、生产状态盘点 | 能力与缺口有实证；§4.6 原子边界记录清楚，额外治理方案未自动纳入 |
+| P0 事实与能力 | 两类 GitCode 源仓映射、权限/事件/网络、事件历史/账本、门禁能力、Checks App 能力、生产状态与 vLLM 容器盘点 | 能力与缺口有实证；按 §4.6 选 native/versioned_only，不因原子能力不足扩大范围或阻断调试 |
 | P1 本地协议与控制代码 | schema 4/Manifest 2、可信执行器、H/B→M/T、早期 intent/结果槽/完整产物、幂等 | 静态/CPU/Mock 通过；上游待审提交完整，不引用尚未存在的脚本 |
-| P2 本地 Blue 适配 | 单一代际账本、SourceHandle、ResultChannel、取消 fencing、迁移与双仓隔离 | 兼容 schema 3；源端与消费端合同一致，候选不绕过生产锁/隔离 |
-| P3 上游发布与受控联调就绪 | 用户在 GitCode 上游合入完整控制变更并镜像，兼容 Blue 按独占/迁移规程就绪 | 默认分支 C=U/注册核验；Provider 在兼容 Worker 就绪前关闭，其后仅开放受控验收范围 |
+| P2 本地 Blue 适配 | 单一代际账本、SourceHandle、ResultChannel、取消 fencing、迁移、双仓隔离与 vllm_hccl_smoke 代码绑定 | 兼容 schema 3；Plan/节点/真实容器核验一致，候选不绕过生产锁/隔离 |
+| P3 上游发布与受控联调就绪 | GitCode 完整控制提交自动或本次手动同步到 GitHub 默认分支，兼容 Blue 按独占/迁移规程就绪 | C=U/文件/注册核验，记录 sync_mode；Provider 在兼容 Worker 就绪前关闭，其后开放受控验收范围 |
 | P4 分层 E2E | OS → TorchTitan 8P/16P/Nightly → vLLM 8P/16P → 跨仓与版本取消 | E2E-01～18 及 INT 必验有证据；部分瞬间用注入测试 |
 | P5 正式发布 | drain、迁移、独占切换、正式 Run 和回滚演练 | 状态/隔离/outbox 保留，旧入口回归；Yellow 不变 |
-| P6 交付关闭 | 文档、权限与运维交接、完整证据链接 | DoD 全部满足；未满足不得宣称完成 |
+| P6 交付关闭 | 文档、权限、同步模式、门禁模式及运维交接、完整证据链接 | 调试 DoD 与常态自动同步恢复分别记录；未验证的能力不得宣称完成 |
 
-P1/P2 可在 P0 不涉及权限的部分并行开发；平台未知能力不得以 Mock 冒充实证。上游 Workflow 未合入/镜像未就绪前，可继续本地验证，但不能用 GitHub 独有分支绕过用户决定来宣称平台联调成功。不在新 Producer 已启用时等待 Consumer 适配，也不发布只含 Workflow 而缺少脚本的半成品。
+P1/P2 可在 P0 不涉及权限的部分并行开发；平台未知能力不得以 Mock 冒充实证。可信 GitCode 控制提交就绪后，手动同步通过 §0.4 核验即可进行本次平台联调，不等待定时镜像。没有可信控制代码或同步核验未过时继续本地验证，不使用专用 CI 分支。不在新 Producer 已启用时等待 Consumer 适配，也不发布只含 Workflow 而缺少脚本的半成品。
 
 ## 7. 端到端验收与故障验证
 
 ### 7.1 原 12 项主链路（全部升级为合并结果）
 
-每项从对应 GitCode 个人 PR/Action 出发，关联同一模型 GitHub Repo/Run，经可信 Prepare 和 Blue 执行或拒绝，再回到正确 GitCode 版本的状态。证据包含 H/B/M/T/C，不能仅记录 Head。成功项还受 §4.6 门禁要求约束。
+每项从对应 GitCode 个人 PR/Action 出发，关联同一模型 GitHub Repo/Run，经可信 Prepare 和 Blue 执行或拒绝，再回到正确 GitCode 版本的状态。证据包含 H/B/M/T/C，不能仅记录 Head；分别记录 test_result、merge_gate 与 mode。受限模式可出现 TEST_PASS + GATE_NOT_PROVIDED/BLOCKED，这表示合并测试闭环通过、未提供原子合入保证，不能把两者合并成“全部门禁通过”或误报训练失败。
 
 | E2E | 场景 | 必需证明 |
 |---|---|---|
@@ -620,12 +659,12 @@ P1/P2 可在 P0 不涉及权限的部分并行开发；平台未知能力不得�
 | E2E-04 | TorchTitan 安全拒绝 | 错 Head/Base repo/SHA、伪造合并来源或 Yellow 请求零任务 |
 | E2E-05 | TorchTitan Nightly Muon/AdamW | 两 Case 使用同一 M/T，rank0 五步 LOSS、清理、实际模型模块路径 |
 | E2E-06 | TorchTitan 双节点 16P | 两节点真实通信、租约/端口、逐节点释放、正确 M/T |
-| E2E-07 | vLLM PR → OS+A3 8P → PASS | 独立 vLLM Repo ID/Run、WORLD_SIZE=8、sum=28、M/T 与清理 |
-| E2E-08 | vLLM 双节点 A3 16P | WORLD_SIZE=16、sum=120、两节点绑定/端口/清理 |
+| E2E-07 | vLLM PR → OS+A3 8P → PASS | 独立 Repo ID/Run、M/T；8P 实际在 vllm_hccl_smoke 执行，Name/ID/镜像证据，WORLD_SIZE=8、sum=28 与清理；OS 不进容器 |
+| E2E-08 | vLLM 双节点 A3 16P | 两节点各自 vllm_hccl_smoke 的 Name/不可变 ID/镜像与真实进程，WORLD_SIZE=16、sum=120、物理锁/端口/清理 |
 | E2E-09 | vLLM Head A→B | 主动撤销/取消 A，B 新合并树；旧 STALE/FAIL 不覆盖新 PASS |
 | E2E-10 | vLLM 越权/错仓拒绝 | 错控制仓、Head/Base/合并身份、A5 Case 拒绝；Yellow 无访问变更 |
 | E2E-11 | 两仓重叠执行 | 唯一 Blue，共享物理锁；无串结果/重复占卡/跨仓误清理 |
-| E2E-12 | vLLM 真实执行失败 | 载荷正常通过 Prepare 后在 A3 8P 失败，清理及红色版本状态闭环 |
+| E2E-12 | vLLM 真实执行失败 | 载荷通过 Prepare 后在 vllm_hccl_smoke 内 A3 8P 真失败；按原容器 ID 清理，红色版本测试状态闭环 |
 
 E2E-03/12 不能用错误 SHA 的 Prepare 拒绝代替实机失败。E2E-05 只沿用既有五步/LOSS 口径，不宣称新的数值精度认证。vLLM HCCL 也不宣称完整推理验证。
 
@@ -633,14 +672,14 @@ E2E-03/12 不能用错误 SHA 的 Prepare 拒绝代替实机失败。E2E-05 只�
 
 | E2E | 场景 | 必需证明 |
 |---|---|---|
-| E2E-13 | 上游控制发布与镜像 | 用户 GitCode 上游合入 U，同步后默认分支 C/文件/注册正确；同步未就绪明确等待/拒绝，不使用专用 CI 分支 |
+| E2E-13 | 上游控制发布与同步 | GitCode 可信 U 自动或本次手动同步后，默认分支 C=U/文件/注册正确；记录 sync_mode、操作者、时间、前后 SHA，可直接支撑调试。自动同步恢复单列收尾证据，不使用专用 CI 分支 |
 | E2E-14 | 合并结果内容正确 | 测试同时依赖 Head 与 Base 的改动；另构造 Head 单独通过、合并后失败；至少一次实机源码差异证明执行 T |
 | E2E-15 | 合并冲突 | 真实 PR H/B 冲突，明确 MERGE_CONFLICT，无可执行请求/租约，当前状态非成功 |
 | E2E-16 | Base-only 前进 | Head 不变，Base X→Y；旧运行取消/旧绿灯失效，用新 T 重测；丢事件时补偿可恢复 |
-| E2E-17 | 平台门禁与竞争窗口 | 最后 GET 后或测试通过后、合入前 Base 推进，实证平台是否阻止旧 H/B 合入；未证明则不能标“当前可合并”，按 §4.6 记录边界及待决策 |
+| E2E-17 | 所选门禁模式与竞争窗口 | 最后 GET 后或测试通过后、合入前 Base 推进：native 证明旧 H/B 不放行；versioned_only 证明结果绑定版本、失效/重测时延可观测且不声称原子可合并，混合状态按 §4.6 阻断 |
 | E2E-18 | 取消、乱序与旧回调 | 排队/运行取消至少各一次真实验证；租约/launch/清理/回报瞬间注入，已登记/已观测 A→B→A 的旧 intent 永不复活；旧回调只清理自己的租约 |
 
-E2E-17 不授权自动合并用户业务 PR 或修改门禁。后续验证在明确的测试范围内执行；能力不满足则保留事实、窗口和待决策，暂停“当前可合并”保证的上线，不能用只测 Head 或轮询结果冒充原子能力。
+E2E-17 在明确的测试范围内验证既有平台能力，不自动合并用户业务 PR 或修改分支保护。原生能力不足即采用已选受限模式，保留事实、窗口和模式证据，继续测试/调试；不把轮询冒充原子能力，也不为此新增合入服务。
 
 ### 7.3 必验集成测试（主要 CPU/Mock）
 
@@ -654,6 +693,7 @@ E2E-17 不授权自动合并用户业务 PR 或修改门禁。后续验证在明
 | INT-06 | 一仓 403/坏 Plan/查询故障 | 另一仓仍能执行、取消、清理、回报 |
 | INT-07 | 同一控制提交大量结果、创建丢响应/slot 删除/App 权限 | Plan 固定 ID 正常直读；创建不明零调度，已固定 ID 不偷换；receipt 一致，无全历史扫描 |
 | INT-08 | 旧 Attempt、GitHub 全部/部分重跑、控制分支推进、漏/skip Case | schema 4 的原生 rerun 拒绝并指向 Bridge；旧发布权失效、C 固定、漏测不绿 |
+| INT-09 | vLLM 容器固定值、错绑定、重建与跨容器物理锁 | Plan/Case 只能用 vllm_hccl_smoke；误指旧容器/Name或ID不符拒绝，无回退；OS 不进 Docker；恢复不清理重建容器，双仓仍共享物理锁 |
 
 ### 7.4 本期明确排除与证据模板
 
@@ -662,11 +702,11 @@ E2E-17 不授权自动合并用户业务 PR 或修改门禁。后续验证在明
 - 不允许未经合入的 PR Workflow 自动成为控制面。
 - 不用 GitHub Fork PR、单独手工 GitHub 成功或历史 Yellow 证据替代 GitCode 闭环。
 
-| 用例 | GitCode PR/事件/Action | H / B / M / T | 上游 U / GitHub C | Run / Attempt / 代际 | Case/实际加载路径/日志 | 租约/取消/清理 | GitCode 当前门禁 |
+| 用例 | GitCode PR/事件/Action | H / B / M / T | 上游 U / GitHub C / sync_mode | Run / Attempt / 代际 | Case/容器 Name-ID-镜像/加载路径 | 租约/取消/清理 | test_result / merge_gate / mode |
 |---|---|---|---|---|---|---|---|
 | E2E-01～12（每项独立一行） | 待运行 | 待核验 | 待核验 | 待运行 | 待运行或零执行证明 | 待验证 | 待验证 |
 | E2E-13～18（每项独立一行） | 待运行 | 按场景 | 待核验 | 按场景 | 平台/源码/实机证据 | 按场景 | 待验证 |
-| INT-01～08（每项独立一行） | 测试记录 | 输入/预期/结果 | 固定版本 | 故障注入记录 | 断言与关键输出 | 状态快照 | 不误成功 |
+| INT-01～09（每项独立一行） | 测试记录 | 输入/预期/结果 | 固定版本 | 故障注入记录 | 断言与关键输出 | 状态快照 | 不误成功 |
 
 模板行只是占位，正式交付必须展开每一个用例，保留非成功场景的预期与实际结果，不能把整个范围写一行 PASS。
 
@@ -675,20 +715,22 @@ E2E-17 不授权自动合并用户业务 PR 或修改门禁。后续验证在明
 ### 8.1 硬前置
 
 1. 两个个人 PR 仓、两个实际控制上游仓、GitHub 镜像的 ID/ref/权限/同步路径分别核验。
-2. 用户在 GitCode 上游合入控制变更，GitHub 默认分支同步并注册；只有此后开展对应 Workflow 联调。
-3. GitCode 事件/历史、Check 版本绑定及 Base-only 失效有实证；原子合入能力/局限按 §4.6 明确，未经证明不启用“当前可合并”保证。
+2. 可信 GitCode 控制提交自动或本次手动同步到 GitHub 默认分支，C=U/文件/注册核验通过即可联调；本次不要求等待自动同步任务。
+3. GitCode 事件/历史、Check 版本绑定及 Base-only 失效有实证；按 §4.6 选择 native/versioned_only 并分开测试结果与合入保证，原子能力不足不阻断调试。
 4. 同一 GitHub App 的 Prepare 创建/Blue 更新权限、Plan 固定 ID/receipt/恢复、GitCode 状态发布能力验证通过。
 5. 控制域可查询 GitCode、Hosted 可取得 H/B、Blue 可获取 Artifact；凭据和源码可读范围已核实。
-6. Blue 唯一实例、状态/隔离、节点容器/镜像/网络、两仓资源策略及恢复基线均已盘点。
+6. Blue 唯一实例、状态/隔离、节点容器/镜像/网络、两仓资源策略及恢复基线均已盘点；vLLM 选中节点实际使用 vllm_hccl_smoke，按 VL-03 校验代码与绑定。
 7. schema 3/4、旧仓名和 state_version 迁移有测试，关闭任何依赖空白状态绕开隔离的路径。
 
 ### 8.2 风险处理
 
 | 风险 | 处理 |
 |---|---|
-| 用户上游变更尚未合入或镜像延迟 | 标记控制发布未就绪；继续本地可做部分，不用 GitHub CI 分支替代 |
+| GitCode 控制提交未就绪或自动同步延迟 | 控制提交未就绪则继续本地开发；已就绪则按 §0.4 手动同步核验后调试，不等待定时任务 |
+| 手动同步与自动同步并发/版本漂移 | 记录前后 SHA 与 sync_mode，协调同一 ref 单写者；每 Run 固定 C，调试后恢复常态自动同步 |
+| vLLM 容器名正确但实际指向旧环境 | 代码固定 docker 值，并核验真实 Docker Name/ID/镜像；不回退 TT 容器，物理锁仍共享 |
 | 个人 Base 与控制上游混淆 | 分别存储 pr.base_repo/ref/B 与 control.upstream/U/C，错误映射拒绝 |
-| GitCode 没有已证明的原子门禁 | G12 平台边界未关闭；提供能力实证再决策，合入服务/写入治理不自动扩入；不能假装再次 GET 已解决 |
+| GitCode 没有已证明的原子门禁 | 采用 versioned_only 继续测试/调试；记录 test_result 与 NOT_PROVIDED/BLOCKED，不新增合入系统、不冒充原子可合并 |
 | 事件缺 revision 或可恢复历史 | 已观察撤销永久有效；无法证明归属的迟到 intent 拒绝，未观察 ABA 不作绝对承诺 |
 | Head/Base 频繁变化 | 当前门禁先失效，取消旧代际，短窗口合并重复触发并限制队列 |
 | 控制端执行 PR Python | 可信目录/Runner 与 Source 分离；全调用链安全测试 |
@@ -702,12 +744,15 @@ E2E-17 不授权自动合并用户业务 PR 或修改门禁。后续验证在明
 
 ### 8.3 回滚与人工交接
 
-可先关闭新增 Bridge 准入，保留已有任务取消、清理和 outbox。Blue 回退遵循 §4.8，保留未知占用隔离；不删除隔离记录、不复位外部训练。模型控制代码由用户在 GitCode 上游回退并同步，不能在 GitHub 形成独有补丁。已有 GitHub 原生触发入口保留至新路径验收与调用者迁移完成。
+可先关闭新增 Bridge 准入，保留已有任务取消、清理和 outbox。Blue 回退遵循 §4.8，保留未知占用隔离；不删除隔离记录、不复位外部训练。模型控制代码回退到明确的可信 GitCode 提交，常态自动同步，本次调试允许按 §0.4 手动同步核验；不能在 GitHub 形成独有补丁。已有 GitHub 原生触发入口保留至新路径验收与调用者迁移完成。
 
 | 事项 | 责任/状态 |
 |---|---|
 | GitCode 上游控制变更审查合入 | 用户完成；本轮仅形成设计，不代为合入 |
+| 本次调试手动同步 | 用户已允许；按 §0.4 核验、记录并避免并发写入，调试后交接恢复自动同步 |
 | 上游/个人仓/镜像映射与能力验证 | 后续 P0 实证；不能凭同名仓或文档推定 |
+| 合入保证模式 | D05 已确定策略；P0 依实证选择 native/versioned_only，不再等待用户范围决策 |
+| vLLM 容器代码绑定 | 实现 VL-03 的固定字段/真实容器身份校验，并提供 8P/16P 实机证据；本次文档更新不代表代码已生效 |
 | Secrets/App/门禁后台变更 | 先完成具体方案与权限核验，按实际能力说明必要操作 |
 | Blue 实现与正式发布 | 按既有授权范围和生产 Gate 执行；本轮没有切换 |
 | Yellow | 用户后续独立操作，本期保持当前状态 |
@@ -719,25 +764,25 @@ E2E-17 不授权自动合并用户业务 PR 或修改门禁。后续验证在明
 
 必须同时满足：
 
-1. 控制代码由用户在 GitCode 实际上游合入并同步，两个 GitHub 默认分支可运行；没有依赖 GitHub 独有 CI 补丁或专用 CI 分支。
+1. 可信 GitCode 控制提交已自动或按本次例外手动同步，两个 GitHub 默认分支 C=U、文件与 Workflow 注册可验证，sync_mode 和来源记录完整；没有 GitHub 独有 CI 补丁或专用 CI 分支。本次调试可凭手动同步证据完成，常态自动同步恢复另列交接项。
 2. 两个个人仓真实 PR 的 H/B 被准确获取，实际执行 M/T，C 与上游控制发布可追溯；两个模型身份不串用。
-3. 一个 Blue 完成 TorchTitan OS/8P/16P/Nightly Muon/AdamW，以及 vLLM Blue OS/A3 8P/16P，全部有必要证据。
+3. 一个 Blue 完成 TorchTitan OS/8P/16P/Nightly Muon/AdamW，以及 vLLM Blue OS/A3 8P/16P；vLLM 8P/16P 的代码/Plan 固定 vllm_hccl_smoke，真实容器 Name/ID/镜像与执行、清理证据一致，双仓仍共享物理锁。
 4. Head/Base 更新主动取消旧版本并失效旧结果；重启、乱序和迟到回调不复活旧任务或破坏新租约。
-5. GitCode 状态准确表达当前已测 H/B 的合并结果；§4.6 平台版本绑定、失效与原子边界有实证和明确上线决策。未证明的“当前可合并”保证不启用；不以 Head-only 或普通绿图标替代，也不擅自扩大为合入服务改造。
-6. E2E-01～18 和 INT-01～08 均有独立记录，原 GitHub 原生事件的 schema 3 路径回归正常。
+5. GitCode 状态准确表达当前已测 H/B 的合并结果，按 §4.6 已选策略记录 native/versioned_only 模式及平台证据，分别验收 test_result 与 merge_gate。原子能力不足不阻断本期合并测试闭环；明确未提供的保证，不扩建合入服务。
+6. E2E-01～18 和 INT-01～09 均有独立记录，原 GitHub 原生事件的 schema 3 路径回归正常。
 7. 安全准入、完整产物、结果按 ID 关联、状态迁移/回滚、跨仓故障隔离和清理恢复完成。
-8. Yellow 状态维持不变，Native 仅预留，旧入口删除另按迁移计划处理。
+8. Yellow 状态维持不变，Native Self-hosted Adapter 仅预留，旧入口删除另按迁移计划处理。
 
-文档提交、单测通过、只有 GitHub 手动成功或只有 GitCode 绿色，均不能单独宣称完成。使用旧源码/仅 Head 不能通过本期验收；原子门禁与事件观察边界尚无证据/决策时，必须明确保留未关闭项。
+文档提交、单测通过、只有 GitHub 手动成功或只有 GitCode 绿色，均不能单独宣称完成。使用旧源码/仅 Head、vLLM Smoke 跑入错误容器不能通过本期验收。未验证的平台能力或自动同步恢复明确留作证据缺口；已验证不具备原子门禁时按受限模式如实交付，不再将其视为未拍板问题。
 
-### 9.2 V3.0 文档提交范围
+### 9.2 V3.1 文档提交范围
 
 本次只更新 depeng1994/lite-actions 既有 gitcode-forward 分支的本文件：
 
-- 落实 D01/D02/D03，删除旧的 GitHub CI 分支退路和 Head-only 源码等式。
-- 新增 H/B/M/T/C、可信 Runner、合并源/产物 Gate、语义幂等、代际取消、Base 更新与门禁合同。
-- 明确 schema/状态兼容、结果通道权限 Gate、双仓故障隔离与用户上游发布交接。
-- 将正式验收扩展为 18 项 E2E 与 8 项集成验证，所有执行证据仍待后续实施。
+- 扩充 D01：本次调试允许手动同步可信 GitCode 控制提交到模型 GitHub 默认分支，补齐流程、验收、回滚和自动同步恢复交接。
+- 新增 D04：vLLM Blue 8P/16P 的代码/Plan/节点绑定固定 vllm_hccl_smoke，并核验实际容器身份与共享物理锁；OS、TorchTitan、既有 A5 边界明确。
+- 落实用户授权的 D05：固定 H/B 合并测试与合入保证分开，原生能力不足采用受限模式继续调试，不新增合入服务，不再待用户拍板。
+- 保留 V3.0 的 H/B/M/T/C、可信执行器、幂等、代际取消与兼容方案；更新 E2E-07/08/12/13/17，增加容器 INT-09，现为 18 项 E2E 与 9 项集成验证。
 
 本轮没有修改两个 GitHub 模型仓、GitCode 上游/个人仓、生产 Worker、Required Checks 或任何硬件配置。
 
@@ -746,8 +791,11 @@ E2E-17 不授权自动合并用户业务 PR 或修改门禁。后续验证在明
 ### 10.1 仓库基线
 
 - [V2.2 设计基线](https://github.com/depeng1994/lite-actions/blob/5d01fe9b8a0a7fddfe7cf3bd2d65a41b66ad456a/docs/gitcode-forward-design.md)
+- [V3.0 设计基线](https://github.com/depeng1994/lite-actions/blob/a10da23cb11388bb1dc30b13bb95d8bd61237622/docs/gitcode-forward-design.md)
 - [Lite Actions main 基线](https://github.com/depeng1994/lite-actions/tree/9b881db9c541d589dd57564eef2b41b3ee78d4d6)
 - [registry：控制机目录发现](https://github.com/depeng1994/lite-actions/blob/9b881db9c541d589dd57564eef2b41b3ee78d4d6/ci_core/registry.py)
+- [config：逻辑环境与真实容器解析](https://github.com/depeng1994/lite-actions/blob/9b881db9c541d589dd57564eef2b41b3ee78d4d6/ci_core/config.py)
+- [resources：共享物理设备租约](https://github.com/depeng1994/lite-actions/blob/9b881db9c541d589dd57564eef2b41b3ee78d4d6/ci_core/resources.py)
 - [github：Artifact、SHA 归一化与多仓查询](https://github.com/depeng1994/lite-actions/blob/9b881db9c541d589dd57564eef2b41b3ee78d4d6/ci_core/github.py)
 - [router：任务键、状态与取消](https://github.com/depeng1994/lite-actions/blob/9b881db9c541d589dd57564eef2b41b3ee78d4d6/ci_core/router.py)
 - [reporting：现有评论回传](https://github.com/depeng1994/lite-actions/blob/9b881db9c541d589dd57564eef2b41b3ee78d4d6/ci_core/reporting.py)
