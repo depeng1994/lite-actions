@@ -1,15 +1,17 @@
-# GitCode → GitHub Actions 训练 CI 转发与统一源码准备：详细设计
+# GitCode → GitHub Actions 双仓训练 CI 转发与统一源码准备：详细设计
 
-> **版本**：V2.0 · 开发基线 / 待端到端验收  
+> **版本**：V2.2 · 双仓 + vLLM Blue A3 Smoke / 待端到端验收  
 > **更新**：2026-11-01  
 > **设计分支**：`depeng1994/lite-actions:gitcode-forward`  
 > **GitHub 组织**：`cann-framework`（已完成重命名）  
 > **源仓**：GitCode `cann/torchtitan-npu`（上游只读）与 `depeng1994` 个人仓（首期开发、合并及验收范围）  
-> **目标 CI 仓**：GitHub `cann-framework/torchtitan-npu`  
+> **目标 CI 仓**：GitHub `cann-framework/torchtitan-npu`（master）及 `cann-framework/vllm-ascend`（main）  
 > **执行与调度仓**：GitHub `depeng1994/lite-actions`  
-> **生效边界**：Blue Worker 首期生产；Yellow Worker **不部署、不启用、不验收硬件**；GitHub 原生 Self-hosted Runner **仅接口预留**。
+> **生效边界**：同一个 Blue Worker 首期接入 TorchTitan 与 vLLM 两个 GitHub 仓；vLLM 新增 Blue A3 OS/8P/16P Smoke。Yellow Worker **不部署、不启用、不验收硬件**；原生 Self-hosted Runner 仅接口预留。
 
 ## 0. 决策摘要与现状核对
+
+**V2.2 增补的重要范围：** V2.0 仅覆盖 TorchTitan-NPU，遗漏了 vLLM-Ascend。现在明确将 GitCode `depeng1994` **vLLM 个人仓 PR → GitHub `cann-framework/vllm-ascend` → 可信 Prepare → 同一个 Blue A3 Worker → GitCode Check** 纳入本期核心需求；vLLM 本期必须包含 Blue Worker OS Probe、A3 8P 和 A3 16P 真实 HCCL Smoke。既有 Yellow A5 8P/32P 不算 Blue 的验收，也不要求用户现在动 Yellow。GitCode vLLM 个人仓实际项目 ID/地址需授权环境验证，不能把 GitHub 同名 Fork 当作 GitCode 可用性的证明。
 
 **本轮确认的架构决策：** 首期只处理 **GitCode PR 的训练代码、已有测试用例和经批准的 Case 选择器变更**。GitCode 个人仓的可信 Bridge 通过 GitHub `workflow_dispatch` 启动 **已有的** Nightly All Test / Dispatcher Smoke Test；GitHub Hosted `prepare` Job 从 GitCode 固定 PR Commit、核验并封装源码；现有 Lite Actions **Blue Worker** 拉取与校验该产物、执行既有任务；GitCode Bridge 根据同一个 GitHub Run 的终态和最新 PR Head 判定 PASS/FAIL/STALE。保留原生 Self-hosted Adapter 协议设计，但本期不实现、不注册 Runner、不列硬件验收门槛。
 
@@ -29,17 +31,19 @@
 4. Lite Actions `config/pools.json` 中 Blue A3 池为 `enabled=true`，Yellow 的 A3/A5 池均为 `enabled=false`。`docs/blue-worker.md` 记载 Blue 已使用 systemd 正式服务，当前模型工作流仍从 PR 分支调用；`docs/validation.md` 提供已有 Blue Smoke/Nightly 实机证据。**历史成功不能代替本次跨平台桥接成功**。
 5. 远端可访问设备中，按用户指定应使用**非 depeng 的第二台 Remote Desktop Commander 环境**查询 GitCode 登录/凭据；只允许向 GitCode `depeng1994` 个人仓写入/合并，`cann/torchtitan-npu` 上游仓不得写入。个人仓的实际项目地址、目标分支、权限及 GitCode Actions 状态须在 P0 Spike 中确认，不应将猜测的网址视为已授权。
 6. 现有 `sync-upstream.yml` 会从 `gitcode.com/cann/torchtitan-npu` 拉取并同步 GitHub 分支；该同步可能覆盖/清理 GitHub 侧分支。新方案不能依赖 GitHub 上存在一个永久可写的个人 PR 镜像分支。
+7. `cann-framework/vllm-ascend` Repository ID 为 `1438625957`、默认 `main`，已存在 `lite_actions_dispatcher_smoke.yml`，但当前只支持 Yellow A5 8P/32P。其 `prepare_request.py`、`wait_result.py` 与 Workflow 的 checkout 仍有旧组织名硬编码，必须适配。
+8. Lite Actions 的 `ci_core/vllm_ascend.py` 目前只有固定 A5 Case；`ci_core/ssh_runner.py` 使用模块级 VLLM 判定并硬编码 `a5_smoke.py` 和证据文件。vLLM Blue A3 不属于简单把 A5 Case 改名，必须在可信注册表、执行脚本、repo 身份和产物校验处扩展。
 
 ### 0.1 实施范围
 
 | 项目 | 本期策略 | 说明 |
 |---|---|---|
 | GitCode 入口 | `depeng1994` 个人仓中可信 `.gitcode/workflows` | 本期开发和真实 PR 触发均在个人仓闭环；上游只读 |
-| GitHub 入口 | 现有 Nightly、Dispatcher Smoke 两个 Workflow | 默认以可信 `master` 触发；合入前允许限定 CI 特性分支试运行 |
+| GitHub 入口 | TorchTitan Nightly/Smoke + vLLM Dispatcher-Smoke | 分别在可信 master / main 触发；禁止执行 PR 新增 Workflow |
 | 源码 | GitCode PR Head SHA（严格比对） | GitHub `control_sha` 与 GitCode `source_sha` 分离 |
 | 准备 | GitHub Hosted `prepare` Job | 所有 NPU 调度前先固化 Source Bundle、Manifest、Plan |
-| 执行 | 仅 Lite Actions Blue Worker | 维持现有资源池、并发锁、容器和释放逻辑 |
-| Yellow | 用户后续手动操作 | 本期拒绝派发；保留配置，不解禁、不尝试 A5 |
+| 执行 | 一个 Lite Actions Blue Worker，双仓共用 | TorchTitan 与 vLLM 使用同一 `a3_shared_blue`、同一设备/端口锁、同一 Blue systemd 和持久化状态 |
+| Yellow | 用户后续手动操作 | vLLM 原有 A5 8P/32P 定义保留；本期 GitCode Bridge 严禁任何 Yellow/A5 调度 |
 | 原生 Self-hosted | 协议/文件接口预留 | 不实现 adapter，不部署 runner、不列为本期验收 |
 | 新增 GitHub Actions YAML | 明确不支持自动运行 | PR 修改 Workflow 走独立基础设施评审 |
 | 独立 A3/A5 Workflow | 从新设计、验收和调用入口中移除 | 物理删除待统一入口正式上线后清理 |
@@ -58,6 +62,9 @@
 | G06 | 失败与过期不能误报 PASS | SHA 错误、运行失败、超时、PR 更新、资源未释放均 FAIL/STALE |
 | G07 | 改名后稳定运行，存量能力不回归 | `cann-framework` 身份校验、Blue systemd、原 GitHub CI 可回归 |
 | G08 | Yellow 完全隔离、本期不碰 Self-hosted | 生产 Yellow 状态和设备不改变；原生 Runner 只保留扩展口 |
+| G09 | vLLM GitCode PR 跨平台闭环 | vLLM 个人仓 PR → vLLM GitHub Smoke → Blue → GitCode Check，代码 SHA 精确一致 |
+| G10 | vLLM Blue OS/8P/16P HCCL Smoke | OS 不占卡，8P `all_reduce_sum=28`、16P `all_reduce_sum=120`；蓝区清理有证据 |
+| G11 | 双仓互斥及隔离 | TorchTitan/vLLM 在同一 Blue Worker 不重复占卡、不串仓、不串结果，Yellow 无任何更改 |
 
 ### 1.2 必须解决的工程问题
 
@@ -75,6 +82,10 @@
 | Q10 真正端到端验收 | CPU 模拟不能证明跨平台能运行 | E2E-01～E2E-06 均需真实 GitCode PR 页面、GitHub Run、Blue 证据、回写状态 |
 | Q11 GitHub 组织更名 | 多个代码常量仍为 `torchtitan-npu/` | 统一目标 `cann-framework`、稳定 repo ID 校验、全链路 CI 回归 |
 | Q12 镜像双写与状态恢复 | Github 同步会删分支、Blue 有运行中状态 | 不依赖 PR 镜像分支；Blue drain、同一状态目录、升级回滚与 pending report 恢复 |
+| Q13 vLLM 现有入口只支持 A5 | Blue 选择器无法准入或错误派发 Yellow | vLLM 受信 Smoke Workflow/测试注册表增加 Blue OS/A3 8P/16P；新 Provider 默认 Blue |
+| Q14 执行端 A5 硬编码 | A3 16P 误用 A5 脚本/验证文件 | 按每任务仓库+Case+池类型分发通用 HCCL Smoke；A5 旧用例兼容 |
+| Q15 Blue 跨仓并发和状态隔离 | 同一台 NPU 可能双重租赁或结果串仓 | 唯一 Blue Router、共享租约，任务键含控制仓 ID + Run/Attempt/Case |
+| Q16 vLLM GitCode 项目身份尚未核实 | 错把 GitHub Fork 当作 GitCode PR 来源 | 对 vLLM GitCode 个人仓单独 P0 授权/Repo ID/PR 事件 Spike |
 
 ## 2. 系统架构与部署边界
 
@@ -133,6 +144,61 @@ flowchart LR
 ```
 
 **注意：** SHA/摘要只能证明版本一致，不能证明代码不存在恶意行为。首期 Blue 实机测试只对授权的个人仓、授权提交人及批准的测试选择器开放；外部 Fork 默认为拒绝。可信 `prepare` 必须读取来自可信 GitHub 分支的验证器，不可从 PR 上传源码中导入具有执行副作用的任意 Python 来决定资源权限。
+
+
+### 2.4 vLLM 加入后的双仓共享 Blue 架构（V2.2）
+
+```mermaid
+flowchart TB
+  T["GitCode depeng1994 / TorchTitan 个人仓 PR"] --> B["GitCode Trusted Bridge / Repo ID 路由"]
+  V["GitCode depeng1994 / vLLM 个人仓 PR"] --> B
+  B --> G1["GitHub cann-framework/torchtitan-npu / Nightly + Smoke"]
+  B --> G2["GitHub cann-framework/vllm-ascend / Dispatcher-Smoke"]
+  G1 --> P1["Hosted Prepare / TorchTitan Source SHA 校验"]
+  G2 --> P2["Hosted Prepare / vLLM Source SHA 校验"]
+  P1 --> A[("按 GitHub Repo ID + Run + Attempt 区分 / Source Artifact + Manifest + Plan")]
+  P2 --> A
+  A --> W["唯一 Blue Worker / 双仓 Poller + 公共资源锁和状态目录"]
+  W --> N["Blue A3 共享节点 / TorchTitan OS+8P+16P+Nightly / vLLM OS+8P+16P"]
+  N --> W
+  W --> R["各自 GitHub Run/Case Result"]
+  R --> B
+  B --> T
+  B --> V
+  A -.-> Y["Yellow A5 未授权，本期拒绝"]
+  A -.-> H["Native Self-hosted 仅预留"]
+```
+
+两个 GitHub 仓分别生成自己的 Run、Artifact、Source SHA 与 Plan。**物理资源仍只有一套 Blue A3**，不得为 vLLM 再部署第二个 Blue 调度进程或建立另一套不互通的锁。
+
+### 2.5 vLLM Blue 端到端数据流（V2.2）
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant GC as GitCode vLLM 个人仓 PR
+  participant BR as GitCode Trusted Bridge
+  participant GH as GitHub cann-framework/vllm-ascend
+  participant P as Hosted Prepare
+  participant BW as 统一 Blue Worker
+  participant A3 as Blue A3 NPU
+  BR->>GC: 读取并验证 repo_id/PR/head_sha/base_sha
+  GC-->>BR: 当前真实 GitCode SHA
+  BR->>GH: workflow_dispatch(可信 main, Blue Case)
+  GH-->>BR: github_run_id/URL
+  GH->>P: Prepare Job
+  P->>GC: 复核 GitCode PR + Fetch Head Commit
+  GC-->>P: Commit 与匹配 SHA 的源码
+  P->>P: Manifest / SHA256 / 受信 Plan
+  P-->>BW: GitHub Artifact + Case 受控接单
+  BW->>BW: 校验 repo/run/attempt/source_sha + 共享租约
+  BW->>A3: OS Probe / A3 8P / A3 16P
+  A3-->>BW: world_size + all_reduce + cleanup_verified
+  BW-->>GH: 独立 vLLM Run 结果
+  BR->>GH: 按 Run ID 轮询最终状态
+  GH-->>BR: 终态
+  BR->>GC: 复核最新 SHA 后写 GitCode Check
+```
 
 ## 3. 端到端数据流、状态和身份
 
@@ -359,7 +425,62 @@ Blue 当前生产 schema 3 使用 `lite-ci-request-<attempt>`；新字段须显�
 
 沿用 20 行诊断、180 字符/行、Comment 请求预算与 LOSS/清理判定；Bridge Summary 不泄露训练完整日志、Token 和私有机器地址。设置最大等待、GitHub API 退避及 403/429 重试边界。监控同一个 `bridge_key` 的触发、Prepare、Blue 接单、回报、最终 Check；按唯一身份防止重复训练。状态异常 Fail Closed。
 
-## 6. 三仓实施文件清单与开发顺序
+
+## 5A. vLLM-Ascend Blue A3 Smoke 专项详细设计（V2.2，本期必做）
+
+### VL-01｜vLLM 双平台路由与源仓权限
+
+GitCode 入口是 `depeng1994` 的 vLLM 个人仓 PR；P0 必须确认 GitCode 项目的 URL、Repo ID、受保护目标分支、Actions 权限及 GitHub Dispatch Token。GitHub 目的地固定为 `cann-framework/vllm-ascend`（Repo ID `1438625957`，可信 `main`），Workflow 仅使用已注册的 `lite_actions_dispatcher_smoke.yml`。不得用同名 GitHub `depeng1994/vllm-ascend` Fork 的存在来推断 GitCode 个人仓可用。
+
+通用 Bridge 应映射 `(gitcode_repo_id, gitcode_pr, source_sha) → (control_repo_id, github_run_id, run_attempt)`。两仓即使 PR 号码、分支名或 Case ID 相同也不能复用 Run、结果和 Artifact。所有源代码由 vLLM 对应 GitCode PR 的 Commit 固定，`github.sha` 始终表示 GitHub 可信控制面版本，不能代替实际执行的 `source_sha`。
+
+### VL-02｜vLLM GitHub Smoke 入口支持 Blue、保留原 A5
+
+当前 `.github/workflows/lite_actions_dispatcher_smoke.yml` 的 `prepare`、`smoke`、`result` 都围绕 Yellow A5 设计；`prepare_request.py` 默认 `worker=yellow`、`target_pool=a5_shared_yellow`、`docker=vllm-kimi-wangjinyin`，选择器仅 `dispatch_smoke_a5_8p`/`dispatch_smoke_a5_32p`。需要为 GitCode Provider 增加**受信 Blue 固定 Case 选择器**；不要让 GitCode 任意传入 worker、pool、docker、shell 命令。默认仅 vLLM Blue OS + A3 8P，A3 16P 单独显式选择。
+
+vLLM `pull_request_target` 的原有 GitHub-only 路径保留但不得在本期被 GitCode Bridge 引导为 Yellow；GitCode Provider 明确拒绝 `a5_shared_yellow` 和任何 A5 Case。`actions/checkout` 里的旧 `torchtitan-npu/vllm-ascend` 及 Python 常量统一改为 `cann-framework/vllm-ascend`。
+
+### VL-03｜vLLM Blue 受信 Case 与脚本
+
+规划三个新 Case ID：
+
+| ID（拟） | 类别 | Worker / Pool | 拓扑 / 真实验收 |
+|---|---|---|---|
+| `vllm_worker_os_blue` | `worker_probe` | Blue，不占 Pool | 验证 Blue 接单、身份与 GitHub 结果 |
+| `dispatch_smoke_a3_8p` | `npu_smoke` | Blue / `a3_shared_blue` | 1×8，`WORLD_SIZE=8`，`all_reduce_sum=28` |
+| `dispatch_smoke_a3_16p` | `npu_smoke` | Blue / `a3_shared_blue` | 2×8，`WORLD_SIZE=16`，`all_reduce_sum=120` |
+
+在可信 `ci_core/vllm_ascend.py` 增加对应拓扑、`ci_overrides`、耗时、Blue 绑定，保留既有 A5 8P/32P 配置但本期禁止启动。不能把动态 PR 输入直接作为租约规格。OS Probe 使用 `worker_probe`，不占用 Docker/NPU。A3 Smoke 使用**已经核验**的 Blue 容器 `cann_master_torchtitan_master_xyj`，但新上机前仍需只读检查两个节点实际镜像 ID、`torch_npu`、CANN、HCCL 网络与完整绑定。
+
+vLLM 现有 `a5_smoke.py` 将 `choices`、`WORLD_SIZE` 和结果证据名称写死为 A5 8P/32P。建议抽象为硬件无关的 `hccl_smoke.py`（旧 A5 可保留包装器），按受信 Test ID 校验 `world_size` 和 `sum`；rank 0 输出 `DISPATCH_SMOKE_PASS` 以及结构化文件，8P=28、16P=120、32P=496。Smoke 只证明通信及调度，不等于 vLLM 完整推理/模型验证。
+
+### VL-04｜单 Blue 多仓执行与安全隔离
+
+Blue 仍保持唯一 systemd 服务，使用现有 `/var/lib/lite-actions/blue` 状态目录、相同 NPU 设备/端口锁和隔离记录。生产配置需要受信地启用两个 Repo：`LITE_ACTIONS_MODEL_REPOS=cann-framework/torchtitan-npu,cann-framework/vllm-ascend`（实际生效前必须先更新仓库白名单、预检并兼容旧状态）。
+
+必须重点修复：`ci_core/ssh_runner.py` 使用模块级 `VLLM = MODEL_REPO == ...`，并在 `remote_command`、`verify`、`stage` 里分叉 A5 特有实现。在双仓 Blue 部署时，以**每次 Run 的 Repo ID/Source Provider/Test ID/Pool 类型**决定目标执行入口及其证据，不依赖常驻 Worker 启动时的默认仓库。`ci_core/executor.py` 已通过子进程环境选择模型仓，但不能跳过新的 Source Artifact 校验。A5 特有 rootinfo 检查继续按 `ascend-a5` 池类型触发，Blue A3 16P 不能误走 A5 rootinfo 或 A5 PID 清理逻辑。
+
+测试必须覆盖：跨仓同一设备租约互斥、并发入队、取消、失败清理、状态恢复和结果不串仓；不得新增第二个 Blue Worker 进程或绕过已有共享锁。
+
+### VL-05｜vLLM Prepare/Artifact/Waiter 与改名兼容
+
+vLLM 的 GitHub Hosted Prepare 从 **GitCode vLLM 个人仓的 PR API** 再次查证提交并按已验证的来源 fetch 到精确 `source_sha`；生成与 TorchTitan 同规范的 Source Bundle、SHA256、Manifest、可信 Case Plan，绑定 `control_repo_id=1438625957`、GitCode Repo ID、Run、Attempt、Case Plan digest。执行端必须校验每个字节摘要与所有身份字段。实际执行脚本来自经 Prepare 固定的该 GitCode SHA，不允许执行未经审批的 PR Workflow YAML。
+
+vLLM `wait_result.py` / `prepare_request.py` 目前硬编码旧组织名，必须更新并保留原 GitHub-only 兼容路径；不能把 vLLM Run 的 Comment 按 TorchTitan 的 GitHub 仓库查询。GitCode Bridge 结束时重新检查 PR Head/Base，过期成功标记 STALE/非 0，而非给最新 PR 绿灯。
+
+### VL-06｜vLLM 开发文件、阶段与发布门槛
+
+| 位置 | 必改文件 / 用途 |
+|---|---|
+| GitCode `depeng1994` vLLM 个人仓 | `.gitcode/workflows/ci-github-bridge.yml`、`.gitcode/scripts/github_bridge.py`，与 TorchTitan Bridge 共享受信逻辑 |
+| GitHub `cann-framework/vllm-ascend` | `.github/workflows/lite_actions_dispatcher_smoke.yml`、`.github/scripts/lite_actions/prepare_request.py`、`wait_result.py`，新增 GitCode Prepare 和通用 HCCL Smoke |
+| GitHub `depeng1994/lite-actions` | `ci_core/vllm_ascend.py`、`contract.py`、`github.py`、`registry.py`、`ssh_runner.py`、`router.py`、`executor.py`、`tests/test_workflow.py` |
+| 部署 | 仅 Blue 的双仓 Poller/可信 Source 消费及资源隔离；Yellow 服务与池不变 |
+| 阶段验收 | vLLM GitCode 权限 Spike → Blue OS → Blue A3 8P → Blue A3 16P → 跨仓互斥 → 失败/STALE → 正式发布 |
+
+现有 vLLM PR #2 面向 Yellow A5，只能作为旧代码/历史证据，不可算 Blue 通过。GitHub vLLM Smoke 已在 `main`，但 Blue Case 和 GitCode Provider 都还需要开发。Yellow 由用户后续独立操作；本期不能为省事先去开 A5 Pool 或在 Yellow 上试验。
+
+## 6. 双模型多仓实施文件清单与开发顺序
 
 ### 6.1 GitCode `depeng1994` 个人仓（必须写入/提交）
 
