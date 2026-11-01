@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "overall_status": "INCOMPLETE_NOT_E2E_ACCEPTED",
+  "repository": "depeng1994/lite-actions",
+  "branch": "gitcode-forward",
+  "validated_code_commit": "748239eb43e5ff7fdc85e644773b96996ce90f6a",
+  "validated_tree": "24851ffe64d07cef6177e59eb369b790b4545e22",
+  "validation_machine_reported_time_utc": "2026-11-01T22:19:52.498588+00:00",
+  "prerequisites": [
+    {"repo": "cann-framework/torchtitan-npu", "pr": 11, "merged": true, "merge_commit": "f20d073aec6bb7543b2e7db706d1e01b5298c8ca"},
+    {"repo": "depeng1994/lite-actions", "pr": 14, "merged": true, "merge_commit": "0585f4c8fe5658c95c913d0dca48b7ad28f33d4d"}
+  ],
+  "local_regression": {
+    "command": "python3 -m unittest discover -s tests -v",
+    "test_count": 145,
+    "result": "PASS",
+    "scope": "CPU_MOCK_LOCAL_GIT_NOT_PLATFORM_E2E",
+    "log_sha256": "b1b72789cec012e41cb384742a8cbeb43bc9854f6a193dee8c27a3d8b9f0f200"
+  },
+  "lint": {
+    "command": "python3 scripts/lint.py",
+    "tracked_python_files": 47,
+    "result": "PASS",
+    "log_sha256": "fb368efca97e2f42cff475472ff6e34a19acf8edcab0d37d6f56b3511b57e5bf"
+  },
+  "container_preflight": {
+    "scope": "READ_ONLY_IDENTITY_NO_NPU_TASK",
+    "checked_at_utc": "2026-11-01T22:21:23.070267+00:00",
+    "container_name": "vllm_hccl_smoke",
+    "image_id": "sha256:f81de6249765738a06b5c187dcf0968dfd0ce828e8b6b16a2771de2b0e78217c",
+    "image_ref": "quay.io/ascend/vllm-ascend:v0.23.0-a3-openeuler",
+    "nodes": [
+      {"port": "153", "result": "PASS", "container_id": "a7af292308d526be3dbea52439b15df01e70b978242dd3d888e272d4fb013053"},
+      {"port": "154", "result": "PASS", "container_id": "384504e60112f8ada3522e47af43847d20e9f55f07988f55f27c2bacfe90cae1"}
+    ]
+  },
+  "production_release_observed": "0ff72385648f0f394dc24c68110e335dcf9d6522",
+  "production_worker_changed": false,
+  "hardware_tasks_launched_this_checkpoint": 0,
+  "gitcode_e2e_completed": 0,
+  "gitcode_e2e_required": 18,
+  "integration_acceptance_completed": 0,
+  "integration_acceptance_required": 9,
+  "limitations": [
+    "Schema-4 modules are not wired into the full production execution lifecycle.",
+    "Model control workflows and personal GitCode trusted bridge are not released end to end.",
+    "Verified vLLM GitCode personal/control-source mapping is not established; attempted personal path returned HTTP 404.",
+    "A shared dedicated Checks App for Prepare and Blue has not been configured and proven.",
+    "No platform E2E, production migration, or rollback acceptance is claimed."
+  ]
+}
