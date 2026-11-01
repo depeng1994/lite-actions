@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ci_core.broadcast import broadcast_job
+from ci_core.contract import SUPPORTED_REPOS, TORCHTITAN_REPO, VLLM_REPO
 from ci_core.logs import metadata, select_remote
 from ci_core.registry import resolve_test
 
@@ -58,14 +59,11 @@ def task_dir(run: dict, root: Path) -> Path:
         if not isinstance(test_id, str) or not SELECTOR.fullmatch(test_id):
             raise ValueError("invalid CI task Test ID")
         suffix = f"_test-{test_id}"
-    source_repo = run.get("_ci_repo", "torchtitan-npu/torchtitan-npu")
-    if source_repo not in (
-        "torchtitan-npu/torchtitan-npu",
-        "torchtitan-npu/vllm-ascend",
-    ):
+    source_repo = run.get("_ci_repo", TORCHTITAN_REPO)
+    if source_repo not in SUPPORTED_REPOS:
         raise ValueError("untrusted model repo")
     logs = root / "logs/runs"
-    if source_repo == "torchtitan-npu/vllm-ascend":
+    if source_repo == VLLM_REPO:
         logs = logs / "vllm-ascend"
     return logs / (
         f"{local:%Y-%m-%d_%H-%M-%S}_run-{int(run['id'])}"
@@ -100,7 +98,7 @@ def remote_task_name(run: dict) -> str:
         if not isinstance(test_id, str) or not SELECTOR.fullmatch(test_id):
             raise ValueError("invalid CI test ID")
         suffix += f"_test-{test_id}"
-    prefix = "vllm_" if run.get("_ci_repo") == "torchtitan-npu/vllm-ascend" else ""
+    prefix = "vllm_" if run.get("_ci_repo") == VLLM_REPO else ""
     return f"{prefix}{local:%Y-%m-%d_%H-%M-%S}_run_{name}_{number}{suffix}"
 
 
@@ -381,7 +379,7 @@ def prepare_profile(case: dict, run: dict) -> dict:
     from ci_core.ssh_runner import model_archive
 
     with tempfile.TemporaryDirectory(prefix="lite-model-") as tmp:
-        source_repo = run.get("_ci_repo", "torchtitan-npu/torchtitan-npu")
+        source_repo = run.get("_ci_repo", TORCHTITAN_REPO)
         archive = model_archive(run["head_sha"], Path(tmp), source_repo=source_repo)
         definition = resolve_test(
             archive,
@@ -448,9 +446,7 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
                 stderr=subprocess.STDOUT,
                 env={
                     **os.environ,
-                    "LITE_ACTIONS_MODEL_REPO": run.get(
-                        "_ci_repo", "torchtitan-npu/torchtitan-npu"
-                    ),
+                    "LITE_ACTIONS_MODEL_REPO": run.get("_ci_repo", TORCHTITAN_REPO),
                 },
                 start_new_session=True,
             )

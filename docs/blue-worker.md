@@ -1,6 +1,6 @@
 # blue worker 生产运行
 
-blue 在 `ssh ycy` 上由 `lite-actions-blue.service` 管理，已设置开机启用和故障重启。当前发布代码为 `2c5adbf934a65442e6aaffe4cf7a936ea9468265`，对应 Lite Actions main；服务配置模板见 [systemd unit](../deploy/lite-actions-blue.service)。
+blue 在 `ssh ycy` 上由 `lite-actions-blue.service` 管理，已设置开机启用和故障重启。当前发布 SHA、模型分支和验收记录以 `/etc/lite-actions/blue-deployment.json` 为准；服务配置模板见 [systemd unit](../deploy/lite-actions-blue.service)。
 
 ## 路径与进程
 
@@ -21,20 +21,20 @@ blue 在 `ssh ycy` 上由 `lite-actions-blue.service` 管理，已设置开机�
 
 ## 当前调用范围
 
-模型仓 PR #11 暂不合入：blue 使用模型仓现有 PR 分支的 schema 3 入口，尚未切换 master 与 required checks。允许的手动分支记录在发布信息的 `model_branch` 中。yellow 未正式上线，两个 yellow 训练池禁用。
+blue 使用 schema 3 入口；发布前可验证 PR 分支，合入后使用 master。允许的手动分支记录在发布信息的 `model_branch` 中，升级不得更改 required checks。Yellow/A5 不属于本次 Blue 验收范围，保持其现有独立配置。
 
 在 worker 主机上读取当前模型分支并提交任务：
 
 ```bash
 MODEL_CI_REF=$(python3 -c 'import json; print(json.load(open("/etc/lite-actions/blue-deployment.json"))["model_branch"])')
-gh workflow run nightly_fulltests.yml -R torchtitan-npu/torchtitan-npu --ref "$MODEL_CI_REF"
-gh workflow run lite_actions_dispatcher_smoke.yml -R torchtitan-npu/torchtitan-npu --ref "$MODEL_CI_REF" \
+gh workflow run nightly_fulltests.yml -R cann-framework/torchtitan-npu --ref "$MODEL_CI_REF"
+gh workflow run lite_actions_dispatcher_smoke.yml -R cann-framework/torchtitan-npu --ref "$MODEL_CI_REF" \
   -f 'test_cases=[{"test_id":"worker_os_blue"},{"test_id":"dispatch_smoke_8p"},{"test_id":"dispatch_smoke_16p"}]'
 ```
 
-Nightly 默认两条 DSV4 8P 均由 blue 执行。Dispatcher-Smoke 的模型仓默认集合还包含 yellow 系统探测，当前使用上述 blue 选择器。模型仓同步策略仍待处理；本次 blue 上线不修改模型仓同步工作流，也不保证 GitHub 独有分支不会被未来同步删除。
+Nightly 默认执行 8P Muon、8P AdamW 和双节点 16P AdamW 五步训练，均由 blue 执行。Dispatcher-Smoke 默认集合为 Blue 系统探测及 8P/16P HCCL Smoke；Yellow 只能显式选择。模型仓同步策略仍待处理；本次 blue 上线不修改模型仓同步工作流，也不保证 GitHub 独有分支不会被未来同步删除。
 
-两个节点都进入已有容器 `cann_master_torchtitan_master_xyj`，逐节点固定容器与镜像身份。`:153` 可运行训练与 smoke；`:154` 缺少已配置的 DSV4 资产，仅允许 smoke。现有资源条件下两条 DSV4 训练排队，独立可用的 smoke 分配可以并行。
+两个节点都进入已有容器 `cann_master_torchtitan_master_xyj`，逐节点固定容器与镜像身份。16P 训练需要两端都具备用例所需资产与依赖；必须完成预检后才能在持久配置中启用第二节点的 `train` 能力，不能仅修改能力标记。训练与 Smoke 按完整设备及端口租约排队或并发，保留原有设备隔离，不抢占 Blue 外部任务。
 
 ## 运维
 

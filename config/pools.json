@@ -52,6 +52,7 @@
         "environments": {},
         "host_ssh": "113.46.17.205:154",
         "capabilities": [
+          "train",
           "npu_smoke"
         ]
       }
