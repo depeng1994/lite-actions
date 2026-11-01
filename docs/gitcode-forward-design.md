@@ -1,294 +1,245 @@
-# GitCode → GitHub Actions 双仓训练 CI 转发与统一源码准备：详细设计
+# GitCode → GitHub Actions 双仓合并结果 CI：详细设计
 
-> **版本**：V2.2 · 双仓 + vLLM Blue A3 Smoke / 待端到端验收  
-> **更新**：2026-11-01  
-> **设计分支**：`depeng1994/lite-actions:gitcode-forward`  
-> **GitHub 组织**：`cann-framework`（已完成重命名）  
-> **源仓**：GitCode `cann/torchtitan-npu`（上游只读）与 `depeng1994` 个人仓（首期开发、合并及验收范围）  
-> **目标 CI 仓**：GitHub `cann-framework/torchtitan-npu`（master）及 `cann-framework/vllm-ascend`（main）  
-> **执行与调度仓**：GitHub `depeng1994/lite-actions`  
-> **生效边界**：同一个 Blue Worker 首期接入 TorchTitan 与 vLLM 两个 GitHub 仓；vLLM 新增 Blue A3 OS/8P/16P Smoke。Yellow Worker **不部署、不启用、不验收硬件**；原生 Self-hosted Runner 仅接口预留。
+> **版本**：V3.0 · 已确认治理与验收语义 / 待实现及端到端验收  
+> **更新**：2026-11-01（北京时间）  
+> **设计分支**：depeng1994/lite-actions:gitcode-forward  
+> **目标 CI 仓**：cann-framework/torchtitan-npu（master）、cann-framework/vllm-ascend（main）  
+> **执行仓**：depeng1994/lite-actions；唯一 Blue Worker  
+> **本次变更**：将用户拍板的三项决定及 review 修正落入设计；没有部署、触发训练或修改模型仓/上游。
 
-## 0. 决策摘要与现状核对
+## 0. 已拍板决策与实施边界
 
-**V2.2 增补的重要范围：** V2.0 仅覆盖 TorchTitan-NPU，遗漏了 vLLM-Ascend。现在明确将 GitCode `depeng1994` **vLLM 个人仓 PR → GitHub `cann-framework/vllm-ascend` → 可信 Prepare → 同一个 Blue A3 Worker → GitCode Check** 纳入本期核心需求；vLLM 本期必须包含 Blue Worker OS Probe、A3 8P 和 A3 16P 真实 HCCL Smoke。既有 Yellow A5 8P/32P 不算 Blue 的验收，也不要求用户现在动 Yellow。GitCode vLLM 个人仓实际项目 ID/地址需授权环境验证，不能把 GitHub 同名 Fork 当作 GitCode 可用性的证明。
+### 0.1 用户确认的三项决定（2026-11-01）
 
-**本轮确认的架构决策：** 首期只处理 **GitCode PR 的训练代码、已有测试用例和经批准的 Case 选择器变更**。GitCode 个人仓的可信 Bridge 通过 GitHub `workflow_dispatch` 启动 **已有的** Nightly All Test / Dispatcher Smoke Test；GitHub Hosted `prepare` Job 从 GitCode 固定 PR Commit、核验并封装源码；现有 Lite Actions **Blue Worker** 拉取与校验该产物、执行既有任务；GitCode Bridge 根据同一个 GitHub Run 的终态和最新 PR Head 判定 PASS/FAIL/STALE。保留原生 Self-hosted Adapter 协议设计，但本期不实现、不注册 Runner、不列硬件验收门槛。
-
-**本轮不再保留三个独立 Action 的开发/验收目标**：
-
-- ~~`a3_8p_lite_actions.yml` / T16~~
-- ~~`a3_16p_lite_actions.yml` / T17~~
-- ~~`a5_64p_lite_actions.yml` / T18~~
-
-其测试能力不是取消，而是归并：**Nightly All Test** 验证训练用例，**Dispatcher Smoke Test** 验证 Blue 侧系统探测、8P/16P 通信与释放。**A5/Yellow 不在本期执行范围**。三个旧 YAML 文件的实际清理应在统一入口合入、旧 Required Checks 和外部调用方清理完成后单独提交；本轮仅修改设计文档，不直接删除模型仓生产 YAML。
-
-**已核对的仓库事实（2026-11-01，只读）**：
-
-1. GitHub 组织已是 `cann-framework`；`cann-framework/torchtitan-npu` 仓库 ID 为 `1210038933`，默认分支 `master`。独立 Lite Actions 仓为 `depeng1994/lite-actions`，默认分支 `main`。
-2. Lite Actions `main` 的 `ci_core/contract.py` 已列出唯一业务入口 `nightly_fulltests.yml`、`lite_actions_dispatcher_smoke.yml`，使用 schema 3。Blue/Yellow Worker 均在代码中存在。
-3. **模型仓 `master` 尚未完成对应收编**：目前 `.github/workflows/` 仍有上述三个独立 YAML、`lite_actions_common.yml` 等；新入口在 [模型仓 Draft PR #11](https://github.com/cann-framework/torchtitan-npu/pull/11) 的 `ci/lite-actions-v2` 分支，未合入。**不能直接在 `master` 上假定 Nightly/Smoke 可触发**。
-4. Lite Actions `config/pools.json` 中 Blue A3 池为 `enabled=true`，Yellow 的 A3/A5 池均为 `enabled=false`。`docs/blue-worker.md` 记载 Blue 已使用 systemd 正式服务，当前模型工作流仍从 PR 分支调用；`docs/validation.md` 提供已有 Blue Smoke/Nightly 实机证据。**历史成功不能代替本次跨平台桥接成功**。
-5. 远端可访问设备中，按用户指定应使用**非 depeng 的第二台 Remote Desktop Commander 环境**查询 GitCode 登录/凭据；只允许向 GitCode `depeng1994` 个人仓写入/合并，`cann/torchtitan-npu` 上游仓不得写入。个人仓的实际项目地址、目标分支、权限及 GitCode Actions 状态须在 P0 Spike 中确认，不应将猜测的网址视为已授权。
-6. 现有 `sync-upstream.yml` 会从 `gitcode.com/cann/torchtitan-npu` 拉取并同步 GitHub 分支；该同步可能覆盖/清理 GitHub 侧分支。新方案不能依赖 GitHub 上存在一个永久可写的个人 PR 镜像分支。
-7. `cann-framework/vllm-ascend` Repository ID 为 `1438625957`、默认 `main`，已存在 `lite_actions_dispatcher_smoke.yml`，但当前只支持 Yellow A5 8P/32P。其 `prepare_request.py`、`wait_result.py` 与 Workflow 的 checkout 仍有旧组织名硬编码，必须适配。
-8. Lite Actions 的 `ci_core/vllm_ascend.py` 目前只有固定 A5 Case；`ci_core/ssh_runner.py` 使用模块级 VLLM 判定并硬编码 `a5_smoke.py` 和证据文件。vLLM Blue A3 不属于简单把 A5 Case 改名，必须在可信注册表、执行脚本、repo 身份和产物校验处扩展。
-
-### 0.1 实施范围
-
-| 项目 | 本期策略 | 说明 |
+| 决策 | 本期必须实现的行为 | 对旧设计的替换 |
 |---|---|---|
-| GitCode 入口 | `depeng1994` 个人仓中可信 `.gitcode/workflows` | 本期开发和真实 PR 触发均在个人仓闭环；上游只读 |
-| GitHub 入口 | TorchTitan Nightly/Smoke + vLLM Dispatcher-Smoke | 分别在可信 master / main 触发；禁止执行 PR 新增 Workflow |
-| 源码 | GitCode PR Head SHA（严格比对） | GitHub `control_sha` 与 GitCode `source_sha` 分离 |
-| 准备 | GitHub Hosted `prepare` Job | 所有 NPU 调度前先固化 Source Bundle、Manifest、Plan |
-| 执行 | 一个 Lite Actions Blue Worker，双仓共用 | TorchTitan 与 vLLM 使用同一 `a3_shared_blue`、同一设备/端口锁、同一 Blue systemd 和持久化状态 |
-| Yellow | 用户后续手动操作 | vLLM 原有 A5 8P/32P 定义保留；本期 GitCode Bridge 严禁任何 Yellow/A5 调度 |
-| 原生 Self-hosted | 协议/文件接口预留 | 不实现 adapter，不部署 runner、不列为本期验收 |
-| 新增 GitHub Actions YAML | 明确不支持自动运行 | PR 修改 Workflow 走独立基础设施评审 |
-| 独立 A3/A5 Workflow | 从新设计、验收和调用入口中移除 | 物理删除待统一入口正式上线后清理 |
+| D01 控制面由 GitCode 上游维护 | 两个 GitHub 模型仓保持与各自 GitCode 上游一致的默认分支；用户在 GitCode 修改、审查、合入 Workflow，再自动同步到 GitHub 验证 | 不在 GitHub 保留独有 CI 补丁，不创建或依赖专用 CI 控制分支；删除旧的分支联调退路 |
+| D02 绿色证明与最新 Base 的合并结果通过 | 固定真实 PR Head H 与该 PR 目标分支最新 Base B，测试其合并结果 M/T；门禁绑定相同版本 | 不再把 PR Head 本身当作实际被测源码；Head-only 成功不能满足本期要求 |
+| D03 最新提交优先 | 新 Head 到来主动撤销旧代际的排队/启动权，取消旧运行并清理；新版优先调度 | 不能只等待旧任务结束后标记 STALE；旧任务不得复活或污染新版结果 |
 
-## 1. 需求目标与需要解决的问题
+D02 同时要求处理 **Base 前进、PR 改目标分支和旧绿灯失效**。只监听 Head 更新不能满足“最新 Base”。本期测试语义已确认；“用户实际合入瞬间仍为已测 Base”的平台原子保证须在 P0 核验，不能把“最后再 GET 一次”当作原子保证。若原生能力不足，是否扩大到受控合入入口/分支写入治理须另行拍板，不能自动扩为本期已确认范围。
 
-### 1.1 需求目标（结果导向）
+“无专用 CI 分支”的约束针对两个 GitHub 模型镜像仓。独立的 Lite Actions 实现/设计分支流程继续保留，本文件仍在既有 gitcode-forward 分支维护。
 
-| ID | 需求目标 | 生产级验收口径 |
+### 0.2 权威来源、仓库映射与变更职责
+
+| 对象 | 权威来源 | 写入/消费规则 |
 |---|---|---|
-| G01 | GitCode 个人仓 PR 可以自动触发 GitHub CI | GitCode PR 页出现原生 Bridge Action；GitHub 有对应可点击 Run |
-| G02 | 实际测试源码精确对应 GitCode PR | `gitcode_head_sha = manifest.source_sha = 训练端校验记录的 source_sha` |
-| G03 | GitHub 控制流保持可信、任务可复用 | GitHub 只运行已注册的 Nightly/Smoke，不能执行 PR 新增 YAML |
-| G04 | 所有执行端使用统一 Prepare | GitHub Prepare 完成 SHA/Artifact 校验后才允许 Blue 接单 |
-| G05 | Blue 正式环境可运行、结果闭环 | GitCode 个人 PR → GitHub Smoke/Nightly → Blue 实机 → GitCode Check |
-| G06 | 失败与过期不能误报 PASS | SHA 错误、运行失败、超时、PR 更新、资源未释放均 FAIL/STALE |
-| G07 | 改名后稳定运行，存量能力不回归 | `cann-framework` 身份校验、Blue systemd、原 GitHub CI 可回归 |
-| G08 | Yellow 完全隔离、本期不碰 Self-hosted | 生产 Yellow 状态和设备不改变；原生 Runner 只保留扩展口 |
-| G09 | vLLM GitCode PR 跨平台闭环 | vLLM 个人仓 PR → vLLM GitHub Smoke → Blue → GitCode Check，代码 SHA 精确一致 |
-| G10 | vLLM Blue OS/8P/16P HCCL Smoke | OS 不占卡，8P `all_reduce_sum=28`、16P `all_reduce_sum=120`；蓝区清理有证据 |
-| G11 | 双仓互斥及隔离 | TorchTitan/vLLM 在同一 Blue Worker 不重复占卡、不串仓、不串结果，Yellow 无任何更改 |
+| TorchTitan 可信控制代码 | GitCode cann/torchtitan-npu 的默认分支，核对实际镜像配置 | Workflow、Prepare、Waiter、可信执行器与注册表由用户在 GitCode 合入后同步 |
+| vLLM 可信控制代码 | 实际 GitCode 镜像源仓及默认分支；URL、Repo ID、分支待核验 | 不根据 GitHub 仓名推测源仓；映射确认后采用相同上游合入流程 |
+| GitHub TorchTitan | Repo ID 1210038933；默认 master | 只从已同步、已核验的默认分支派发 |
+| GitHub vLLM | Repo ID 1438625957；默认 main | 只从已同步、已核验的默认分支派发 |
+| 本期业务 PR | GitCode depeng1994 的两个个人仓中的真实 PR | 分别核验项目 ID、Head 来源、目标分支、账号与权限；外部 Fork 默认拒绝 |
+| 个人仓 Bridge | 对应 GitCode PR 目标分支的可信 .gitcode/workflows 与脚本 | 基于受信目标分支执行；不能 Checkout PR 后运行其中的 Bridge |
+| Lite Actions | depeng1994/lite-actions | 负责协议、准入、租约、源码消费、监督、清理、恢复与回报 |
 
-### 1.2 必须解决的工程问题
+**Base 的含义：** B 来自该 PR 的真实目标仓/分支。首期若 PR 开在个人仓，B 就是该个人仓的目标分支最新提交。GitHub 控制提交 C 来自上游镜像；B 和 C 不得混用，也不要求相等。未来若要验证 Fork Head 合入官方上游，应使用目标为该上游的真实 PR 或另行声明该模式。
 
-| 问题 | 当前风险 | 解法 / 关键 Gate |
+对原样 Git ref 同步的镜像，发布核验必须满足 C=U。同步配置/工作流本身也须在上游保留或由已核验的外部同步器维护，避免第一次覆盖默认分支后同步入口消失；不以 GitHub 独有补丁补救。
+
+**职责边界：** 本轮助手对 GitCode 上游保持只读；后续上游控制面变更由用户合入。本设计不授权自动合并业务 PR、修改 Required Checks、改变生产分支保护或启用 Yellow。
+
+### 0.3 已核对基线与当前缺口
+
+以下是 2026-11-01 的代码快照，不等于部署验收：
+
+| 对象 | 快照 | 已确认事实 |
 |---|---|---|
-| Q01 个人仓 GitCode 权限 | 不允许直接写入 `cann` 上游 | 使用第二台远程环境认证，只向 `depeng1994` 个人仓提交/发 PR；权限失败阻断 |
-| Q02 GitCode Secrets/事件安全 | PR 内容可能携带恶意脚本 | 可信目标分支 Bridge，`pull_request_target` 仅跑受信代码；提交代码不接触 Token |
-| Q03 GitHub Dispatch 关联 | 同时运行会串单 | `return_run_details=true` 获取明确 Run ID；不可用则实现有唯一 nonce 的受控关联并拒绝歧义 |
-| Q04 Workflow 是否已注册 | 模型 `master` 目前没有统一入口 | 先合入/切换已审查的 Nightly/Smoke；试运行可锁定现有 `ci/lite-actions-v2` 分支 |
-| Q05 GitCode Commit 可获取性 | Fork 分支、SHA 裸 fetch 并非总可用 | 根据经 API 校验的 PR 源仓/分支 fetch，`rev-parse` 必须等于传入 Head SHA |
-| Q06 双 SHA/身份 | schema 3 目前用 GitHub Run `head_sha` 表示待测源码 | `control_sha` 与 `source_sha` 分开；扩展 Plan/Report/Waiter 校验但保留旧 GitHub CI 兼容性 |
-| Q07 Artifact 消费 | 当前 Worker `model_archive()` 直接 GitHub fetch | GitCode 转发路径消费 Prepare 的 Source Bundle；原生 GitHub 路径保持旧逻辑，阶段式上线 |
-| Q08 Blue 资源权限 | NPU 多用户共享、隔离记录 | 只允许 `worker=blue`、`pool=a3_shared_blue`、受信 Case；不改资源抢占、设备释放逻辑 |
-| Q09 GitCode 结果正确性 | 旧 PR 版本完成后可能误判 | GitHub Run 到终态后再次查询 GitCode PR Head/Base；不同则 STALE/FAIL，不写当前 PR PASS |
-| Q10 真正端到端验收 | CPU 模拟不能证明跨平台能运行 | TorchTitan E2E-01～06 + vLLM E2E-07～12 均需真实 GitCode PR、正确 GitHub Run、Blue 证据和 GitCode Check |
-| Q11 GitHub 组织更名 | 多个代码常量仍为 `torchtitan-npu/` | 统一目标 `cann-framework`、稳定 repo ID 校验、全链路 CI 回归 |
-| Q12 镜像双写与状态恢复 | Github 同步会删分支、Blue 有运行中状态 | 不依赖 PR 镜像分支；Blue drain、同一状态目录、升级回滚与 pending report 恢复 |
-| Q13 vLLM 现有入口只支持 A5 | Blue 选择器无法准入或错误派发 Yellow | vLLM 受信 Smoke Workflow/测试注册表增加 Blue OS/A3 8P/16P；新 Provider 默认 Blue |
-| Q14 执行端 A5 硬编码 | A3 16P 误用 A5 脚本/验证文件 | 按每任务仓库+Case+池类型分发通用 HCCL Smoke；A5 旧用例兼容 |
-| Q15 Blue 跨仓并发和状态隔离 | 同一台 NPU 可能双重租赁或结果串仓 | 唯一 Blue Router、共享租约，任务键含控制仓 ID + Run/Attempt/Case |
-| Q16 vLLM GitCode 项目身份尚未核实 | 错把 GitHub Fork 当作 GitCode PR 来源 | 对 vLLM GitCode 个人仓单独 P0 授权/Repo ID/PR 事件 Spike |
+| 旧设计 V2.2 | lite-actions 5d01fe9b8a0a7fddfe7cf3bd2d65a41b66ad456a | 原设计只封装 Head，需要整体迁移为合并结果 |
+| Lite Actions main | 9b881db9c541d589dd57564eef2b41b3ee78d4d6 | schema 3、多仓支持、Blue/Yellow、持久化状态均已存在；GitCode 合并源尚未实现 |
+| TorchTitan master | 8a71d8940e877cc9f2e5f4b977b4f18d48539592 | 当前同步器强制同步上游分支，并清理上游不存在的分支，仅豁免 gh-pages |
+| TorchTitan Draft PR #11 | 016a031081482c366d7c8f575da530a673b8699c | 统一 Nightly/Smoke 的实现参考；不能直接合入 GitHub 作为本期控制面发布 |
+| vLLM main | e20e2c482606e2ddd6b2fe1bf3a78638f55da8a8 | 现有 Smoke 面向 Yellow A5，Blue OS/A3 8P/16P 仍需实现 |
 
-## 2. 系统架构与部署边界
+D01 使镜像成为正式发布途径，而不是绕过对象。PR #11 的必要实现应移植到 GitCode 上游，由用户合入，再同步验证。PR #11 当前会删除 a3_16p_lite_actions.yml、a5_64p_lite_actions.yml，并把 a3_8p_lite_actions.yml 重命名为 nightly_fulltests.yml；移植时应拆开统一入口接入与旧入口清理，直到调用者和旧门禁完成迁移。
+
+旧代码中另有这些必须修复的依赖：
+
+- TorchTitan registry.inspect_archive 会在控制机执行源码包中的 Python；GitCode 合并源路径不能复用该行为。
+- Worker 对 request Artifact 的发现不等于 Prepare Job 已成功，需新增完整准入条件。
+- schema 3 的内部 head_sha 在部分 PR 路径已归一化为待测源码 SHA，不能统一改释为控制 SHA。
+- 旧结果通过 Commit Comments 回传，Worker/Waiter 有 20×100 条扫描预算；schema 4 不得沿用无界历史扫描。
+- 仓库改名、schema 升级、旧 pending report 和隔离状态需要显式迁移。
+- vLLM 的 A5 脚本、证据路径及模块级仓库判断需要按任务扩展；两个模型仓不能串结果。
+- 生产 Blue 实际发布、在途任务、绑定与隔离状态仍须现场只读盘点；历史成功不是本轮证据。
+
+## 1. 需求目标与工程约束
+
+### 1.1 目标
+
+| ID | 目标 | 验收口径 |
+|---|---|---|
+| G01 | GitCode PR 自动触发 GitHub CI | 两个个人仓各有真实 PR/Action、准确的 GitHub Run 链接 |
+| G02 | 实际测试合并结果 | H/B 来自真实 PR，T=Merge(B,H).tree，Blue 执行 M/T 对应 Bundle |
+| G03 | 控制面可信且来源唯一 | 用户 GitCode 上游合入 U → GitHub 默认分支镜像 C；实际控制代码固定 C |
+| G04 | Prepare 成功后才接单 | Prepare Job 成功、全部产物和身份可验证，才允许资源准入 |
+| G05 | Blue 结果闭环 | 对应 GitHub Run、必需 Case、清理及 GitCode 当前版本门禁一致 |
+| G06 | 失败/过期不误绿 | 冲突、SHA/Tree 错误、取消、超时、漏 Case、清理不明均非成功 |
+| G07 | 兼容原 GitHub CI | schema 3 原有 SHA 与结果语义不被破坏，改名和状态迁移可验证 |
+| G08 | Yellow/Native 边界 | Yellow 服务和资源保持当前状态；原生 Self-hosted 仅预留 |
+| G09 | vLLM 双平台闭环 | vLLM 个人 PR 合并结果经对应 GitHub 仓、同一 Blue 返回结果 |
+| G10 | vLLM Blue OS/8P/16P | OS 不占卡；真实 HCCL 8P=28、16P=120，逐节点清理 |
+| G11 | 双仓共享资源但故障隔离 | 同一物理锁；无串仓/重复租约；一仓失败不阻断另一仓清理 |
+| G12 | 最新 Base 测试状态 | Base 更新使旧版本状态失效并重测；实际合入时的原子保证按 §4.6 单独核验并声明边界 |
+| G13 | 最新版本优先 | Head/Base 变化后主动取消旧代际，旧启动/回报/释放不能操作新任务 |
+| G14 | 可恢复与可审计 | 请求认领、取消、回报和隔离持久化；重启与回滚不丢状态 |
+
+### 1.2 开发前必须解决的问题
+
+| ID | 问题 | 本期处理 |
+|---|---|---|
+| Q01 | 两个 GitCode 个人仓身份/权限 | 在用户指定的非 depeng 第二台远端环境只读核验；不输出凭据 |
+| Q02 | PR 与 Secret 隔离 | 可信 Bridge/Prepare/Worker；PR Python 不在控制机执行 |
+| Q03 | Dispatch 关联/未知响应 | 稳定 nonce、持久化映射、DISPATCH_UNKNOWN 恢复 |
+| Q04 | 统一 Workflow 未在默认镜像上线 | 用户 GitCode 上游合入并同步后再联调；没有 CI 分支兜底 |
+| Q05 | Head/Base 可获取性 | 按权威 repo/ref 获取 H/B，核对实际对象及合并所需历史 |
+| Q06 | 版本身份与兼容 | 显式区分 H、B、M、T、C；保留旧 schema 3 语义 |
+| Q07 | Artifact 消费 | 一次解析 SourceHandle，全链路禁止 GitCode 路径回退 GitHub 源码 |
+| Q08 | Blue 准入 | 固定可信 Case/Pool/容器；不抢占外部进程 |
+| Q09 | 旧结果与最新门禁 | 代际失效、平台版本绑定；区分测试通过与合入时原子保证 |
+| Q10 | 实机证明 | 保留双仓 12 项主链路，增加合并/镜像/取消/门禁场景 |
+| Q11 | 组织改名 | 稳定 Repo ID + 受控名称映射 + 状态迁移 |
+| Q12 | 上游与镜像发布 | GitCode 为唯一控制代码写入源；镜像延迟明确等待/拒绝 |
+| Q13 | vLLM 入口只支持 A5 | 增加受信 Blue OS/A3 Case，GitCode Provider 拒绝 Yellow |
+| Q14 | 执行脚本 A5 硬编码 | 按每任务 repo/Case/硬件分发，A5 兼容保留 |
+| Q15 | 双仓隔离 | 一个 Router、共享物理锁、按仓/Run 隔离故障 |
+| Q16 | vLLM GitCode 路由未确认 | 分别核实业务个人仓和控制上游源仓，不用 GitHub Fork 替代 |
+| Q17 | 合并结果构造 | 固定合并策略/Git 版本，验证 H/B→M/T；冲突零调度 |
+| Q18 | Base-only 更新 | 目标分支 push + 可信 reconciler，失效并重新规划相关开放 PR |
+| Q19 | 平台原子门禁未知 | P0 实证；未证明不能宣称“最新 Base 可合并”已交付，额外治理改造另行决策 |
+| Q20 | 新版本取消与旧回调 | 持久化 generation、取消意图、lease_id/fencing_token |
+| Q21 | 结果通道容量 | 按确定 ID 取结果，明确权限/留存；不扫描控制提交全部评论 |
+| Q22 | 安全恢复 | 清理资料启动前落盘，恢复不依赖 Artifact 或源仓仍在线 |
+
+## 2. 架构与信任边界
 
 ### 2.1 组件职责
 
-| 组件 | 部署位置 | 职责及不允许的行为 |
+| 组件 | 位置 | 职责 |
 |---|---|---|
-| GitCode Personal PR | `depeng1994` 个人仓 | PR、Head/Base、提交来源的权威源；禁止把个人仓 CI Token 下发给训练机 |
-| GitCode Bridge | 个人仓 `.gitcode/workflows/` | PR 事件、调用 GitHub Dispatch、轮询与展示 Check；不得执行 PR 中的脚本 |
-| GitHub Workflow | `cann-framework/torchtitan-npu` 的 Nightly/Smoke | 可信调度控制面；Workflow `ref` 指向受控 GitHub 分支，不等于源码 SHA |
-| Hosted Prepare | GitHub `ubuntu-latest` | 查询 PR、获取 GitCode Commit、计算摘要、生成 Artifact/Plan；失败阻断执行 |
-| Artifact Store | GitHub Actions | `source-bundle`、`source-manifest`、`case-plan`，按 Run/Attempt 唯一绑定 |
-| Lite Actions Blue | `depeng1994/lite-actions` + Blue systemd | 安全校验、租约、并发、SSH、训练/探测、释放、结果回报 |
-| GitCode PR Check | 个人仓 PR 的 Bridge Job | 把 GitHub 终态正确映射为 GitCode 本地 Job PASS/FAIL |
-| Yellow Worker | 保留配置，**不启动新生产接单** | 直到用户另行操作后再扩容 |
-| Native Self-hosted | 未部署 | 仅保留未来 `needs: prepare + Artifact` 兼容接口 |
+| GitCode 上游控制代码 | 两个实际镜像源仓默认分支 | 用户审查并合入控制代码，镜像发布源 |
+| GitCode 个人 PR | 两个已核验个人仓 | Head、真实目标分支、PR 状态的权威来源 |
+| Trusted Bridge | GitCode 个人仓受信目标分支 | 验证事件/PR、派发、轮询、取消请求、发布版本绑定状态 |
+| GitHub Workflow/Prepare | 两个模型镜像仓默认分支 | 固定 C，构建 H/B 合并结果、可信 Plan 与 Artifact |
+| Artifact Store | 对应 GitHub Run/Attempt | Source Bundle、Runner Bundle、Manifest、最终 Request |
+| Blue 控制协调器 | 唯一 Blue systemd 服务 | 串行更新每 PR 代际、持久化认领、资源调度、监督、恢复 |
+| Blue 执行域 | 已绑定 A3 节点/容器 | 执行 M/T 的测试载荷；不接收 GitHub/GitCode 凭据 |
+| Result Channel/Waiter | Blue + GitHub + Bridge | 精确身份的回报、聚合与当前门禁 |
+| GitCode 原生门禁 | 目标项目 | 绑定 H/B 或预合并版本，Base 变化后禁止旧结果放行 |
 
-### 2.2 总体架构图
+Blue 的控制协调逻辑与既有 Router 在同一服务中运行，使用同一持久化目录和资源锁；不得另起一个可调度同一 NPU 的进程。控制机可配置最小权限的 GitCode 只读元数据凭据，用于独立核对当前 PR/Base、补偿事件和取消；该凭据绝不进入训练环境。其网络和权限是 P0 验证项。
+
+### 2.2 双仓与合并结果流
 
 ```mermaid
 flowchart TB
-  GC["GitCode depeng1994 个人仓\nPR / Head SHA / Base SHA"]
-  BR["可信 GitCode Bridge\nGitCode Action / Secret"]
-  GH["GitHub cann-framework/torchtitan-npu\nNightly All Test / Dispatcher Smoke"]
-  PR["GitHub Hosted Prepare\nPR 元数据复核 → Fetch GitCode → SHA 校验"]
-  ART[("固定源码 Bundle + Manifest\n可信 Case Plan / Run+Attempt")]
-  BLUE["Lite Actions Blue Worker\n系统服务 / 安全授权 / 资源调度"]
-  NPU["Blue A3 共享节点\nOS / 8P / 16P Smoke + Nightly 训练"]
-  OUT["GitHub Case Result / Run Conclusion"]
-  GC -->|PR 事件| BR
-  BR -->|workflow_dispatch + run details| GH
-  GH --> PR
-  GC -->|GitCode API + Git fetch| PR
-  PR -->|only when verified| ART
-  ART -->|blue-only| BLUE
-  BLUE --> NPU
-  NPU --> BLUE
-  BLUE --> OUT
-  OUT -->|Run ID polling| BR
-  BR -->|Check PASS/FAIL/STALE + URL| GC
-  YELLOW["Yellow Worker：暂不切换"]
-  NATIVE["Self-hosted：仅预留协议"]
-  ART -.->|未来阶段，不执行| NATIVE
-  ART -.->|禁止本期接单| YELLOW
+  U["用户在 GitCode 上游合入控制代码"] --> S["自动同步并核验 GitHub 默认分支 C"]
+  T["TorchTitan 个人 PR：H / B"] --> P["可信 Prepare：验证身份并合并"]
+  V["vLLM 个人 PR：H / B"] --> P
+  S --> P
+  P -->|冲突或版本失效| F["拒绝：零 NPU 任务"]
+  P -->|M / T 与完整产物| A["对应仓 Run / Attempt / Plan"]
+  A --> W["唯一 Blue：代际核对、认领、共享锁"]
+  W --> N["Blue A3：OS / 8P / 16P / Nightly"]
+  N --> R["Case 结果与清理证据"]
+  R --> G["当前 H / B 门禁"]
+  E["Head 或 Base 更新"] --> X["撤销旧代际并持久化取消"]
+  X --> W
+  X --> G
+  X --> P
 ```
 
-### 2.3 信任与权限边界图
+### 2.3 可信执行器与待测源码
 
-```mermaid
-flowchart LR
-  U["不可信输入\nGitCode PR 源码 / 分支名 / 测试参数"] --> G["可信控制域\n个人仓 base Bridge + GitHub master Prepare"]
-  G -->|"权限审查 / SHA / digest / allowlist"| A["准入后的源码与 Plan"]
-  A --> B["Blue Worker\n固定 NPU 池、已有资源锁"]
-  T["GitHub/GitCode Token"] -->|仅供可信控制面| G
-  U -.-X T
-```
-
-**注意：** SHA/摘要只能证明版本一致，不能证明代码不存在恶意行为。首期 Blue 实机测试只对授权的个人仓、授权提交人及批准的测试选择器开放；外部 Fork 默认为拒绝。可信 `prepare` 必须读取来自可信 GitHub 分支的验证器，不可从 PR 上传源码中导入具有执行副作用的任意 Python 来决定资源权限。
-
-
-### 2.4 vLLM 加入后的双仓共享 Blue 架构（V2.2）
-
-```mermaid
-flowchart TB
-  T["GitCode depeng1994 / TorchTitan 个人仓 PR"] --> B["GitCode Trusted Bridge / Repo ID 路由"]
-  V["GitCode depeng1994 / vLLM 个人仓 PR"] --> B
-  B --> G1["GitHub cann-framework/torchtitan-npu / Nightly + Smoke"]
-  B --> G2["GitHub cann-framework/vllm-ascend / Dispatcher-Smoke"]
-  G1 --> P1["Hosted Prepare / TorchTitan Source SHA 校验"]
-  G2 --> P2["Hosted Prepare / vLLM Source SHA 校验"]
-  P1 --> A[("按 GitHub Repo ID + Run + Attempt 区分 / Source Artifact + Manifest + Plan")]
-  P2 --> A
-  A --> W["唯一 Blue Worker / 双仓 Poller + 公共资源锁和状态目录"]
-  W --> N["Blue A3 共享节点 / TorchTitan OS+8P+16P+Nightly / vLLM OS+8P+16P"]
-  N --> W
-  W --> R["各自 GitHub Run/Case Result"]
-  R --> B
-  B --> T
-  B --> V
-  A -.-> Y["Yellow A5 未授权，本期拒绝"]
-  A -.-> H["Native Self-hosted 仅预留"]
-```
-
-两个 GitHub 仓分别生成自己的 Run、Artifact、Source SHA 与 Plan。**物理资源仍只有一套 Blue A3**，不得为 vLLM 再部署第二个 Blue 调度进程或建立另一套不互通的锁。
-
-### 2.5 vLLM Blue 端到端数据流（V2.2）
-
-```mermaid
-sequenceDiagram
-  autonumber
-  participant GC as GitCode vLLM 个人仓 PR
-  participant BR as GitCode Trusted Bridge
-  participant GH as GitHub cann-framework/vllm-ascend
-  participant P as Hosted Prepare
-  participant BW as 统一 Blue Worker
-  participant A3 as Blue A3 NPU
-  BR->>GC: 读取并验证 repo_id/PR/head_sha/base_sha
-  GC-->>BR: 当前真实 GitCode SHA
-  BR->>GH: workflow_dispatch(可信 main, Blue Case)
-  GH-->>BR: github_run_id/URL
-  GH->>P: Prepare Job
-  P->>GC: 复核 GitCode PR + Fetch Head Commit
-  GC-->>P: Commit 与匹配 SHA 的源码
-  P->>P: Manifest / SHA256 / 受信 Plan
-  P-->>BW: GitHub Artifact + Case 受控接单
-  BW->>BW: 校验 repo/run/attempt/source_sha + 共享租约
-  BW->>A3: OS Probe / A3 8P / A3 16P
-  A3-->>BW: world_size + all_reduce + cleanup_verified
-  BW-->>GH: 独立 vLLM Run 结果
-  BR->>GH: 按 Run ID 轮询最终状态
-  GH-->>BR: 终态
-  BR->>GC: 复核最新 SHA 后写 GitCode Check
-```
-
-## 3. 端到端数据流、状态和身份
-
-### 3.1 GitCode PR → GitHub → Blue → GitCode 完整时序
-
-```mermaid
-sequenceDiagram
-  autonumber
-  participant PR as GitCode 个人仓 PR
-  participant B as GitCode Bridge
-  participant GH as GitHub Workflow API
-  participant P as Hosted Prepare
-  participant AF as GitHub Artifact
-  participant W as Lite Actions Blue
-  B->>PR: 查询 PR 权威 Head/Base/源仓/状态
-  PR-->>B: PR# / head_sha / base_sha / repo_id
-  B->>GH: workflow_dispatch(ref=可信分支, inputs=PR+sha+smoke, return_run_details)
-  GH-->>B: github_run_id + html_url
-  GH->>P: 执行 Prepare（与 Blue Job 形成先后 Gate）
-  P->>PR: 二次查询 PR 权威数据
-  PR-->>P: 当前 Head/Base 与授权信息
-  P->>PR: git fetch 经批准的 GitCode PR 源分支
-  P->>P: 比较 FETCH_HEAD = 预期 source_sha
-  P->>P: 归档、SHA256、Manifest、可信 Case Plan
-  P->>AF: upload source/manifest/plan, run+attempt
-  GH->>W: GitHub Waiter 发布请求后 Blue Pull 接单
-  W->>AF: download + manifest/digest/Case Plan 校验
-  W->>W: 执行 Blue OS / HCCL / Nightly 与释放
-  W-->>GH: Comment / Case result + cleanup_verified
-  loop GitCode 轮询
-    B->>GH: GET Run by github_run_id
-    GH-->>B: queued/in_progress/completed + conclusion
-  end
-  B->>PR: 重新查询最新 PR Head/Base
-  PR-->>B: 当前版本
-  B-->>PR: 版本相符且 PASS => GitCode Check PASS；否则 FAIL/STALE
-```
-
-### 3.2 身份与幂等键
-
-| 字段 | 来源 | 不变量 |
+| 内容 | 版本来源 | 允许执行位置 |
 |---|---|---|
-| `gitcode_repo` / `gitcode_repo_id` | GitCode 可信 PR API | 仅 `depeng1994` 个人仓允许列表；主仓禁止写入 |
-| `gitcode_pr` | GitCode 可信 API | 必须是对应个人仓真实、未关闭 PR |
-| `source_sha` | GitCode PR Head | 40 位 SHA；Fetch 的实际 Commit 必须相同 |
-| `base_sha` | GitCode PR 目标分支 | 最终 Check 时必须重新校验基线，避免陈旧结果 |
-| `control_sha` | GitHub workflow dispatch 的分支 SHA | 决定可信 Workflow/Prepare 代码版本，不与 `source_sha` 混用 |
-| `github_run_id` / `run_attempt` | GitHub Actions | 唯一定位 Artifact、Plan、Case/结果；不能靠最新一条 Run 猜测 |
-| `source_digest` | Prepare | Source Artifact 字节哈希；Blue 本地再次验证 |
-| `plan_digest` | Prepare | 任务参数/Case/资源约束的规范化哈希 |
-| `bridge_key` | Bridge | `repo_id + PR + head_sha + base_sha + pipeline`；用于去重和版本判定 |
+| Bridge | GitCode 受信目标分支固定提交 | GitCode 控制 Job |
+| Workflow、Prepare、Waiter、可信目录与执行器 | 已同步控制提交 C / 固定 Lite Actions 发布 | 控制域；可访问最小必要权限 |
+| 训练实现、受准入的测试载荷/断言 | 合并结果 M/T | Blue 执行域 |
+| Case 资源、Pool、容器、最大超时、执行入口 | 受信注册表及部署策略 | PR 只能提交受校验的选择器 |
+| 取消、设备检查、结果完整性验证 | 可信 Worker 版本 | 不允许被 PR 包覆盖 |
 
-**严禁**将 `GITHUB_SHA` / `github.run.head_sha` 替换为 GitCode SHA；在旧 schema 3 中该字段应继续解释为 GitHub 控制面 SHA。需要新版本协议（建议 schema 4）增加 `source` 子对象与源校验字段，并提供原生 GitHub 路径与新 GitCode 路径的兼容转换。
+GitCode Provider 禁止在 Prepare/Blue 控制机调用 Source Bundle 的 inspect/catalog/build_test_list 或导入其 Python。需要的目录/资源定义由 C 的可信注册表生成并由 Worker 校验。可信执行器与 Source Bundle 分目录、固定入口，避免 PR 模块遮蔽控制脚本。
 
-### 3.3 单次任务状态机
+SHA/摘要不是恶意代码隔离机制；本期只准入明确授权的个人仓、提交者和测试载荷。共享容器和设备租约不应被描述为对任意外部代码的安全沙箱。
+
+## 3. 端到端流程、身份与状态
+
+### 3.1 单次执行流程
+
+1. **控制发布就绪**：用户上游提交 U 已同步为 GitHub 默认分支 C，必要文件/权限/版本核验通过。
+2. **事件与快照**：Bridge 读取事件身份，再查询真实 PR、Head 仓/引用及目标分支，固定 H/B；迟到事件不得静默改测另一个 Head。
+3. **派发**：只向映射的 GitHub 默认分支触发 Smoke/Nightly，传固定版本、选择器、不可复用快照/意图与 nonce；保存 Run ID。可信 Prepare 先发布不可执行的 dispatch-intent，Blue 沿用 Pull 通道尽早登记在途任务。
+4. **固定控制版本**：获取实际 Run/Workflow 身份，Prepare/Waiter 均 checkout 同一不可变 C；发布版本不符则拒绝或重新规划。
+5. **构建合并结果**：读取并复核 H/B，按受信策略得到 M/T；冲突或缺依赖则失败，不能降级为仅测 H。
+6. **封装与提交请求**：生成完整 Source/Runner/Manifest，最后发布带 Artifact ID/摘要的 schema 4 Request；Prepare Job 成功后才可接单。
+7. **Blue 准入与认领**：核验最新 PR/Base、当前代际、完整产物、Case 与 Blue 策略；持久化执行认领和租约，再启动。
+8. **运行与主动取消**：测试 M/T；Head/Base 更新使旧代际失效，撤销旧排队/启动权并停止所属任务。
+9. **可信清理与回报**：逐节点确认清理或隔离，按 Run/Attempt/Case 定位结果；回报失败只重传，不重复训练。
+10. **状态与门禁**：全部必需 Case 成功且当前 H/B/代际及发布权一致，才发布该版本合并测试通过；“当前可合并”还需 §4.6 的平台原子保证，未证实不能混称。
+
+### 3.2 身份合同
+
+| 字段/简称 | 定义 | 不变量 |
+|---|---|---|
+| pr_repo_id + pr_number | PR 所在目标仓与编号 | 两仓不能仅按 PR 号混用 |
+| head_repo_id/ref/head_sha = H | 真实 PR 源仓、源引用及提交 | 不信任输入 URL；经 API 与 Fetch 双重验证 |
+| base_repo_id/ref/base_sha = B | 真实目标仓、目标分支最新提交 | 本期个人 PR 的 B 不替换为镜像仓或官方上游 |
+| tested_merge_sha = M | 固定 H/B 的平台预合并或本地合成提交 | 只作为测试快照，无需推到任一远端 |
+| tested_tree_sha = T | M 对应的合并结果 tree | 实际测试内容来源；必须由批准策略的 H/B 得到 |
+| upstream_control_sha = U | 用户已在实际 GitCode 上游合入的控制发布 | 来源及默认分支已验证 |
+| control_sha = C | 本次 GitHub Run 实际使用的可信控制提交 | 镜像发布证据绑定 U→C；所有控制 Job 固定 C |
+| bridge_event_id / action_run / attempt | GitCode 触发与运行身份 | 原始事件与重跑可追踪，不用最新一条 Action 猜测 |
+| source_snapshot_id / dispatch_intent_id | 受信快照与派发意图的不可复用身份 | 与完整 H/B 身份及原始事件绑定；不能仅因 SHA 再次相同重新授予旧请求资格 |
+| request_spec_digest | H/B、合并策略、控制版本及受信测试规格的摘要 | 不含 GitHub Run/Attempt、nonce 等投递身份 |
+| pr_generation | Blue 协调器对当前 PR 版本分配的持久化代际 | 单写者更新，旧代际不能恢复调度权 |
+| rerun_intent_id / execution_generation | 受信整单重跑意图及协调器分配的代次 | 同一 intent 重传不新增，不能靠输入自报整数绕过去重 |
+| pipeline / publication_revision | 命名的必需测试组及其当前发布权 | 同一 H/B 下改规格或重跑也能撤销旧结果发布权 |
+| github_run_id / run_attempt | GitHub 执行身份 | Artifact、Plan、结果均绑定，禁止跨 Attempt 猜测 |
+| lease_id / fencing_token | Blue 每次租约及其代际令牌 | 旧回调不得释放新租约或终止新进程 |
+
+V3 新设计的 schema 4 使用显式 H/B/M/T/C 字段，不继续用一个 source_sha/head_sha 承载不同身份。schema 3 原字段保留旧语义：当前 vLLM PR-target 的内部 head_sha 已被归一化为 PR 源码 SHA。转换器必须先保存 API 原始控制身份，再做事件相关的兼容转换。
+
+### 3.3 PR 代际与任务状态
+
+每个 PR 的协调作用域为 **(pr_repo_id, pr_number)**，跨 Smoke/Nightly。当前版本至少包含 Head/Base 的仓库、引用、提交与合并策略；Head/Base/目标分支变化、关闭/合并或授权失效均撤销旧版本。新 Head 需要取消该 PR 的所有旧版本任务，不能只取消某一个 Pipeline。
+
+GitCode 事件是核对信号，不是可直接写入当前状态的权威快照。唯一 Blue 控制协调器按 PR 串行读取权威 API、持久化版本与代际，记录事件去重和取消意图。迟到事件不能将状态退回旧提交；强推 A→B→A 不能重新启用已撤销的执行记录。平台 revision/事件字段及重跑识别方式在 P0 用真实载荷锁定。
+
+**登记方式与保证边界：** 保留现有 Pull 拓扑，不假定已有可公开访问的 Blue 入站 API。Bridge 的 source_snapshot_id/dispatch_intent_id 来自受信原始事件和调用身份，并绑定完整 H/B、控制仓/Workflow/C、pipeline、选择器、重跑意图、nonce、创建时间与期限；网络重试保持同一身份。可信 Prepare 在最早控制阶段发布独立 dispatch-intent Artifact（不含执行 Plan、不能触发租约）。Blue 校验控制来源/授权、查询权威状态并持久化意图与唯一代际映射，再追踪该 Run；最终 Request 引用此不可变意图。Blue 尚未登记时由 Bridge 负责取消本次派发，登记后由协调器补偿。
+
+已经登记、观察或记录撤销的旧 intent/Request 永不改绑到新代际。首次迟到请求如跨越已知版本变化，必须用可信事件顺序/revision/事件账本证明归属；无法证明则拒绝，不能只因 H/B 相同授予当前资格。P0 须锁定事件历史可读性及账本持久化方案；若平台没有 revision/可恢复历史，完全发生在两次观察之间且没有任何可读记录的 A→B→A 无法仅从当前 SHA 辨认，本期不宣称具备该能力。当前权威状态不可读取时，不启动新任务、不发布当前 PASS；运行中的取消时效以事件/轮询的发现和停止证据衡量，不能承诺推送瞬间已经停止。
+
+另按 (PR, pr_generation, pipeline) 保存当前发布权，指向当前 request_spec_digest + execution_generation，或明确声明的并行必需集合。控制 C、选择器或授权重跑改变时，事务更新该发布权。新旧顺序以已验证的 intent/事件顺序为依据，不按 Prepare 完成先后决定；最终 Request 只能绑定仍有效的 intent，较旧 Prepare 晚到不能重新取得发布权，无法证明顺序则拒绝覆盖。旧规格/旧重跑即使 H/B 相同也不能覆盖新结果；Smoke 成功不能替代 Nightly 或所要求的 16P。只有 canonical execution 能提交该发布权下的状态。
 
 ```mermaid
 stateDiagram-v2
-  [*] --> Triggered
-  Triggered --> Authorized: GitCode PR 允许
-  Triggered --> Rejected: 不可信/越权
-  Authorized --> Dispatched: 拿到唯一 Run ID
-  Authorized --> InfraError: API 失败/Run ID 歧义
-  Dispatched --> Preparing
-  Preparing --> Prepared: 双 SHA 与 Artifact 验证成功
-  Preparing --> Failed: SHA / Plan / Token 失败
-  Prepared --> RunningBlue: Blue 接单
-  RunningBlue --> Reporting: 训练/探测与清理结束
-  Reporting --> Completed: GitHub Run 终态
-  Dispatched --> TimedOut: 到达总超时
-  Preparing --> TimedOut
-  RunningBlue --> TimedOut
-  Completed --> Passed: Result success + SHA 仍当前
-  Completed --> Failed: Result failure / cleanup 未证实
-  Completed --> Stale: Head/Base 已变化
-  Passed --> [*]
-  Failed --> [*]
-  Stale --> [*]
+  [*] --> Preparing
+  Preparing --> Rejected: 冲突、身份或产物错误
+  Preparing --> Prepared: 可信 Prepare 成功
+  Prepared --> Queued: 当前版本且认领成功
+  Queued --> Running: 完整租约与启动许可
+  Running --> Cleaning: 执行结束
+  Cleaning --> ReportPending: 已释放或隔离
+  ReportPending --> Completed: 精确回报成功
+  Preparing --> Superseded: 新版本
+  Prepared --> Superseded: 新版本
+  Queued --> Superseded: 新版本
+  Running --> CancelRequested: 新版本或取消
+  CancelRequested --> Cleaning: 停止所属进程
+  Superseded --> [*]
   Rejected --> [*]
-  InfraError --> [*]
-  TimedOut --> [*]
+  Completed --> [*]
 ```
 
-任意非成功终态禁止当前 GitCode PR 显示 PASS；GitCode Bridge 应始终返回非 0 Exit Code（STALE 可在摘要中单独展示，不允许作为成功）。超时后优先取消相应 GitHub Run，执行中断必须遵循 Blue 的任务归属与资源释放机制；不可用“超时即删除租约”取代 NPU 检查。
+图中的 Completed 仅表示任务闭环，PASS 还需全部 Case、清理、版本和门禁判定。清理或回报期间被替换的结果只进入历史审计；不改变当前 PR 结论。
 
-## 4. 核心协议与 Artifact 方案
 
-### 4.1 可信 GitCode Bridge → GitHub Dispatch
+## 4. 协议、Prepare、取消与结果设计
 
-GitCode Bridge 通过目标分支受信任的脚本从 GitCode PR API 取权威元数据，再发送：
+### 4.1 Dispatch 合同与幂等
+
+只允许目标仓已核验默认分支：TorchTitan 为 master，vLLM 为 main。参数示例仅说明结构，所有项目 ID、SHA、事件名与 API 版本必须在 P0 锁定：
 
 ```json
 {
@@ -296,416 +247,529 @@ GitCode Bridge 通过目标分支受信任的脚本从 GitCode PR API 取权威�
   "return_run_details": true,
   "inputs": {
     "source_provider": "gitcode",
-    "gitcode_repo": "depeng1994/torchtitan-npu",
+    "test_mode": "merge_result",
+    "gitcode_pr_repo_id": "verified-personal-project-id",
     "gitcode_pr": "123",
-    "gitcode_head_sha": "0123456789abcdef0123456789abcdef01234567",
-    "gitcode_base_sha": "abcdef0123456789abcdef0123456789abcdef01",
-    "test_cases": "[{\"test_id\":\"worker_os_blue\"},{\"test_id\":\"dispatch_smoke_8p\"}]"
+    "expected_head_sha": "1111111111111111111111111111111111111111",
+    "expected_base_sha": "2222222222222222222222222222222222222222",
+    "expected_control_sha": "3333333333333333333333333333333333333333",
+    "test_cases": "[{\"test_id\":\"worker_os_blue\"},{\"test_id\":\"dispatch_smoke_8p\"}]",
+    "bridge_nonce": "stable-event-and-invocation-identifier",
+    "request_context": "{\"source_snapshot_id\":\"trusted-snapshot-identifier\",\"dispatch_intent_id\":\"stable-dispatch-intent-identifier\",\"rerun_intent_id\":\"initial-or-authorized-whole-run-intent\"}"
   }
 }
 ```
 
-以上 SHA、PR 号、仓库地址均为**示例值**；个人仓存在性/名称、GitHub Workflow `inputs`、GitCode API path 和 GitCode `on` 事件类型，需要 P0 Spike 验证后固化。`ref=master` 仅在 Nightly/Smoke 合入默认分支后使用；开发验证期间可用受控 `ci/lite-actions-v2` / 专用 CI 分支，禁止将测试用 PR 提交的 Workflow 当作可信控制面。
+GitHub 已支持返回 Run Details；使用固定 API 版本并验证实际返回的 workflow_run_id/URL。nonce 在正常路径也必须存在，并进入可信 run-name/请求元数据。nonce 来自受信事件与调用身份，跨网络重试保持稳定，不由 PR 文本任意指定。
 
-如 GitHub API 返回 `workflow_run_id`，直接绑定；如果环境 API 行为不支持该响应，增加唯一 `bridge_nonce` 并查询带 nonce 的受信 Run 元数据，**遇到多条候选即拒绝**，不使用“最新一条”兜底。
+request_context 为有类型/长度限制的 JSON 字符串，解析后与可信事件和早期 intent 核对，不能当作任意调用参数透传。示例保持十个 Workflow 输入，最终 YAML 与 Bridge 使用同一合同。
 
-### 4.2 Source Manifest（schema 1，拟新增）
+派发前记录意图；服务端是否已接收不明时进入 DISPATCH_UNKNOWN，按 nonce、仓、Workflow、时间范围与输入身份找回候选。不能仅取最新 Run；歧义时停止新的资源执行并恢复关联。Bridge 的进程内变量不能作为唯一持久化记录：映射须有可恢复的事件/Run 元数据及 Blue 认领账本。
+
+**两个摘要各司其职：**
+
+- request_spec_digest：规范化 PR 身份、H/B、T、合并策略、控制仓/Workflow/C、受信选择器、策略与运行环境版本；不含投递 Run/Attempt/nonce。
+- plan_digest：本次完整 Plan 的规范化摘要，包含 Run/Attempt/产物引用；排除自身 plan_digest 字段。
+
+Blue 先按 (PR, pr_generation, request_spec_digest, execution_generation) 原子选定整单 canonical execution，再在其下按 case_id 认领；重复 Run 不得分别抢走同一整单的部分 Case。相同规格的重复投递不能再分配一组 NPU；不同选择器（例如 8P 与 16P）不互相复用。重复 GitHub Run 应明确链接 canonical execution 并结束为重复/取消，不能把另一个 Run 的原生结果伪装为本 Run 独立执行。Bridge 必须识别受信重复关系，跟随 canonical 的状态或将重复记录排除出门禁；重复 Run 的 cancelled 不能覆盖 canonical 的当前成功/失败。无法证明关联时失败关闭。
+
+GitCode/schema 4 首期仅支持从受信 Bridge 新建整单重跑。Bridge 携带可验证的操作者/事件身份和 rerun_intent_id，协调器把同一 intent 原子映射到同一 execution_generation；新授权 intent 才增加代次并撤销前一次执行/发布权。网络重试、重复事件不增加代次。GitHub 原生全部或部分 Job rerun 均明确拒绝，提示通过 Bridge 重跑；schema 3 原行为保留。旧 H/B 的手动重跑仍须判为过期。
+
+### 4.2 合并结果构建
+
+1. 从已校验 PR API 与目标分支 API 确定 H/B、仓库 ID、ref、PR open 状态和授权；不要把事件中陈旧的 base.sha 当作当前分支 tip。
+2. 只从允许的 GitCode 主机/项目获取 H/B。按已核验引用 fetch，再核对对象 SHA；取得足够共同祖先历史，缺历史或来源不明则拒绝。
+3. 使用隔离目录、固定 Git 版本和受信配置执行批准的合并策略。可使用 git merge-tree --write-tree 构造结果 tree；必须检查退出状态和冲突信息，不能因输出了 tree ID 就视为无冲突。
+4. 默认设计为固定 merge 策略，基于 B 合入 H。若目标项目实际使用 squash/rebase，P0 必须确定能证明内容等价的策略；未证明前不能用另一策略的测试冒充通过。
+5. 合并冲突报 MERGE_CONFLICT，既不发布可执行 Request，也不租用 NPU。禁止执行 PR hooks、构建脚本、任意 merge driver 或 Python 目录发现。
+6. 正常合并结果得到 T，并封装为本地测试提交 M；父提交顺序为 B、H。受信生成器固定作者、提交者、时间生成规则及消息模板，保证重试可复现。H=B、快进、无变化等边界规则和预期树必须有测试。
+7. 平台已有预合并 ref 可作为优化，但必须验证其输入父提交/树与本次 H/B/策略一致。引用名称和 merge_commit_sha 字段本身不构成证明。
+8. 只归档已验证的 T，记录文件/依赖完整性和 bundle SHA256；M 无须推回任一远端。实际最终合并提交可能因元数据不同而 SHA 不同，内容判定以 H/B/策略及 tree 为准。
+9. PR 测试载荷必须存在于 M/T，可信执行器/入口来自 C。缺入口、接口不兼容或依赖不足，在 Prepare 阶段拒绝。
+10. 构建后再次核对当前 H/B；已变更则废弃该请求，按新版本重新准备。
+
+Git archive 不自动补齐 submodule/LFS。Manifest 必须列出本期用到的依赖、固定对象及是否封装；需要时由可信 Prepare 拉取并校验，执行端不得自行取浮动分支。vLLM 的 csrc/third_party/catlass 若本期 HCCL 不依赖，可明确记录 gitlink 与未封装状态。
+
+### 4.3 Source Manifest 与 Request（拟新增）
+
+Source Manifest schema 2 只描述来源、内容与控制版本；最终 Request schema 4 引用它。**Manifest 不嵌入最终 plan_digest**，避免 Plan/Manifest 互相哈希形成循环依赖。
 
 ```json
 {
-  "schema": 1,
+  "schema": 2,
   "source_provider": "gitcode",
-  "source_repo_id": "trusted-gitcode-repository-id",
-  "source_repo": "depeng1994/torchtitan-npu",
-  "pr_number": 123,
-  "head_ref": "feature/change-tests",
-  "base_ref": "master",
-  "source_sha": "0123456789abcdef0123456789abcdef01234567",
-  "base_sha": "abcdef0123456789abcdef0123456789abcdef01",
-  "control_repo_id": 1210038933,
-  "control_repo": "cann-framework/torchtitan-npu",
-  "control_sha": "11223344556677889900aabbccddeeff11223344",
+  "test_mode": "merge_result",
+  "pr": {
+    "repo_id": "verified-personal-project-id",
+    "number": 123,
+    "head_repo_id": "verified-head-project-id",
+    "head_ref": "feature/change",
+    "head_sha": "1111111111111111111111111111111111111111",
+    "base_repo_id": "verified-personal-project-id",
+    "base_ref": "master",
+    "base_sha": "2222222222222222222222222222222222222222"
+  },
+  "merge": {
+    "policy": "approved-merge-policy-v1",
+    "builder_version": "pinned-build-environment",
+    "tested_merge_sha": "4444444444444444444444444444444444444444",
+    "tested_tree_sha": "5555555555555555555555555555555555555555"
+  },
+  "control": {
+    "upstream_repo_id": "verified-upstream-project-id",
+    "upstream_default_ref": "master",
+    "upstream_control_sha": "3333333333333333333333333333333333333333",
+    "github_repo_id": 1210038933,
+    "default_ref": "master",
+    "control_sha": "3333333333333333333333333333333333333333",
+    "runner_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
   "github_run_id": 123456789,
   "run_attempt": 1,
-  "source_artifact": "gitcode-source-123456789-1",
-  "source_sha256": "64位十六进制SHA256摘要",
-  "case_plan_sha256": "64位十六进制SHA256摘要"
+  "source_artifact_id": 12345,
+  "bundle_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "dependencies": []
 }
 ```
 
-**生产校验**：禁止用 PR 载荷直接信任 Fork URL，必须从 GitCode API 权威响应解析且校验允许列表。完整校验 `source_sha`、`source_sha256`、`control_repo_id`、Run/Attempt、计划摘要。Manifest 是审计元数据，不能凭其存在就跳过 Artifact 字节校验。`git archive` 不自动封装 submodule/LFS 内容；对本期需要的依赖另行固定版本/校验，不暗示源码包是完整镜像。
+所有值均为示例，不是已验证项目/运行。40 位 SHA 指 40 个十六进制字符。代码仓库名用于展示/寻址，准入以稳定 Repo ID 和已核验映射为依据。
 
-### 4.3 Artifact 命名和所有权
+最终 schema 4 Request 必须包含：
 
-| Artifact | 制作者 | 消费者 | Gate |
-|---|---|---|---|
-| `gitcode-source-<run>-<attempt>` | Prepare | Blue / 未来 Self-hosted | 归档内 GitCode 指定 SHA、SHA256 一致 |
-| `source-manifest-<run>-<attempt>` | Prepare | Blue、Waiter、Bridge（元信息） | GitHub Run/Attempt 唯一，内容结构合法 |
-| `lite-ci-request-<attempt>` | Prepare / 现有规划入口 | Blue | 受信 Plan/schema 4、worker/pool allowlist、plan digest 一致 |
+- control_repo_id、Workflow ID/path、C、GitHub Run/Attempt、Bridge 事件/nonce、dispatch_intent_id；
+- PR H/B 身份、source_snapshot_id、M/T、合并策略、pipeline、request_spec_digest 与 rerun_intent_id；
+- 早期 dispatch-intent 与 Source/Runner/Manifest 的不可变 Artifact ID、名称、大小、摘要；
+- 可信 Case 全集、资源/超时/环境策略、策略版本与 plan_digest；
+- Prepare Job 身份、可信 deadline、请求级与每 Case 的 result_slots（Check Run ID 及 App/仓/C/Run/Attempt/Case 身份）。
 
-Blue 当前生产 schema 3 使用 `lite-ci-request-<attempt>`；新字段须显式升级协议并更新双方消费者。**不得生产端一半采用 schema 3、一半采用 schema 4 后直接切换。** 旧 GitHub 原生 PR 工作流维持原始路径，直到双路径回归通过。
+pr_generation、execution_generation 和 lease fencing 由 Blue 持久化协调器形成运行封套；不是由 PR 或任意 Dispatch 输入自报。request_id=(control_repo_id, github_run_id, run_attempt) 与 source_snapshot_id/代际的绑定一旦持久化不可更改；已撤销请求即使 H/B 再次相同也不能重新准入。首次迟到请求须验证原始受信事件/快照关系，不能只比当前 H/B；具体可证明边界见 §3.3。Waiter 通过 §4.7 的 AdmissionReceipt 获得并固定运行封套，不改写不可变 Plan 或重算摘要。
 
-### 4.4 Blue 选择器硬限制
+### 4.4 Artifact 就绪与安全消费
 
-首期仅接收已注册选择器及 Blue 资源覆盖：
-
-- Dispatcher Smoke：`worker_os_blue`、`dispatch_smoke_8p`、`dispatch_smoke_16p`（具体 ID 仍按模型特性分支注册表核验）。
-- Nightly：既有 Blue 8P DSV4 Muon/AdamW 训练用例（保留 LOSS、5 步和 cleanup 证据）；由可信 Workflow defaults 指定，不由 PR 输入任意定义训练拓扑。
-- `worker=yellow`、`a3_shared_yellow`、`a5_shared_yellow`、任意 A5/64P 调度一律拒绝；不改变 Blue 设备隔离记录，不强制回收外部占卡进程。
-
-## 5. 需求拆分及逐项开发设计
-
-### R01｜组织名与统一 Workflow 收编（必须先完成）
-
-**影响：** 模型仓 Workflow、`prepare_request.py`、`wait_result.py`、Lite Actions `contract.py`、`github.py`、`router.py`、`ssh_runner.py` 等仍引用旧组织名。推荐用仓库稳定 ID 鉴别可信身份，以新名称组装 GitHub API 和 clone URL，禁止永久信任旧组织名重定向。
-
-**实现：** 将两种业务 Workflow `nightly_fulltests.yml` / `lite_actions_dispatcher_smoke.yml` 在模型仓受审代码线上落实；按既有 Draft PR #11、依赖和镜像同步策略决定何时合入 `master`。旧独立 YAML 的删除必须在两个统一入口和旧调用者替换完成后单独审查。**禁止本设计分支擅自删除模型仓三个旧 YAML。**
-
-**验收：** GitHub 新组织下两个工作流可运行；既有 GitHub-only Nightly/Smoke 结果正常；旧仓库路径硬编码检查通过。
-
-### R02｜GitCode 个人仓可信 Bridge
-
-**位置（首期只写个人仓）：** `.gitcode/workflows/ci-github-bridge.yml`、`.gitcode/scripts/github_bridge.py`，以及个人仓受控分支中的测试配置。上游 `cann/torchtitan-npu` 只读。
-
-**实现：** 个人仓目标分支上部署受信 `pull_request_target` Bridge；限制目标 branch、本人/审核账号、Repo ID、源仓与 tests 白名单。密钥放个人仓 Secret `GH_ACTIONS_BRIDGE_TOKEN`，GitHub Token 限定目标 repo 的 Actions 最小权限；不得 Checkout PR Head 后运行 PR 中的 Bridge 脚本。Bridge 记录可访问的 GitHub Run URL，轮询期间持续打印简短进度。
-
-**验收：** 个人仓 PR 打开/更新后真正出现 GitCode Action；无权 PR 不能拿到 Secret 或启动 Blue。
-
-### R03｜PR 权威元数据验证和 GitCode Fetch
-
-**实现：** Bridge 和 Prepare 都查询 GitCode 当前 PR 数据。验证个人仓 ID、真实 Head Repo、目标分支、PR Open、Head SHA、Base SHA。Git Fetch 使用已核验的源仓分支，不依赖从 GitCode 裸 SHA 直接 Fetch。`rev-parse FETCH_HEAD` 必须严格等于 API 返回并与 Dispatch 传输一致的 40 字节十六进制 SHA。抓取期间 PR 更新则拒绝该请求；结束时再次做 PR 版本检查。
-
-**验收：** 正常 PR SHA 成功；篡改输入 SHA、伪造 repo、修改后旧 Run 都不能 PASS。
-
-### R04｜GitHub Dispatch 与幂等
-
-**实现：** GitHub Workflow 首期只选 Smoke/Nightly。优先 `workflow_dispatch` 返回 Run Details；Bridge 用 `bridge_key` 关联与去重，避免 GitCode Action 重试造成重复 NPU 训练；如果重复调用，复用同版本 Run 或明确取消旧 Run，不能靠最近 Run 猜测。失败时错误分类为 `AUTH`、`DISPATCH`、`RUN_ID`、`STALE`、`TIMEOUT`、`UPSTREAM_FAILURE`。
-
-**验收：** 单 PR 同 SHA 的重复触发不导致多组 Blue 任务；GitCode 日志出现 GitHub Run ID 和 URL。
-
-### R05｜统一 Prepare：源码、Manifest、Plan
-
-**位置：** GitHub Hosted Job，Nightly 和 Smoke 共同调用可信模块/可复用工作流。
-
-**实现：** `needs` 前置。可信脚本校验 GitCode 元数据、Fetch 源码、冻结训练相关文件、计算 bundle SHA256、生成 Source Manifest/Case Plan、上传 Artifact。Case 列表必须来自可信注册/白名单；PR 提供的测试文件作为测试对象，但不能不受控地修改 Runner 标签、worker/pool、资源抢占、最大并行、脚本入口或密钥权限。`source_sha` 与 `control_sha` 分开，先生成全部 Artifact 再允许 Blue Pull 接单。
-
-**验收：** Prepare 失败零 Blue 任务；Artifact 均有可核查摘要和 Run/Attempt。
-
-### R06｜Lite Actions Blue Artifact 消费及安全复用
-
-**位置：** `ci_core/contract.py`、`ci_core/github.py`、`ci_core/ssh_runner.py`、`ci_core/router.py`、`ci_core/executor.py`、相关单测。
-
-**实现：** 只对 `source_provider=gitcode` 使用本次 Prepare 的源码归档；原 GitHub-only 任务保留现有 GitHub SHA 取源码路径。Blue Pull 必须校验计划签名性质的信任链（可信 GitHub Run+Artifact 来源/字段/摘要，而不是单靠自报 JSON）。资源调度、并发锁、SSH 派发、进程组取消、已存在隔离、结果重试和 20 行摘要继续复用；不更改 NPU 编排算法。
-
-**验收：** Blue Smoke 的 OS、8P、16P 在新源代码路径下运行，释放后可重复用卡；原 GitHub CI 路径仍通过。
-
-### R07｜GitCode 最终 Check 与过期检测
-
-**实现：** Bridge 按明确 Run ID 轮询，只有 GitHub `completed/success`、case 清理成功和 GitCode Head/Base 仍相同才返回 0。`failure/timed_out/cancelled/action_required`、Prepare 拒绝、无 Run ID、过期版本一律非零退出。GitCode Job Summary 提供 `GitCode PR → Source SHA → GitHub Run → Blue Case → GitCode Check` 的链路与日志链接。禁止因 GitCode 等待超时而直接认为 Blue 设备已释放。
-
-**验收：** GitCode PR 原生 Check 与 GitHub Run 完全一致；SHA 更新后旧 PASS 不覆盖新 Head。
-
-### R08｜Blue 正式发布与生产状态保留
-
-**实现：** Blue `ssh ycy` 由 `lite-actions-blue.service` 继续运行；以现有 `main` 发布为稳定回退点。工作在独立分支、临时目录和候选状态中验证；正式升级执行 drain → 快照 → 停机 → 同一持久状态目录/配置 → 部署候选 → 校验 → 启动。若有运行中训练、待回传状态或未解除隔离，先闭环后切换；不能启动第二个 Worker 实例争夺同一资源。升级后要验证新的完整 Run 以及旧 `pending report` 恢复。
-
-**验收：** 本轮跨平台 E2E 成功并且 Blue 无新增未知隔离；原生产 Nightly/Smoke 回归正常。Yellow 完全保持当前状态。
-
-### R09｜个人仓合并/镜像与分支一致性
-
-**实现：** 本轮所有 GitCode 代码仅在 `depeng1994` 个人仓修改/合并，上游 `cann` 不写入。训练代码直接取个人仓 PR SHA，不要求 GitHub 镜像先同步；后续官方上游合并、GitHub `sync-upstream.yml` 与 GitCode Push Mirror 改动属于独立工作，需确认单一写入者和 `gh-pages`/特性分支保护。拒绝将个人仓 PR 与 GitCode 上游 PR 号混为同一身份。
-
-**验收：** 个人仓 PR 反复提交可独立通过 CI；未修改上游，GitHub 镜像无冲突覆盖。
-
-### R10｜Native Self-hosted 接口预留（本期不做）
-
-保留 Provider-neutral `Source Manifest`、`source_digest` 与 Artifact 合同；未来可增 `train.needs: prepare`，原生 Runner 下载并校验相同 Bundle。**本轮不添加 `.github/workflows` 自托管业务 Job，不部署 Runner，不做原生 Runner 端到端验收**。
-
-### R11｜回归、监控、限流与故障处置
-
-沿用 20 行诊断、180 字符/行、Comment 请求预算与 LOSS/清理判定；Bridge Summary 不泄露训练完整日志、Token 和私有机器地址。设置最大等待、GitHub API 退避及 403/429 重试边界。监控同一个 `bridge_key` 的触发、Prepare、Blue 接单、回报、最终 Check；按唯一身份防止重复训练。状态异常 Fail Closed。
-
-
-## 5A. vLLM-Ascend Blue A3 Smoke 专项详细设计（V2.2，本期必做）
-
-### VL-01｜vLLM 双平台路由与源仓权限
-
-GitCode 入口是 `depeng1994` 的 vLLM 个人仓 PR；P0 必须确认 GitCode 项目的 URL、Repo ID、受保护目标分支、Actions 权限及 GitHub Dispatch Token。GitHub 目的地固定为 `cann-framework/vllm-ascend`（Repo ID `1438625957`，可信 `main`），Workflow 仅使用已注册的 `lite_actions_dispatcher_smoke.yml`。不得用同名 GitHub `depeng1994/vllm-ascend` Fork 的存在来推断 GitCode 个人仓可用。
-
-通用 Bridge 应映射 `(gitcode_repo_id, gitcode_pr, source_sha) → (control_repo_id, github_run_id, run_attempt)`。两仓即使 PR 号码、分支名或 Case ID 相同也不能复用 Run、结果和 Artifact。所有源代码由 vLLM 对应 GitCode PR 的 Commit 固定，`github.sha` 始终表示 GitHub 可信控制面版本，不能代替实际执行的 `source_sha`。
-
-### VL-02｜vLLM GitHub Smoke 入口支持 Blue、保留原 A5
-
-当前 `.github/workflows/lite_actions_dispatcher_smoke.yml` 的 `prepare`、`smoke`、`result` 都围绕 Yellow A5 设计；`prepare_request.py` 默认 `worker=yellow`、`target_pool=a5_shared_yellow`、`docker=vllm-kimi-wangjinyin`，选择器仅 `dispatch_smoke_a5_8p`/`dispatch_smoke_a5_32p`。需要为 GitCode Provider 增加**受信 Blue 固定 Case 选择器**；不要让 GitCode 任意传入 worker、pool、docker、shell 命令。默认仅 vLLM Blue OS + A3 8P，A3 16P 单独显式选择。
-
-vLLM `pull_request_target` 的原有 GitHub-only 路径保留但不得在本期被 GitCode Bridge 引导为 Yellow；GitCode Provider 明确拒绝 `a5_shared_yellow` 和任何 A5 Case。`actions/checkout` 里的旧 `torchtitan-npu/vllm-ascend` 及 Python 常量统一改为 `cann-framework/vllm-ascend`。
-
-### VL-03｜vLLM Blue 受信 Case 与脚本
-
-规划三个新 Case ID：
-
-| ID（拟） | 类别 | Worker / Pool | 拓扑 / 真实验收 |
-|---|---|---|---|
-| `vllm_worker_os_blue` | `worker_probe` | Blue，不占 Pool | 验证 Blue 接单、身份与 GitHub 结果 |
-| `dispatch_smoke_a3_8p` | `npu_smoke` | Blue / `a3_shared_blue` | 1×8，`WORLD_SIZE=8`，`all_reduce_sum=28` |
-| `dispatch_smoke_a3_16p` | `npu_smoke` | Blue / `a3_shared_blue` | 2×8，`WORLD_SIZE=16`，`all_reduce_sum=120` |
-
-在可信 `ci_core/vllm_ascend.py` 增加对应拓扑、`ci_overrides`、耗时、Blue 绑定，保留既有 A5 8P/32P 配置但本期禁止启动。不能把动态 PR 输入直接作为租约规格。OS Probe 使用 `worker_probe`，不占用 Docker/NPU。A3 Smoke 使用**已经核验**的 Blue 容器 `cann_master_torchtitan_master_xyj`，但新上机前仍需只读检查两个节点实际镜像 ID、`torch_npu`、CANN、HCCL 网络与完整绑定。
-
-vLLM 现有 `a5_smoke.py` 将 `choices`、`WORLD_SIZE` 和结果证据名称写死为 A5 8P/32P。建议抽象为硬件无关的 `hccl_smoke.py`（旧 A5 可保留包装器），按受信 Test ID 校验 `world_size` 和 `sum`；rank 0 输出 `DISPATCH_SMOKE_PASS` 以及结构化文件，8P=28、16P=120、32P=496。Smoke 只证明通信及调度，不等于 vLLM 完整推理/模型验证。
-
-### VL-04｜单 Blue 多仓执行与安全隔离
-
-Blue 仍保持唯一 systemd 服务，使用现有 `/var/lib/lite-actions/blue` 状态目录、相同 NPU 设备/端口锁和隔离记录。生产配置需要受信地启用两个 Repo：`LITE_ACTIONS_MODEL_REPOS=cann-framework/torchtitan-npu,cann-framework/vllm-ascend`（实际生效前必须先更新仓库白名单、预检并兼容旧状态）。
-
-必须重点修复：`ci_core/ssh_runner.py` 使用模块级 `VLLM = MODEL_REPO == ...`，并在 `remote_command`、`verify`、`stage` 里分叉 A5 特有实现。在双仓 Blue 部署时，以**每次 Run 的 Repo ID/Source Provider/Test ID/Pool 类型**决定目标执行入口及其证据，不依赖常驻 Worker 启动时的默认仓库。`ci_core/executor.py` 已通过子进程环境选择模型仓，但不能跳过新的 Source Artifact 校验。A5 特有 rootinfo 检查继续按 `ascend-a5` 池类型触发，Blue A3 16P 不能误走 A5 rootinfo 或 A5 PID 清理逻辑。
-
-测试必须覆盖：跨仓同一设备租约互斥、并发入队、取消、失败清理、状态恢复和结果不串仓；不得新增第二个 Blue Worker 进程或绕过已有共享锁。
-
-### VL-05｜vLLM Prepare/Artifact/Waiter 与改名兼容
-
-vLLM 的 GitHub Hosted Prepare 从 **GitCode vLLM 个人仓的 PR API** 再次查证提交并按已验证的来源 fetch 到精确 `source_sha`；生成与 TorchTitan 同规范的 Source Bundle、SHA256、Manifest、可信 Case Plan，绑定 `control_repo_id=1438625957`、GitCode Repo ID、Run、Attempt、Case Plan digest。执行端必须校验每个字节摘要与所有身份字段。实际执行脚本来自经 Prepare 固定的该 GitCode SHA，不允许执行未经审批的 PR Workflow YAML。
-
-vLLM `wait_result.py` / `prepare_request.py` 目前硬编码旧组织名，必须更新并保留原 GitHub-only 兼容路径；不能把 vLLM Run 的 Comment 按 TorchTitan 的 GitHub 仓库查询。GitCode Bridge 结束时重新检查 PR Head/Base，过期成功标记 STALE/非 0，而非给最新 PR 绿灯。
-
-**源码完整性注意**：vLLM 仓含 `csrc/third_party/catlass` Git Submodule；普通 `git archive` 不会自动包含该 Submodule 的实际文件。本期 Blue HCCL Smoke 若不依赖 catlass，可在受信 Manifest 中声明未包含的 Submodule 及固定 Gitlink SHA；如实际依赖 catlass，Prepare 必须拉取其受控提交并校验，而不能让执行机自行拉取浮动分支。
-
-### VL-06｜vLLM 开发文件、阶段与发布门槛
-
-| 位置 | 必改文件 / 用途 |
-|---|---|
-| GitCode `depeng1994` vLLM 个人仓 | `.gitcode/workflows/ci-github-bridge.yml`、`.gitcode/scripts/github_bridge.py`，与 TorchTitan Bridge 共享受信逻辑 |
-| GitHub `cann-framework/vllm-ascend` | `.github/workflows/lite_actions_dispatcher_smoke.yml`、`.github/scripts/lite_actions/prepare_request.py`、`wait_result.py`，新增 GitCode Prepare 和通用 HCCL Smoke |
-| GitHub `depeng1994/lite-actions` | `ci_core/vllm_ascend.py`、`contract.py`、`github.py`、`registry.py`、`ssh_runner.py`、`router.py`、`executor.py`、`tests/test_workflow.py` |
-| 部署 | 仅 Blue 的双仓 Poller/可信 Source 消费及资源隔离；Yellow 服务与池不变 |
-| 阶段验收 | vLLM GitCode 权限 Spike → Blue OS → Blue A3 8P → Blue A3 16P → 跨仓互斥 → 失败/STALE → 正式发布 |
-
-现有 vLLM PR #2 面向 Yellow A5，只能作为旧代码/历史证据，不可算 Blue 通过。GitHub vLLM Smoke 已在 `main`，但 Blue Case 和 GitCode Provider 都还需要开发。Yellow 由用户后续独立操作；本期不能为省事先去开 A5 Pool 或在 Yellow 上试验。
-
-## 6. 双模型多仓实施文件清单与开发顺序
-
-### 6.1 GitCode `depeng1994` 两个模型个人仓（分别写入/提交）
-
-| 文件（拟新增） | 内容 |
-|---|---|
-| `.gitcode/workflows/ci-github-bridge.yml` | PR Trigger、受信 base、GitHub Dispatch、等待与原生 Check |
-| `.gitcode/scripts/github_bridge.py` | PR API 复核、Run ID、重试/轮询、当前 Head/Base 判断 |
-| `.gitcode/scripts/bridge_contract.py` | 可信仓库/Case 白名单、变量/输入验证与错误映射 |
-| `.gitcode/tests/test_github_bridge.py` | Mock API 的拒绝/重试/STALE 单测 |
-| `.gitcode/README-ci-bridge.md` | Secret、调试、手动触发、复盘步骤 |
-
-**权限要求**：GitCode 第二台远程环境需分别确认 **TorchTitan 与 vLLM** 个人仓真实 URL、GitCode Repo ID、目标分支、PR/Action 权限和受保护 Secrets；这一步暂未证明已可写，不能以同名 GitHub Fork 存在推断 GitCode 项目可用。
-
-### 6.2 GitHub `cann-framework/torchtitan-npu`（通过 PR 修改）
-
-| 文件 | 内容 |
-|---|---|
-| `.github/workflows/nightly_fulltests.yml` | 受信 Nightly：增加 GitCode Provider 可选输入、统一 Prepare |
-| `.github/workflows/lite_actions_dispatcher_smoke.yml` | 受信 Smoke：增加 GitCode Provider 可选输入、统一 Prepare |
-| `.github/scripts/lite_actions/prepare_request.py` | 版本源分离、扩展 Case Plan 与 Manifest |
-| `.github/scripts/lite_actions/wait_result.py` | Run/Attempt/Source Identity 核验与透传 |
-| `.github/scripts/lite_actions/prepare_gitcode.py`（拟新增） | GitCode PR 查询、源 Fetch、摘要、Artifact |
-| `tests/integration_tests/...` | 受信 Case 注册/选择与兼容测试 |
-
-**特别说明**：若 Nightly/Smoke 仍在 Draft PR #11 中，先做统一工作流落地与审查，不直接在 `master` 调用不存在的 Workflow。旧三个独立业务 YAML 仅在全部消费者迁移后单独删除；T16～T18 不再分别作为新功能需求或验收编号。
-
-### 6.3 `depeng1994/lite-actions`（双仓共享控制面和唯一 Blue Worker）
-
-| 文件 | 内容 |
-|---|---|
-| `docs/gitcode-forward-design.md` | **本文件；首先提交到 `gitcode-forward` 分支** |
-| `ci_core/contract.py` | schema 4、Source Identity、TorchTitan/vLLM 两个 GitHub Repo ID、Blue-only 校验、GitHub-only 兼容 |
-| `ci_core/github.py` | GitHub Artifact/Run/身份管理、改名适配 |
-| `ci_core/ssh_runner.py` | Bundle 消费与缓存，真实执行 SHA 校验；按每个 Run 的仓库/Case 选择 TorchTitan 或 vLLM HCCL 入口，不能依赖模块级 VLLM 判断 |
-| `ci_core/router.py` / `executor.py` | 接单 Gate、Blue 授权、回报与恢复 |
-| `ci_core/vllm_ascend.py` | 受信 Blue OS / A3 8P/16P 定义及原 A5 8P/32P 兼容 |
-| `tests/test_workflow.py` | 双仓协议/状态/安全、取消/资源回归、共享设备锁和结果隔离 |
-| `docs/blue-worker.md` / `README.md` | 上线、回滚、运维与链路说明 |
-
-### 6.4 开发推进顺序（P0–P6）
-
-| 阶段 | 交付物 | 退出标准 |
+| Artifact | 生成者 | 校验和用途 |
 |---|---|---|
-| P0 基线/权限 | GitCode TorchTitan/vLLM 两个个人仓权限 Spike、分别盘点 GitHub Workflow、Blue 状态备份 | 两仓 GitCode PR/Bridge 权限与 GitHub 可信入口可用，vLLM Case 清单符合 Blue-only |
-| P1 Bridge Spike | 分别从 TorchTitan 与 vLLM 个人 GitCode PR 启动对应 GitHub **Blue OS probe** | 两仓各自有 GitCode PR → GitHub Run → GitCode Check 的证据，不能跨仓取结果 |
-| P2 Prepare | GitCode PR SHA → Source Bundle/Manifest/Plan 的 GitHub Hosted Job | SHA 正确且恶意输入被拒绝，错误不触发 NPU |
-| P3 Blue Adapter | schema 4、双仓 Artifact 消费、vLLM Blue A3 8P/16P HCCL 入口、唯一 Blue 共享资源锁 | 协议/安全/单测通过；原两仓 GitHub-only 入口不回归；Yellow 未动 |
-| P4 大 E2E | 执行 TorchTitan E2E-01～06 + vLLM E2E-07～12 | 两个 GitCode 个人仓真实 PR、各自 GitHub Run、Blue 实际执行/拒绝证据齐全 |
-| P5 Blue 正式切换 | Blue 服务带状态平滑升级、回滚能力 | 正式 Blue E2E + 旧入口 Smoke/Nightly 通过 |
-| P6 文档与关闭 | 双仓代码审查、运维文档、失败演练和汇总 | **12 个 E2E** 有真实链接及结果，Yellow/Native 保持未切换 |
+| dispatch-intent-<run>-<attempt> | 可信 Prepare 最早阶段 | 仅登记 PR/快照/派发/控制身份；不授予任何执行或资源权限 |
+| gitcode-merge-source-<run>-<attempt> | Prepare | 唯一 source.tar.gz；内层文件的 SHA256 明确为 bundle_sha256 |
+| trusted-runner-<run>-<attempt> | Prepare 从 C 导出 | 独立可信执行器/目录版本及摘要 |
+| source-manifest-<run>-<attempt> | Prepare | schema 2、H/B/M/T/C、Source Artifact ID 与依赖 |
+| lite-ci-request-<attempt> | Prepare 最后发布 | schema 4、完整 Case/产物引用、plan_digest |
 
-## 7. 端到端“大验证用例”：本期正式验收矩阵
+GitHub 外层 ZIP 的摘要与内部 source.tar.gz 摘要不能混用；分别标明校验对象。缓存键包含 provider、repo ID、M/T 及 bundle digest；缓存命中仍验证内容。SourceHandle 一次解析，供 Router、Executor、SSH 子进程共享；GitCode 路径任何一层都不得回退到 GitHub model_archive。
 
-**原则**：每个 E2E 必须从**对应模型 GitCode `depeng1994` 个人仓的真实 PR/Action** 出发，经该模型 GitHub Repo ID/Run、可信 Prepare、Blue 实际执行或拒绝，最后**回到同一 GitCode PR 页面显示 Check 状态**。TorchTitan 为 E2E-01～06；vLLM 为 E2E-07～12（Blue OS、8P、16P），合计 12 项。不能用 GitHub 单独成功、CPU 单测或 Yellow A5 历史验证替代任何 Blue 大用例。
+**接单门槛同时成立：**
 
-### E2E-01｜个人仓 PR → GitHub Blue Smoke → GitCode PASS（主链路，P0）
+1. 来自批准的控制仓、默认分支、Workflow 和实际 C；
+2. 绑定本 Run/Attempt 的 Prepare Job 已 completed/success；
+3. Source、Runner、Manifest、Request 全部存在，ID/归属/大小/摘要一致，全部 result_slots 已由预期 App 创建且身份可验证；
+4. 请求 H/B 仍当前、代际有效，Case 与 Blue 策略通过；
+5. 没有取消、重复执行认领或过期 deadline。
 
-**准备**：在 GitCode `depeng1994` 个人仓创建 PR，修改一个可安全执行的测试用例内容/注释或受控测试参数；确保 GitCode 可信 Bridge 已在个人仓目标分支注册。允许选择 Blue 的 `worker_os_blue` + `dispatch_smoke_8p`，实际运行 8P HCCL（必要时先用 OS 探测打通网络）。
+needs: prepare 不能单独约束外部 Pull Worker。全部普通产物先上传、Request 最后发布；Worker 仍检查 Prepare Job 成功。处理只上传部分文件、上传 Request 后失败/取消、重复候选、过期/被删除产物时都不启动。
 
-**操作/数据流**：GitCode 个人 PR 触发 `ci-github-bridge` → Bridge 从 PR API 取得最新 Head SHA → GitHub `lite_actions_dispatcher_smoke.yml` 返回 Run ID → Hosted Prepare 从个人 GitCode 源分支抓 Commit 并固定 Artifact → Blue 实际执行 OS/8P、校验释放 → GitHub Case 和 Run 变 success → GitCode Bridge 复核 Head/Base 一致并退出 0。
+下载、解压、缓存需限制压缩/解压大小、文件数与路径；拒绝路径越界、危险链接和覆盖控制目录。控制机向每个节点传输后再次核对 bundle digest，所有节点完成 staging 才允许 launch。关键模型模块的实际加载路径与运行环境版本纳入执行证据。
 
-**通过证据（必须全部具备）**：① GitCode PR/Actions URL、本人账号与 Head SHA；② GitHub Run URL/Run ID；③ Source Manifest 完整 SHA 与源码包 digest；④ Blue 任务日志（OS/HCCL 校验）、具体 Test ID、`cleanup_verified=true`；⑤ GitCode PR Check 绿色 PASS，且源 SHA 一致。**不得用 GitHub 的 `master` 源码替代 GitCode PR。**
+### 4.5 最新版本优先、取消与 Base 更新
 
-### E2E-02｜同一 PR 更新新提交后再次转发，旧 PASS 不污染新版本（P0）
+Blue 控制协调器在一个事务中更新 PR 当前版本/代际、撤销旧执行资格并记录取消意图。执行持久化层采用带版本和唯一约束的事务接口；实现可采用 SQLite，不能用多次独立状态 update 假装跨记录原子事务。
 
-**操作**：E2E-01 成功后，对同一 PR push 新 Commit（Head A→B）。新 GitCode Action 再次 dispatch；旧 Run 可能仍在终态或运行中。
+| 旧任务位置 | 新版本到来后的动作 |
+|---|---|
+| 仅派发/Prepare 中 | 标记过期并取消对应 GitHub Run；不允许 Request 获得启动权 |
+| 排队中 | 撤销排队资格，终结为 SUPERSEDED/CANCELLED |
+| 已租约、未启动 | 再核对代际；取消 staging/启动，核验后释放或隔离 |
+| 正在执行 | 持久化取消意图，终止该任务所属进程，逐节点清理 |
+| 清理/回报中 | 完成安全清理，结果只留历史，不改变当前门禁 |
 
-**通过证据**：版本 A 的 Source Manifest/Run 与版本 B 分别可追踪，B 的实际执行 `source_sha=B`；如果 A 结果在 B 之后才结束，GitCode 不得对 B 显示 A 的成功；B 执行完成才可 PASS。同 SHA 重试不得额外占用 Blue 资源。
+执行侧状态独立为 CancelRequested → Stopping → Cleaned / Quarantined。GitHub Run cancelled 不代表 NPU 已释放。接单、租约获取后、staging 后 launch 前及运行中核对当前代际；结果发布再核对当前发布权。最新代际是启动和发布当前成功的条件，不是清理自身任务的条件：旧任务仍须完成清理，仅当持久化租约的 lease_id/fencing_token/execution_id 与该任务捕获的绑定完全相同时才能释放这份租约。远端任务标记与 fencing 防止旧回调终止新进程、释放新租约。
 
-### E2E-03｜GitCode PR 测试变更导致 Blue Smoke 真失败，GitCode 正确 FAIL（P0）
+新版可以先 Prepare 和排队，也可使用与旧任务无关且已确认空闲的设备；不得绕过旧任务占用和隔离。继续禁止强制回收外部进程，不改变 Blue 隔离规则。
 
-**操作**：在受控个人 PR 上提交明确会导致已选 smoke case 失败的测试变更（例如安全的校验断言失败），触发 GitHub Smoke，确保不是被 Prepare 拒绝的伪失败。
+**更新来源与责任：**
 
-**通过证据**：GitHub 对应 Case 的真实执行显示 FAIL、保留关键报错；Blue 设备释放或安全隔离确认；GitCode PR Action 最终红色 FAIL，能跳转到相同 Run。测试完成后通过更新 PR 恢复变更，不在生产环境留下故障配置。
+- GitCode PR 事件：驱动 Head 更新；Bridge 验证原始事件与当前权威状态。
+- 目标分支 push：可信 GitCode workflow 枚举受影响的开放 PR，使旧门禁失效并调用相同 Bridge 逻辑准备新 H/B。
+- GitCode 周期 reconciler：补偿事件丢失，重新创建缺失的受信执行并补发版本状态；其对 PR Check 的关联能力必须在 P0 实证。
+- Blue 只读 reconciler：独立核对已登记派发和已接单 PR/Base，发现过期立即撤销并取消；在 Prepare 成功前也跟踪 Run 所有权。Bridge 负责本次在途派发的即时取消，协调器恢复账本并补偿；不依赖 Bridge 始终存活，也不伪造 GitCode Action。
+- PR 关闭、合并、改目标分支或授权撤回：撤销旧代际；不再自动重排已无资格的请求。
 
-### E2E-04｜错误 SHA 或不可信源被 Prepare 拒绝，Blue 零任务（P0，安全阻断）
+重复/乱序通知不能降低代际。短时密集更新可合并触发，但必须先失效旧门禁，且不能借此延后旧任务取消。记录发现更新、发起取消、远端停止、释放/隔离的时间及超时原因。
 
-**操作**：通过受控手动 Bridge 测试入口/测试模式，模拟 PR 指定 SHA 与 GitCode 实际 Head 不一致、Repo ID 不在 allowlist，或要求 Yellow/A5 Case。
+### 4.6 GitCode 绿色与合并门禁：确认范围与能力边界
 
-**通过证据**：Prepare/可信 Bridge 明确给出拒绝原因，GitHub Run 为非成功、GitCode Action 红色；Blue 调度日志与资源租约证明**没有新任务下发**；Yellow 服务与资源状态没有变化。拒绝场景不靠在真实 PR 里偷偷注入不可信 Workflow。
+**已确认的测试语义：** 固定当前 H/B，执行合并结果 M/T；Head/Base 变化后失效、取消并重测。发布该版本“合并测试通过”必须同时满足：
 
-### E2E-05｜个人仓 PR → GitHub Nightly All Test → Blue 五步训练 → GitCode PASS（P0）
+- 全部必需 Case 集合与 Plan 一致并成功，身份、摘要、M/T 及清理证据有效；
+- PR 仍 open，发布前查询的 Head/Base、目标引用与已测版本相同，代际有效；
+- 当前 Pipeline 的规格、重跑代次及 canonical execution 仍拥有发布权；
+- GitCode 状态能够关联已测 H/B 或可验证预合并版本，详情明确显示测试过的 Base；
+- 已知 Head/Base 更新先撤销旧版本状态，再进行新版准备，不能拿旧 PASS 覆盖当前状态。
 
-**操作**：在个人仓 PR 上修改一个受控训练用例或训练代码，选择已注册的 Nightly 默认 Blue 8P Muon/AdamW（实际用例与资源许可需先核对）；GitHub 运行 `nightly_fulltests.yml`，Prepare 固定对应 GitCode SHA；Blue 完成训练并释放。
+无法确认当前 H/B、版本已失效或结果身份不全时保持 PENDING/BLOCKED 或明确失败。指定 H/B 的历史 PASS 可保留，但不得冒充当前版本的成功。
 
-**通过证据**：GitCode 个人 PR URL、GitHub Nightly Run、两个 Case 使用同一 `source_sha`，每个 PASS 有真实 rank0 LOSS 五步证据（不宣称新的数值精度一致性）、`cleanup_verified=true`，GitCode 最终 PASS，且没有旧代码回退。**此用例涵盖原 A3 8P 独立业务验证的核心能力，但不再启动独立 `a3_8p_lite_actions.yml`。**
+**需要单独核验的合入保证：** 最终 GET 与状态发布之间仍可有更新，绿色之后、用户合入之前也可能更新 Base。再次 GET、轮询、事件补偿和普通 PR 级状态覆盖不能证明“实际合入瞬间仍是已测 Base”。该保证需要平台原子核对版本条件、自动使旧结果不再满足门禁，或提供等价保证的合并队列。
 
-### E2E-06｜个人仓 PR → GitHub Blue 16P Smoke → GitCode PASS（P0，跨节点）
+P0 必须在目标项目记录原生 Check 的提交/预合并绑定、Base 更新失效、受保护分支的合入条件及原子验证/合并队列能力，覆盖上述竞争窗口。如果只支持事件后异步失效，必须明确可观测延迟，不能写成无窗口保证。2026-11-01 核对的 [GitCode 公开合并 API](https://docs.gitcode.com/docs/apis/put-api-v-5-repos-owner-repo-pulls-number-merge/) 没有文档化 expected_head_sha/expected_base_sha/CAS 参数；这不足以断言平台不支持，也不足以假定普通 Merge API 已提供保证。
 
-**操作**：同样从 GitCode 个人 PR 触发统一 `lite_actions_dispatcher_smoke.yml`，仅选择已批准的 `dispatch_smoke_16p`；Blue 通过原有两机 HCCL 拓扑执行真实通信测试并释放。
+**尚未拍板的扩展范围：** 若原生能力不足，选择“接受明确标示版本与时效边界的测试状态”或“增加受控合入入口/约束所有写入者”需带平台实证再请用户决定。本文件不自动引入合入服务或改分支保护。此前可展示指定 H/B 的测试结果，但代表“当前可合并”的门禁不得给绿；若平台只能展示一个混合状态，先保持 BLOCKED/PENDING，不静默降低 D02。G12 的平台边界与上线结论在完成该验证/决策前保持未关闭。
 
-**通过证据**：一条 GitCode PR Action 对应唯一 GitHub Smoke Run、Prepare SHA 一致、两节点都正确持有/释放资源、`cleanup_verified=true`，GitCode PASS。此项验证的是**统一 Smoke 中的 16P Case**，不是恢复独立 `a3_16p_lite_actions.yml`。
+### 4.7 结果通道与状态恢复
+
+**schema 4 选定由可信 Prepare 预创建、按固定 ID 读取的 GitHub Check Run 通道，作为 P0 权限验证目标。** Prepare 和 Blue 使用同一专用 GitHub App 在对应控制仓的授权身份：Prepare 创建一个请求级 aggregate slot 和每个 Case 的 slot，Blue 后续只更新这些已绑定 ID。App 的预期 ID 来自受信配置，不能由 PR 指定；两端分别取得限定仓库/权限的短期 installation token，不共享长期运行时 Token，私钥/Token 不进入任何 Bundle、Artifact 或 NPU 子进程。
+
+Prepare 在最终 Plan 发布前取得全部 check_run_id，将每个 result_slot 的 ID、App ID、控制仓 ID、C、Run/Attempt 与 Case/aggregate 身份写入 Plan，随后计算 plan_digest。创建时的唯一 check_name/external_id 使用 repo/run/attempt/case 与规格身份，不包含尚未生成的最终 plan_digest，以免循环依赖。最终摘要由 Blue 的首次更新绑定。
+
+Blue 准入时持久化 AdmissionReceipt，包含 request_id、plan_digest、request_spec_digest、snapshot/intent、canonical_execution_id、pr_generation、execution_generation 与 publication_revision，并发布到已固定的 aggregate slot。Waiter 从验证后的 Plan 直接 GET 每个 Check Run ID，核对 API 所属仓、head_sha=C、App、external_id、Run/Attempt/Case 及 receipt，固定此运行封套；所有 Case 结果必须引用同一封套。Plan 不因准入而改写。重复请求的 receipt 明确指向 canonical 及其可信结果身份，Bridge 按该关系跟随，不能从 duplicate Run 的取消结论推断 canonical 失败。
+
+创建请求响应丢失时先进入未知状态，用唯一 check_name、app_id、filter=all 和完整身份作有界恢复；多候选、不可见或范围不完整则 Prepare 失败并保持零硬件执行，禁止盲目重复 POST。正常读取完全不依赖共享控制提交的结果列表。[GitHub 按 ref 列举](https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference) 存在最近 1000 个 Check Suite 的范围限制，因此恢复失败不能解释成“此前未创建”。未发布可执行 Plan 的遗留槽由控制恢复流程终结。
+
+Plan 发布后，slot 被删/过期不能另建 ID 偷换不可变绑定：记为 ResultChannel 不可用，保留 outbox 与清理证据；需受信整单新请求才能绑定新 slots。API 暂时失败只对原 ID 重传，不重跑训练。留存、同名容量、过期行为与创建/更新权限在 P0 和 INT-07 锁定。
+
+GitHub 官方 Checks 创建/更新要求 GitHub App 身份及 Checks: write；普通用户 PAT 不能代替该写入身份。能力不足时阻断 schema 4 上线，可另提 ResultChannel 设计，不能静默退回全历史 Commit Comment 扫描。原 schema 3 暂保留原回报协议。
+
+结果携带 H/B/M/T/C、代际、发布权、规格摘要、Run/Attempt、Case、状态和 cleanup_verified。全部必需 Case 完成才汇总测试成功；跳过、缺失、重复冲突或清理不明不算 PASS。旧代际、旧规格、旧重跑及重复 Run 不得覆盖当前状态。GitHub 结果槽的测试结论不能代替 §4.6 的 GitCode 当前门禁判定。
+
+沿用每 Case 最多 20 行、每行 180 字符的诊断限制，汇总只含必要元数据和链接；完整训练日志留在执行环境，不在 Bridge 摘要暴露 Token 或私有机器地址。新增字段必须有长度/类型边界并验证最终序列化预算。
+
+### 4.8 兼容、升级与回滚
+
+| 路径 | 协议/行为 |
+|---|---|
+| 已有 GitHub 手动/PR 流程 | 保留 schema 3 原字段及事件相关 SHA 语义 |
+| vLLM GitHub pull_request_target | 保留 PR 源码 SHA 的既有归一化和回报关联 |
+| GitCode 合并结果 | 只使用 schema 4 + Manifest 2；不把 H 或 C 当作 M |
+| GitCode/schema 4 的 GitHub 全部或部分 Job rerun | 首期拒绝并提示从可信 Bridge 新建整单重跑；schema 3 不改 |
+| 未知 state/协议版本 | 拒绝启动或准入，不忽略字段继续执行 |
+
+状态迁移必须包含旧仓名→稳定 Repo ID 的核验映射、schema 3 原始载荷、排队与在途任务、pending report、隔离记录、远端目录/标记和租约。启动前持久化清理必需的环境与运行指纹；reconcile 不重新下载源码、不导入 PR Python。
+
+发布执行 drain → 核验 → 快照 → 停旧实例 → 原目录事务迁移 → 校验 → 启新实例；真实候选硬件验证同样独占生产锁和已知隔离状态。无硬件的 Mock/静态检查可以使用独立目录，不能用空白候选状态绕开真实隔离。
+
+回滚不能直接丢弃新版状态并恢复旧快照。保留新增取消、隔离和 outbox；旧二进制不支持新 state_version 时必须拒绝启动，完成经验证的兼容迁移后再回退。模型控制代码回滚也由用户在 GitCode 上游回退并同步；GitHub 不补独有回滚提交。
+
+### 4.9 超时、权限与故障隔离
+
+分别定义 Prepare、排队、执行、取消清理、结果回传与 Bridge 总等待预算，保留清理余量。现有 Worker 有排队/执行时限，Waiter/平台 Job 另有等待时限，新协议需统一校验最坏组合；不能只沿用各处默认值。
+
+可信 Plan 含 deadline，远端监督程序在 Bridge/网络异常时仍能终止本任务；无法核验释放则隔离。持久化取消与 outbox 恢复不依赖任务还出现在 active Run 列表。
+
+| 身份 | 最小用途与存放位置 |
+|---|---|
+| GitCode Bridge/状态发布 | 个人项目 PR/事件读取、必要状态发布和受控重跑；GitCode 可信 Job |
+| GitHub Dispatch | 限定两个控制仓 Actions 触发/读取/取消；不下发 NPU |
+| GitHub Prepare | GitCode PR/源代码只读、Artifact 上传、同一专用 App 的 Checks 写入以创建结果槽；Hosted 可信控制 Job |
+| Blue 控制进程 | GitHub 读取/取消/Check 回报，GitCode 当前 PR/Base 只读，授权 SSH |
+| Blue 执行域 | 仅批准运行环境和资源标记；不含平台 Token |
+
+按仓/Run 隔离 403/404、坏 Plan、产物错误和超时；一个失败请求不能中断另一仓的取消、调度和回报。定义每仓退避和请求预算，清理优先。Token 有效期/轮换、源码与 Artifact 可读范围、日志脱敏在 P0 核验。
 
 
-### E2E-07｜vLLM GitCode 个人 PR → GitHub vLLM Smoke → Blue OS + 8P → GitCode PASS（P0）
+## 5. 逐项开发设计与文件责任
 
-**起点**：在 GitCode `depeng1994` 的 vLLM 个人仓创建真实 PR，修改安全的既有 Smoke 用例文件。受信 Bridge 取权威 GitCode Repo ID / PR Head SHA / Base SHA，固定选择 `vllm_worker_os_blue` + `dispatch_smoke_a3_8p`，仅 Dispatch 到 GitHub `cann-framework/vllm-ascend` 的 `lite_actions_dispatcher_smoke.yml`。
+### R01｜上游控制面发布与镜像核验
 
-**完整链路**：GitCode vLLM PR Action → GitHub vLLM Run（可信 `main`）→ Hosted Prepare 从 GitCode 拉取指定 SHA → Source Artifact / Manifest / Plan → **唯一 Blue Worker** → A3 8P HCCL → GitHub Case Comment/Run 终态 → GitCode PR Check 绿色。
+模型 Workflow、Prepare、Waiter、注册表和执行器变更在实际 GitCode 上游准备，由用户审查并合入默认分支。按镜像配置核对 U→C（原样同步必须相等）、Repo ID、默认分支名、所需文件/Workflow 注册及发布策略，确认同步入口本身不会被覆盖丢失。只对已同步的默认分支联调；同步失败或延迟明确等待/失败。
 
-**通过证据**：GitCode PR/Action URL、GitHub vLLM Run/Attempt URL、Repo ID `1438625957`、Source SHA、Source Artifact SHA256、Blue OS 结果、单节点 `WORLD_SIZE=8` / `all_reduce_sum=28`、`cleanup_verified=true`，GitCode 当前 PR Head 对应 PASS。**只通过 OS 或仅成功调用 Dispatch 均不算通过。**
+GitHub Draft PR #11 仅作为移植实现参考，不作为直接上线入口。旧独立 YAML 的移除必须与调用者/旧门禁迁移分开安排；本轮不删除模型仓文件、不更改 Required Checks。
 
-### E2E-08｜vLLM GitCode PR → GitHub vLLM Smoke → Blue 双节点 16P → GitCode PASS（P0）
+### R02｜个人仓 Trusted Bridge 与事件入口
 
-在个人 vLLM GitCode PR 选择受信 `dispatch_smoke_a3_16p`，由 Blue A3 两个节点各分配一组 8P，真实 HCCL `WORLD_SIZE=16` / `all_reduce_sum=120`。需证明两节点的容器 ID、占用 NPU、HCCL 端口租约、rank 清理和 `cleanup_verified=true`；GitHub vLLM Run 与 GitCode vLLM PR 最终状态和 SHA 一致。**不允许把 Yellow A5 32P 结果替换此项。**
+个人仓受信目标分支部署 .gitcode/workflows/ci-github-bridge.yml、可信脚本和测试。验证本人/审核账号、PR 目标仓、Head 来源、目标分支及测试白名单；不执行 PR 内的 Bridge。明确原始事件与当前快照的绑定，分别处理 PR、Base push、手动整单重跑和周期补偿。
 
-### E2E-09｜vLLM 个人 PR 更新 A→B，旧 PASS 不得污染新提交（P0）
+GitCode 实际语法、上下文、Token 权限和 Check 关联以 P0 载荷为准，不能照搬 GitHub 的事件拼写。全部凭据只在控制域使用。
 
-vLLM PR 的 SHA=A 已派发后提交 B。Bridge 触发新的 GitHub vLLM Run，Prepare/Blue 实际使用 B 的 Artifact。若 A 的 Run 迟到 PASS，当前 B 的 GitCode Check 必须保持非成功（旧结果 STALE）；只有 B 的 Run 结束且 Head/Base 校验一致才允许 PASS。证据保留 A/B 两次 Source SHA、Run ID、GitCode PR Checks 与必要的取消/去重记录。
+### R03｜权威 H/B 与合并源码 Provider
 
-### E2E-10｜vLLM 越权、错仓和 Yellow A5 选择器被拒绝（P0）
+新增统一 GitCodeMergeSourceProvider：解析真实 PR 目标/来源、核验 H/B、构建 M/T、校验依赖及发布 SourceHandle。合并过程不调用 PR Python。个人 PR 的 Base 与上游控制仓分开建模；冲突、浅历史不足、错误 repo/ref、陈旧合并引用都失败关闭。
 
-通过受控测试入口模拟：vLLM GitCode Repo ID 不符、PR Head SHA 不符、把 TorchTitan Repo ID 作为 vLLM 控制仓、选择 `a5_shared_yellow` / `dispatch_smoke_a5_32p`。Bridge/Prepare **Fail Closed**，GitHub 与 GitCode 显示非成功；Blue 无新 NPU 任务、Yellow 完全没有访问和配置变化，两个仓库没有串 Artifact/Comment。
+### R04｜Dispatch、请求账本与完整重跑
 
-### E2E-11｜TorchTitan 与 vLLM 同时发起 Blue Smoke，物理资源锁不冲突（P0）
+固化 API 版本、nonce、早期 intent、Run ID 持久化及 DISPATCH_UNKNOWN 恢复；语义摘要覆盖选择器/策略/控制版本。Blue 持久化层提供跨投递唯一认领，把受信 Bridge 的授权重跑意图映射到新 execution_generation。投递重复可产生多个 GitHub Run，但不能重复占卡或取得第二份状态发布权；重复 Bridge 跟随 canonical 并注明复用。schema 4 的 GitHub 原生全部/部分 rerun 均提示转到 Bridge。
 
-在 TorchTitan 和 vLLM 两个 GitCode 个人仓各建真实 PR，分别 Dispatch 到两个 GitHub 仓，制造 Blue 8P 任务时间重叠。**必须只有一个 Blue systemd 调度进程与共享物理锁目录**；同一组设备不会被重复分配，允许资源可用时安全并发或排队；释放后下一个 Case 可启动。两仓的 Repo ID、Run、Source SHA、Case、GitCode 最终 Check 各自独立，不能串结果、不能误杀对方 ranks。
+### R05｜统一 Prepare 与发布门槛
 
-### E2E-12｜vLLM PR 的真实 Smoke 失败 → Blue 清理 → GitCode FAIL（P0）
+Nightly/Smoke 共同调用受信 Prepare。固定 C，先发布不可执行 intent，再构建合并源 M/T 和独立可信 Runner、检查入口/接口，预创建结果槽，上传完整 Artifact，最后发布 Request。Blue 检查 Prepare Job 成功及全部引用，不能仅靠 needs 或 Artifact 名称推定就绪。
 
-在授权 vLLM 个人 PR 上提交可控、不会破坏设备的校验失败变更。要求 GitCode 指定 SHA 正常通过 Prepare，**真实进入 Blue A3 8P 的脚本运行阶段**，输出可判定失败根因，核验设备释放或安全隔离；对应 GitHub vLLM Run FAIL，GitCode vLLM PR 以链接到同一 Run 的红色 Check 结束。故意传错 SHA 导致 Prepare 失败**不能**充当此用例的实际执行失败证据。
+### R06｜Blue SourceHandle 与安全准入
 
-### 7.1 本期不设置的 E2E 目标
+Router、Executor、SSH 子进程使用同一已验证 SourceHandle；禁止把新路径简单接到现有 inspect_archive。可信目录/资源参数来自 C/部署策略，训练载荷来自 M/T；检查缓存和逐节点传输摘要。保持现有 NPU 编排算法、共享锁和外部占卡避让。
 
-- 不跑 Yellow OS/训练/A5 8P/32P/64P 实机验收，不做 Yellow 生产切换；用户后续另行操作。**vLLM 本期必须运行 Blue A3 OS/8P/16P Smoke。**
-- 不做原生 Self-hosted Runner 的注册、实际任务或结果回写验收。
-- 不以 GitCode 上游 `cann` 组织仓 PR 为唯一触发源；**TorchTitan 与 vLLM 各自在可写的 `depeng1994` 个人仓形成完整闭环**。若对应个人仓权限缺失，应明确阻断，不得用 GitHub Fork PR 代替。
-- 不要求 GitCode PR 新增的 `.github/workflows/*.yml` 自动转发执行；只使用可信 Nightly/Smoke。
+### R07｜当前版本门禁与结果通道
 
-### 7.2 强制验收记录模板
+实现由 Prepare 预创建结果槽、Plan 固定 ID、Blue 回报 AdmissionReceipt/Case 的 schema 4 ResultChannel，聚合完整 Case 和清理证据，绑定 H/B/M/T/C、代际与发布权。GitCode 发布器区分历史结果、当前测试状态与原子合入条件；平台边界/上线决策未关闭前不能宣称“当前可合并”。旧 STALE/FAIL、旧规格或重复 Run 不得覆盖当前结果。
 
-每次真实 E2E 结束后，填写如下表格，不允许只记录 PASS/FAIL：
+### R08｜状态迁移、Blue 升级与回滚
 
-| E2E | GitCode PR / Action | GitCode Head SHA | GitHub Run / Attempt | Source SHA / Digest | Blue Case / 真实日志 | 清理证据 | GitCode 最终 Check |
+增加 state_version、事务式 PR 代际/执行认领/取消/outbox。迁移旧名称和 schema 3 载荷；原目录保留隔离、远端标记和清理资料。独占实例、drain、迁移验证、发布和回退均有操作记录。未知状态版本拒绝启动。
+
+### R09｜Latest-wins 与 Base 变更补偿
+
+实现 PR 作用域的持久化取消，覆盖派发、Prepare、排队、已租约、运行、清理与回报。Head 更新取消所有旧 Pipeline；Base 前进和 PR retarget 同样失效旧版本。GitCode Base push/周期补偿负责重排，Blue 只读协调器负责独立撤销过期启动权和取消。
+
+### R10｜Native Self-hosted 接口预留
+
+保留 SourceHandle、Runner Bundle、Manifest、资源清理/结果合同。未来 Adapter 消费相同 M/T 和可信 Runner；本期不实现、不注册 Runner，也不增加硬件验收目标。
+
+### R11｜故障隔离、限流与审计
+
+多仓 Poller、状态查询、坏 Plan 和结果重试按仓/Run 隔离，避免整轮 tick 被一个请求阻断。定义期限、API 退避与恢复指标，保持诊断预算。审计连接 GitCode 事件/PR、H/B/M/T、U/C、Run/Attempt、代际、Case、租约、清理和最终门禁。
+
+## 5A. vLLM Blue A3 专项设计
+
+### VL-01｜分别核验业务源与控制源
+
+GitCode depeng1994 vLLM 个人仓作为首期 PR 入口，其 Repo ID/URL/目标分支须独立核验；vLLM 控制代码的实际 GitCode 上游源仓也须单独核验。映射到 GitHub cann-framework/vllm-ascend（1438625957，main）后，只从镜像默认分支 dispatch。
+
+### VL-02｜Blue 入口与既有 A5 兼容
+
+在 GitCode 上游维护的 lite_actions_dispatcher_smoke.yml 增加 GitCode merge_result 输入与受信 Blue 默认集合。既有 GitHub 原生触发路径的 A5 定义保留，并随控制代码在 GitCode 上游维护、同步到 GitHub；GitCode Provider 明确拒绝 Yellow/A5。Prepare/Waiter 的旧组织名修正及固定 C 的 checkout 一并在上游合入后同步。
+
+### VL-03｜受信 Case 与真实测试载荷
+
+| Case ID（拟） | 类型 | Worker/Pool | 验收 |
+|---|---|---|---|
+| vllm_worker_os_blue | worker_probe | Blue，无 Pool | 接单/身份/回报，不启动 Docker、不占 NPU |
+| dispatch_smoke_a3_8p | npu_smoke | Blue / a3_shared_blue | 1×8，WORLD_SIZE=8，all_reduce_sum=28 |
+| dispatch_smoke_a3_16p | npu_smoke | Blue / a3_shared_blue | 2×8，WORLD_SIZE=16，all_reduce_sum=120 |
+
+可信注册表限定拓扑、环境、入口、时限，默认 OS+8P，16P 显式选择。通用 HCCL 执行监督与证据校验来自 C，待测的已批准 Smoke 载荷来自 M/T；资源决策不依赖 PR Python。载荷缺失或适配版本不符在 Prepare 拒绝。
+
+优先复用已有 Blue 逻辑环境 cann_master_torchtitan_master_xyj；两节点实际容器/镜像 ID、torch_npu/CANN/HCCL、设备与网络仍须 preflight。8P/16P 的预期值来自受信规格，rank0 证据需和全部 rank/进程退出及清理一致。原 A5 8P/32P 可保留兼容包装，但本期不启动。
+
+**范围：** Check 名称标明 Bridge/HCCL Smoke。该用例证明合并测试载荷、调度与通信，不等于 vLLM 完整推理或所有业务代码功能通过。
+
+### VL-04｜同一 Blue 的双仓执行
+
+继续一个 systemd 服务和 /var/lib/lite-actions/blue，受信配置启用两个模型仓，同一设备/端口锁和隔离记录。按每次任务的 Repo ID、Provider、Case、Pool 与硬件类型选择入口/证据，不依赖常驻模块级 VLLM 默认值。
+
+A3 不进入 A5 rootinfo 或回收逻辑；取消一个仓的旧任务不能误杀另一仓进程。除共享锁互斥，还必须通过“一仓 403/坏 Plan，另一仓继续完成和清理”的测试。
+
+### VL-05｜合并源与依赖完整性
+
+vLLM 使用同一 H/B→M/T、Manifest 2 和 schema 4；Control Repo ID 固定为 1438625957。不能消费 TorchTitan 的 Artifact、Comment 或 Check 对象。catlass submodule 是否 materialize 按实际用例依赖声明，固定 Gitlink/内容摘要；不允许执行机自行拉浮动版本。
+
+### VL-06｜落地文件与上线顺序
+
+| 位置 | 变更 |
+|---|---|
+| GitCode vLLM 个人仓可信 Base | Bridge、Base 更新/周期补偿、版本状态发布与测试 |
+| 实际 GitCode vLLM 上游 | Workflow、Prepare、Waiter、合并源模块、可信 HCCL 控制器/目录、必要源码载荷接口 |
+| GitHub vLLM 默认 main | 自动同步后的只读核验和 Workflow 验证，不直接补丁 |
+| Lite Actions | vllm_ascend、contract、registry、github、router、executor、ssh_runner、结果/状态/SourceProvider 与测试 |
+| Blue 部署 | 双仓 Poller、单一代际账本和共享资源；Yellow 不变 |
+
+先完成本地实现、协议/Mock 与权限预检，再按 §6.4 完成用户上游合入/镜像和兼容 Blue 就绪，随后验证 OS、8P、16P、取消/STALE/真失败、跨仓互斥和故障隔离。旧 vLLM PR #2 的 Yellow A5 证据不能计入 Blue 本期验收。
+
+## 6. 实施清单与开发顺序
+
+### 6.1 GitCode 个人仓（两个项目分别落地）
+
+- .gitcode/workflows/ci-github-bridge.yml：受信 PR、手动重跑入口。
+- .gitcode/workflows/ci-pr-reconcile.yml（拟）：Base push 与周期补偿。
+- .gitcode/scripts/github_bridge.py：API 复核、nonce、派发、恢复/取消、结果等待。
+- .gitcode/scripts/bridge_contract.py：项目/分支/账号/选择器映射及规格身份。
+- .gitcode/scripts/publish_ci_status.py（拟）：按已验证平台合同发布当前版本状态。
+- .gitcode/tests/：重复、乱序、过期、Base 推进、原子门禁和 API 故障。
+- .gitcode/README-ci-bridge.md：凭据、映射、整单重跑、门禁限制和恢复操作。
+
+### 6.2 GitCode 上游模型仓（用户合入，再自动同步）
+
+| 文件/模块 | TorchTitan | vLLM |
+|---|---|---|
+| .github/workflows/nightly_fulltests.yml | 统一 Nightly + merge_result | 本期无新增 vLLM Nightly |
+| .github/workflows/lite_actions_dispatcher_smoke.yml | Blue OS/8P/16P | Blue OS/A3 8P/16P，保留旧 A5 |
+| .github/workflows/lite_actions_common.yml 或受信复用模块 | 统一 Prepare/Waiter | 复用同一合同，按项目映射 |
+| .github/scripts/lite_actions/prepare_request.py | schema 4 及可信目录 | 同规范 |
+| .github/scripts/lite_actions/prepare_gitcode.py（拟） | H/B 合并、Manifest、产物 | 同规范 |
+| .github/scripts/lite_actions/wait_result.py | 按 ID 结果及兼容 schema 3 | 同规范 |
+| 可信 runner/catalog 与测试载荷接口 | 训练/Smoke 资源边界 | 通用 HCCL，禁止 A5 错路由 |
+| 上游同步配置/工作流 | 核验源与默认分支、单一写入者 | 核实实际配置后同样处理 |
+
+个人 PR 的合并源码中必须具备其测试载荷接口。上游加了适配器不等于个人 Base 自动具备；个人仓更新、所需接口版本和 Prepare 文件检查需一同列入交接。
+
+### 6.3 Lite Actions
+
+必改范围：ci_core/contract.py、registry.py、github.py、router.py、executor.py、ssh_runner.py、reporting.py、job_state.py、vllm_ascend.py、scripts/reconcile.py。新增 source_provider/merge-source 身份、PR 协调器、事务存储、ResultChannel 的具体模块名由实现确定，但接口和责任按本文件锁定。
+
+测试扩展到现有 tests/test_workflow.py、test_multi_repo_worker.py、test_process_lifecycle.py 及新的源码/协议/状态测试；README、docs/blue-worker.md 和验证记录同时更新。测试目标为行为不变量，不以配置快照代替跨阶段验证。
+
+### 6.4 P0–P6 推进顺序
+
+| 阶段 | 交付 | 退出标准 |
+|---|---|---|
+| P0 事实与能力 | 两类 GitCode 源仓映射、权限/事件/网络、事件历史/账本、门禁能力、Checks App 能力、生产状态盘点 | 能力与缺口有实证；§4.6 原子边界记录清楚，额外治理方案未自动纳入 |
+| P1 本地协议与控制代码 | schema 4/Manifest 2、可信执行器、H/B→M/T、早期 intent/结果槽/完整产物、幂等 | 静态/CPU/Mock 通过；上游待审提交完整，不引用尚未存在的脚本 |
+| P2 本地 Blue 适配 | 单一代际账本、SourceHandle、ResultChannel、取消 fencing、迁移与双仓隔离 | 兼容 schema 3；源端与消费端合同一致，候选不绕过生产锁/隔离 |
+| P3 上游发布与受控联调就绪 | 用户在 GitCode 上游合入完整控制变更并镜像，兼容 Blue 按独占/迁移规程就绪 | 默认分支 C=U/注册核验；Provider 在兼容 Worker 就绪前关闭，其后仅开放受控验收范围 |
+| P4 分层 E2E | OS → TorchTitan 8P/16P/Nightly → vLLM 8P/16P → 跨仓与版本取消 | E2E-01～18 及 INT 必验有证据；部分瞬间用注入测试 |
+| P5 正式发布 | drain、迁移、独占切换、正式 Run 和回滚演练 | 状态/隔离/outbox 保留，旧入口回归；Yellow 不变 |
+| P6 交付关闭 | 文档、权限与运维交接、完整证据链接 | DoD 全部满足；未满足不得宣称完成 |
+
+P1/P2 可在 P0 不涉及权限的部分并行开发；平台未知能力不得以 Mock 冒充实证。上游 Workflow 未合入/镜像未就绪前，可继续本地验证，但不能用 GitHub 独有分支绕过用户决定来宣称平台联调成功。不在新 Producer 已启用时等待 Consumer 适配，也不发布只含 Workflow 而缺少脚本的半成品。
+
+## 7. 端到端验收与故障验证
+
+### 7.1 原 12 项主链路（全部升级为合并结果）
+
+每项从对应 GitCode 个人 PR/Action 出发，关联同一模型 GitHub Repo/Run，经可信 Prepare 和 Blue 执行或拒绝，再回到正确 GitCode 版本的状态。证据包含 H/B/M/T/C，不能仅记录 Head。成功项还受 §4.6 门禁要求约束。
+
+| E2E | 场景 | 必需证明 |
+|---|---|---|
+| E2E-01 | TorchTitan PR → OS+8P → PASS | 真实 HCCL、执行 M/T、完整 Case、清理与当前门禁 |
+| E2E-02 | TorchTitan Head A→B | 主动取消 A 的排队/运行任务；B 使用新合并树；旧结果不能复活 |
+| E2E-03 | TorchTitan Smoke 真失败 | 失败载荷进入 M/T 并实际执行，GitHub/GitCode 非成功，释放或隔离 |
+| E2E-04 | TorchTitan 安全拒绝 | 错 Head/Base repo/SHA、伪造合并来源或 Yellow 请求零任务 |
+| E2E-05 | TorchTitan Nightly Muon/AdamW | 两 Case 使用同一 M/T，rank0 五步 LOSS、清理、实际模型模块路径 |
+| E2E-06 | TorchTitan 双节点 16P | 两节点真实通信、租约/端口、逐节点释放、正确 M/T |
+| E2E-07 | vLLM PR → OS+A3 8P → PASS | 独立 vLLM Repo ID/Run、WORLD_SIZE=8、sum=28、M/T 与清理 |
+| E2E-08 | vLLM 双节点 A3 16P | WORLD_SIZE=16、sum=120、两节点绑定/端口/清理 |
+| E2E-09 | vLLM Head A→B | 主动撤销/取消 A，B 新合并树；旧 STALE/FAIL 不覆盖新 PASS |
+| E2E-10 | vLLM 越权/错仓拒绝 | 错控制仓、Head/Base/合并身份、A5 Case 拒绝；Yellow 无访问变更 |
+| E2E-11 | 两仓重叠执行 | 唯一 Blue，共享物理锁；无串结果/重复占卡/跨仓误清理 |
+| E2E-12 | vLLM 真实执行失败 | 载荷正常通过 Prepare 后在 A3 8P 失败，清理及红色版本状态闭环 |
+
+E2E-03/12 不能用错误 SHA 的 Prepare 拒绝代替实机失败。E2E-05 只沿用既有五步/LOSS 口径，不宣称新的数值精度认证。vLLM HCCL 也不宣称完整推理验证。
+
+### 7.2 新增决策验收 E2E-13～18
+
+| E2E | 场景 | 必需证明 |
+|---|---|---|
+| E2E-13 | 上游控制发布与镜像 | 用户 GitCode 上游合入 U，同步后默认分支 C/文件/注册正确；同步未就绪明确等待/拒绝，不使用专用 CI 分支 |
+| E2E-14 | 合并结果内容正确 | 测试同时依赖 Head 与 Base 的改动；另构造 Head 单独通过、合并后失败；至少一次实机源码差异证明执行 T |
+| E2E-15 | 合并冲突 | 真实 PR H/B 冲突，明确 MERGE_CONFLICT，无可执行请求/租约，当前状态非成功 |
+| E2E-16 | Base-only 前进 | Head 不变，Base X→Y；旧运行取消/旧绿灯失效，用新 T 重测；丢事件时补偿可恢复 |
+| E2E-17 | 平台门禁与竞争窗口 | 最后 GET 后或测试通过后、合入前 Base 推进，实证平台是否阻止旧 H/B 合入；未证明则不能标“当前可合并”，按 §4.6 记录边界及待决策 |
+| E2E-18 | 取消、乱序与旧回调 | 排队/运行取消至少各一次真实验证；租约/launch/清理/回报瞬间注入，已登记/已观测 A→B→A 的旧 intent 永不复活；旧回调只清理自己的租约 |
+
+E2E-17 不授权自动合并用户业务 PR 或修改门禁。后续验证在明确的测试范围内执行；能力不满足则保留事实、窗口和待决策，暂停“当前可合并”保证的上线，不能用只测 Head 或轮询结果冒充原子能力。
+
+### 7.3 必验集成测试（主要 CPU/Mock）
+
+| ID | 场景 | 通过标准 |
+|---|---|---|
+| INT-01 | 同 H/B 选择 8P→16P，Bridge 整单重跑，重复事件/丢 Dispatch 响应 | 规格/发布权不混用；重复至多一次执行，duplicate 取消不覆盖 canonical；授权重跑有新代次 |
+| INT-02 | PR 同名模块/inspect/环境注入 | Prepare、Blue 规划/预检/reconcile 不执行源包 Python、不泄露控制凭据 |
+| INT-03 | 部分产物、Request 后 Prepare 失败/取消、坏摘要/错仓/过期 | 零启动；不回退错误源码；安全解压和缓存校验 |
+| INT-04 | schema 3/4、组织改名、旧状态迁移/回滚 | 旧 SHA/报告语义保留，排队/取消/outbox/隔离不丢失 |
+| INT-05 | Artifact 删除或平台失联后 reconcile | 可用持久化可信资料核验，不依赖重新下载/导入源码 |
+| INT-06 | 一仓 403/坏 Plan/查询故障 | 另一仓仍能执行、取消、清理、回报 |
+| INT-07 | 同一控制提交大量结果、创建丢响应/slot 删除/App 权限 | Plan 固定 ID 正常直读；创建不明零调度，已固定 ID 不偷换；receipt 一致，无全历史扫描 |
+| INT-08 | 旧 Attempt、GitHub 全部/部分重跑、控制分支推进、漏/skip Case | schema 4 的原生 rerun 拒绝并指向 Bridge；旧发布权失效、C 固定、漏测不绿 |
+
+### 7.4 本期明确排除与证据模板
+
+- 不跑 Yellow OS/训练/A5 8P/32P/64P 实机验收，不切换其生产状态。
+- 不实现/注册原生 Self-hosted Adapter。
+- 不允许未经合入的 PR Workflow 自动成为控制面。
+- 不用 GitHub Fork PR、单独手工 GitHub 成功或历史 Yellow 证据替代 GitCode 闭环。
+
+| 用例 | GitCode PR/事件/Action | H / B / M / T | 上游 U / GitHub C | Run / Attempt / 代际 | Case/实际加载路径/日志 | 租约/取消/清理 | GitCode 当前门禁 |
 |---|---|---|---|---|---|---|---|
-| E2E-01 | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 |
-| E2E-02 | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 |
-| E2E-03 | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 |
-| E2E-04 | 待运行 | 待运行 | 待运行 | 待运行 | 应无任务 | 证明零调度 | 待运行 |
-| E2E-05 | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 |
-| E2E-06 | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 |
-| E2E-07 vLLM Blue 8P | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 |
-| E2E-08 vLLM Blue 16P | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 |
-| E2E-09 vLLM SHA 变更 | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 |
-| E2E-10 vLLM 安全拒绝 | 待运行 | 待运行 | 待运行 | 待运行 | 证明无任务 | 零调度 | 待运行 |
-| E2E-11 两仓 Blue 并发 | 两仓待运行 | 两个 SHA | 两个 Run | 两个 Digest | 资源互斥 | 共享锁 | 各自 Check |
-| E2E-12 vLLM 真 FAIL | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 |
+| E2E-01～12（每项独立一行） | 待运行 | 待核验 | 待核验 | 待运行 | 待运行或零执行证明 | 待验证 | 待验证 |
+| E2E-13～18（每项独立一行） | 待运行 | 按场景 | 待核验 | 按场景 | 平台/源码/实机证据 | 按场景 | 待验证 |
+| INT-01～08（每项独立一行） | 测试记录 | 输入/预期/结果 | 固定版本 | 故障注入记录 | 断言与关键输出 | 状态快照 | 不误成功 |
 
-## 8. 测试先决条件、风险、回滚与明确的人工边界
+模板行只是占位，正式交付必须展开每一个用例，保留非成功场景的预期与实际结果，不能把整个范围写一行 PASS。
 
-### 8.1 实施前 Gate（任何一项不满足不得宣称 E2E 全通过）
+## 8. 实施 Gate、风险、回滚与交接
 
-1. GitCode 第二台 Remote Desktop 环境可分别认证到 TorchTitan 和 vLLM 两个 `depeng1994` 个人仓，且只向个人仓推送/合并；不记录或输出 Token 明文。
-2. 个人仓受信 Bridge 可以获得具备最小权限的 GitHub Dispatch Token；GitCode Runner 能访问 GitHub API，GitHub Hosted Prepare 能 Fetch GitCode 指定 PR。
-3. TorchTitan Nightly/Smoke 以及 vLLM Dispatcher-Smoke 在**各自 GitHub 受信分支**存在，Lite Actions Blue 消费同一规范的 Source/Plan；TorchTitan Draft PR #11 及 vLLM Blue 新增脚本均必须先完成审查和测试。
-4. Blue systemd 环境、当前任务、隔离状态、日志目录、回滚版本均已核实，保证不启动双实例；Yellow 仍禁用。
-5. 两个 GitHub 仓的 Repo ID、两个 GitCode 个人仓权威 Repo ID、源码地址、Workflow 所需权限分别校验通过。
-6. Blue 的 vLLM A3 容器内 `torch_npu`、CANN/HCCL、节点网络及真实脚本均完成 preflight；一个 Blue 服务实例已配置双仓 Poller，Yellow 无改动。
+### 8.1 硬前置
 
-### 8.2 风险及治理
+1. 两个个人 PR 仓、两个实际控制上游仓、GitHub 镜像的 ID/ref/权限/同步路径分别核验。
+2. 用户在 GitCode 上游合入控制变更，GitHub 默认分支同步并注册；只有此后开展对应 Workflow 联调。
+3. GitCode 事件/历史、Check 版本绑定及 Base-only 失效有实证；原子合入能力/局限按 §4.6 明确，未经证明不启用“当前可合并”保证。
+4. 同一 GitHub App 的 Prepare 创建/Blue 更新权限、Plan 固定 ID/receipt/恢复、GitCode 状态发布能力验证通过。
+5. 控制域可查询 GitCode、Hosted 可取得 H/B、Blue 可获取 Artifact；凭据和源码可读范围已核实。
+6. Blue 唯一实例、状态/隔离、节点容器/镜像/网络、两仓资源策略及恢复基线均已盘点。
+7. schema 3/4、旧仓名和 state_version 迁移有测试，关闭任何依赖空白状态绕开隔离的路径。
 
-| 风险 | 后果 | 处理 |
-|---|---|---|
-| GitCode 个人仓 PR API/权限不可用 | Bridge 无法准入 | P0 只读探测，需用户授权；不要向 cann 上游写入 |
-| GitHub master 缺统一入口 | 调用错误 Workflow 或根本无法启动 | 合入 PR #11 前锁定 CI 分支、检查文件存在、按治理切换 master |
-| 仅改 Workflow 不改 Worker 协议 | Artifact/plan 被旧 schema 拒绝 | 同版本切换 schema 4；保留 GitHub-only 兼容与回滚 |
-| PR 途中更新 | 旧 Commit PASS 误判当前 PR | 派发前/Prepare 前/最终 Check 三次验证 Head/Base |
-| PR 恶意执行/凭据泄露 | 影响 NPU 和账号 | 受信 Workflow、最小权限、个人授权、资源白名单、隔离 |
-| 两个同步器覆盖模型分支 | 丢失 CI 分支或导致错误控制面 | 梳理 `sync-upstream.yml` 与 Push Mirror；本期不以 CI 镜像分支为依赖 |
-| Blue 切换时任务未结束 | 丢任务、重复训练、设备未释放 | drain + 状态快照 + 同状态目录 + 版本回退 + reconcile |
-| Yellow 误准入 | 未验证 A5/资源受影响 | 协议和路由同时 Blue-only，禁用 Yellow，E2E-04 与 E2E-10 拒绝证明 |
-| vLLM A5-only 代码 | A3 Smoke 在 Plan 或实际脚本阶段失败 | 在 vLLM 固定注册表/Workflow/脚本和 Blue SSH 路由逐层修复，E2E-07/08 验证 |
-| 两仓 Blue 共享锁 | 可能双重占卡或跨仓错误清理 | 单 Blue Router + 相同物理锁和 Repo ID 任务键，E2E-11 验证 |
+### 8.2 风险处理
 
-### 8.3 失败时回滚原则
+| 风险 | 处理 |
+|---|---|
+| 用户上游变更尚未合入或镜像延迟 | 标记控制发布未就绪；继续本地可做部分，不用 GitHub CI 分支替代 |
+| 个人 Base 与控制上游混淆 | 分别存储 pr.base_repo/ref/B 与 control.upstream/U/C，错误映射拒绝 |
+| GitCode 没有已证明的原子门禁 | G12 平台边界未关闭；提供能力实证再决策，合入服务/写入治理不自动扩入；不能假装再次 GET 已解决 |
+| 事件缺 revision 或可恢复历史 | 已观察撤销永久有效；无法证明归属的迟到 intent 拒绝，未观察 ABA 不作绝对承诺 |
+| Head/Base 频繁变化 | 当前门禁先失效，取消旧代际，短窗口合并重复触发并限制队列 |
+| 控制端执行 PR Python | 可信目录/Runner 与 Source 分离；全调用链安全测试 |
+| Prepare/产物就绪竞争 | 最后 Request + Prepare Job 成功 + 完整引用 |
+| 重复请求与错误复用 | 语义规格、显式重跑代次、持久化唯一认领 |
+| 旧取消/结果迟到 | 代际与租约 fencing；旧回调只影响其所属任务 |
+| schema/组织名迁移不完整 | 事务迁移和旧载荷保留；拒绝未知版本 |
+| 结果通道权限或容量不足 | P0 验证及容量门槛，不回退全历史评论扫描 |
+| 单仓故障影响另一仓 | 每仓/Run 错误隔离与清理优先 |
+| Yellow/A5 错准入 | Provider、Workflow、Plan、Worker 多层 Blue-only 校验 |
 
-- 只回滚新增的 GitCode Bridge 触发/Secret 使用、GitHub GitCode Provider 输入及 Blue 候选版本；**不**删除隔离记录、不复用未知状态设备、不强制复位其他训练进程。
-- Blue 回滚到经验证 `main` 发布，保留 `/var/lib/lite-actions/blue`、配置信息和 `pending report`；回滚前确认 schema 消费兼容并完成在途任务 drain。
-- GitHub 旧直接触发入口保留至新 E2E 已通过，防止跨平台 Bridge 失败导致唯一 CI 路径不可用。
-- Yellow 和 Native Self-hosted 本期无切换，无须回滚动作。
+### 8.3 回滚与人工交接
 
-### 8.4 需要用户介入（最小化）
+可先关闭新增 Bridge 准入，保留已有任务取消、清理和 outbox。Blue 回退遵循 §4.8，保留未知占用隔离；不删除隔离记录、不复位外部训练。模型控制代码由用户在 GitCode 上游回退并同步，不能在 GitHub 形成独有补丁。已有 GitHub 原生触发入口保留至新路径验收与调用者迁移完成。
 
-| 事项 | 是否需要用户 | 说明 |
-|---|---|---|
-| GitHub 组织重命名 | 已完成 | `cann-framework` 已确认 |
-| GitCode `depeng1994` 两个个人仓的提交权限 | 可能 | 非 depeng 远端设备具备 GitCode 凭据；需分别确认 TorchTitan 与 vLLM 的个人仓权限，否则对应 E2E 无法验收 |
-| GitCode 项目 Actions / Secrets 后台 | 可能 | 若 CLI/API 不允许设置，用户在个人仓配置最小权限 Secret |
-| Blue 正式切换 | 用户已允许 | 仍须遵守生产切换 Gate，不允许跳过 drain/安全证据 |
-| Yellow 生产 Worker | **必须用户后续亲自操作** | 当前不改变 Yellow 的任何运行/配置状态 |
-| Native Self-hosted | 不需要 | 本期不做 |
+| 事项 | 责任/状态 |
+|---|---|
+| GitCode 上游控制变更审查合入 | 用户完成；本轮仅形成设计，不代为合入 |
+| 上游/个人仓/镜像映射与能力验证 | 后续 P0 实证；不能凭同名仓或文档推定 |
+| Secrets/App/门禁后台变更 | 先完成具体方案与权限核验，按实际能力说明必要操作 |
+| Blue 实现与正式发布 | 按既有授权范围和生产 Gate 执行；本轮没有切换 |
+| Yellow | 用户后续独立操作，本期保持当前状态 |
+| Native Self-hosted | 仅协议预留 |
 
-## 9. 定义完成（DoD）与最终交付
+## 9. 完成定义与本次变更记录
 
 ### 9.1 本期 DoD
 
-**必须同时满足：**
+必须同时满足：
 
-1. GitCode `depeng1994` 的 TorchTitan 与 vLLM 两个个人仓各自存在真实 PR/Action，准确派发对应 GitHub 目标仓并返回稳定 Run ID。
-2. TorchTitan Nightly/Smoke 和 vLLM Dispatcher-Smoke 均使用相同规范的可信 Prepare，实际执行源码是各自 GitCode PR SHA，两个仓库身份不可串用。
-3. 一个 Blue Worker 精确消费两个模型仓的 Artifact：TorchTitan OS/8P/16P Smoke 与 Nightly Muon/AdamW；**vLLM Blue OS + A3 8P/16P HCCL Smoke**。均有完整清理证据。
-4. **E2E-01～E2E-12** 均有各自 GitCode PR、GitHub Run、Source SHA、Blue 实际执行或安全拒绝与 GitCode Check 证据；失败、STALE 和拒绝不得显示通过。
-5. 两个模型仓原有 GitHub-only CI 回归正常，Blue 跨仓共享设备锁、隔离与 pending report 保持可靠；原 vLLM A5 定义仍保留。
-6. `cann-framework` 名称、GitHub API 和 GitCode 个人仓角色正确，Blue 切换完成，Yellow 维持禁用，Native 保持预留。
+1. 控制代码由用户在 GitCode 实际上游合入并同步，两个 GitHub 默认分支可运行；没有依赖 GitHub 独有 CI 补丁或专用 CI 分支。
+2. 两个个人仓真实 PR 的 H/B 被准确获取，实际执行 M/T，C 与上游控制发布可追溯；两个模型身份不串用。
+3. 一个 Blue 完成 TorchTitan OS/8P/16P/Nightly Muon/AdamW，以及 vLLM Blue OS/A3 8P/16P，全部有必要证据。
+4. Head/Base 更新主动取消旧版本并失效旧结果；重启、乱序和迟到回调不复活旧任务或破坏新租约。
+5. GitCode 状态准确表达当前已测 H/B 的合并结果；§4.6 平台版本绑定、失效与原子边界有实证和明确上线决策。未证明的“当前可合并”保证不启用；不以 Head-only 或普通绿图标替代，也不擅自扩大为合入服务改造。
+6. E2E-01～18 和 INT-01～08 均有独立记录，原 GitHub 原生事件的 schema 3 路径回归正常。
+7. 安全准入、完整产物、结果按 ID 关联、状态迁移/回滚、跨仓故障隔离和清理恢复完成。
+8. Yellow 状态维持不变，Native 仅预留，旧入口删除另按迁移计划处理。
 
-**不能把以下成果称为 DoD：** 文档合入、单元测试通过、仅 GitHub 手工触发成功、只在 GitCode 显示了绿色图标但没运行 Blue、或者基于旧 GitHub `master` 源码的误成功。
+文档提交、单测通过、只有 GitHub 手动成功或只有 GitCode 绿色，均不能单独宣称完成。使用旧源码/仅 Head 不能通过本期验收；原子门禁与事件观察边界尚无证据/决策时，必须明确保留未关闭项。
 
-### 9.2 本次提交范围
+### 9.2 V3.0 文档提交范围
 
-这次任务在已有 `depeng1994/lite-actions:gitcode-forward` 分支补齐 **TorchTitan + vLLM 两仓设计、vLLM Blue A3 OS/8P/16P 和 12 个端到端验收**；不启动训练、不切换 Blue、不操作 Yellow、不修改 GitCode 上游仓。后续实现仍需按本文件 E2E 实机验收。
+本次只更新 depeng1994/lite-actions 既有 gitcode-forward 分支的本文件：
 
-## 10. 参考资料（持续维护）
+- 落实 D01/D02/D03，删除旧的 GitHub CI 分支退路和 Head-only 源码等式。
+- 新增 H/B/M/T/C、可信 Runner、合并源/产物 Gate、语义幂等、代际取消、Base 更新与门禁合同。
+- 明确 schema/状态兼容、结果通道权限 Gate、双仓故障隔离与用户上游发布交接。
+- 将正式验收扩展为 18 项 E2E 与 8 项集成验证，所有执行证据仍待后续实施。
 
-- [GitHub `cann-framework/torchtitan-npu`](https://github.com/cann-framework/torchtitan-npu)
-- [GitHub `cann-framework/vllm-ascend`](https://github.com/cann-framework/vllm-ascend)
-- [vLLM 现有 Dispatcher-Smoke（A5 only）](https://github.com/cann-framework/vllm-ascend/blob/main/.github/workflows/lite_actions_dispatcher_smoke.yml)
-- [vLLM GitHub PR #2（面向 Yellow A5，不计 Blue）](https://github.com/cann-framework/vllm-ascend/pull/2)
-- [Lite Actions vLLM Yellow 运维预留](https://github.com/depeng1994/lite-actions/blob/main/docs/vllm-a5-smoke.md)
-- [GitHub 模型仓 Draft PR #11：统一 Nightly / Smoke 入口](https://github.com/cann-framework/torchtitan-npu/pull/11)
-- [Lite Actions `main`](https://github.com/depeng1994/lite-actions)
-- [Lite Actions Blue 生产运行手册](https://github.com/depeng1994/lite-actions/blob/main/docs/blue-worker.md)
-- [Lite Actions 既有实机验证记录](https://github.com/depeng1994/lite-actions/blob/main/docs/validation.md)
-- [GitCode Actions 触发事件与 `pull_request_target`](https://docs.gitcode.com/docs/help/home/org_project/pipeline/core-concepts/trigger-events/)
-- [GitCode PR/MR Pipeline Security](https://docs.gitcode.com/docs/help/home/org_project/pipeline/security-permissions/pr-mr-pipeline-security/)
-- [GitHub REST Create a workflow dispatch event](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event)
-- [GitHub Actions Security: Self-hosted runners](https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions)
+本轮没有修改两个 GitHub 模型仓、GitCode 上游/个人仓、生产 Worker、Required Checks 或任何硬件配置。
+
+## 10. 参考资料与已核对源码
+
+### 10.1 仓库基线
+
+- [V2.2 设计基线](https://github.com/depeng1994/lite-actions/blob/5d01fe9b8a0a7fddfe7cf3bd2d65a41b66ad456a/docs/gitcode-forward-design.md)
+- [Lite Actions main 基线](https://github.com/depeng1994/lite-actions/tree/9b881db9c541d589dd57564eef2b41b3ee78d4d6)
+- [registry：控制机目录发现](https://github.com/depeng1994/lite-actions/blob/9b881db9c541d589dd57564eef2b41b3ee78d4d6/ci_core/registry.py)
+- [github：Artifact、SHA 归一化与多仓查询](https://github.com/depeng1994/lite-actions/blob/9b881db9c541d589dd57564eef2b41b3ee78d4d6/ci_core/github.py)
+- [router：任务键、状态与取消](https://github.com/depeng1994/lite-actions/blob/9b881db9c541d589dd57564eef2b41b3ee78d4d6/ci_core/router.py)
+- [reporting：现有评论回传](https://github.com/depeng1994/lite-actions/blob/9b881db9c541d589dd57564eef2b41b3ee78d4d6/ci_core/reporting.py)
+- [reconcile：清理恢复依赖](https://github.com/depeng1994/lite-actions/blob/9b881db9c541d589dd57564eef2b41b3ee78d4d6/scripts/reconcile.py)
+- [TorchTitan sync-upstream](https://github.com/cann-framework/torchtitan-npu/blob/8a71d8940e877cc9f2e5f4b977b4f18d48539592/.github/workflows/sync-upstream.yml)
+- [TorchTitan Draft PR #11：仅实现参考](https://github.com/cann-framework/torchtitan-npu/pull/11)
+- [vLLM 当前 Workflow](https://github.com/cann-framework/vllm-ascend/blob/e20e2c482606e2ddd6b2fe1bf3a78638f55da8a8/.github/workflows/lite_actions_dispatcher_smoke.yml)
+- [Blue 运维](https://github.com/depeng1994/lite-actions/blob/9b881db9c541d589dd57564eef2b41b3ee78d4d6/docs/blue-worker.md)
+- [既有验证记录：不替代本轮 E2E](https://github.com/depeng1994/lite-actions/blob/9b881db9c541d589dd57564eef2b41b3ee78d4d6/docs/validation.md)
+
+### 10.2 平台合同（2026-11-01 核对，项目实际能力仍须 P0 验证）
+
+- [GitCode 触发事件及 Base push 相关语法](https://docs.gitcode.com/docs/help/home/org_project/pipeline/syntax-reference/trigger-events/)
+- [GitCode PR/MR 流水线安全](https://docs.gitcode.com/docs/help/home/org_project/pipeline/security-permissions/pr-mr-pipeline-security/)
+- [GitCode 结果与 PR Checks 展示](https://docs.gitcode.com/docs/help/home/org_project/pipeline/running-pipelines/view-run-results/)
+- [GitCode 合并 PR API：公开参数未列 expected Head/Base 条件](https://docs.gitcode.com/docs/apis/put-api-v-5-repos-owner-repo-pulls-number-merge/)
+- [GitHub workflow_dispatch API](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event)
+- [GitHub 返回 Run ID 的能力说明](https://github.blog/changelog/2026-02-19-workflow-dispatch-api-now-returns-run-ids/)
+- [GitHub Workflow 触发与默认分支注册](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_dispatch)
+- [GitHub Check Runs：身份、权限与按 ID 读取](https://docs.github.com/en/rest/checks/runs)
+- [GitHub 重跑全部或部分 Jobs](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs)
+- [Git merge-tree：构建合并结果 tree](https://git-scm.com/docs/git-merge-tree)
+
+
+
