@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "repository": "depeng1994/vllm-ascend",
+  "branch": "gitcode-forward",
+  "validated_code_commit": "85cc6c00c69b66bb219e3d5c55a1f62d54b98eb2",
+  "validated_tree": "103701508c62594c5cb274b114c25dcafbc794b5",
+  "validation_scope": "EXACT_COMMIT_CPU_REGRESSION_NOT_HARDWARE_E2E",
+  "validation_machine_reported_time_utc": "2026-11-01T22:43:20.812531+00:00",
+  "changes": [
+    "Migrate both trusted Workflow checkout repository paths to cann-framework/vllm-ascend.",
+    "Migrate Prepare and Waiter repository identities together; reject the obsolete identity rather than adding an alias.",
+    "Preserve schema-3 A5 8P/32P selection, Yellow worker/pool and vllm-kimi-wangjinyin Docker defaults.",
+    "Add 16 CPU-only repository admission and result-correlation regression tests."
+  ],
+  "test_count": 16,
+  "results": {
+    "tests": {
+      "command": "python3 -m unittest discover -s .github/scripts/lite_actions/tests -v",
+      "result": "PASS",
+      "log_sha256": "277fd99f332603dc69c512b39bbdb13aab4ad6f4e8b4412955495f025a524639"
+    },
+    "lint": {
+      "command": "python3 -m ruff check --isolated --select E4,E7,E9,F,I .github/scripts/lite_actions/prepare_request.py .github/scripts/lite_actions/wait_result.py .github/scripts/lite_actions/tests/test_repository_identity.py",
+      "result": "PASS",
+      "log_sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18"
+    },
+    "compile": {
+      "command": "python3 -m compileall -q .github/scripts/lite_actions",
+      "result": "PASS"
+    }
+  },
+  "production_deployed": false,
+  "new_hardware_e2e_performed": false,
+  "business_or_validation_pr_merged": false,
+  "personal_push_workflow_observed": {
+    "id": 41358486824,
+    "name": "Merge Conflict Labeler",
+    "status_at_observation": "queued",
+    "hardware_acceptance_evidence": false
+  },
+  "historical_success_not_rewritten": {
+    "repo_current_name": "cann-framework/vllm-ascend",
+    "repo_id": 1438625957,
+    "repo_name_in_original_result": "torchtitan-npu/vllm-ascend",
+    "pr": 2,
+    "run_id": 41160654371,
+    "run_attempt": 2,
+    "source_head": "bfb61c203ee41f5d7a937bb62f143ff8efbb32ab",
+    "conclusion": "success",
+    "worker": "yellow",
+    "pool": "a5_shared_yellow",
+    "docker": "vllm-kimi-wangjinyin",
+    "world_size": 8,
+    "all_reduce_sum": 28,
+    "result_comment_id": 207493712,
+    "exit_code": 0,
+    "cleanup_verified": true,
+    "scope": "GITHUB_PERSONAL_FORK_TO_YELLOW_A5_8P_HCCL_ONLY"
+  },
+  "out_of_scope_by_user": [
+    "vLLM GitCode personal/upstream mapping and its HTTP 404",
+    "vLLM GitCode-to-GitHub bridge, GitCode status publication and GitCode control-source synchronization"
+  ],
+  "not_claimed": [
+    "Full-repository tests or all GitHub checks successful",
+    "Deployment or current-head hardware acceptance of the rename fix",
+    "Blue A3 OS/8P/16P acceptance",
+    "A5 32P hardware acceptance",
+    "Full vLLM inference validation",
+    "Completion of the TorchTitan GitCode Forward project"
+  ]
+}
