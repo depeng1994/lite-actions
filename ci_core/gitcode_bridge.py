@@ -193,6 +193,9 @@ class GitCodeBridge:
             intent["pr"],
             allowed_repo_id=policy.gitcode_repo_id,
             allowed_refs=policy.allowed_base_refs,
+            allowed_head_repo_ids=tuple(
+                ident for _, ident in policy.allowed_head_repositories
+            ),
         )
         if (
             intent["control_repo_id"] != policy.github_repo_id
@@ -299,8 +302,15 @@ class GitCodeBridge:
             raise BridgeError("DISPATCH_UNKNOWN_OR_AMBIGUOUS")
         return self.validate_run(matches[0], intent)
 
-    def dispatch(self, intent: dict, *, now: int) -> dict:
+    def dispatch(
+        self, intent: dict, *, now: int, attestation: dict | None = None
+    ) -> dict:
         self.validate_intent(intent, now=now)
+        encoded_attestation = None
+        if attestation is not None:
+            encoded_attestation = canonical(attestation, limit=64 * 1024).decode()
+            if len(encoded_attestation.encode()) + len(canonical(intent)) > 60000:
+                raise BridgeError("DISPATCH_ATTESTATION_INPUT_LIMIT")
         owns_post, run_id = self.journal.begin(intent)
         if run_id is None and owns_post:
             payload = {
@@ -311,6 +321,8 @@ class GitCodeBridge:
                     "gitcode_request": canonical(intent).decode(),
                 },
             }
+            if encoded_attestation is not None:
+                payload["inputs"]["gitcode_attestation"] = encoded_attestation
             try:
                 response = self.github.request(
                     "POST",

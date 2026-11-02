@@ -48,6 +48,8 @@ class GitCodeAdmissionBroker:
         read_authority: Callable[[str, int], Authority],
         verify_event: Callable[[dict], EventProof],
         clock: Callable[[], int],
+        verify_plan: Callable[[dict], EventProof] | None = None,
+        enroll_intent: Callable[[dict, dict], bool] | None = None,
     ):
         if reader.policy.github_repo_id != 1210038933:
             raise AdmissionError("TORCHTITAN_GITCODE_SCOPE_ONLY")
@@ -57,10 +59,18 @@ class GitCodeAdmissionBroker:
             verify_event,
             clock,
         )
+        self.verify_plan = verify_plan
+        self.enroll_intent = enroll_intent
         self.workspace = Path(workspace)
         if self.workspace.is_symlink():
             raise AdmissionError("ADMISSION_WORKSPACE_CANNOT_BE_SYMLINK")
         self.workspace.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+    def assert_plan_current(self, plan):
+        if self.verify_plan is not None:
+            proof = self.verify_plan(plan)
+            if not isinstance(proof, EventProof):
+                raise AdmissionError("AUTHENTICATED_PLAN_PROOF_REQUIRED")
 
     def _now(self):
         now = self.clock()
@@ -71,6 +81,15 @@ class GitCodeAdmissionBroker:
     def refresh(self, repo_id: str, number: int) -> int:
         if repo_id != self.reader.policy.gitcode_repo_id:
             raise AdmissionError("UNAUTHORIZED_GITCODE_SCOPE")
+
+        provider = getattr(self.read_authority, "__self__", None)
+        shared = getattr(provider, "coordinator", None)
+        if (
+            shared is not None
+            and shared.path.resolve() == self.coordinator.path.resolve()
+            and callable(getattr(provider, "refresh_coordinator", None))
+        ):
+            return provider.refresh_coordinator(repo_id, number)
 
         def read():
             value = self.read_authority(repo_id, number)
@@ -87,6 +106,12 @@ class GitCodeAdmissionBroker:
         if early is None:
             return None
         intent, run = early
+        if self.enroll_intent is not None:
+            enrolled = self.enroll_intent(intent, run)
+            if enrolled is False:
+                return None
+            if enrolled is not True:
+                raise AdmissionError("DURABLE_INGRESS_ACK_REQUIRED")
         pr = intent["pr"]
         self.refresh(pr["repo_id"], pr["number"])
         proof = self.verify_event(intent)
@@ -115,6 +140,7 @@ class GitCodeAdmissionBroker:
             # Download/staging may outlive authority freshness. Reconcile again
             # before the atomic claim; source/manifest identity alone is not a grant.
             self.refresh(pr["repo_id"], pr["number"])
+            self.assert_plan_current(retained.plan)
             admission = self.coordinator.claim(retained, now=self._now())
         return AcceptedRequest(retained, admission)
 
@@ -135,6 +161,7 @@ class GitCodeAdmissionBroker:
         reference = self.coordinator.request_reference(request_id(plan))
         if reference["receipt"] != accepted.admission.receipt:
             raise AdmissionError("PERSISTED_RECEIPT_MISMATCH")
+        self.assert_plan_current(plan)
         self.reader.actual_run(plan["github"]["run_id"])
         self.refresh(plan["pr"]["repo_id"], plan["pr"]["number"])
         self.coordinator.assert_startable(accepted.execution_id, now=self._now())

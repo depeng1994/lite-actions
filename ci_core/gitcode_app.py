@@ -252,6 +252,39 @@ class InstallationTokens:
             return self._cached
 
 
+class ReadOnlyChecksClient:
+    """Checks reads via a repository-bound read token; never a signing key.
+
+    CheckRunChannel still validates the actual Check's app.id against app_id.
+    This wrapper cannot create, update, rerun or approve anything.
+    """
+
+    def __init__(self, client, *, app_id):
+        positive(app_id)
+        if (
+            client.repo_id not in MODEL_REPOSITORIES
+            or client.repo != MODEL_REPOSITORIES[client.repo_id][0]
+        ):
+            raise AppError("READ_ONLY_CHECK_REPOSITORY_MISMATCH")
+        self.client, self.app_id = client, app_id
+        self.repo, self.repo_id = client.repo, client.repo_id
+
+    def request(self, method, path, data=None):
+        endpoint = path.partition("?")[0] if isinstance(path, str) else ""
+        if (
+            method != "GET"
+            or data is not None
+            or not (
+                re.fullmatch(r"/check-runs/[1-9][0-9]*", endpoint)
+                or re.fullmatch(
+                    r"/commits/[0-9a-f]{40}/check-(?:runs|suites)", endpoint
+                )
+            )
+        ):
+            raise AppError("READ_ONLY_CHECKS_ENDPOINT_NOT_ALLOWED")
+        return self.client.request(method, path)
+
+
 class ChecksAppClient:
     """A repository-bound Checks-only client; all lifecycle writes are explicit."""
 
@@ -273,7 +306,7 @@ class ChecksAppClient:
             or method in {"GET", "PATCH"}
             and re.fullmatch(r"/check-runs/[1-9][0-9]*", endpoint)
             or method == "GET"
-            and re.fullmatch(r"/commits/[0-9a-f]{40}/check-runs", endpoint)
+            and re.fullmatch(r"/commits/[0-9a-f]{40}/check-(?:runs|suites)", endpoint)
         )
         if not allowed:
             raise AppError("CHECKS_CLIENT_ENDPOINT_NOT_ALLOWED")

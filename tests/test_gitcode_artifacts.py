@@ -217,6 +217,23 @@ class ArtifactReaderTests(unittest.TestCase):
     def load(self):
         return self.api.reader.load(100, self.destination, now=1100)
 
+    def test_completed_result_read_never_relaxes_admission(self):
+        self.api.run.update(status="completed", conclusion="success")
+        with self.assertRaisesRegex(ArtifactError, "NOT_AUTHORIZED_OR_ACTIVE"):
+            self.load()
+        verified = self.api.reader.load_results(100, now=1100)
+        self.assertEqual(verified.plan["plan_digest"], self.api.plan["plan_digest"])
+        self.assertFalse(hasattr(verified, "source"))
+        self.assertFalse(self.destination.exists())
+        with self.assertRaisesRegex(ArtifactError, "NOT_AUTHORIZED_OR_ACTIVE"):
+            self.load()
+
+    def test_completed_failed_prepare_is_not_result_evidence(self):
+        self.api.run.update(status="completed", conclusion="failure")
+        self.api.job.update(status="completed", conclusion="failure")
+        with self.assertRaises(ArtifactError):
+            self.api.reader.load_results(100, now=1100)
+
     def test_complete_inputs_pin_merge_source_and_do_not_import_source(self):
         loaded = self.load()
         self.assertEqual(
@@ -391,6 +408,36 @@ class ArtifactReaderTests(unittest.TestCase):
             archive.writestr(info, "/tmp/outside")
         with self.assertRaisesRegex(ArtifactError, "UNSAFE"):
             unzip_one(stream.getvalue(), "ci-request.json", limit=100)
+
+
+class AttestationTransportTests(unittest.TestCase):
+    def test_missing_envelope_is_pending_and_never_fabricated(self):
+        api = ArtifactAPI()
+        self.assertIsNone(api.reader.early_attestation(api.run["id"]))
+
+    def test_exact_owner_digest_and_member_are_required(self):
+        api = ArtifactAPI()
+        ident = api.run["id"]
+        envelope = {"fixture": "not an authenticated event"}
+        metadata = api.add_artifact(
+            987,
+            f"dispatch-attestation-{ident}-1",
+            "attestation.json",
+            canonical(envelope),
+        )
+        self.assertEqual(api.reader.early_attestation(ident), envelope)
+        metadata["workflow_run"]["repository_id"] = 999
+        with self.assertRaises(ArtifactError):
+            api.reader.early_attestation(ident)
+
+    def test_envelope_cannot_substitute_other_zip_member(self):
+        api = ArtifactAPI()
+        ident = api.run["id"]
+        api.add_artifact(
+            987, f"dispatch-attestation-{ident}-1", "unexpected.json", b"{}"
+        )
+        with self.assertRaises(ArtifactError):
+            api.reader.early_attestation(ident)
 
 
 if __name__ == "__main__":

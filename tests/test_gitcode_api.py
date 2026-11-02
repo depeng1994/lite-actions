@@ -187,6 +187,51 @@ class GitCodeAPITests(unittest.TestCase):
             with self.assertRaises(GitCodeAPIError):
                 self.client.open_pull_numbers()
 
+    def test_authority_observes_closed_and_retarget_without_grant(self):
+        self.transport.pr["state"] = "closed"
+        observation = self.client.authority_snapshot(
+            7, allowed_base_refs=("master",), allowed_actors=("depeng1994",)
+        )
+        self.assertEqual(observation["state"], "closed")
+        self.transport.pr["state"] = "open"
+        self.transport.pr["base"]["ref"] = "release"
+        self.transport.branches["release"] = "d" * 40
+        observation = self.client.authority_snapshot(
+            7, allowed_base_refs=("master",), allowed_actors=("depeng1994",)
+        )
+        self.assertFalse(observation["authorized"])
+        self.assertEqual(observation["identity"]["base_ref"], "release")
+
+    def test_action_metadata_preserves_actual_uppercase_event_and_missing_proofs(self):
+        run = {
+            "workflow_run_id": "run-1",
+            "workflow_id": "workflow-1",
+            "file_path": ".gitcode/workflows/bridge.yml",
+            "event": "PUSH",
+            "status": "FAILED",
+            "attempt": 1,
+            "head_sha": "a" * 40,
+            "head_branch": "master",
+            "start_time": 1787052415000,
+            "exist_in_default_branch": True,
+            "stages": [{"untrusted": "omitted"}],
+        }
+
+        def transport(path):
+            if path == "/api/v8/repos/" + self.transport.repo + "/actions/runs/run-1":
+                return copy.deepcopy(run)
+            return self.transport(path)
+
+        self.client._transport = transport
+        observation = self.client.action_run("run-1")
+        self.assertEqual(observation["event"], "PUSH")
+        self.assertNotIn("actor", observation)
+        self.assertNotIn("pull_request", observation)
+        self.assertNotIn("stages", observation)
+        run["workflow_run_id"] = "another"
+        with self.assertRaisesRegex(GitCodeAPIError, "IDENTITY_MISMATCH"):
+            self.client.action_run("run-1")
+
     def test_token_is_not_exposed_in_repr(self):
         client = GitCodeClient(self.transport.repo, "9075802", token="never-print-this")
         self.assertNotIn("never-print-this", repr(client))

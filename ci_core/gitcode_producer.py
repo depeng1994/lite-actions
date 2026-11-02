@@ -42,7 +42,11 @@ class GitCodeProducer:
         upload,
         clock,
         source_builder=prepare_pr_source,
+        authority_protocol=None,
     ):
+        if authority_protocol not in (None, "artifact-check-v1"):
+            raise ProducerError("UNKNOWN_AUTHORITY_PROTOCOL")
+        self.authority_protocol = authority_protocol
         self.policy, self.catalog = policy, catalog
         self.github, self.personal, self.upstream = github, personal, upstream
         self.channel, self.journal = channel, artifact_journal
@@ -268,6 +272,11 @@ class GitCodeProducer:
                 "cases": select_cases(intent["selectors"], self.catalog),
                 "artifacts": refs,
                 "result_slots": {},
+                **(
+                    {"authority_protocol": self.authority_protocol}
+                    if self.authority_protocol
+                    else {}
+                ),
             }
         )
         plan["result_slots"] = self.channel.precreate(plan)

@@ -174,7 +174,11 @@ def hex_digest(value):
 
 
 def validate_pr(
-    pr: dict, *, allowed_repo_id: str | None = None, allowed_refs: tuple[str, ...] = ()
+    pr: dict,
+    *,
+    allowed_repo_id: str | None = None,
+    allowed_refs: tuple[str, ...] = (),
+    allowed_head_repo_ids: tuple[str, ...] | None = (),
 ) -> dict:
     shape(pr, PR_KEYS, "INVALID_PR_IDENTITY")
     for name in ("repo_id", "head_repo_id", "base_repo_id"):
@@ -187,7 +191,14 @@ def validate_pr(
         require_sha(pr[name])
     for name in ("head_ref", "base_ref"):
         require_ref(pr[name])
-    if not pr["repo_id"] == pr["head_repo_id"] == pr["base_repo_id"]:
+    if pr["base_repo_id"] != pr["repo_id"]:
+        raise ContractError("TARGET_REPOSITORY_IDENTITY_MISMATCH")
+    # None is structural validation for already trusted ledger/source objects,
+    # never admission authorization. Empty remains same-repository only.
+    if allowed_head_repo_ids is not None and pr["head_repo_id"] not in (
+        pr["repo_id"],
+        *allowed_head_repo_ids,
+    ):
         raise ContractError("EXTERNAL_FORK_NOT_AUTHORIZED")
     if allowed_repo_id is not None and pr["repo_id"] != allowed_repo_id:
         raise ContractError("GITCODE_REPOSITORY_NOT_AUTHORIZED")
@@ -217,6 +228,7 @@ class ControlPolicy:
     enabled: bool = False
     prepare_job_name: str = "prepare-gitcode"
     max_duration_seconds: int = 28_800
+    allowed_head_repositories: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self):
         if self.github_repo_id not in MODEL_REPOSITORIES:
@@ -237,6 +249,24 @@ class ControlPolicy:
             raise ContractError("WORKFLOW_NOT_AUTHORIZED")
         if type(self.enabled) is not bool:
             raise ContractError("INVALID_PROVIDER_SWITCH")
+        paths, ids = set(), set()
+        for binding in self.allowed_head_repositories:
+            if not isinstance(binding, tuple) or len(binding) != 2:
+                raise ContractError("INVALID_HEAD_REPOSITORY_BINDING")
+            path, ident = binding
+            if (
+                not isinstance(path, str)
+                or not re.fullmatch(
+                    r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*", path
+                )
+                or not isinstance(ident, str)
+                or not re.fullmatch(r"[1-9][0-9]{0,19}", ident)
+                or path in paths
+                or ident in ids
+            ):
+                raise ContractError("INVALID_HEAD_REPOSITORY_BINDING")
+            paths.add(path)
+            ids.add(ident)
 
 
 def vllm_blue_catalog() -> dict[str, dict]:
@@ -300,6 +330,30 @@ def validate_pipeline(pipeline: str, workflow_path: str, cases: list[dict]) -> N
         raise ContractError("PIPELINE_CASE_KIND_MISMATCH")
 
 
+AUTHORITY_PROTOCOL = "artifact-check-v1"
+
+
+def validate_plan_shape(plan):
+    keys = PLAN_KEYS | (
+        {"authority_protocol"} if "authority_protocol" in plan else set()
+    )
+    shape(plan, keys, "INVALID_SCHEMA4_PLAN")
+    if (
+        "authority_protocol" in plan
+        and plan["authority_protocol"] != AUTHORITY_PROTOCOL
+    ):
+        raise ContractError("UNKNOWN_AUTHORITY_PROTOCOL")
+
+
+def planned_slot_ids(plan):
+    result = {"aggregate"} | {case["case_id"] for case in plan["cases"]}
+    if "authority_protocol" in plan:
+        if plan["authority_protocol"] != AUTHORITY_PROTOCOL:
+            raise ContractError("UNKNOWN_AUTHORITY_PROTOCOL")
+        result.add("authority")
+    return result
+
+
 def spec_digest(plan: dict) -> str:
     """Semantic identity excludes delivery nonce, run, attempt, artifacts and slots."""
     return digest(
@@ -313,6 +367,11 @@ def spec_digest(plan: dict) -> str:
             "policy_version": plan["policy_version"],
             "environment_version": plan["environment_version"],
             "cases": plan["cases"],
+            **(
+                {"authority_protocol": plan["authority_protocol"]}
+                if "authority_protocol" in plan
+                else {}
+            ),
         }
     )
 
@@ -372,7 +431,7 @@ def verify_request(
     if not policy.enabled:
         raise ContractError("GITCODE_PROVIDER_DISABLED")
     encoded = canonical(plan)
-    shape(plan, PLAN_KEYS, "INVALID_SCHEMA4_PLAN")
+    validate_plan_shape(plan)
     if (
         type(plan["schema"]) is not int
         or plan["schema"] != 4
@@ -388,6 +447,9 @@ def verify_request(
         plan["pr"],
         allowed_repo_id=policy.gitcode_repo_id,
         allowed_refs=policy.allowed_base_refs,
+        allowed_head_repo_ids=tuple(
+            ident for _, ident in policy.allowed_head_repositories
+        ),
     )
     shape(current_pr, {"identity", "state", "authorized"})
     if (
@@ -594,7 +656,7 @@ def control_runner(plan):
 
 
 def _verify_slots(plan, app_id, observations):
-    cases = {"aggregate"} | {case["case_id"] for case in plan["cases"]}
+    cases = planned_slot_ids(plan)
     shape(plan["result_slots"], cases)
     shape(observations, cases)
     seen = set()

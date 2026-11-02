@@ -20,6 +20,7 @@ from ci_core.gitcode_contract import (
     digest,
     external_id,
     load_json,
+    planned_slot_ids,
     positive,
     request_id,
     source_identity,
@@ -149,7 +150,7 @@ class CheckRunChannel:
     def _binding(self, plan, case_id, check_id):
         positive(check_id)
         self._plan(plan)
-        if case_id not in {"aggregate"} | {c["case_id"] for c in plan["cases"]}:
+        if case_id not in planned_slot_ids(plan):
             raise ChannelError("CHECK_CASE_NOT_PLANNED")
         gh = plan["github"]
         return {
@@ -268,7 +269,7 @@ class CheckRunChannel:
 
     def precreate(self, plan):
         result = {}
-        for case_id in ["aggregate"] + [c["case_id"] for c in plan["cases"]]:
+        for case_id in sorted(planned_slot_ids(plan)):
             result[case_id] = self.create_slot(plan, case_id)
         return result
 
@@ -309,6 +310,8 @@ class CheckRunChannel:
             "ADMITTED": 1,
             "CASE_RESULT": 2,
             "AGGREGATE_RESULT": 2,
+            "AUTHORITY_RESPONSE": 2,
+            "AUTHORITY_CLOSED": 3,
         }
         if phases.get(current.get("phase"), -1) > phases.get(payload.get("phase"), -1):
             raise ChannelError("CHECK_PHASE_REGRESSION")

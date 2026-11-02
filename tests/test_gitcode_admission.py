@@ -112,6 +112,12 @@ class AdmissionBrokerTests(unittest.TestCase):
         with self.assertRaises(StateError):
             self.coordinator.assert_startable(accepted.execution_id, now=1100)
 
+    def test_ingress_pending_prevents_request_load_or_execution(self):
+        self.broker.enroll_intent = Mock(return_value=False)
+        self.assertIsNone(self.broker.admit(100))
+        self.broker.enroll_intent.assert_called_once()
+        self.assertEqual(self.coordinator.execution_snapshots(), [])
+
     def test_disabled_provider_never_queries_platform(self):
         self.api.reader.policy = replace(self.api.policy, enabled=False)
         self.api.calls.clear()

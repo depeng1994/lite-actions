@@ -234,6 +234,17 @@ class AppTokenTests(unittest.TestCase):
             self.assertIsNone(self.tokens._cached)
             self.assertNotIn("secret-should-not-leak", str(raised.exception))
 
+    def test_creation_recovery_can_read_suite_capacity_without_write_scope(self):
+        client = app.ChecksAppClient(self.tokens)
+        path = "/commits/" + "a" * 40 + "/check-suites?per_page=1&page=1"
+        with patch.object(app, "GitHubClient") as factory:
+            factory.return_value.request.return_value = {"total_count": 1}
+            self.assertEqual(client.request("GET", path), {"total_count": 1})
+            factory.return_value.request.assert_called_once_with("GET", path, None)
+            for method in ("POST", "PATCH", "DELETE"):
+                with self.assertRaisesRegex(app.AppError, "ENDPOINT_NOT_ALLOWED"):
+                    client.request(method, path)
+
     def test_unknown_checks_write_reaches_journal_recovery_without_retry(self):
         client = app.ChecksAppClient(self.tokens)
         with patch.object(app, "GitHubClient") as factory:

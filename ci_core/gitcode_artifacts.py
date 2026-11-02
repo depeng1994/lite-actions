@@ -13,6 +13,7 @@ import io
 import re
 import shutil
 import stat
+import tempfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,7 +22,6 @@ from urllib.parse import urlencode
 from ci_core.gitcode_contract import (
     BRIDGE_KEYS,
     MODEL_REPOSITORIES,
-    PLAN_KEYS,
     ControlPolicy,
     VerifiedRequest,
     canonical,
@@ -33,6 +33,7 @@ from ci_core.gitcode_contract import (
     shape,
     text,
     validate_pipeline,
+    validate_plan_shape,
     validate_pr,
     verify_request,
 )
@@ -123,6 +124,9 @@ class GitCodeArtifactReader:
             raise ArtifactError("ARTIFACT_CLIENT_IDENTITY_MISMATCH")
 
     def actual_run(self, run_id: int) -> dict:
+        return self._actual_run(run_id, allow_completed=False)
+
+    def _actual_run(self, run_id: int, *, allow_completed: bool) -> dict:
         if not self.policy.enabled:
             raise ArtifactError("GITCODE_PROVIDER_DISABLED")
         positive(run_id)
@@ -150,7 +154,12 @@ class GitCodeArtifactReader:
             or run.get("path")
             not in (policy.workflow_path, policy.workflow_path + "@" + ref)
             or (run.get("actor") or {}).get("login") not in policy.allowed_actors
-            or run.get("status") not in ("queued", "in_progress")
+            or run.get("status")
+            not in (
+                ("queued", "in_progress", "completed")
+                if allow_completed
+                else ("queued", "in_progress")
+            )
         ):
             raise ArtifactError("ACTUAL_RUN_NOT_AUTHORIZED_OR_ACTIVE")
         return {
@@ -267,6 +276,9 @@ class GitCodeArtifactReader:
             intent["pr"],
             allowed_repo_id=self.policy.gitcode_repo_id,
             allowed_refs=self.policy.allowed_base_refs,
+            allowed_head_repo_ids=tuple(
+                ident for _, ident in self.policy.allowed_head_repositories
+            ),
         )
         validate_pipeline(
             intent["pipeline"],
@@ -309,6 +321,30 @@ class GitCodeArtifactReader:
         self._validate_intent(intent, run, now)
         return intent, run
 
+    def early_attestation(self, run_id: int):
+        """Read an immutable emitter envelope from the SAME trusted early Run.
+
+        This is transport only, never event authorization. The pinned emitter
+        verifier and durable ingress transaction must validate it before grant.
+        """
+        run = self.actual_run(run_id)
+        metadata = self._named(f"dispatch-attestation-{run_id}-1", run)
+        if metadata is None:
+            return None
+        payload = self.github.download_artifact(
+            metadata["id"], limit=metadata["size_in_bytes"]
+        )
+        if (
+            len(payload) != metadata["size_in_bytes"]
+            or hashlib.sha256(payload).hexdigest() != metadata["digest"][7:]
+        ):
+            raise ArtifactError("ATTESTATION_ARTIFACT_DIGEST_OR_SIZE_MISMATCH")
+        envelope = load_json(
+            unzip_one(payload, "attestation.json", limit=64 * 1024), limit=64 * 1024
+        )
+        self.actual_run(run_id)
+        return envelope
+
     def _prepare(self, plan, run):
         job_id = positive(plan["github"].get("prepare_job_id"))
         job = self.github.request("GET", f"/actions/jobs/{job_id}")
@@ -331,13 +367,31 @@ class GitCodeArtifactReader:
         return job
 
     def load(self, run_id: int, workspace: Path, *, now: int) -> LoadedRequest | None:
+        return self._load(run_id, workspace, now=now, results_only=False)
+
+    def load_results(self, run_id: int, *, now: int) -> VerifiedRequest | None:
+        """Read fixed result identities, including completed runs; never grant execution.
+
+        All Prepare/artifact/manifest/slot checks remain enforced. Discard source
+        materialization before returning only immutable VerifiedRequest metadata.
+        A successful Workflow conclusion is never treated as a test result.
+        """
+        with tempfile.TemporaryDirectory(prefix="gitcode-results-") as temporary:
+            loaded = self._load(
+                run_id, Path(temporary) / "verified", now=now, results_only=True
+            )
+            return loaded.verified if loaded is not None else None
+
+    def _load(
+        self, run_id: int, workspace: Path, *, now: int, results_only: bool
+    ) -> LoadedRequest | None:
         """Re-read live identities; materialize only a complete successful Prepare."""
-        run = self.actual_run(run_id)
+        run = self._actual_run(run_id, allow_completed=results_only)
         request = self._named("lite-ci-request-1", run)
         if request is None:
             return None
         plan, _ = self._read(request, "request")
-        shape(plan, PLAN_KEYS, "INVALID_SCHEMA4_PLAN")
+        validate_plan_shape(plan)
         if type(plan["schema"]) is not int or plan["schema"] != 4:
             raise ArtifactError("SCHEMA4_REQUEST_REQUIRED")
         if plan["plan_digest"] != digest(
@@ -390,7 +444,7 @@ class GitCodeArtifactReader:
             check = self.channel.read_slot(plan, case_id)
             slots[case_id] = self.channel._observe(plan, case_id, check)
         # A cancelled/failed/rerun Run cannot cross the download window.
-        run = self.actual_run(run_id)
+        run = self._actual_run(run_id, allow_completed=results_only)
         job = self._prepare(plan, run)
         if job is None:
             raise ArtifactError("PREPARE_CHANGED_DURING_DOWNLOAD")

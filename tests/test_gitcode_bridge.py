@@ -96,6 +96,22 @@ class BridgeTests(unittest.TestCase):
             return self.run
         raise AssertionError((method, path))
 
+    def test_signed_envelope_is_transported_unchanged_not_treated_as_authorization(
+        self,
+    ):
+        envelope = {"protocol": "fixture-not-real-signature", "payload": {"n": 1}}
+        self.bridge.dispatch(self.intent, now=1100, attestation=envelope)
+        posts = [
+            call
+            for call in self.github.request.call_args_list
+            if call.args[0] == "POST"
+        ]
+        import json
+
+        self.assertEqual(
+            json.loads(posts[0].args[2]["inputs"]["gitcode_attestation"]), envelope
+        )
+
     def test_returned_run_id_and_restart_do_not_dispatch_twice(self):
         result = self.bridge.dispatch(self.intent, now=1100)
         self.assertEqual(result["run_id"], 999)

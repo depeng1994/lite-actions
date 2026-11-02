@@ -13,6 +13,7 @@ from ci_core.gitcode_contract import (
     VerifiedRequest,
     aggregate_results,
     canonical,
+    planned_slot_ids,
     request_id,
     seal_plan,
     source_identity,
@@ -39,7 +40,7 @@ class GitCodeWaiter:
         if canonical(seal_plan(self.plan)) != canonical(self.plan):
             raise WaiterError("WAITER_PLAN_DIGEST_MISMATCH")
         channel._plan(self.plan)
-        expected = {"aggregate"} | {c["case_id"] for c in self.plan["cases"]}
+        expected = planned_slot_ids(self.plan)
         if set(self.plan["result_slots"]) != expected:
             raise WaiterError("WAITER_COMPLETE_CASE_SLOTS_REQUIRED")
         self.channel = channel
@@ -122,7 +123,32 @@ class GitCodeWaiter:
             result = self.channel.read_case(self.plan, receipt, case["case_id"])
             if result is not None:
                 results.append(result)
+        if self.plan.get("authority_protocol") == "artifact-check-v1" and (
+            len(results) != len(self.plan["cases"])
+            or envelope["phase"] != "AGGREGATE_RESULT"
+        ):
+            return {
+                "test_result": "PENDING",
+                "reason": "AWAITING_COMPLETE_AGGREGATE",
+                "receipt": receipt,
+            }
+        confirmed_check = None
+        if self.plan.get("authority_protocol") == "artifact-check-v1":
+            # Do the last result-network read before the freshness decision.
+            # A slow aggregate GET cannot extend a previously returned proof.
+            confirmed_check = self.channel.read_slot(self.plan, "aggregate")
+            if canonical(self.channel._payload(confirmed_check)) != canonical(envelope):
+                raise WaiterError("AGGREGATE_CHANGED_DURING_READ")
         current = self.current(self.plan)
+        if (
+            current is None
+            and self.plan.get("authority_protocol") == "artifact-check-v1"
+        ):
+            return {
+                "test_result": "PENDING",
+                "reason": "AWAITING_FRESH_AUTHORITY",
+                "receipt": receipt,
+            }
         if type(current) is not bool:
             raise WaiterError("AUTHORITY_BOOLEAN_REQUIRED")
         outcome = aggregate_results(self.plan, receipt, results, current=current)
@@ -137,7 +163,11 @@ class GitCodeWaiter:
         reported = envelope.get("outcome")
         if not isinstance(reported, dict):
             raise WaiterError("AGGREGATE_OUTCOME_REQUIRED")
-        check = self.channel.read_slot(self.plan, "aggregate")
+        check = (
+            confirmed_check
+            if confirmed_check is not None
+            else self.channel.read_slot(self.plan, "aggregate")
+        )
         confirmed = self.channel._payload(check)
         if canonical(confirmed) != canonical(envelope):
             raise WaiterError("AGGREGATE_CHANGED_DURING_READ")

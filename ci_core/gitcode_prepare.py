@@ -85,6 +85,9 @@ def prepare_pr_source(
         before["identity"],
         allowed_repo_id=client.repo_id,
         allowed_refs=allowed_base_refs,
+        allowed_head_repo_ids=tuple(client.allowed_head_repositories.values())
+        if isinstance(getattr(client, "allowed_head_repositories", None), dict)
+        else (),
     )
     if before["state"] != "open" or before["authorized"] is not True:
         raise PreparationError("PR_SOURCE_NOT_AUTHORIZED")
@@ -93,15 +96,24 @@ def prepare_pr_source(
     ):
         raise PreparationError("DISPATCH_SNAPSHOT_NO_LONGER_CURRENT")
     metadata = client.repository()
+    source_metadata = (
+        metadata
+        if identity["head_repo_id"] == identity["repo_id"]
+        else client.repository_for_identity(identity, "head")
+    )
+    if source_metadata["repo_id"] != identity["head_repo_id"]:
+        raise PreparationError("SOURCE_REPOSITORY_IDENTITY_MISMATCH")
     builder = builder_factory(
         Path(destination),
         expected_git_version=expected_git_version,
-        allowed_urls=(metadata["clone_url"],),
+        allowed_urls=tuple(
+            dict.fromkeys((metadata["clone_url"], source_metadata["clone_url"]))
+        ),
     )
     try:
         for role in ("base", "head"):
             builder.fetch_ref(
-                url=metadata["clone_url"],
+                url=(metadata if role == "base" else source_metadata)["clone_url"],
                 ref=identity[role + "_ref"],
                 expected_sha=identity[role + "_sha"],
                 role=role,
@@ -116,7 +128,16 @@ def prepare_pr_source(
             allowed_base_refs=allowed_base_refs,
             allowed_actors=allowed_actors,
         )
-        if canonical(before) != canonical(after) or client.repository() != metadata:
+        source_after = (
+            client.repository()
+            if identity["head_repo_id"] == identity["repo_id"]
+            else client.repository_for_identity(identity, "head")
+        )
+        if (
+            canonical(before) != canonical(after)
+            or client.repository() != metadata
+            or source_after != source_metadata
+        ):
             raise PreparationError("PR_SOURCE_CHANGED_DURING_PREPARATION")
         handle.verify()
         return handle, identity
@@ -144,7 +165,7 @@ def manifest_for_source(
     from ci_core.gitcode_contract import MERGE_KEYS, positive
 
     handle.verify()
-    validate_pr(pr)
+    validate_pr(pr, allowed_head_repo_ids=None)
     shape(merge, MERGE_KEYS)
     for value in (github_run_id, run_attempt, source_artifact_id):
         positive(value)

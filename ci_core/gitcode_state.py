@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -27,7 +28,7 @@ from ci_core.gitcode_contract import (
     validate_pr,
 )
 
-STATE_VERSION = 4
+STATE_VERSION = 5
 
 
 class StateError(ValueError):
@@ -58,6 +59,29 @@ class Admission:
     receipt: dict
     canonical: dict
 
+
+SOURCE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS source_observations (
+ repo_id TEXT NOT NULL, number INTEGER NOT NULL, revision INTEGER NOT NULL,
+ snapshot TEXT NOT NULL, PRIMARY KEY(repo_id,number)
+);
+CREATE TABLE IF NOT EXISTS source_intents (
+ sequence INTEGER PRIMARY KEY AUTOINCREMENT, repo_id TEXT NOT NULL,
+ id TEXT NOT NULL UNIQUE, semantic TEXT NOT NULL UNIQUE,
+ number INTEGER NOT NULL, revision INTEGER NOT NULL,
+ intent TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0,
+ trigger_kind TEXT NOT NULL, actor TEXT NOT NULL, authorized_rerun INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS source_invalidations (
+ repo_id TEXT NOT NULL, number INTEGER NOT NULL, revision INTEGER NOT NULL,
+ observed_at INTEGER NOT NULL, PRIMARY KEY(repo_id,number,revision)
+);
+CREATE TABLE IF NOT EXISTS source_attestations (
+ intent_id TEXT PRIMARY KEY REFERENCES source_intents(id),
+ envelope_digest TEXT NOT NULL, key_id TEXT NOT NULL, event_id TEXT NOT NULL,
+ original_event_at INTEGER NOT NULL, action_run_id TEXT NOT NULL, payload TEXT NOT NULL
+);
+"""
 
 _SCHEMA = """
 CREATE TABLE pr_versions (
@@ -128,7 +152,7 @@ def _scope(pr):
 
 
 def _version(authority):
-    validate_pr(authority.pr)
+    validate_pr(authority.pr, allowed_head_repo_ids=None)
     positive(authority.revision, "TRUSTED_AUTHORITY_REVISION_REQUIRED")
     if (
         authority.state not in ("open", "closed", "merged")
@@ -167,9 +191,9 @@ class Coordinator:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connection() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, 2, 3, STATE_VERSION):
+            if version not in (0, 1, 2, 3, 4, STATE_VERSION):
                 raise StateError("UNSUPPORTED_COORDINATOR_STATE_VERSION")
-            if version in (1, 2, 3):
+            if version in (1, 2, 3, 4):
                 # Upgrade atomically: keep generations, leases and outbox intact.
                 # Historical v1 results without an exit code are not fabricated.
                 connection.execute("BEGIN IMMEDIATE")
@@ -215,6 +239,40 @@ class Coordinator:
                     ]
                     if columns != ["outbox_id", "sequence"]:
                         raise StateError("OUTBOX_ATTEMPT_MIGRATION_CONFLICT")
+                    for statement in SOURCE_SCHEMA.split(";"):
+                        if statement.strip():
+                            connection.execute(statement)
+                    # Previous coordinator versions did not retain issuer
+                    # invalidation chronology. Import the known current version
+                    # and establish a strict migration-time enrollment barrier.
+                    for row in connection.execute(
+                        "SELECT * FROM pr_versions"
+                    ).fetchall():
+                        old = json.loads(row["version_json"])
+                        snapshot = {
+                            "identity": old["pr"],
+                            "state": old["state"],
+                            "authorized": old["authorized"],
+                        }
+                        inserted = connection.execute(
+                            "INSERT OR IGNORE INTO source_observations VALUES(?,?,?,?)",
+                            (
+                                row["repo_id"],
+                                row["number"],
+                                row["revision"],
+                                _json(snapshot),
+                            ),
+                        ).rowcount
+                        if inserted:
+                            connection.execute(
+                                "INSERT OR IGNORE INTO source_invalidations VALUES(?,?,?,?)",
+                                (
+                                    row["repo_id"],
+                                    row["number"],
+                                    row["revision"],
+                                    int(time.time()),
+                                ),
+                            )
                     connection.execute(f"PRAGMA user_version={STATE_VERSION}")
                     connection.commit()
                 except BaseException:
@@ -229,6 +287,7 @@ class Coordinator:
                 connection.executescript(
                     "BEGIN IMMEDIATE;\n"
                     + _SCHEMA
+                    + SOURCE_SCHEMA
                     + f"\nPRAGMA user_version={STATE_VERSION};\nCOMMIT;"
                 )
         self.path.chmod(0o600)
@@ -327,38 +386,52 @@ class Coordinator:
                 )
                 connection.commit()
                 raise
-            version = _version(authority)
-            if _scope(authority.pr) != (repo_id, number):
-                raise StateError("AUTHORITY_PR_SCOPE_MISMATCH")
-            encoded = _json(version)
-            row = connection.execute(
-                "SELECT * FROM pr_versions WHERE repo_id=? AND number=?",
-                (repo_id, number),
-            ).fetchone()
-            if row is None:
-                generation = 1
-                connection.execute(
-                    "INSERT INTO pr_versions VALUES(?,?,?,?,?,?,1)",
-                    (repo_id, number, generation, encoded, authority.revision, now),
-                )
-            else:
-                if authority.revision < row["revision"]:
-                    raise StateError("AUTHORITY_REVISION_REGRESSION")
-                changed = encoded != row["version_json"]
-                if changed and authority.revision == row["revision"]:
-                    raise StateError("AUTHORITY_REVISION_COLLISION")
-                generation = row["generation"] + int(changed)
-                if changed:
-                    self._revoke(connection, (repo_id, number))
-                connection.execute(
-                    "UPDATE pr_versions SET generation=?,version_json=?,revision=?,observed_at=?,available=1 WHERE repo_id=? AND number=?",
-                    (generation, encoded, authority.revision, now, repo_id, number),
-                )
-            return generation
+            return self._reconcile_authority(
+                connection, repo_id, number, authority, now=now
+            )
+
+    def _reconcile_authority(self, connection, repo_id, number, authority, *, now):
+        """Apply an authenticated observation inside the caller's transaction.
+
+        The unified source ledger uses this to commit observation, revocation,
+        cancellation outbox and signed-intent enrollment as one SQLite change.
+        """
+        version = _version(authority)
+        if _scope(authority.pr) != (repo_id, number):
+            raise StateError("AUTHORITY_PR_SCOPE_MISMATCH")
+        encoded = _json(version)
+        row = connection.execute(
+            "SELECT * FROM pr_versions WHERE repo_id=? AND number=?",
+            (repo_id, number),
+        ).fetchone()
+        if row is None:
+            generation = 1
+            connection.execute(
+                "INSERT INTO pr_versions VALUES(?,?,?,?,?,?,1)",
+                (repo_id, number, generation, encoded, authority.revision, now),
+            )
+        else:
+            if authority.revision < row["revision"]:
+                raise StateError("AUTHORITY_REVISION_REGRESSION")
+            # A trusted version ledger may have observed A->B->A between
+            # coordinator polls. Revision advance still revokes old grants.
+            changed = (
+                encoded != row["version_json"] or authority.revision > row["revision"]
+            )
+            if changed and authority.revision == row["revision"]:
+                raise StateError("AUTHORITY_REVISION_COLLISION")
+            generation = row["generation"] + int(changed)
+            if changed:
+                self._revoke(connection, (repo_id, number))
+            connection.execute(
+                "UPDATE pr_versions SET generation=?,version_json=?,revision=?,observed_at=?,available=1 WHERE repo_id=? AND number=?",
+                (generation, encoded, authority.revision, now, repo_id, number),
+            )
+        return generation
 
     def register_intent(self, intent: dict, delivery: dict, proof: EventProof) -> int:
         """Record an early, non-executable dispatch intent and its Run ownership."""
-        validate_pr(intent["pr"])
+        validate_pr(intent["pr"], allowed_head_repo_ids=None)
         canonical(intent, limit=16 * 1024)
         if (
             not isinstance(proof, EventProof)
@@ -1009,6 +1082,43 @@ class Coordinator:
                     )
                 ],
             }
+
+    def iter_authority_requests(
+        self, *, now: int, page_size: int = 100, include_expired: bool = False
+    ):
+        """Page unexpired retained requests, including duplicate and delivered owners.
+
+        Hosted challenges belong to the waiting Run, even if its receipt follows
+        a canonical execution. Keep history and bound this pass by initial rowid.
+        """
+        if type(now) is not int or now < 0 or type(include_expired) is not bool:
+            raise StateError("INVALID_AUTHORITY_SCAN_CLOCK")
+        if type(page_size) is not int or not 1 <= page_size <= 1000:
+            raise StateError("INVALID_AUTHORITY_SCAN_PAGE_SIZE")
+        with self._connection() as db:
+            upper = db.execute(
+                "SELECT COALESCE(MAX(rowid),0) FROM requests"
+            ).fetchone()[0]
+        after = 0
+        while after < upper:
+            with self._connection() as db:
+                rows = db.execute(
+                    "SELECT r.rowid,r.id,r.plan_digest,r.receipt_json,r.execution_id "
+                    "FROM requests r JOIN executions e ON e.id=r.execution_id "
+                    "WHERE r.rowid>? AND r.rowid<=? AND (? OR e.deadline>?) "
+                    "ORDER BY r.rowid LIMIT ?",
+                    (after, upper, int(include_expired), now, page_size),
+                ).fetchall()
+            if not rows:
+                return
+            for row in rows:
+                after = row[0]
+                yield {
+                    "request_id": row["id"],
+                    "plan_digest": row["plan_digest"],
+                    "receipt": json.loads(row["receipt_json"]),
+                    "execution_id": row["execution_id"],
+                }
 
     def execution_snapshots(self, limit: int = 1000) -> list[dict]:
         positive(limit)

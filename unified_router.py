@@ -22,7 +22,20 @@ def main():
     p.add_argument("--worker-id", required=True, choices=["blue", "yellow"])
     p.add_argument("--validate", action="store_true")
     p.add_argument("--once", action="store_true")
+    p.add_argument("--gitcode-config", action="append", type=Path, default=[])
+    p.add_argument("--gitcode-state-directory", type=Path)
     a = p.parse_args()
+    if a.gitcode_config and (
+        a.worker_id != "blue" or a.gitcode_state_directory is None
+    ):
+        p.error("GitCode requires Blue and an explicit durable state directory")
+    if a.gitcode_state_directory is not None and not a.gitcode_config:
+        p.error("GitCode state directory requires an explicit release config")
+    if a.gitcode_config:
+        from ci_core.gitcode_assembly import load_release
+
+        for config_path in a.gitcode_config:
+            load_release(config_path)
     load(ROOT, a.worker_id)
     repos = configured_repos()
     if a.validate:
@@ -43,11 +56,21 @@ def main():
             if len(repos) > 1
             else GitHubClient(token, repos[0])
         )
+        gitcode_adapter = None
+        if a.gitcode_config:
+            from ci_core.gitcode_assembly import assemble_blue
+
+            gitcode_adapter = assemble_blue(
+                a.gitcode_config,
+                environment=os.environ,
+                state_directory=a.gitcode_state_directory,
+            )
         router = Router(
             ROOT,
             a.worker_id,
             client,
             os.environ.get("LITE_ACTIONS_RESULT_AUTHOR"),
+            gitcode_adapter=gitcode_adapter,
         )
         try:
             while True:

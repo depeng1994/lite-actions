@@ -30,7 +30,15 @@ def is_gitcode_record(record):
 class GitCodeRouterAdapter:
     """Use Router's threads, JobState and physical device/port reservations."""
 
-    def __init__(self, brokers, *, executor=None, clock=time.time):
+    def __init__(
+        self,
+        brokers,
+        *,
+        executor=None,
+        clock=time.time,
+        publishers=None,
+        responders=None,
+    ):
         if not brokers:
             raise RuntimeError4("SCHEMA4_TRUSTED_BROKERS_REQUIRED")
         if executor is None:
@@ -52,6 +60,12 @@ class GitCodeRouterAdapter:
             ):
                 raise RuntimeError4("SCHEMA4_SINGLE_COORDINATOR_POLICY_REQUIRED")
             self.brokers[key] = broker
+        self.responders = dict(responders or {})
+        if set(self.responders) - set(self.brokers):
+            raise RuntimeError4("AUTHORITY_RELEASE_NOT_CONFIGURED")
+        self.publishers = dict(publishers or {})
+        if set(self.publishers) - set(self.brokers):
+            raise RuntimeError4("PUBLICATION_RELEASE_NOT_CONFIGURED")
         self.delivery = GitCodeDelivery(
             self.coordinator,
             resolve_request=self.resolve_request,
@@ -206,6 +220,7 @@ class GitCodeRouterAdapter:
         def before_launch():
             if cancel.is_set():
                 raise InterruptedError("schema-4 cancellation requested")
+            broker.assert_plan_current(verified.plan)
             broker.reader.actual_run(verified.plan["github"]["run_id"])
             broker.refresh(
                 verified.plan["pr"]["repo_id"], verified.plan["pr"]["number"]
@@ -374,6 +389,54 @@ class GitCodeRouterAdapter:
             broker.reconcile_registered()
         self.delivery.flush()
         self.flush()
+        self.respond_authority()
+
+    def current_authority(self, verified, receipt):
+        plan = verified.plan
+        broker = self.broker(plan)
+        try:
+            broker.assert_plan_current(plan)
+            broker.reader._actual_run(plan["github"]["run_id"], allow_completed=True)
+            broker.refresh(plan["pr"]["repo_id"], plan["pr"]["number"])
+            reference = self.coordinator.request_reference(request_id(plan))
+            if (
+                reference["plan_digest"] != plan["plan_digest"]
+                or reference["receipt"] != receipt
+            ):
+                return False
+            self.coordinator.assert_startable(reference["execution_id"], now=self.now())
+        except Exception:
+            return False
+        return True
+
+    def respond_authority(self):
+        if not self.responders:
+            return
+        for reference in self.coordinator.iter_authority_requests(
+            now=self.now(), include_expired=True
+        ):
+            try:
+                verified = self.resolve_request(reference["request_id"])
+                plan = verified.plan
+                if plan.get("authority_protocol") != "artifact-check-v1":
+                    continue
+                key = (plan["control"]["control_sha"], plan["github"]["workflow_id"])
+                responder = self.responders.get(key)
+                if responder is None:
+                    continue
+                # Completed owners close their exact non-result slot neutral.
+                # Confirmed closures are durably acked; old history needs no API.
+                if responder.cleanup(verified, reference["receipt"]):
+                    continue
+                # Only answer a waiting active owner Run, never an old rerun.
+                self.broker(plan).reader.actual_run(plan["github"]["run_id"])
+                responder.respond(
+                    verified, reference["receipt"], current=self.current_authority
+                )
+            except Exception as exc:
+                logging.warning(
+                    "schema-4 authority response pending (%s)", type(exc).__name__
+                )
 
     def flush(self):
         self.delivery.flush()
@@ -390,6 +453,7 @@ class GitCodeRouterAdapter:
                 def current():
                     broker = self.broker(plan)
                     try:
+                        broker.assert_plan_current(plan)
                         broker.reader.actual_run(plan["github"]["run_id"])
                         broker.refresh(plan["pr"]["repo_id"], plan["pr"]["number"])
                         self.coordinator.assert_startable(
@@ -402,6 +466,13 @@ class GitCodeRouterAdapter:
                 self.delivery.publish_complete(
                     verified, receipt, results, current=current
                 )
+                publisher = self.publishers.get(
+                    (plan["control"]["control_sha"], plan["github"]["workflow_id"])
+                )
+                if publisher is not None:
+                    # A failed/unknown GitCode write remains pending without
+                    # re-running cases or acknowledging aggregate delivery.
+                    publisher.publish(verified, receipt, results, current=current)
                 self.coordinator.mark_aggregate_delivered(
                     snapshot["id"], receipt, now=self.now()
                 )

@@ -547,7 +547,7 @@ class GitCodeRouterTests(unittest.TestCase):
             }
         migrated = Coordinator(self.coordinator.path)
         with sqlite3.connect(migrated.path) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 4)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 5)
             self.assertEqual(
                 {
                     table: db.execute("SELECT * FROM " + table).fetchall()
@@ -574,6 +574,93 @@ class GitCodeRouterTests(unittest.TestCase):
         router.tick()
         self.drain(router)
         self.assertEqual(router.state.read()["existing-quarantine"], before)
+
+    def test_authority_requests_retain_delivered_owner_and_responder_uses_exact_receipt(
+        self,
+    ):
+        router = self.make_router()
+        router.tick()
+        self.drain(router)
+        references = list(
+            self.coordinator.iter_authority_requests(now=1100, page_size=1)
+        )
+        self.assertEqual(len(references), 1)
+        self.assertTrue(
+            self.coordinator.execution_snapshot(references[0]["execution_id"])[
+                "aggregate_delivered"
+            ]
+        )
+        self.assertEqual(
+            list(self.coordinator.iter_authority_requests(now=self.plan["deadline"])),
+            [],
+        )
+        fake_plan = {**self.plan, "authority_protocol": "artifact-check-v1"}
+        verified = Mock(plan=fake_plan)
+        responder = Mock()
+        responder.cleanup.return_value = False
+        self.assertEqual(
+            len(
+                list(
+                    self.coordinator.iter_authority_requests(
+                        now=self.plan["deadline"], include_expired=True
+                    )
+                )
+            ),
+            1,
+        )
+        router.gitcode.responders[
+            (self.plan["control"]["control_sha"], self.plan["github"]["workflow_id"])
+        ] = responder
+        with patch.object(router.gitcode, "resolve_request", return_value=verified):
+            router.gitcode.respond_authority()
+        responder.respond.assert_called_once_with(
+            verified, references[0]["receipt"], current=router.gitcode.current_authority
+        )
+        responder.reset_mock()
+        responder.cleanup.return_value = True
+        with patch.object(router.gitcode, "resolve_request", return_value=verified):
+            router.gitcode.respond_authority()
+        responder.cleanup.assert_called_once_with(verified, references[0]["receipt"])
+        responder.respond.assert_not_called()
+
+    def test_current_authority_rechecks_trusted_plan_and_publication_owner(self):
+        router = self.make_router()
+        router.tick()
+        self.drain(router)
+        reference = list(self.coordinator.iter_authority_requests(now=1100))[0]
+        verified = router.gitcode.resolve_request(reference["request_id"])
+        broker = router.gitcode.broker(self.plan)
+        broker.verify_plan = Mock(
+            side_effect=ValueError("new selector intent revoked old plan")
+        )
+        self.assertFalse(
+            router.gitcode.current_authority(verified, reference["receipt"])
+        )
+        broker.verify_plan.assert_called_once_with(self.plan)
+
+    def test_gitcode_publication_failure_retains_pending_without_reexecution(self):
+        router = self.make_router()
+        publisher = Mock()
+        publisher.publish.side_effect = OSError("publication unavailable")
+        router.gitcode.publishers[
+            (self.plan["control"]["control_sha"], self.plan["github"]["workflow_id"])
+        ] = publisher
+        with self.assertLogs(level="WARNING"):
+            router.tick()
+            for _ in range(10):
+                for future, _, _ in list(router.active.values()):
+                    future.result(timeout=15)
+                router.pump()
+                router.gitcode.flush()
+                if not router.active:
+                    break
+        self.assertEqual(len(self.executed), 2)
+        self.assertTrue(self.coordinator.pending_execution_snapshots())
+        publisher.publish.side_effect = None
+        router.gitcode.flush()
+        self.assertEqual(self.coordinator.pending_execution_snapshots(), [])
+        self.assertEqual(len(self.executed), 2)
+        self.assertGreaterEqual(publisher.publish.call_count, 2)
 
     def test_crash_after_remote_aggregate_before_local_ack_only_retries_delivery(self):
         router = self.make_router()
