@@ -606,7 +606,9 @@ class ManualCaptureTests(unittest.TestCase):
 
         legacy = copy.deepcopy(self.intent)
         legacy["selectors"] = [{"test_id": "worker_os_blue"}]
-        self.logs["log"] = encode_capture(legacy, legacy["bridge"]["event_created_at"]) + "\n"
+        self.logs["log"] = (
+            encode_capture(legacy, legacy["bridge"]["event_created_at"]) + "\n"
+        )
         proof = verify_manual_capture(
             legacy, self.capture_policy, self.client, now=self.now
         )
@@ -627,9 +629,14 @@ class ManualCaptureTests(unittest.TestCase):
         ):
             changed = copy.deepcopy(self.intent)
             changed["selectors"] = selectors
-            self.logs["log"] = encode_capture(changed, changed["bridge"]["event_created_at"]) + "\n"
-            with self.subTest(selectors=selectors), self.assertRaisesRegex(
-                ManualCaptureError, "BOUNDED_SMOKE_REQUEST_REQUIRED"
+            self.logs["log"] = (
+                encode_capture(changed, changed["bridge"]["event_created_at"]) + "\n"
+            )
+            with (
+                self.subTest(selectors=selectors),
+                self.assertRaisesRegex(
+                    ManualCaptureError, "BOUNDED_SMOKE_REQUEST_REQUIRED"
+                ),
             ):
                 verify_manual_capture(
                     changed, self.capture_policy, self.client, now=self.now

@@ -227,7 +227,8 @@ def verify_manual_capture(
         or intent.get("bridge", {}).get("rerun_intent_id") != "initial"
         or not isinstance(intent.get("selectors"), list)
         or not intent["selectors"]
-        or intent["selectors"] not in (
+        or intent["selectors"]
+        not in (
             [{"test_id": "worker_os_blue"}],
             [
                 {"test_id": "worker_os_blue"},

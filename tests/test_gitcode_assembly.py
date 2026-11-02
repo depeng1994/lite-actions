@@ -1,7 +1,9 @@
 """Trusted wiring tests use synthetic env values and no live credentials/network."""
 
+import sqlite3
 import tempfile
 import threading
+import time
 import unittest
 from dataclasses import asdict
 from pathlib import Path
@@ -118,6 +120,24 @@ class AssemblyTests(unittest.TestCase):
     def test_real_assemble_blue_broker_counts_fresh_authority_and_persists_revocation(
         self,
     ):
+        self._exercise_real_assembled_work()
+
+    def test_joint_factory_rejects_revocation_during_before_launch_network(self):
+        self._exercise_real_assembled_work("before_launch_network")
+
+    def test_joint_factory_rejects_pass_after_pre_finish_revocation(self):
+        self._exercise_real_assembled_work("before_finish")
+
+    def test_joint_factory_rejects_aggregate_after_pre_publish_revocation(self):
+        self._exercise_real_assembled_work("before_aggregate")
+
+    def test_joint_factory_guard_uses_post_lock_clock_after_new_observation(self):
+        self._exercise_real_assembled_work("clock_lock")
+
+    def _exercise_real_assembled_work(self, revoke_at=None):
+        trusted_now = [1100]
+        lock_threads = []
+
         class GitCodeTransport:
             def __init__(transport_self):
                 self_fixture = self.fixture
@@ -178,6 +198,10 @@ class AssemblyTests(unittest.TestCase):
 
             def request(fake_self, method, path, data=None):
                 fake_self.calls.append((method, path))
+                hook = getattr(fake_self, "before_response", None)
+                if hook is not None:
+                    fake_self.before_response = None
+                    hook()
                 if method == "GET" and path == "/actions/runs/100":
                     return {
                         "id": 100,
@@ -212,12 +236,15 @@ class AssemblyTests(unittest.TestCase):
                 [self.path],
                 environment=self.environment,
                 state_directory=self.root / "assembled-blue-state",
+                clock=lambda: trusted_now[0],
             )
 
         broker = next(iter(adapter.brokers.values()))
         provider = broker.verify_event.__self__
-        provider.clock = lambda: 1100
-        broker.clock = lambda: 1100
+        provider.clock = lambda: trusted_now[0]
+        broker.clock = lambda: trusted_now[0]
+        self.assertEqual(adapter.coordinator.decision_clock(), 1100)
+        self.assertEqual(provider.coordinator.decision_clock(), 1100)
         intent = provider.create_intent(
             self.fixture.intent["pr"]["number"],
             [{"test_id": "dispatch_smoke_8p"}],
@@ -282,7 +309,7 @@ class AssemblyTests(unittest.TestCase):
             "item": case,
             "phase": "QUEUED",
         }
-        adapter.clock = lambda: 1100
+        adapter.clock = lambda: trusted_now[0]
         adapter.router = SimpleNamespace(
             worker="blue",
             state=MemoryState(record),
@@ -292,7 +319,15 @@ class AssemblyTests(unittest.TestCase):
             active={},
         )
 
+        phase_counts = {}
+        actual_launches = []
+        work_start = len(transport.calls)
+
+        def revoke():
+            transport.branches["master"] = "e" * 40
+
         def cpu_only_executor(**kwargs):
+            phase_counts["work_preallocation"] = len(transport.calls) - work_start
             cleanup = {
                 "nodes": [
                     {
@@ -304,8 +339,46 @@ class AssemblyTests(unittest.TestCase):
                     }
                 ]
             }
-            kwargs["capture"]({"lease_id": "lease-assembly-cpu", "cleanup": cleanup})
+            captured = kwargs["capture"](
+                {"lease_id": "lease-assembly-cpu", "cleanup": cleanup}
+            )
+            self.assertGreater(captured["fencing_token"], 0)
+            if revoke_at == "before_launch_network":
+
+                def network_revocation():
+                    revoke()
+                    provider.read_authority(plan["pr"]["repo_id"], plan["pr"]["number"])
+
+                broker.reader.github.before_response = network_revocation
+            if revoke_at == "clock_lock":
+
+                def hold_then_observe():
+                    acquired = threading.Event()
+
+                    def writer():
+                        with sqlite3.connect(broker.coordinator.path) as db:
+                            db.execute("BEGIN IMMEDIATE")
+                            acquired.set()
+                            time.sleep(0.05)
+                            trusted_now[0] = 1102
+                            db.execute("UPDATE pr_versions SET observed_at=1102")
+
+                    thread = threading.Thread(target=writer)
+                    lock_threads.append(thread)
+                    thread.start()
+                    self.assertTrue(acquired.wait(2))
+
+                broker.reader.github.before_response = hold_then_observe
+            before_launch = len(transport.calls)
             kwargs["before_launch"]()
+            for thread in lock_threads:
+                thread.join(2)
+                self.assertFalse(thread.is_alive())
+            phase_counts["actual_before_launch"] = len(transport.calls) - before_launch
+            actual_launches.append("synthetic-executor-no-NPU")
+            phase_counts["before_finish_count"] = len(transport.calls)
+            if revoke_at == "before_finish":
+                revoke()
             return Execution(
                 0, ["CPU-only adapter regression"], self.root / "cpu.log", True
             )
@@ -319,17 +392,46 @@ class AssemblyTests(unittest.TestCase):
             return {"test_result": "PASS" if publish_current_calls[-1] else "STALE"}
 
         adapter.delivery.publish_complete = publish_complete
+        if revoke_at == "before_launch_network":
+            from ci_core.gitcode_state import StateError
+
+            with self.assertRaises(StateError):
+                adapter.work("assembled-case", case, threading.Event())
+            self.assertEqual(actual_launches, [])
+            snapshot = adapter.coordinator.execution_snapshot(accepted.execution_id)
+            self.assertTrue(snapshot["cancel_requested"])
+            self.assertEqual(snapshot["leases"][0]["state"], "ACTIVE")
+            self.assertIsNone(snapshot["cases"][0]["result"])
+            return
         adapter.work("assembled-case", case, threading.Event())
+        self.assertEqual(phase_counts["work_preallocation"], 6)
+        self.assertEqual(phase_counts["actual_before_launch"], 6)
+        self.assertEqual(len(transport.calls) - phase_counts["before_finish_count"], 6)
+        self.assertEqual(len(actual_launches), 1)
         self.assertEqual(
-            adapter.router.state.read()["assembled-case"]["report"]["status"], "PASS"
+            adapter.router.state.read()["assembled-case"]["report"]["status"],
+            "CANCELLED" if revoke_at == "before_finish" else "PASS",
         )
+        if revoke_at == "before_aggregate":
+            revoke()
         before = len(transport.calls)
         adapter.flush()
-        self.assertEqual(publish_current_calls, [True])
-        self.assertEqual(len(transport.calls) - before, 6)
+        self.assertEqual(publish_current_calls, [revoke_at in (None, "clock_lock")])
+        self.assertEqual(
+            len(transport.calls) - before, 0 if revoke_at == "before_finish" else 6
+        )
         self.assertEqual(
             adapter.router.state.read()["assembled-case"]["phase"], "REPORTED"
         )
+        if revoke_at == "clock_lock":
+            self.assertEqual(trusted_now[0], 1102)
+            self.assertEqual(adapter.coordinator.decision_clock(), 1102)
+            return
+        if revoke_at is not None:
+            snapshot = adapter.coordinator.execution_snapshot(accepted.execution_id)
+            self.assertTrue(snapshot["cancel_requested"])
+            self.assertEqual(snapshot["leases"][0]["state"], "RELEASED")
+            return
 
         github = broker.reader.github
         github.run_status = "completed"
