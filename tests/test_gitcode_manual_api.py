@@ -81,6 +81,25 @@ class ManualAPITests(unittest.TestCase):
         transport = Mock(side_effect=lambda path: copy.deepcopy(values[path]))
         return GitCodeClient("owner/repo", "1", transport=transport), transport
 
+    def test_platform_metadata_distinguishes_missing_null_and_empty_without_values(
+        self,
+    ):
+        self.step.update(
+            task="official_pre_step", inputs=None, env=None, condition=None
+        )
+        value = self.client._job_snapshot(self.job)["steps"][0]
+        self.assertEqual(value["inputs_state"], "null")
+        self.assertEqual(value["env_state"], "null")
+        self.assertEqual(value["condition_state"], "null")
+        del self.step["condition"]
+        self.step["inputs"] = []
+        self.step["env"] = {"secret": "DO_NOT_EXPOSE"}
+        value = self.client._job_snapshot(self.job)["steps"][0]
+        self.assertEqual(value["inputs_state"], "present")
+        self.assertEqual(value["env_state"], "present")
+        self.assertEqual(value["condition_state"], "missing")
+        self.assertNotIn("DO_NOT_EXPOSE", json.dumps(value))
+
     def test_retained_capture_exact_three_fresh_reads_and_full_safe_metadata(self):
         client, transport = self.capture_client()
         expected_job = client._job_snapshot(self.job)

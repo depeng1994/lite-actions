@@ -142,6 +142,75 @@ class VerifiedManualCapture:
         return self.event_id
 
 
+# Exact API field names observed in b472's platform-owned pre/post steps.
+PLATFORM_STEP_KEYS = frozenset(
+    {
+        "business_type",
+        "condition",
+        "continue-on-error",
+        "daily_build_number",
+        "end_time",
+        "endpoint_ids",
+        "env",
+        "icon_url",
+        "id",
+        "identifier",
+        "inputs",
+        "job_run_id",
+        "last_dispatch_id",
+        "message",
+        "multi_step_editable",
+        "name",
+        "official_task_version",
+        "runtime_attribution",
+        "sequence",
+        "start_time",
+        "status",
+        "task",
+        "timeout-minutes",
+    }
+)
+
+
+def capture_user_step(job, policy):
+    """Accept one user step, optionally inside the exact observed platform shell."""
+    steps = job.get("steps")
+    if not isinstance(steps, list) or len(steps) not in (1, 3):
+        raise ManualCaptureError("MANUAL_CAPTURE_JOB_NOT_FIXED_COMPLETE")
+    if len(steps) == 1:
+        return steps[0]
+    if len({step.get("id") for step in steps}) != 3:
+        raise ManualCaptureError("MANUAL_PLATFORM_STEP_IDENTITY_MISMATCH")
+    for index, task, name in (
+        (0, "official_pre_step", "初始化步骤"),
+        (2, "official_post_step", "后处理步骤"),
+    ):
+        step = steps[index]
+        if (
+            step.get("task") != task
+            or step.get("name") != name
+            or "identifier" not in step
+            or step["identifier"] is not None
+            or type(step.get("sequence")) is not int
+            or step["sequence"] != index
+            or step.get("status") != "COMPLETED"
+            or step.get("job_run_id") != job["id"]
+            or step.get("continue-on-error") not in (None, False)
+            or set(step.get("metadata_keys", [])) != PLATFORM_STEP_KEYS
+            or any(
+                step.get(field + "_state") != "null"
+                for field in ("inputs", "env", "condition")
+            )
+            or any(
+                key in step for key in ("script_sha256", "shell", "working_directory")
+            )
+        ):
+            raise ManualCaptureError("MANUAL_PLATFORM_STEP_ENVELOPE_MISMATCH")
+    if type(steps[1].get("sequence")) is not int or steps[1]["sequence"] != 1:
+        raise ManualCaptureError("MANUAL_USER_STEP_SEQUENCE_MISMATCH")
+    return steps[1]
+
+
 def verify_manual_capture(
     intent, policy, client, *, now, first_enrollment=True, allow_terminal=False
 ):
@@ -199,10 +268,9 @@ def verify_manual_capture(
         or job.get("status") != "COMPLETED"
         or job.get("is_shadow") is True
         or not isinstance(steps, list)
-        or len(steps) != 1
     ):
         raise ManualCaptureError("MANUAL_CAPTURE_JOB_NOT_FIXED_COMPLETE")
-    step = steps[0]
+    step = capture_user_step(job, policy)
     required = {
         "identifier": policy.step_identifier,
         "name": policy.step_name,

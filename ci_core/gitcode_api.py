@@ -510,6 +510,16 @@ class GitCodeClient:
                 raise GitCodeAPIError("GITCODE_ACTION_STEP_OWNERSHIP_MISMATCH")
             seen.add(ident)
             normalized = {"id": ident, "job_run_id": result["id"]}
+            # Evidence shape only: never disclose environment or input values.
+            normalized["metadata_keys"] = sorted(step)
+            for field in ("inputs", "env", "condition"):
+                normalized[field + "_state"] = (
+                    "missing"
+                    if field not in step
+                    else "null"
+                    if step[field] is None
+                    else "present"
+                )
             if "task" in step:
                 normalized["task"] = cls._action_text(step["task"])
             inputs = step.get("inputs")

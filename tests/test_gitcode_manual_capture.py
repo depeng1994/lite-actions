@@ -13,8 +13,10 @@ from ci_core.gitcode_admission import GitCodeAdmissionBroker
 from ci_core.gitcode_assembly import AssembledRuntime, AssemblyError
 from ci_core.gitcode_contract import digest
 from ci_core.gitcode_manual_capture import (
+    PLATFORM_STEP_KEYS,
     ManualCaptureError,
     ManualCapturePolicy,
+    capture_user_step,
     encode_capture,
     verify_manual_capture,
 )
@@ -173,6 +175,107 @@ class ManualCaptureTests(unittest.TestCase):
             self.assertNotIn("workflow_source_sha", evidence["metadata"])
             self.assertNotIn("original_event_at", evidence["metadata"])
             self.assertEqual(db.execute("SELECT count(*) FROM leases").fetchone()[0], 0)
+
+    def test_real_b472_sanitized_fixture_exact_platform_envelope(self):
+        fixture = json.loads(
+            (
+                Path(__file__).parent / "fixtures" / "gitcode_manual_b472_steps.json"
+            ).read_text()
+        )
+        steps = []
+        for observed in fixture["steps"]:
+            step = {
+                k: v
+                for k, v in observed.items()
+                if k not in {"keys", "inputs", "inputs_type", "env_type"}
+            }
+            step["metadata_keys"] = observed["keys"]
+            step["inputs_state"] = (
+                "null" if observed["inputs_type"] == "NoneType" else "present"
+            )
+            step["env_state"] = (
+                "null" if observed["env_type"] == "NoneType" else "present"
+            )
+            step["condition_state"] = (
+                "null" if observed["condition"] is None else "present"
+            )
+            steps.append(step)
+        selected = capture_user_step(
+            {"id": fixture["job_id"], "steps": steps}, self.capture_policy
+        )
+        self.assertEqual(selected["id"], "c4ec4fb5f98247e9add0dbfca47a35ae")
+        self.assertEqual(selected["task"], "official_shell")
+        self.assertEqual(set(fixture["steps"][0]["keys"]), PLATFORM_STEP_KEYS)
+        self.assertIsNone(fixture["steps"][0]["inputs"])
+
+    def add_platform_steps(self):
+        self.job["steps"][0]["sequence"] = 1
+
+        def platform(index, task, name):
+            return {
+                "id": "platform-" + str(index),
+                "job_run_id": self.job["id"],
+                "sequence": index,
+                "identifier": None,
+                "task": task,
+                "name": name,
+                "status": "COMPLETED",
+                "continue-on-error": None,
+                "metadata_keys": sorted(PLATFORM_STEP_KEYS),
+                "inputs_state": "null",
+                "env_state": "null",
+                "condition_state": "null",
+                "start_time": 990000 if index == 0 else 1010000,
+                "end_time": 990000 if index == 0 else 1010000,
+            }
+
+        self.job["steps"] = [
+            platform(0, "official_pre_step", "初始化步骤"),
+            self.job["steps"][0],
+            platform(2, "official_post_step", "后处理步骤"),
+        ]
+
+    def test_exact_platform_wrapper_enrolls_and_retains_whole_envelope(self):
+        self.add_platform_steps()
+        self.enroll()
+        self.provider.verify_event(self.intent)
+        self.job["steps"][0]["end_time"] += 1
+        with self.assertRaisesRegex(PlatformError, "REVOKED_BY_ACTION"):
+            self.provider.verify_event(self.intent)
+
+    def test_platform_wrapper_unknown_missing_or_nonnull_metadata_rejected(self):
+        self.add_platform_steps()
+        original = copy.deepcopy(self.job)
+        changes = [
+            ("task", "official_shell"),
+            ("name", "init"),
+            ("identifier", "0"),
+            ("sequence", 1),
+            ("status", "FAILED"),
+            ("job_run_id", "other-job"),
+            ("inputs_state", "missing"),
+            ("inputs_state", "present"),
+            ("env_state", "missing"),
+            ("env_state", "present"),
+            ("condition_state", "missing"),
+            ("condition_state", "present"),
+            ("script_sha256", "a" * 64),
+            ("metadata_keys", sorted(PLATFORM_STEP_KEYS | {"command"})),
+        ]
+        for key, value in changes:
+            with self.subTest(key=key, value=value):
+                self.job = copy.deepcopy(original)
+                self.job["steps"][0][key] = value
+                with self.assertRaises(ManualCaptureError):
+                    self.enroll()
+        self.job = copy.deepcopy(original)
+        self.job["steps"].append(copy.deepcopy(self.job["steps"][1]))
+        with self.assertRaises(ManualCaptureError):
+            self.enroll()
+        self.job = copy.deepcopy(original)
+        self.job["steps"][1]["sequence"] = 2
+        with self.assertRaises(ManualCaptureError):
+            self.enroll()
 
     def runtime_with_admitted_plan(self):
         self.api.reader.read_snapshot = self.provider.read_snapshot
