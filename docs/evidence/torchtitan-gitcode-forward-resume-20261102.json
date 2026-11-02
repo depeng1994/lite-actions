@@ -1,0 +1,89 @@
+{
+  "schema": 1,
+  "checked_at_utc": "2026-11-02T03:58:32.536921+00:00",
+  "worker_code_commit": "d9444a26911864fc79f1bf756ff5545014e749a6",
+  "worker_tree": "cd8ec567b0507922be582ad3401e3cba4b6485e2",
+  "worker_test_count": 330,
+  "worker_python_file_count": 79,
+  "validation_scope": "CPU_LOCAL_GIT_MOCK_SUBPROCESS_NOT_PLATFORM_OR_NPU",
+  "worker_logs": {
+    "tests": {
+      "sha256": "f5fab6adf43e52021ceefe6b9b942f6bd1ed3311e8c3ab6ef504f1b1abf4be12",
+      "last_lines": [
+        "",
+        "----------------------------------------------------------------------",
+        "Ran 330 tests in 29.681s",
+        "",
+        "OK"
+      ]
+    },
+    "lint": {
+      "sha256": "e3e75536809fddead684100d219413a6157dcc009e3a2f510ac2e0f3d1e2307a",
+      "last_lines": [
+        "All checks passed!",
+        "79 files already formatted"
+      ]
+    }
+  },
+  "production": {
+    "release": "f4b15e32b8348d0762cb808a85f7ea0a6f33745a",
+    "service": "active",
+    "main_pid": 142932,
+    "state_records": 94,
+    "inflight": [],
+    "quarantined_keys": [
+      "migration_guard_50262de0804176e228efa26ff0acf8eb72eb5b363205b9e2e4bdded4ef956a7c"
+    ],
+    "state_sha256": "336d5fab4ddd1d86ba3c1510015937753f47f64c1b5eb886f3af4516b0723794",
+    "restarted_this_checkpoint": false,
+    "new_hardware_tasks_this_checkpoint": 0
+  },
+  "sdk_audit": {
+    "info": 0,
+    "low": 0,
+    "moderate": 7,
+    "high": 0,
+    "critical": 0,
+    "total": 7
+  },
+  "overall_status": "INCOMPLETE_TORCHTITAN_GITCODE_E2E_NOT_ACCEPTED",
+  "prerequisite_prs_merged": true,
+  "model": {
+    "repository": "depeng1994/torchtitan-npu",
+    "branch": "gitcode-forward",
+    "commit": "67cee7fe6df4cc4d81619dce380bb51310c8b906",
+    "tree": "804c3fcd88e6d13f91301a7332ab916758158012",
+    "validated_at_utc": "2026-11-02T03:57:40.978923+00:00",
+    "scope": "EXACT_COMMIT_CPU_NOT_PLATFORM_OR_NPU",
+    "tests": {
+      "schema3_control": 63,
+      "trusted_runner": 14,
+      "hosted_boundary": 18
+    },
+    "log_sha256": {
+      "schema3_control": "29465774303734555c195d4cb242ee45bb259a96d8859b4bd2910e9d441e8922",
+      "trusted_runner": "03ff8de0697839ff043493bcb98bb61f3edb047dfe2ca5c5ff5c038a6b96b575",
+      "hosted_boundary": "1786c92e344316cab15b2c2c473d1a85c67d9351798f626c227830b30200ad10"
+    },
+    "prerequisite_control_files_exactly_restored": 25,
+    "schema4_workflow_enabled": false
+  },
+  "github_code_commits_created_using_connector": true,
+  "gitcode_credential_probe": {
+    "credential_file_presence_confirmed": true,
+    "attempt_result": "TOOL_SAFETY_CHECK_BLOCKED_BEFORE_API_RESULT",
+    "credential_validity": "NOT_DETERMINED",
+    "credential_printed": false,
+    "alternate_credential_access_attempted_after_block": false
+  },
+  "new_platform_e2e_accepted": 0,
+  "new_int_items_fully_accepted": 0,
+  "remaining": [
+    "Real GitCode event/history/Action provenance adapter and trusted personal Bridge/status/Base compensation are not complete or accepted.",
+    "Hosted final job and service startup assembly remain incomplete; restored workflows are schema 3, not a schema-4 release.",
+    "Dedicated App installation/token/create/update capabilities are not proven live on Prepare and Blue.",
+    "No new reviewed official GitCode control U or verified U=C publication.",
+    "TorchTitan GitCode OS/8P/16P/Nightly, failures, cancellation, recovery, mixed-source locks, production migration and rollback are not accepted."
+  ],
+  "vllm_scope": "Existing GitHub-native Blue acceptance remains valid only for its documented scope; GitCode forwarding is out of scope for vLLM."
+}

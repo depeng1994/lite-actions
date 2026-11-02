@@ -1,5 +1,7 @@
 # TorchTitan GitCode Forward：原设计逐项审计与实施检查点
 
+> **最新续办记录见第 10 节**：Worker `d9444a2`、模型 `67cee7f` 已提交并完成精确提交 CPU 回归；完整 TorchTitan GitCode Forward 仍未验收。第 1～9 节保留上一检查点的逐项审计，不将新单测替代原 E2E/INT。
+
 **检查日期：2026-11-02。总体结论：尚未完成，不能按原设计 DoD 宣布交付或开启 TorchTitan schema-4 生产准入。**
 
 本审计以 `gitcode-forward-design.md` V3.1 的 G01–G14、R01–R11、P0–P6、E2E-01–18、INT-01–09 为基准，并应用 `gitcode-forward-scope-20261102.md`：vLLM 只验收 GitHub 原生链路，不再要求 GitCode Bridge、GitCode 状态回写或 U→C 同步。被取消的范围标记为 OUT_OF_SCOPE，不改记为 PASS。
@@ -156,3 +158,53 @@ INT 表列出已通过的具体 CPU 子检查，而不是把所有集成项一�
 只读复核时，Blue 服务 active，94 条任务状态、零在途任务、原 :153 设备 0–7 隔离对象保留。两台 TT 容器 Name/ID/Image/Running 只读检查通过；本轮没有启动新的 NPU 任务，没有重启/切换生产 Worker，没有修改 Yellow、分支保护、Required Checks 或业务 PR 合并状态。
 
 **交付判断：已有可核验的新代码与精确提交测试；完整 TorchTitan GitCode Forward 仍未交付，原设计 DoD 不满足。**
+
+
+## 10. 本次续办：已提交代码与当前真实门槛
+
+本节机器证据记录时间为 2026-11-02 03:58 UTC（北京时间 11:58）。不是全项目完成声明。两个前置 PR 已经合入，不再作为等待理由。
+
+### 10.1 已提交、精确版本复核
+
+| 仓库/分支 | 代码提交 | 实际验证 |
+|---|---|---|
+| `depeng1994/lite-actions:gitcode-forward` | `d9444a26911864fc79f1bf756ff5545014e749a6`，tree `cd8ec567b0507922be582ad3401e3cba4b6485e2` | 独立 worktree：330 项全量单测通过；lint 通过，79 个 Python 文件格式通过；compile 通过 |
+| `depeng1994/torchtitan-npu:gitcode-forward` | `67cee7fe6df4cc4d81619dce380bb51310c8b906`，tree `804c3fcd88e6d13f91301a7332ab916758158012` | 在非 depeng Remote 的实际 PyTorch 环境检出精确提交：63 项 schema-3 控制回归、14 项可信 Runner、18 项 Hosted 边界测试均通过；本轮新增 Python 静态检查、compile、三个恢复 Workflow 的 actionlint 通过 |
+
+Worker 新增专用 Checks App 短期 installation token、固定仓库/最小权限校验与过期刷新；未知 Check 写入交由原持久化 journal 恢复，不自动重复 POST、不回退 PAT。App 私钥签名测试使用临时生成的合成 RSA 密钥，没有读取生产私钥，不能当作实际 App 权限验收。
+
+恢复此前未提交的 Base 补偿、分页发现和 outbox 公平性实现并提交：已登记 PR 不受单页历史上限影响，发现只是核对信号；缺独立 EventProof 时零 dispatch；回报重试顺序在 I/O 前持久化，坏结果不会永久占满前批队列；state v3→v4 原子迁移保留租约、取消和 outbox。全部为 CPU/本地故障注入范围。
+
+模型补齐 PR #11 的 25 个必要控制/目录/测试依赖文件，与 `f20d073aec6bb7543b2e7db706d1e01b5298c8ca` 对应文件逐字节相同；没有执行旧 YAML 删除。新增 Hosted 不可变 Run/Attempt/C/Workflow SHA 边界与完整验证后按 ID 等待；上传 SDK 固定 6.3.1 和 lockfile，ESM 实际导入检查通过，上传子进程不继承 GitHub/GitCode/App 凭证。
+
+**保留事实：模型新提交还没有接入 GitCode Workflow 分支。** 恢复的是原 schema-3 入口；Hosted helper 不是最终发布编排，不把半套候选推到组织默认分支。尚需真实 GitCode 事件/状态适配、最终 CLI/Job 编排与服务启动装配。这些是未完成开发，不只归因于权限。
+
+### 10.2 当前无法跨越的外部发布门槛
+
+非 depeng Remote 的 GitCode 凭证文件存在且非空。读取该凭证并在进程内调用 GitCode API 的操作被工具安全检查拦截，未取得认证 API 返回；没有打印凭证，也没有换路径/换凭证方式绕过。**不能将此解释为 Token 无效、过期或仓库不存在。** 本轮未写入 GitCode 官方或个人仓。
+
+专用 App 的代码支持已新增，但 Prepare 与 Blue 使用同一专用 App 的真实安装范围、短期 token、创建/更新 Check 能力仍未配置并验收。普通 GitHub 插件可修改文件不等于生产 Worker 已有该身份。
+
+官方 GitCode 控制发布继续按原设计由用户审查合入；当前没有新 U 及 C=U 的平台证据。本候选尚未完成编排，不能把它当作完整上游待合入包，更不能用 GitHub 独有控制补丁绕过。
+
+`@actions/artifact` 锁文件的本轮 npm audit 为 0 high / 0 critical / 7 moderate（archiver/glob/minimatch 链）。固定单文件上传未暴露 PR glob，但依赖风险审查尚需收口；不将审计写成全绿。
+
+### 10.3 严格按原 P0–P6 的当前判断
+
+| 阶段 | 当前状态 | 未完成项 |
+|---|---|---|
+| P0 | PARTIAL / BLOCKED | GitCode 认证及真实事件/回写合同、专用 App 实证 |
+| P1 | PARTIAL | 已补 Hosted 边界与前置控制依赖；真实 Bridge/状态适配、最终 Job 编排未完成 |
+| P2 | CANDIDATE / NOT_DEPLOYED | 330 项 CPU 回归通过，服务启动装配和真实执行仍未验收 |
+| P3 | NOT_READY | 无完整官方控制发布及 U=C 核验 |
+| P4 | TT_GITCODE_NOT_RUN | 本轮新增真实平台/NPU E2E 通过数为 0；第 6/7 节逐项状态未被单测升级 |
+| P5 | TT_SCHEMA4_NOT_DEPLOYED | 不满足前置时没有强开生产 Provider；真实迁移/回滚未关闭 |
+| P6 | INCOMPLETE | 全项目 DoD 未满足 |
+
+原 18 项 E2E、9 项 INT 的逐项审计继续适用。vLLM 已验收的 GitHub 原生 Blue 三项仍仅覆盖其文档范围，不能冒充 TorchTitan GitCode 实机结果；Base-only 自动恢复等未关闭项保持未关闭。
+
+### 10.4 生产复核和证据
+
+生产 Blue 仍是 `f4b15e32b8348d0762cb808a85f7ea0a6f33745a`，active，PID 142932；94 条状态、零在途任务、原隔离记录保留。本次没有重启生产、没有启动硬件任务、没有改 Yellow/Required Checks/分支保护、没有合入业务 PR。
+
+原始日志分别保留在两台授权机器的 `gitcode-forward-work` 目录。精确提交、日志 SHA256、生产状态、凭证调用边界与剩余任务见 [本轮机器证据](evidence/torchtitan-gitcode-forward-resume-20261102.json)。
