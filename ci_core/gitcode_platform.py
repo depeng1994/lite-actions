@@ -82,7 +82,9 @@ class ObservedGitCodeAuthority:
                 raise PlatformError(
                     "LEGACY_AUTHORITY_LEDGER_REQUIRES_REVIEWED_MIGRATION"
                 )
-        self.coordinator = coordinator or Coordinator(self.path)
+        self.coordinator = coordinator or Coordinator(
+            self.path, decision_clock=lambda: int(self.clock())
+        )
         if self.coordinator.path.resolve() != self.path.resolve():
             raise PlatformError("AUTHORITY_AND_COORDINATOR_DATABASE_MUST_MATCH")
 

@@ -503,7 +503,9 @@ def _assemble(
                 attestation_policy.issuer_repo_id,
                 token=token,
             )
-        shared_coordinator = Coordinator(root / "coordinator.sqlite3")
+        shared_coordinator = Coordinator(
+            root / "coordinator.sqlite3", decision_clock=lambda: int(clock())
+        )
         authority = ObservedGitCodeAuthority(
             personal,
             policy,
@@ -585,7 +587,7 @@ def assemble_bridge(config_path, *, environment, upload, state_directory):
     )
 
 
-def assemble_blue(config_paths, *, environment, state_directory):
+def assemble_blue(config_paths, *, environment, state_directory, clock=time.time):
     if not config_paths:
         raise AssemblyError("APPROVED_BLUE_RELEASE_CONFIG_REQUIRED")
     # Validate every release and shared source identity before opening coordinator
@@ -614,10 +616,13 @@ def assemble_blue(config_paths, *, environment, state_directory):
             upload=no_upload,
             state_directory=root,
             role="blue",
+            clock=clock,
         )
         for config_path in config_paths
     ]
-    coordinator = Coordinator(root / "coordinator.sqlite3")
+    coordinator = Coordinator(
+        root / "coordinator.sqlite3", decision_clock=lambda: int(clock())
+    )
     store = GitCodeRequestStore(root / "requests")
 
     def enroll_for(runtime):
@@ -651,7 +656,7 @@ def assemble_blue(config_paths, *, environment, state_directory):
                     or runtime.authority.manual_capture_policy is not None
                 )
                 else None,
-                clock=lambda: int(time.time()),
+                clock=lambda: int(clock()),
             )
         )
     publishers = {
@@ -679,5 +684,8 @@ def assemble_blue(config_paths, *, environment, state_directory):
                 runtime.reader.channel,
                 resolve_request=broker.resolve_request,
                 cleanup_journal=CreationJournal(root / "authority-closures.sqlite3"),
+                clock=clock,
             )
-    return GitCodeRouterAdapter(brokers, publishers=publishers, responders=responders)
+    return GitCodeRouterAdapter(
+        brokers, publishers=publishers, responders=responders, clock=clock
+    )

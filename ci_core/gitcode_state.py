@@ -9,6 +9,7 @@ A platform without a verified event revision/history must not enable this adapte
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import time
 import uuid
@@ -184,7 +185,16 @@ def _semantic(intent):
 
 
 class Coordinator:
-    def __init__(self, path: Path, *, authority_max_age_seconds: int = 30):
+    def __init__(
+        self,
+        path: Path,
+        *,
+        authority_max_age_seconds: int = 30,
+        decision_clock: Callable[[], int] | None = None,
+    ):
+        if decision_clock is not None and not callable(decision_clock):
+            raise StateError("INVALID_DECISION_CLOCK")
+        self.decision_clock = decision_clock
         positive(authority_max_age_seconds)
         self.authority_max_age_seconds = authority_max_age_seconds
         self.path = Path(path)
@@ -570,6 +580,23 @@ class Coordinator:
             )
             return generation
 
+    def _locked_decision_now(self, connection, supplied_now):
+        """Authorization time, never source observation or original event time.
+
+        Production supplies a trusted clock. Explicit historical/test callers
+        without that clock retain their supplied timestamp. Resolve once only
+        AFTER BEGIN IMMEDIATE, including all subsequent deadline decisions.
+        """
+        if not connection.in_transaction:
+            raise StateError("DECISION_REQUIRES_TRANSACTION_LOCK")
+        try:
+            now = self.decision_clock() if self.decision_clock else supplied_now
+        except Exception:
+            raise StateError("INVALID_DECISION_CLOCK") from None
+        if type(now) is not int or now < 0:
+            raise StateError("INVALID_DECISION_CLOCK")
+        return now
+
     def _current(self, connection, execution, *, now):
         version = connection.execute(
             "SELECT * FROM pr_versions WHERE repo_id=? AND number=?",
@@ -584,18 +611,60 @@ class Coordinator:
                 execution["pipeline"],
             ),
         ).fetchone()
-        return bool(
-            version
-            and head
-            and version["available"]
-            and 0 <= now - version["observed_at"] <= self.authority_max_age_seconds
-            and version["generation"] == execution["generation"]
-            and head["execution_generation"] == execution["execution_generation"]
-            and head["publication_revision"] == execution["publication_revision"]
-            and head["spec_digest"] == execution["spec_digest"]
-            and not execution["cancel_requested"]
-            and now < execution["deadline"]
+        observed = version["observed_at"] if version else None
+        age = now - observed if observed is not None else None
+        checks = (
+            (version is not None, "VERSION_MISSING"),
+            (head is not None, "PIPELINE_HEAD_MISSING"),
+            (bool(version and version["available"]), "AUTHORITY_UNAVAILABLE"),
+            (age is not None and age >= 0, "AUTHORITY_FROM_FUTURE"),
+            (
+                age is not None and age <= self.authority_max_age_seconds,
+                "AUTHORITY_STALE",
+            ),
+            (
+                bool(version and version["generation"] == execution["generation"]),
+                "PR_GENERATION_CHANGED",
+            ),
+            (
+                bool(
+                    head
+                    and head["execution_generation"]
+                    == execution["execution_generation"]
+                ),
+                "EXECUTION_GENERATION_CHANGED",
+            ),
+            (
+                bool(
+                    head
+                    and head["publication_revision"]
+                    == execution["publication_revision"]
+                ),
+                "PUBLICATION_REVISION_CHANGED",
+            ),
+            (
+                bool(head and head["spec_digest"] == execution["spec_digest"]),
+                "SPEC_CHANGED",
+            ),
+            (not execution["cancel_requested"], "EXECUTION_CANCELLED"),
+            (now < execution["deadline"], "EXECUTION_DEADLINE_EXPIRED"),
         )
+        reason = next((reason for okay, reason in checks if not okay), None)
+        if reason is not None:
+            # Fixed enum and numeric timing only: never payload, credentials,
+            # source URLs, intent contents or exception text from callbacks.
+            logging.warning(
+                "schema-4 current rejected reason=%s decision_at=%d observed_at=%s "
+                "age=%s max_age=%d deadline=%d",
+                reason,
+                now,
+                observed,
+                age,
+                self.authority_max_age_seconds,
+                execution["deadline"],
+            )
+            return False
+        return True
 
     def claim(self, verified: VerifiedRequest, *, now: int) -> Admission:
         if not isinstance(verified, VerifiedRequest):
@@ -603,6 +672,7 @@ class Coordinator:
         plan = verified.plan
         rid, intent_id = request_id(plan), plan["bridge"]["dispatch_intent_id"]
         with self._transaction() as connection:
+            now = self._locked_decision_now(connection, now)
             delivery = connection.execute(
                 "SELECT * FROM deliveries WHERE request_id=?", (rid,)
             ).fetchone()
@@ -729,6 +799,7 @@ class Coordinator:
 
     def assert_startable(self, execution_id: str, *, now: int) -> None:
         with self._transaction() as connection:
+            now = self._locked_decision_now(connection, now)
             execution = connection.execute(
                 "SELECT * FROM executions WHERE id=?", (execution_id,)
             ).fetchone()
@@ -737,6 +808,7 @@ class Coordinator:
 
     def claim_case(self, execution_id: str, case_id: str, *, now: int) -> bool:
         with self._transaction() as connection:
+            now = self._locked_decision_now(connection, now)
             execution = connection.execute(
                 "SELECT * FROM executions WHERE id=?", (execution_id,)
             ).fetchone()
@@ -773,6 +845,7 @@ class Coordinator:
             ):
                 raise StateError("RECOVERY_BINDINGS_REQUIRED")
         with self._transaction() as connection:
+            now = self._locked_decision_now(connection, now)
             execution = connection.execute(
                 "SELECT * FROM executions WHERE id=?", (execution_id,)
             ).fetchone()
@@ -1148,6 +1221,7 @@ class Coordinator:
     ) -> None:
         """Only external occupancy before captured lease/staging may retry."""
         with self._transaction() as db:
+            now = self._locked_decision_now(db, now)
             execution = db.execute(
                 "SELECT * FROM executions WHERE id=?", (execution_id,)
             ).fetchone()
@@ -1181,6 +1255,7 @@ class Coordinator:
         if type(fencing_token) is not int or fencing_token < 1:
             raise StateError("INVALID_FENCING_TOKEN")
         with self._transaction() as db:
+            now = self._locked_decision_now(db, now)
             execution = db.execute(
                 "SELECT * FROM executions WHERE id=?", (execution_id,)
             ).fetchone()

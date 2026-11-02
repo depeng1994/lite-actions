@@ -221,6 +221,23 @@ class AssemblyTests(unittest.TestCase):
                 state_directory=self.root / "state",
             )
 
+    def test_blue_both_coordinators_bind_same_trusted_decision_clock(self):
+        now = [1102.25]
+        adapter = assemble_blue(
+            [self.path],
+            environment=self.environment,
+            state_directory=self.root / "clock-state",
+            clock=lambda: now[0],
+        )
+        self.assertEqual(adapter.coordinator.decision_clock(), 1102)
+        for broker in adapter.brokers.values():
+            provider = broker.verify_plan.__self__
+            self.assertEqual(provider.coordinator.decision_clock(), 1102)
+            now[0] = 1103.25
+            self.assertEqual(provider.coordinator.decision_clock(), 1103)
+            self.assertEqual(broker.coordinator.decision_clock(), 1103)
+            self.assertEqual(broker._now(), 1103)
+
     def test_invalid_release_never_opens_coordinator_storage(self):
         self.config["policy"]["enabled"] = False
         self.write()

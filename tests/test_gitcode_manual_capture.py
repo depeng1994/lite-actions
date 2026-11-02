@@ -325,6 +325,7 @@ class ManualCaptureTests(unittest.TestCase):
                 [self.root / "synthetic-release.json"],
                 environment={},
                 state_directory=self.root,
+                clock=lambda: self.now,
             )
         adapter.clock = lambda: self.now
         verified = adapter.resolve_request(request_id(plan))

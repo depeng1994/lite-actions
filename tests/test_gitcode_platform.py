@@ -46,6 +46,11 @@ class ObservedAuthorityTests(unittest.TestCase):
             **kwargs,
         )
 
+    def test_fallback_coordinator_has_trusted_decision_clock(self):
+        self.assertEqual(self.provider.coordinator.decision_clock(), 1100)
+        self.provider.clock = lambda: 1102
+        self.assertEqual(self.provider.coordinator.decision_clock(), 1102)
+
     def test_restart_and_retries_reuse_original_intent_and_proof(self):
         intent = self.create()
         proof = self.provider.verify_event(intent)
