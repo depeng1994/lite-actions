@@ -33,7 +33,11 @@ class ManualCaptureTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.api = HostingAPI(self.root)
         self.api.intent["bridge"]["rerun_intent_id"] = "initial"
-        self.api.intent["selectors"] = self.api.intent["selectors"][:2]
+        self.api.intent["selectors"] = [
+            {"test_id": "worker_os_blue"},
+            {"test_id": "dispatch_smoke_8p"},
+            {"test_id": "dispatch_smoke_16p"},
+        ]
         self.api.run["created_at"] = "1970-01-01T00:16:50Z"
         self.now = 1100
         self.capture_policy = ManualCapturePolicy(
@@ -545,7 +549,6 @@ class ManualCaptureTests(unittest.TestCase):
         self.enroll()
         changed = copy.deepcopy(self.intent)
         changed["bridge"]["dispatch_intent_id"] = "new-id"
-        changed["selectors"] = changed["selectors"][:1]
         self.logs["log"] = (
             encode_capture(changed, changed["bridge"]["event_created_at"]) + "\n"
         )
@@ -563,21 +566,32 @@ class ManualCaptureTests(unittest.TestCase):
                 db.execute("SELECT count(*) FROM source_intents").fetchone()[0], 0
             )
 
-    def test_old_selector_request_cannot_supersede_current_pipeline_owner(self):
+    def test_older_duplicate_three_case_capture_does_not_supersede_current_owner(self):
         self.enroll()
         older = copy.deepcopy(self.intent)
         older["bridge"].update(
-            dispatch_intent_id="older-request",
+            bridge_event_id="manual:older-run",
             bridge_action_run="older-run",
+            bridge_nonce="o" * 32,
+            source_snapshot_id="manual-capture:" + "o" * 32,
+            dispatch_intent_id="manual-intent:" + "o" * 32,
             event_created_at=985,
         )
-        older["selectors"] = older["selectors"][:1]
         self.run["workflow_run_id"] = "older-run"
         self.run["start_time"] = 970000
         self.job["steps"][0].update(start_time=980000, end_time=990000)
         self.logs["log"] = encode_capture(older, 985) + "\n"
-        with self.assertRaisesRegex(PlatformError, "NOT_NEWER_THAN_PIPELINE_OWNER"):
-            self.enroll(older)
+        older_gh_run = {
+            **self.api.run,
+            "display_title": "lite-gitcode:" + older["bridge"]["bridge_nonce"],
+        }
+        self.enroll(older, run=older_gh_run)
+        with self.db._connection() as db:
+            rows = db.execute(
+                "SELECT id,revoked FROM source_intents ORDER BY id"
+            ).fetchall()
+            self.assertEqual(len(rows), 2)
+            self.assertTrue(all(row["revoked"] == 0 for row in rows))
 
     def test_run_attempt_change_after_log_read_rejected(self):
         self.client.action_run.side_effect = [
@@ -586,6 +600,40 @@ class ManualCaptureTests(unittest.TestCase):
         ]
         with self.assertRaisesRegex(ManualCaptureError, "RUN_IDENTITY_CHANGED"):
             self.enroll()
+
+    def test_manual_capture_allows_legacy_os_only_or_exact_three_case_mode(self):
+        from ci_core.gitcode_manual_capture import verify_manual_capture
+
+        legacy = copy.deepcopy(self.intent)
+        legacy["selectors"] = [{"test_id": "worker_os_blue"}]
+        self.logs["log"] = encode_capture(legacy, legacy["bridge"]["event_created_at"]) + "\n"
+        proof = verify_manual_capture(
+            legacy, self.capture_policy, self.client, now=self.now
+        )
+        self.assertEqual(proof.intent["selectors"], [{"test_id": "worker_os_blue"}])
+
+        for selectors in (
+            [{"test_id": "worker_os_blue"}, {"test_id": "dispatch_smoke_8p"}],
+            [
+                {"test_id": "worker_os_blue"},
+                {"test_id": "dispatch_smoke_8p"},
+                {"test_id": "dispatch_smoke_8p"},
+            ],
+            [
+                {"test_id": "dispatch_smoke_8p"},
+                {"test_id": "worker_os_blue"},
+                {"test_id": "dispatch_smoke_16p"},
+            ],
+        ):
+            changed = copy.deepcopy(self.intent)
+            changed["selectors"] = selectors
+            self.logs["log"] = encode_capture(changed, changed["bridge"]["event_created_at"]) + "\n"
+            with self.subTest(selectors=selectors), self.assertRaisesRegex(
+                ManualCaptureError, "BOUNDED_SMOKE_REQUEST_REQUIRED"
+            ):
+                verify_manual_capture(
+                    changed, self.capture_policy, self.client, now=self.now
+                )
 
     def test_manual_never_enables_training_or_native_attempt(self):
         for mutation in ("training", "attempt"):

@@ -227,12 +227,14 @@ def verify_manual_capture(
         or intent.get("bridge", {}).get("rerun_intent_id") != "initial"
         or not isinstance(intent.get("selectors"), list)
         or not intent["selectors"]
-        or any(
-            row.get("test_id") not in {"worker_os_blue", "dispatch_smoke_8p"}
-            for row in intent["selectors"]
-            if isinstance(row, dict)
+        or intent["selectors"] not in (
+            [{"test_id": "worker_os_blue"}],
+            [
+                {"test_id": "worker_os_blue"},
+                {"test_id": "dispatch_smoke_8p"},
+                {"test_id": "dispatch_smoke_16p"},
+            ],
         )
-        or any(not isinstance(row, dict) for row in intent["selectors"])
     ):
         raise ManualCaptureError("MANUAL_BOUNDED_SMOKE_REQUEST_REQUIRED")
     run_id = text(intent.get("bridge", {}).get("bridge_action_run"), limit=100)
