@@ -32,6 +32,7 @@ from ci_core.gitcode_contract import (
     select_cases,
     shape,
     text,
+    validate_pipeline,
     validate_pr,
     verify_request,
 )
@@ -267,7 +268,11 @@ class GitCodeArtifactReader:
             allowed_repo_id=self.policy.gitcode_repo_id,
             allowed_refs=self.policy.allowed_base_refs,
         )
-        select_cases(intent["selectors"], self.catalog)
+        validate_pipeline(
+            intent["pipeline"],
+            intent["workflow_path"],
+            select_cases(intent["selectors"], self.catalog),
+        )
         shape(intent["bridge"], BRIDGE_KEYS)
         bridge = intent["bridge"]
         for key, value in bridge.items():
@@ -422,10 +427,16 @@ class GitCodeArtifactReader:
                 bundle_sha256=plan["artifacts"]["source"]["content_sha256"],
                 bundle_path=str(source_path),
                 merge_policy=plan["merge"]["policy"],
-                git_version=plan["merge"]["builder_version"],
+                git_version=plan["merge"]["builder_version"].removeprefix("git-"),
                 dependencies=tuple(contents["manifest"]["dependencies"]),
             )
             source_directory = extract_verified_source(source, workspace / "source")
+            if self.policy.github_repo_id == 1210038933:
+                from ci_core.gitcode_interfaces import inspect_directory
+
+                inspect_directory(
+                    source_directory, [case["test_id"] for case in plan["cases"]]
+                )
             from ci_core.gitcode_source import extract_verified_archive
 
             runner_directory = extract_verified_archive(

@@ -5,7 +5,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ci_core.gitcode_contract import VerifiedRequest, canonical, request_id, seal_plan, source_identity
+from ci_core.gitcode_contract import (
+    VerifiedRequest,
+    canonical,
+    request_id,
+    seal_plan,
+    source_identity,
+)
 from ci_core.gitcode_waiter import GitCodeWaiter, WaiterError
 from tests.test_gitcode_pipeline import HostingAPI
 
@@ -36,12 +42,15 @@ class DuplicateWaiterTests(unittest.TestCase):
                 "receipt": self.receipt,
                 "identity": source_identity(self.plan),
                 "status": "PASS",
+                "exit_code": 0,
                 "cleanup_verified": True,
                 "summary": ["Waiter CPU fixture, not a hardware execution"],
             }
             self.api.channel.publish_case(self.plan, self.receipt, result)
             self.results.append(result)
-        self.api.channel.publish_aggregate(self.plan, self.receipt, self.results, current=True)
+        self.api.channel.publish_aggregate(
+            self.plan, self.receipt, self.results, current=True
+        )
         duplicate = copy.deepcopy(self.plan)
         duplicate["github"].update(run_id=200, prepare_job_id=201)
         duplicate["result_slots"] = {}
@@ -60,14 +69,18 @@ class DuplicateWaiterTests(unittest.TestCase):
             "github": self.plan["github"],
             "result_slots": self.plan["result_slots"],
         }
-        self.api.channel.publish_receipt(self.duplicate, self.duplicate_receipt, canonical_execution=self.pointer)
+        self.api.channel.publish_receipt(
+            self.duplicate, self.duplicate_receipt, canonical_execution=self.pointer
+        )
 
     def waiter(self, **kwargs):
         return GitCodeWaiter(
             VerifiedRequest(canonical(self.duplicate)),
             self.api.channel,
             current=lambda plan: True,
-            resolve_canonical=kwargs.get("resolve", lambda pointer: VerifiedRequest(canonical(self.plan))),
+            resolve_canonical=kwargs.get(
+                "resolve", lambda pointer: VerifiedRequest(canonical(self.plan))
+            ),
         )
 
     def change_envelope(self, **changes):
@@ -81,10 +94,27 @@ class DuplicateWaiterTests(unittest.TestCase):
         outcome = self.waiter().poll(now=1100)
         self.assertEqual(outcome["test_result"], "PASS")
         self.assertEqual(outcome["receipt"], self.receipt)
-        self.assertEqual(outcome["followed_from_request_id"], request_id(self.duplicate))
-        duplicate_cases = {x["id"] for k, x in self.duplicate["result_slots"].items() if k != "aggregate"}
-        self.assertFalse(any(path == f"/check-runs/{ident}" for _, path in self.api.calls for ident in duplicate_cases))
-        self.assertFalse(any("/actions/runs/" in path or "comments" in path for _, path in self.api.calls))
+        self.assertEqual(
+            outcome["followed_from_request_id"], request_id(self.duplicate)
+        )
+        duplicate_cases = {
+            x["id"]
+            for k, x in self.duplicate["result_slots"].items()
+            if k != "aggregate"
+        }
+        self.assertFalse(
+            any(
+                path == f"/check-runs/{ident}"
+                for _, path in self.api.calls
+                for ident in duplicate_cases
+            )
+        )
+        self.assertFalse(
+            any(
+                "/actions/runs/" in path or "comments" in path
+                for _, path in self.api.calls
+            )
+        )
 
     def test_unverified_or_wrong_canonical_plan_is_rejected(self):
         with self.assertRaisesRegex(WaiterError, "VERIFIED_CANONICAL"):
@@ -92,15 +122,26 @@ class DuplicateWaiterTests(unittest.TestCase):
         wrong = copy.deepcopy(self.plan)
         wrong["github"]["run_id"] = 999
         with self.assertRaisesRegex(WaiterError, "POINTER_PLAN"):
-            self.waiter(resolve=lambda p: VerifiedRequest(canonical(wrong))).poll(now=1100)
+            self.waiter(resolve=lambda p: VerifiedRequest(canonical(wrong))).poll(
+                now=1100
+            )
 
     def test_pointer_cannot_redirect_to_another_case_specification(self):
         wrong = copy.deepcopy(self.plan)
         wrong["control"]["control_sha"] = "0" * 40
         wrong = seal_plan(wrong)
-        self.change_envelope(canonical={"request_id": request_id(wrong), "plan_digest": wrong["plan_digest"], "github": wrong["github"], "result_slots": wrong["result_slots"]})
+        self.change_envelope(
+            canonical={
+                "request_id": request_id(wrong),
+                "plan_digest": wrong["plan_digest"],
+                "github": wrong["github"],
+                "result_slots": wrong["result_slots"],
+            }
+        )
         with self.assertRaisesRegex(WaiterError, "SPECIFICATION_MISMATCH"):
-            self.waiter(resolve=lambda p: VerifiedRequest(canonical(wrong))).poll(now=1100)
+            self.waiter(resolve=lambda p: VerifiedRequest(canonical(wrong))).poll(
+                now=1100
+            )
 
     def test_different_execution_generation_cannot_use_old_green(self):
         receipt = {**self.duplicate_receipt, "execution_generation": 2}
@@ -109,7 +150,9 @@ class DuplicateWaiterTests(unittest.TestCase):
             self.waiter().poll(now=1100)
 
     def test_self_reference_is_not_a_canonical_result(self):
-        self.change_envelope(canonical={**self.pointer, "request_id": request_id(self.duplicate)})
+        self.change_envelope(
+            canonical={**self.pointer, "request_id": request_id(self.duplicate)}
+        )
         with self.assertRaisesRegex(WaiterError, "CYCLE"):
             self.waiter().poll(now=1100)
 

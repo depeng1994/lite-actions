@@ -84,6 +84,7 @@ class CheckChannelTests(unittest.TestCase):
             "receipt": receipt,
             "identity": source_identity(self.plan),
             "status": "PASS",
+            "exit_code": 0,
             "cleanup_verified": True,
             "summary": ["fixture passed and cleaned"],
         }

@@ -33,6 +33,7 @@ class GitCodeStoreTests(unittest.TestCase):
         result = reopened.load_execution(self.rid, self.digest)
         self.assertEqual(result.verified.plan, self.plan)
         self.assertEqual(result.source.metadata(), self.loaded.source.metadata())
+        self.assertEqual(result.source.git_version, "2.43.0")
         result.verify_files()
         self.assertNotEqual(result.source.bundle_path, self.loaded.source.bundle_path)
 
@@ -84,16 +85,38 @@ class GitCodeStoreTests(unittest.TestCase):
     def test_different_source_cannot_rebind_existing_request(self):
         self.store.save(self.loaded)
         changed = replace(self.loaded.source, tested_tree_sha="0" * 40)
-        with self.assertRaisesRegex(StoreError, "BINDING_IMMUTABLE"):
+        with self.assertRaisesRegex(StoreError, "SOURCE_PLAN_MISMATCH"):
             self.store.save(replace(self.loaded, source=changed))
+
+    def test_wrong_source_cannot_poison_first_persistence(self):
+        changed = replace(self.loaded.source, tested_tree_sha="0" * 40)
+        with self.assertRaisesRegex(StoreError, "SOURCE_PLAN_MISMATCH"):
+            self.store.save(replace(self.loaded, source=changed))
+        self.assertEqual(list(self.store.root.iterdir()), [])
+
+    def test_source_symlink_is_rejected_even_with_matching_content_hash(self):
+        alias = self.root / "source-alias.tar.gz"
+        alias.symlink_to(self.loaded.source.bundle_path)
+        with self.assertRaises(SourceError):
+            self.store.save(
+                replace(
+                    self.loaded,
+                    source=replace(self.loaded.source, bundle_path=str(alias)),
+                )
+            )
 
     def test_concurrent_idempotent_persistence_has_one_record(self):
         with ThreadPoolExecutor(max_workers=4) as workers:
-            results = list(workers.map(lambda _: self.store.save(self.loaded), range(8)))
+            results = list(
+                workers.map(lambda _: self.store.save(self.loaded), range(8))
+            )
         self.assertTrue(all(x.plan == self.plan for x in results))
         self.assertEqual(len(list(self.store.root.iterdir())), 1)
         self.assertEqual((self.store.root.stat().st_mode & 0o777), 0o700)
-        self.assertEqual(((self.store._directory(self.rid) / "request.json").stat().st_mode & 0o777), 0o600)
+        self.assertEqual(
+            ((self.store._directory(self.rid) / "request.json").stat().st_mode & 0o777),
+            0o600,
+        )
 
     def test_symlink_metadata_and_entry_are_rejected(self):
         self.store.save(self.loaded)

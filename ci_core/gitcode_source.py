@@ -107,6 +107,7 @@ class SourceHandle:
         path = Path(self.bundle_path)
         if (
             not re.fullmatch(r"[0-9a-f]{64}", self.bundle_sha256)
+            or path.is_symlink()
             or not path.is_file()
             or sha256_file(path) != self.bundle_sha256
         ):

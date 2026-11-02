@@ -29,6 +29,7 @@ from ci_core.gitcode_contract import (
     select_cases,
     shape,
     text,
+    validate_pipeline,
     validate_pr,
 )
 from ci_core.gitcode_prepare import verify_control_release
@@ -200,7 +201,11 @@ class GitCodeBridge:
             or intent["pipeline"] not in ("smoke", "nightly")
         ):
             raise BridgeError("INTENT_CONTROL_RELEASE_MISMATCH")
-        select_cases(intent["selectors"], self.catalog)
+        validate_pipeline(
+            intent["pipeline"],
+            intent["workflow_path"],
+            select_cases(intent["selectors"], self.catalog),
+        )
         shape(intent["bridge"], BRIDGE_KEYS)
         for key, value in intent["bridge"].items():
             positive(value) if key in ("bridge_attempt", "event_created_at") else text(

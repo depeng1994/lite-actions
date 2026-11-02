@@ -286,6 +286,20 @@ def select_cases(selectors: list[dict], catalog: dict[str, dict]) -> list[dict]:
     return result
 
 
+def validate_pipeline(pipeline: str, workflow_path: str, cases: list[dict]) -> None:
+    expected = {
+        ".github/workflows/lite_actions_dispatcher_smoke.yml": (
+            "smoke",
+            {"worker_probe", "npu_smoke"},
+        ),
+        ".github/workflows/nightly_fulltests.yml": ("nightly", {"train"}),
+    }.get(workflow_path)
+    if expected is None or pipeline != expected[0]:
+        raise ContractError("PIPELINE_WORKFLOW_MISMATCH")
+    if not cases or any(case.get("kind") not in expected[1] for case in cases):
+        raise ContractError("PIPELINE_CASE_KIND_MISMATCH")
+
+
 def spec_digest(plan: dict) -> str:
     """Semantic identity excludes delivery nonce, run, attempt, artifacts and slots."""
     return digest(
@@ -477,6 +491,7 @@ def verify_request(
             raise ContractError("VLLM_NIGHTLY_NOT_AUTHORIZED")
     if canonical(plan["cases"]) != canonical(select_cases(selectors, catalog)):
         raise ContractError("UNTRUSTED_CASE_RESOURCES")
+    validate_pipeline(plan["pipeline"], gh["workflow_path"], plan["cases"])
     if plan["request_spec_digest"] != spec_digest(plan):
         raise ContractError("REQUEST_SPEC_DIGEST_MISMATCH")
     _verify_bundles(plan, artifacts, manifest, intent, selectors)
@@ -648,7 +663,15 @@ def aggregate_results(
     for result in results:
         shape(
             result,
-            {"case_id", "receipt", "identity", "status", "cleanup_verified", "summary"},
+            {
+                "case_id",
+                "receipt",
+                "identity",
+                "status",
+                "exit_code",
+                "cleanup_verified",
+                "summary",
+            },
         )
         case_id = result["case_id"]
         if case_id not in expected or case_id in seen:
@@ -669,10 +692,17 @@ def aggregate_results(
         }:
             raise ContractError("INVALID_CASE_RESULT")
         if (
+            type(result["exit_code"]) is not int
+            or not -255 <= result["exit_code"] <= 255
+        ):
+            raise ContractError("INVALID_CASE_EXIT_CODE")
+        if result["status"] == "PASS" and result["exit_code"] != 0:
+            raise ContractError("PASS_EXIT_CODE_MISMATCH")
+        if (
             not isinstance(result["summary"], list)
             or len(result["summary"]) > 20
             or any(
-                not isinstance(x, str) or len(x) > 180 or "\n" in x or "\r" in x
+                not isinstance(x, str) or len(x) > 180 or any(ord(c) < 32 for c in x)
                 for x in result["summary"]
             )
         ):

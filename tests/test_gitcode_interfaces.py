@@ -4,7 +4,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ci_core.gitcode_interfaces import SMOKE_PAYLOAD, SourceInterfaceError, inspect_directory, required_paths
+from ci_core.gitcode_interfaces import (
+    SMOKE_PAYLOAD,
+    SourceInterfaceError,
+    inspect_directory,
+    required_paths,
+)
 from tests.test_gitcode_pipeline import HostingAPI
 
 
@@ -23,7 +28,10 @@ class InterfaceTests(unittest.TestCase):
         return path
 
     def test_payload_is_ast_parsed_not_imported(self):
-        self.write(SMOKE_PAYLOAD, "raise RuntimeError('control must not run proposed Python')\nPAYLOAD_API_VERSION = 1\ndef all_reduce(tensor): pass\n")
+        self.write(
+            SMOKE_PAYLOAD,
+            "raise RuntimeError('control must not run proposed Python')\nPAYLOAD_API_VERSION = 1\ndef all_reduce(tensor): pass\n",
+        )
         inspect_directory(self.source, ["dispatch_smoke_8p", "dispatch_smoke_16p"])
 
     def test_missing_wrong_duplicate_or_boolean_interface_version_is_rejected(self):
@@ -46,12 +54,19 @@ class InterfaceTests(unittest.TestCase):
     def test_reserved_control_bootstrap_names_are_not_allowed(self):
         for name in ("sitecustomize.py", "usercustomize.py", "_lite_gitcode_train.py"):
             file = self.write(name, "raise RuntimeError('must not execute')")
-            with self.subTest(name=name), self.assertRaisesRegex(SourceInterfaceError, "SHADOWS"):
+            with (
+                self.subTest(name=name),
+                self.assertRaisesRegex(SourceInterfaceError, "SHADOWS"),
+            ):
                 inspect_directory(self.source, ["worker_os_blue"])
             file.unlink()
 
     def test_training_paths_are_data_not_python_discovery(self):
-        tests = ["dsv4_flash_a3_8p_example", "dsv4_flash_a3_8p_adamw", "dsv4_flash_a3_16p_example"]
+        tests = [
+            "dsv4_flash_a3_8p_example",
+            "dsv4_flash_a3_8p_adamw",
+            "dsv4_flash_a3_16p_example",
+        ]
         paths = required_paths(tests)
         self.assertIn("scripts/run_train_multinodes.sh", paths)
         for path in paths:
@@ -62,7 +77,12 @@ class InterfaceTests(unittest.TestCase):
             inspect_directory(self.source, tests)
 
     def test_foreign_case_and_traversal_are_not_accepted(self):
-        for tests in (["dispatch_smoke_a5_8p"], ["../../outside"], ["worker_os_blue", "worker_os_blue"], []):
+        for tests in (
+            ["dispatch_smoke_a5_8p"],
+            ["../../outside"],
+            ["worker_os_blue", "worker_os_blue"],
+            [],
+        ):
             with self.subTest(tests=tests), self.assertRaises(SourceInterfaceError):
                 required_paths(tests)
 
@@ -79,6 +99,7 @@ class InterfaceTests(unittest.TestCase):
     def test_producer_missing_payload_never_uploads_executable_request(self):
         from tests.test_gitcode_artifacts import tar_bytes
 
+        (self.root / "hosting").mkdir()
         api = HostingAPI(self.root / "hosting")
         api.source_bytes = tar_bytes({"README.md": b"no smoke payload"})
         with self.assertRaisesRegex(SourceInterfaceError, "MISSING_OR_UNSAFE"):

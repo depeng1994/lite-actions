@@ -265,6 +265,7 @@ class CoordinatorTests(unittest.TestCase):
             "receipt": admission.receipt,
             "identity": source_identity(self.plan),
             "status": status,
+            "exit_code": 0 if status == "PASS" else 1,
             "cleanup_verified": clean,
             "summary": [],
         }

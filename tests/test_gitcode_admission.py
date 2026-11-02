@@ -56,7 +56,9 @@ class AdmissionBrokerTests(unittest.TestCase):
         self.authority = Authority(self.authority.pr, 2, state="closed")
         result = self.broker.reconcile_registered()
         self.assertEqual(result["unavailable"], [])
-        self.assertEqual([x["kind"] for x in self.coordinator.pending_outbox()], ["CANCEL_RUN"])
+        self.assertEqual(
+            [x["kind"] for x in self.coordinator.pending_outbox()], ["CANCEL_RUN"]
+        )
         self.assertEqual(self.count("executions"), 0)
 
     def test_duplicate_poll_does_not_add_execution_or_resource_lease(self):
@@ -66,7 +68,10 @@ class AdmissionBrokerTests(unittest.TestCase):
         self.assertEqual(self.count("executions"), 1)
         self.assertEqual(self.count("requests"), 1)
         self.assertEqual(self.count("leases"), 0)
-        self.assertEqual(self.broker.startable_source(first).source.tested_merge_sha, self.plan["merge"]["tested_merge_sha"])
+        self.assertEqual(
+            self.broker.startable_source(first).source.tested_merge_sha,
+            self.plan["merge"]["tested_merge_sha"],
+        )
 
     def test_no_authenticated_event_proof_means_no_execution(self):
         self.proof = {"event_order": 1, "version_revision": 1}
@@ -93,7 +98,9 @@ class AdmissionBrokerTests(unittest.TestCase):
         self.api.metadata.clear()
         self.api.zips.clear()
         self.api.calls.clear()
-        self.assertEqual(self.broker.resolve_request(request_id(self.plan)).plan, self.plan)
+        self.assertEqual(
+            self.broker.resolve_request(request_id(self.plan)).plan, self.plan
+        )
         self.assertEqual(self.api.calls, [])
         self.broker.startable_source(accepted).verify_files()
         self.assertFalse(any("artifacts" in path for _, path in self.api.calls))

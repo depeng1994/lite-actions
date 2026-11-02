@@ -83,6 +83,20 @@ class GitCodeRequestStore:
         finally:
             os.close(descriptor)
 
+    @staticmethod
+    def _validate_source_identity(plan: dict, source: SourceHandle):
+        if (
+            source.provider != "gitcode"
+            or source.head_sha != plan["pr"]["head_sha"]
+            or source.base_sha != plan["pr"]["base_sha"]
+            or source.tested_merge_sha != plan["merge"]["tested_merge_sha"]
+            or source.tested_tree_sha != plan["merge"]["tested_tree_sha"]
+            or source.bundle_sha256 != plan["artifacts"]["source"]["content_sha256"]
+            or source.merge_policy != plan["merge"]["policy"]
+            or "git-" + source.git_version != plan["merge"]["builder_version"]
+        ):
+            raise StoreError("STORED_SOURCE_PLAN_MISMATCH")
+
     def save(self, loaded: LoadedRequest) -> VerifiedRequest:
         if not isinstance(loaded, LoadedRequest):
             raise StoreError("LOADED_VERIFIED_REQUEST_REQUIRED")
@@ -90,9 +104,15 @@ class GitCodeRequestStore:
         plan = loaded.verified.plan
         if canonical(seal_plan(plan)) != canonical(plan):
             raise StoreError("REQUEST_STORE_PLAN_DIGEST_MISMATCH")
+        self._validate_source_identity(plan, loaded.source)
         source = loaded.source.metadata()
         source.pop("bundle_path", None)
-        document = {"schema": 1, "request_id": request_id(plan), "plan": plan, "source": source}
+        document = {
+            "schema": 1,
+            "request_id": request_id(plan),
+            "plan": plan,
+            "source": source,
+        }
         encoded = canonical(document)
         target = self._directory(document["request_id"])
         if target.exists():
@@ -156,19 +176,17 @@ class GitCodeRequestStore:
     def load_execution(self, rid: str, expected_digest: str) -> StoredExecution:
         document = self._document(rid, expected_digest)
         directory = self._directory(rid)
-        source = SourceHandle(**{**document["source"], "dependencies": tuple(document["source"]["dependencies"]), "bundle_path": str(directory / "source.tar.gz")})
+        source = SourceHandle(
+            **{
+                **document["source"],
+                "dependencies": tuple(document["source"]["dependencies"]),
+                "bundle_path": str(directory / "source.tar.gz"),
+            }
+        )
         plan = document["plan"]
-        if (
-            source.provider != "gitcode"
-            or source.head_sha != plan["pr"]["head_sha"]
-            or source.base_sha != plan["pr"]["base_sha"]
-            or source.tested_merge_sha != plan["merge"]["tested_merge_sha"]
-            or source.tested_tree_sha != plan["merge"]["tested_tree_sha"]
-            or source.bundle_sha256 != plan["artifacts"]["source"]["content_sha256"]
-            or source.merge_policy != plan["merge"]["policy"]
-            or "git-" + source.git_version != plan["merge"]["builder_version"]
-        ):
-            raise StoreError("STORED_SOURCE_PLAN_MISMATCH")
-        result = StoredExecution(VerifiedRequest(canonical(plan)), source, directory / "runner.tar.gz")
+        self._validate_source_identity(plan, source)
+        result = StoredExecution(
+            VerifiedRequest(canonical(plan)), source, directory / "runner.tar.gz"
+        )
         result.verify_files()
         return result

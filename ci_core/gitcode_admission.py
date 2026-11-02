@@ -52,7 +52,11 @@ class GitCodeAdmissionBroker:
         if reader.policy.github_repo_id != 1210038933:
             raise AdmissionError("TORCHTITAN_GITCODE_SCOPE_ONLY")
         self.reader, self.coordinator, self.store = reader, coordinator, store
-        self.read_authority, self.verify_event, self.clock = read_authority, verify_event, clock
+        self.read_authority, self.verify_event, self.clock = (
+            read_authority,
+            verify_event,
+            clock,
+        )
         self.workspace = Path(workspace)
         if self.workspace.is_symlink():
             raise AdmissionError("ADMISSION_WORKSPACE_CANNOT_BE_SYMLINK")
@@ -97,8 +101,12 @@ class GitCodeAdmissionBroker:
         }
         self.coordinator.register_intent(intent, delivery, proof)
         # Early registration grants cancellation ownership, NOT resource access.
-        with tempfile.TemporaryDirectory(prefix="request-", dir=self.workspace) as temporary:
-            loaded = self.reader.load(run_id, Path(temporary) / "materialized", now=self._now())
+        with tempfile.TemporaryDirectory(
+            prefix="request-", dir=self.workspace
+        ) as temporary:
+            loaded = self.reader.load(
+                run_id, Path(temporary) / "materialized", now=self._now()
+            )
             if loaded is None:
                 return None
             if request_id(loaded.verified.plan) != delivery["request_id"]:
@@ -139,7 +147,13 @@ class GitCodeAdmissionBroker:
             try:
                 self.refresh(repo_id, number)
             except Exception as exc:
-                unavailable.append({"repo_id": repo_id, "number": number, "error_type": type(exc).__name__})
+                unavailable.append(
+                    {
+                        "repo_id": repo_id,
+                        "number": number,
+                        "error_type": type(exc).__name__,
+                    }
+                )
             else:
                 refreshed.append({"repo_id": repo_id, "number": number})
         return {"refreshed": refreshed, "unavailable": unavailable}

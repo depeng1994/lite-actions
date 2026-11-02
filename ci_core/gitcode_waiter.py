@@ -83,10 +83,10 @@ class GitCodeWaiter:
             }
             if canonical(pointer) != canonical(expected):
                 raise WaiterError("CANONICAL_POINTER_PLAN_MISMATCH")
-            if (
-                plan["request_spec_digest"] != self.plan["request_spec_digest"]
-                or canonical(source_identity(plan))
-                != canonical(source_identity(self.plan))
+            if plan["request_spec_digest"] != self.plan[
+                "request_spec_digest"
+            ] or canonical(source_identity(plan)) != canonical(
+                source_identity(self.plan)
             ):
                 raise WaiterError("CANONICAL_SPECIFICATION_MISMATCH")
             self.canonical_pointer = dict(pointer)
@@ -141,6 +141,17 @@ class GitCodeWaiter:
         confirmed = self.channel._payload(check)
         if canonical(confirmed) != canonical(envelope):
             raise WaiterError("AGGREGATE_CHANGED_DURING_READ")
+        if reported.get("test_result") == "PENDING":
+            pending = aggregate_results(self.plan, receipt, [], current=True)
+            if (
+                canonical(reported) != canonical(pending)
+                or check.get("status") != "in_progress"
+                or check.get("conclusion") is not None
+            ):
+                raise WaiterError("PENDING_AGGREGATE_IDENTITY_CONFLICT")
+            if not current:
+                return outcome
+            return {**pending, "reason": "AWAITING_AGGREGATE"}
         complete = len(results) == len(self.plan["cases"])
         if reported.get("test_result") == "PASS" and not complete:
             raise WaiterError("INCOMPLETE_CASE_SET_CANNOT_PASS")
@@ -149,7 +160,10 @@ class GitCodeWaiter:
                 raise WaiterError("AGGREGATE_CASE_RESULTS_CONFLICT")
             if outcome["test_result"] != "PENDING":
                 expected = "success" if outcome["test_result"] == "PASS" else "failure"
-                if check.get("status") != "completed" or check.get("conclusion") != expected:
+                if (
+                    check.get("status") != "completed"
+                    or check.get("conclusion") != expected
+                ):
                     raise WaiterError("AGGREGATE_CONCLUSION_CONFLICT")
         else:
             # A historical green Check is immutable. Report STALE rather than

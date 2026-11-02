@@ -4,26 +4,87 @@ import copy
 import hashlib
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock
 
-from ci_core.gitcode_artifacts import ArtifactError
-from ci_core.gitcode_checks import ChannelError, CreationJournal
-from ci_core.gitcode_contract import VerifiedRequest, canonical, request_id, source_identity
+from ci_core.gitcode_admission import GitCodeAdmissionBroker
+from ci_core.gitcode_artifacts import ArtifactError, GitCodeArtifactReader
+from ci_core.gitcode_checks import CheckRunChannel, CreationJournal
+from ci_core.gitcode_contract import (
+    canonical,
+    source_identity,
+)
 from ci_core.gitcode_delivery import DeliveryError, GitCodeDelivery
 from ci_core.gitcode_producer import GitCodeProducer, ProducerError
 from ci_core.gitcode_source import SourceHandle
 from ci_core.gitcode_state import Authority, Coordinator, EventProof
+from ci_core.gitcode_store import GitCodeRequestStore
 from ci_core.gitcode_waiter import GitCodeWaiter, WaiterError
 from tests.test_gitcode_artifacts import ArtifactAPI, tar_bytes
 
 
 class HostingAPI(ArtifactAPI):
-    def __init__(self, root):
+    def __init__(self, root, *, torchtitan=True):
         self.root = root
-        self.source_bytes = tar_bytes()
+        self.source_bytes = (
+            tar_bytes(
+                {
+                    ".github/scripts/lite_actions/gitcode/smoke_payload.py": b"raise RuntimeError('must never execute on Prepare or Worker control')\nPAYLOAD_API_VERSION = 1\ndef all_reduce(tensor): pass\n"
+                }
+            )
+            if torchtitan
+            else tar_bytes()
+        )
         self.runner_bytes = tar_bytes({"entry.py": b"# trusted runner\n"})
         super().__init__(source=self.source_bytes, runner=self.runner_bytes)
+        if torchtitan:
+            old_catalog = self.reader.catalog
+            self.policy = replace(
+                self.policy,
+                github_repo_id=1210038933,
+                upstream_default_ref="master",
+                allowed_base_refs=("master",),
+            )
+            self.repo, self.repo_id = "cann-framework/torchtitan-npu", 1210038933
+            self.api = "https://api.github.com/repos/" + self.repo
+            self.intent = copy.deepcopy(self.intent)
+            self.intent["pr"]["base_ref"] = "master"
+            self.intent["control_repo_id"] = self.repo_id
+            mapping = {
+                "vllm_worker_os_blue": "worker_os_blue",
+                "dispatch_smoke_a3_8p": "dispatch_smoke_8p",
+                "dispatch_smoke_a3_16p": "dispatch_smoke_16p",
+            }
+            catalog = {}
+            for old, name in mapping.items():
+                row = copy.deepcopy(old_catalog[old])
+                row["test_id"] = name
+                if row["kind"] != "worker_probe":
+                    row["docker"] = "cann_master_torchtitan_master_xyj"
+                catalog[name] = row
+            self.intent["selectors"] = [{"test_id": name} for name in mapping.values()]
+            self.run.update(
+                repository_id=self.repo_id,
+                repository={"id": self.repo_id, "full_name": self.repo},
+                head_branch="master",
+                _ci_repo=self.repo,
+            )
+            self.personal.open_pull_snapshot.return_value = {
+                "identity": copy.deepcopy(self.intent["pr"]),
+                "state": "open",
+                "authorized": True,
+            }
+            self.channel = CheckRunChannel(
+                self, repo_id=self.repo_id, app_id=self.policy.app_id
+            )
+            self.reader = GitCodeArtifactReader(
+                policy=self.policy,
+                github=self,
+                personal=self.personal,
+                channel=self.channel,
+                catalog=catalog,
+            )
         self.metadata.clear()
         self.zips.clear()
         self.checks.clear()
@@ -53,6 +114,11 @@ class HostingAPI(ArtifactAPI):
             clock=lambda: 1100,
             source_builder=self.build_source,
         )
+
+    def add_artifact(self, artifact_id, name, member, content):
+        value = super().add_artifact(artifact_id, name, member, content)
+        value["workflow_run"]["head_branch"] = self.run["head_branch"]
+        return value
 
     def build_source(self, client, number, destination, **kwargs):
         self.assert_source_identity = kwargs["expected_identity"]
@@ -85,9 +151,16 @@ class HostingAPI(ArtifactAPI):
 
     def request(self, method, path, data=None):
         if method == "GET" and path == "":
-            return {"id": self.repo_id, "full_name": self.repo, "default_branch": "main"}
-        if method == "GET" and path == "/branches/main":
-            return {"name": "main", "commit": {"sha": self.policy.control_sha}}
+            return {
+                "id": self.repo_id,
+                "full_name": self.repo,
+                "default_branch": self.run["head_branch"],
+            }
+        if method == "GET" and path == "/branches/" + self.run["head_branch"]:
+            return {
+                "name": self.run["head_branch"],
+                "commit": {"sha": self.policy.control_sha},
+            }
         if method == "GET" and path == "/actions/workflows/91":
             return {"id": 91, "path": self.policy.workflow_path, "state": "active"}
         if method == "GET" and path.startswith("/actions/runs/100/attempts/1/jobs"):
@@ -125,27 +198,24 @@ class GitCodePipelineTests(unittest.TestCase):
     def admitted(self):
         plan = self.api.produce()
         self.api.job.update(status="completed", conclusion="success")
-        loaded = self.api.reader.load(100, self.root / "admitted", now=1100)
         self.coordinator = Coordinator(self.root / "coordinator.sqlite3")
         self.authority = Authority(copy.deepcopy(plan["pr"]), 1)
-        self.coordinator.reconcile("42", 1, lambda: self.authority, now=1100)
-        self.coordinator.register_intent(
-            loaded.intent,
-            {
-                "request_id": request_id(plan),
-                "repo_id": plan["github"]["repo_id"],
-                "run_id": 100,
-                "run_attempt": 1,
-                "control_sha": self.api.policy.control_sha,
-            },
-            EventProof("event-1", "snapshot-1", 1, 1),
+        self.broker = GitCodeAdmissionBroker(
+            reader=self.api.reader,
+            coordinator=self.coordinator,
+            store=GitCodeRequestStore(self.root / "retained"),
+            workspace=self.root / "admissions",
+            read_authority=lambda repo, number: self.authority,
+            verify_event=lambda intent: EventProof("event-1", "snapshot-1", 1, 1),
+            clock=lambda: 1100,
         )
-        self.verified = loaded.verified
-        self.receipt = self.coordinator.claim(loaded.verified, now=1100).receipt
+        accepted = self.broker.admit(100)
+        self.verified = accepted.verified
+        self.receipt = accepted.admission.receipt
         self.results = []
         self.delivery = GitCodeDelivery(
             self.coordinator,
-            resolve_request=lambda rid: self.verified,
+            resolve_request=self.broker.resolve_request,
             channel_for=lambda plan: self.api.channel,
             cancel_run=Mock(return_value=True),
             cancel_execution=Mock(return_value=True),
@@ -163,17 +233,28 @@ class GitCodePipelineTests(unittest.TestCase):
                     eid,
                     case_id,
                     "lease-" + case_id,
-                    {"nodes": [{"host_id": "test-host", "container_id": "a" * 64,
+                    {
+                        "nodes": [
+                            {
+                                "host_id": "test-host",
+                                "container_id": "a" * 64,
                                 "image_id": "sha256:" + "b" * 64,
-                                "task_marker": eid + case_id, "device_ids": list(range(8))}]},
+                                "task_marker": eid + case_id,
+                                "device_ids": list(range(8)),
+                            }
+                        ]
+                    },
                     now=1100,
                 )
-                self.coordinator.complete_lease(eid, case_id, "lease-" + case_id, token, cleanup_verified=True)
+                self.coordinator.complete_lease(
+                    eid, case_id, "lease-" + case_id, token, cleanup_verified=True
+                )
             result = {
                 "case_id": case_id,
                 "receipt": self.receipt,
                 "identity": source_identity(self.api.plan),
                 "status": status,
+                "exit_code": 0 if status == "PASS" else 1,
                 "cleanup_verified": True,
                 "summary": ["CPU integration fixture; no hardware executed"],
             }
@@ -181,12 +262,29 @@ class GitCodePipelineTests(unittest.TestCase):
             self.results.append(result)
 
     def waiter(self, *, current=True):
-        return GitCodeWaiter(self.verified, self.api.channel, current=lambda plan: current)
+        return GitCodeWaiter(
+            self.verified, self.api.channel, current=lambda plan: current
+        )
 
     def test_request_is_last_and_successful_prepare_is_independent(self):
         plan = self.api.produce()
-        self.assertEqual(self.api.uploads, ["dispatch-intent-100-1", "gitcode-merge-source-100-1", "trusted-runner-100-1", "source-manifest-100-1", "lite-ci-request-1"])
-        self.assertNotIn("plan_digest", self.api.manifest)
+        self.assertEqual(
+            self.api.uploads,
+            [
+                "dispatch-intent-100-1",
+                "gitcode-merge-source-100-1",
+                "trusted-runner-100-1",
+                "source-manifest-100-1",
+                "lite-ci-request-1",
+            ],
+        )
+        manifest_meta = next(
+            x
+            for x in self.api.metadata.values()
+            if x["name"] == "source-manifest-100-1"
+        )
+        manifest, _ = self.api.reader._read(manifest_meta, "manifest")
+        self.assertNotIn("plan_digest", manifest)
         self.assertEqual(plan["merge"]["tested_merge_sha"], "e" * 40)
         self.assertNotEqual(plan["pr"]["head_sha"], plan["merge"]["tested_merge_sha"])
         self.assertIsNone(self.api.reader.load(100, self.root / "early", now=1100))
@@ -203,7 +301,9 @@ class GitCodePipelineTests(unittest.TestCase):
         self.record_results()
         self.delivery.flush()
         self.assertEqual(waiter.poll(now=1100)["test_result"], "PENDING")
-        self.delivery.publish_complete(self.verified, self.receipt, self.results, current=lambda: True)
+        self.delivery.publish_complete(
+            self.verified, self.receipt, self.results, current=lambda: True
+        )
         outcome = waiter.poll(now=1100)
         self.assertEqual(outcome["test_result"], "PASS")
         self.assertEqual(outcome["merge_gate"], "NOT_PROVIDED")
@@ -226,7 +326,10 @@ class GitCodePipelineTests(unittest.TestCase):
     def test_changed_pr_during_upload_publishes_no_request(self):
         def changed(name):
             if name == "source-manifest-100-1":
-                self.api.personal.open_pull_snapshot.return_value["identity"]["base_sha"] = "0" * 40
+                self.api.personal.open_pull_snapshot.return_value["identity"][
+                    "base_sha"
+                ] = "0" * 40
+
         self.api.after_upload = changed
         with self.assertRaisesRegex(ValueError, "STALE"):
             self.api.produce()
@@ -248,9 +351,18 @@ class GitCodePipelineTests(unittest.TestCase):
         self.admitted()
         self.record_results()
         self.delivery.flush()
-        self.delivery.publish_complete(self.verified, self.receipt, self.results, current=lambda: True)
-        self.assertEqual(self.waiter(current=False).poll(now=1100)["test_result"], "STALE")
-        self.assertEqual(self.delivery.publish_complete(self.verified, self.receipt, self.results, current=lambda: False)["test_result"], "STALE")
+        self.delivery.publish_complete(
+            self.verified, self.receipt, self.results, current=lambda: True
+        )
+        self.assertEqual(
+            self.waiter(current=False).poll(now=1100)["test_result"], "STALE"
+        )
+        self.assertEqual(
+            self.delivery.publish_complete(
+                self.verified, self.receipt, self.results, current=lambda: False
+            )["test_result"],
+            "STALE",
+        )
 
     def test_receipt_cannot_be_swapped_after_first_read(self):
         self.admitted()
@@ -268,9 +380,13 @@ class GitCodePipelineTests(unittest.TestCase):
         self.admitted()
         self.record_results()
         self.delivery.flush()
-        self.delivery.publish_complete(self.verified, self.receipt, self.results, current=lambda: True)
+        self.delivery.publish_complete(
+            self.verified, self.receipt, self.results, current=lambda: True
+        )
         case_id = self.api.plan["cases"][-1]["case_id"]
-        self.api.checks[self.api.plan["result_slots"][case_id]["id"]]["status"] = "in_progress"
+        self.api.checks[self.api.plan["result_slots"][case_id]["id"]]["status"] = (
+            "in_progress"
+        )
         with self.assertRaisesRegex(WaiterError, "INCOMPLETE_CASE_SET"):
             self.waiter().poll(now=1100)
 
@@ -278,7 +394,9 @@ class GitCodePipelineTests(unittest.TestCase):
         self.admitted()
         self.record_results(status="FAIL")
         self.delivery.flush()
-        self.delivery.publish_complete(self.verified, self.receipt, self.results, current=lambda: True)
+        self.delivery.publish_complete(
+            self.verified, self.receipt, self.results, current=lambda: True
+        )
         result = self.waiter().poll(now=1100)
         self.assertEqual(result["test_result"], "FAIL")
         self.assertEqual(result["merge_gate"], "NOT_PROVIDED")
@@ -287,7 +405,9 @@ class GitCodePipelineTests(unittest.TestCase):
         self.admitted()
         self.record_results()
         self.delivery.flush()
-        self.delivery.publish_complete(self.verified, self.receipt, self.results, current=lambda: True)
+        self.delivery.publish_complete(
+            self.verified, self.receipt, self.results, current=lambda: True
+        )
         waiter = self.waiter()
         waiter.poll(now=1100)
         waiter.current = Mock(side_effect=OSError("authority offline"))
@@ -306,7 +426,13 @@ class GitCodePipelineTests(unittest.TestCase):
         count = len(self.api.checks)
         self.assertEqual(self.delivery.flush()["pending"], [])
         self.assertEqual(len(self.api.checks), count)
-        self.assertFalse(self.coordinator.claim_case(self.receipt["canonical_execution_id"], self.api.plan["cases"][0]["case_id"], now=1100))
+        self.assertFalse(
+            self.coordinator.claim_case(
+                self.receipt["canonical_execution_id"],
+                self.api.plan["cases"][0]["case_id"],
+                now=1100,
+            )
+        )
 
     def test_cancellation_drains_even_when_all_check_writes_fail(self):
         self.admitted()
@@ -327,12 +453,43 @@ class GitCodePipelineTests(unittest.TestCase):
         self.admitted()
         self.record_results()
         with self.assertRaisesRegex(DeliveryError, "COMPLETE_PERSISTED"):
-            self.delivery.publish_complete(self.verified, self.receipt, self.results[:-1], current=lambda: True)
+            self.delivery.publish_complete(
+                self.verified, self.receipt, self.results[:-1], current=lambda: True
+            )
         slot = self.api.plan["result_slots"]["aggregate"]["id"]
         del self.api.checks[slot]
         count = len(self.api.checks)
         self.assertTrue(self.delivery.flush()["pending"])
         self.assertEqual(len(self.api.checks), count)
+
+    def test_in_progress_aggregate_can_finish_after_last_case_arrives(self):
+        self.admitted()
+        self.delivery.flush()
+        self.api.channel.publish_aggregate(
+            self.api.plan, self.receipt, [], current=True
+        )
+        self.record_results()
+        self.delivery.flush()
+        self.assertEqual(self.waiter().poll(now=1100)["test_result"], "PENDING")
+        self.delivery.publish_complete(
+            self.verified, self.receipt, self.results, current=lambda: True
+        )
+        self.assertEqual(self.waiter().poll(now=1100)["test_result"], "PASS")
+
+    def test_late_admission_ack_does_not_regress_completed_aggregate(self):
+        self.admitted()
+        self.record_results()
+        acknowledge = self.coordinator.acknowledge
+        self.coordinator.acknowledge = Mock(
+            side_effect=OSError("simulated acknowledgement loss")
+        )
+        self.delivery.flush()
+        self.coordinator.acknowledge = acknowledge
+        self.delivery.publish_complete(
+            self.verified, self.receipt, self.results, current=lambda: True
+        )
+        self.assertEqual(self.delivery.flush()["pending"], [])
+        self.assertEqual(self.waiter().poll(now=1100)["test_result"], "PASS")
 
     def test_waiter_deadline_prevents_future_green(self):
         self.admitted()

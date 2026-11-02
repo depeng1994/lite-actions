@@ -7,7 +7,6 @@ across hosting-job recovery. No Source Bundle Python is imported or executed.
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -49,7 +48,11 @@ class GitCodeProducer:
         self.channel, self.journal = channel, artifact_journal
         self.upload, self.clock, self.source_builder = upload, clock, source_builder
         self.reader = GitCodeArtifactReader(
-            policy=policy, github=github, personal=personal, channel=channel, catalog=catalog
+            policy=policy,
+            github=github,
+            personal=personal,
+            channel=channel,
+            catalog=catalog,
         )
         self.bridge = GitCodeBridge(
             policy=policy,
@@ -63,7 +66,9 @@ class GitCodeProducer:
 
     def _recover_upload(self, run, name):
         query = urlencode({"name": name, "per_page": 2, "page": 1})
-        result = self.github.request("GET", f"/actions/runs/{run['id']}/artifacts?{query}")
+        result = self.github.request(
+            "GET", f"/actions/runs/{run['id']}/artifacts?{query}"
+        )
         rows = result.get("artifacts") if isinstance(result, dict) else None
         if (
             not isinstance(rows, list)
@@ -83,7 +88,12 @@ class GitCodeProducer:
             raise ProducerError("ARTIFACT_CONTENT_SIZE_LIMIT")
         expected = sha256_file(path)
         identity = digest(
-            {"repo_id": self.policy.github_repo_id, "run_id": run["id"], "attempt": 1, "name": name}
+            {
+                "repo_id": self.policy.github_repo_id,
+                "run_id": run["id"],
+                "attempt": 1,
+                "name": name,
+            }
         )
         owns_upload, remembered = self.journal.begin(identity)
         if remembered is not None:
@@ -137,7 +147,9 @@ class GitCodeProducer:
         positive(job.get("id"))
         return job
 
-    def prepare(self, *, run_id: int, intent: dict, runner_path: Path, workspace: Path) -> dict:
+    def prepare(
+        self, *, run_id: int, intent: dict, runner_path: Path, workspace: Path
+    ) -> dict:
         """Return the sealed Plan, not a hardware grant or a successful Prepare.
 
         The external Worker independently requires this Job to have completed
@@ -164,7 +176,9 @@ class GitCodeProducer:
         intent_path.write_bytes(canonical(intent))
         prefix = f"{run_id}-1"
         refs = {
-            "intent": self._publish("intent", intent_path, run, name=f"dispatch-intent-{prefix}")
+            "intent": self._publish(
+                "intent", intent_path, run, name=f"dispatch-intent-{prefix}"
+            )
         }
         handle, pr = self.source_builder(
             self.personal,
@@ -180,10 +194,21 @@ class GitCodeProducer:
         handle.verify()
         if "git-" + handle.git_version != self.policy.git_builder_version:
             raise ProducerError("MERGE_BUILDER_VERSION_MISMATCH")
+        if self.policy.github_repo_id == 1210038933:
+            from ci_core.gitcode_interfaces import inspect_bundle
+
+            inspect_bundle(
+                handle,
+                [row["test_id"] for row in intent["selectors"]],
+                workspace / "source-inspection",
+            )
         # Never trust an upload wrapper's checksum alone: read back each exact
         # Artifact and independently verify its outer ZIP and inner content.
         refs["source"] = self._publish(
-            "source", Path(handle.bundle_path), run, name=f"gitcode-merge-source-{prefix}"
+            "source",
+            Path(handle.bundle_path),
+            run,
+            name=f"gitcode-merge-source-{prefix}",
         )
         refs["runner"] = self._publish(
             "runner", runner_path, run, name=f"trusted-runner-{prefix}"
@@ -250,7 +275,9 @@ class GitCodeProducer:
         # A new Head/Base/control or cancellation during upload invalidates the
         # entire request. Orphaned data/slots cannot create a resource lease.
         self.bridge.validate_intent(intent, now=int(self.clock()))
-        self.reader._validate_intent(intent, self.reader.actual_run(run_id), int(self.clock()))
+        self.reader._validate_intent(
+            intent, self.reader.actual_run(run_id), int(self.clock())
+        )
         if self._job(run)["id"] != job["id"]:
             raise ProducerError("PREPARE_JOB_CHANGED")
         request_path = workspace / "ci-request.json"

@@ -27,7 +27,7 @@ from ci_core.gitcode_contract import (
     validate_pr,
 )
 
-STATE_VERSION = 1
+STATE_VERSION = 2
 
 
 class StateError(ValueError):
@@ -160,8 +160,31 @@ class Coordinator:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connection() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, STATE_VERSION):
+            if version not in (0, 1, STATE_VERSION):
                 raise StateError("UNSUPPORTED_COORDINATOR_STATE_VERSION")
+            if version == 1:
+                # Never invent exit 0 for a historical result that omitted it.
+                # An empty/result-free v1 ledger can be upgraded without losing
+                # generations, cancellation intents, leases, or pending reports.
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    rows = connection.execute(
+                        "SELECT result_json FROM cases WHERE result_json IS NOT NULL"
+                    ).fetchall()
+                    rows += connection.execute(
+                        "SELECT payload_json FROM outbox WHERE kind='CASE_RESULT'"
+                    ).fetchall()
+                    for row in rows:
+                        result = json.loads(row[0])
+                        if type(result.get("exit_code")) is not int:
+                            raise StateError(
+                                "SCHEMA4_RESULT_MIGRATION_REQUIRES_EXIT_EVIDENCE"
+                            )
+                    connection.execute(f"PRAGMA user_version={STATE_VERSION}")
+                    connection.commit()
+                except BaseException:
+                    connection.rollback()
+                    raise
             if version == 0:
                 tables = connection.execute(
                     "SELECT name FROM sqlite_master WHERE type='table'"
@@ -776,6 +799,35 @@ class Coordinator:
                 connection, "CASE_RESULT", execution_id + "/" + case_id, result
             )
 
+    def request_reference(self, rid: str) -> dict:
+        """Read a retained receipt/digest; no remote API or source import."""
+        text(rid, limit=160)
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM requests WHERE id=?", (rid,)
+            ).fetchone()
+            if row is None:
+                raise StateError("UNKNOWN_RETAINED_REQUEST")
+            return {
+                "request_id": row["id"],
+                "execution_id": row["execution_id"],
+                "plan_digest": row["plan_digest"],
+                "receipt": json.loads(row["receipt_json"]),
+            }
+
+    def registered_scopes(self, limit: int = 1000) -> list[tuple[str, int]]:
+        positive(limit)
+        if limit > 1000:
+            raise StateError("REGISTERED_SCOPE_LIMIT")
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT repo_id,number FROM pr_versions ORDER BY repo_id,number LIMIT ?",
+                (limit + 1,),
+            ).fetchall()
+        if len(rows) > limit:
+            raise StateError("REGISTERED_SCOPE_VISIBILITY_INCOMPLETE")
+        return [(row["repo_id"], row["number"]) for row in rows]
+
     def pending_outbox(self, limit: int = 100) -> list[dict]:
         if type(limit) is not int or not 1 <= limit <= 1000:
             raise StateError("INVALID_OUTBOX_PAGE_SIZE")
@@ -789,7 +841,8 @@ class Coordinator:
                     "payload_digest": digest(json.loads(row["payload_json"])),
                 }
                 for row in connection.execute(
-                    "SELECT * FROM outbox WHERE acknowledged=0 ORDER BY id LIMIT ?",
+                    "SELECT * FROM outbox WHERE acknowledged=0 ORDER BY "
+                    "CASE WHEN kind IN ('CANCEL_RUN','CANCEL_EXECUTION','LEASE_CLEANUP') THEN 0 ELSE 1 END,id LIMIT ?",
                     (limit,),
                 )
             ]

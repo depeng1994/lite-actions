@@ -74,9 +74,9 @@ class GitCodeDelivery:
             if existing is not None:
                 if canonical(existing["receipt"]) != canonical(receipt):
                     raise DeliveryError("PUBLISHED_RECEIPT_CHANGED")
-                if receipt["duplicate"] and canonical(existing.get("canonical")) != canonical(
-                    payload["canonical"]
-                ):
+                if receipt["duplicate"] and canonical(
+                    existing.get("canonical")
+                ) != canonical(payload["canonical"]):
                     raise DeliveryError("PUBLISHED_CANONICAL_POINTER_CHANGED")
                 # A crash after PATCH but before outbox acknowledgement may leave
                 # an aggregate already published. Do not regress it to ADMITTED.
@@ -84,7 +84,9 @@ class GitCodeDelivery:
             channel.publish_receipt(
                 plan,
                 receipt,
-                canonical_execution=payload["canonical"] if receipt["duplicate"] else None,
+                canonical_execution=payload["canonical"]
+                if receipt["duplicate"]
+                else None,
             )
             return
         if kind == "CASE_RESULT":
@@ -101,16 +103,29 @@ class GitCodeDelivery:
     def flush(self, *, limit: int = 100) -> dict:
         records = self.coordinator.pending_outbox(limit)
         # Cleanup/cancellation must not sit behind a failing remote result API.
-        records.sort(key=lambda row: (row["kind"] not in {"CANCEL_RUN", "CANCEL_EXECUTION", "LEASE_CLEANUP"}, row["id"]))
+        records.sort(
+            key=lambda row: (
+                row["kind"] not in {"CANCEL_RUN", "CANCEL_EXECUTION", "LEASE_CLEANUP"},
+                row["id"],
+            )
+        )
         delivered, pending = [], []
         for record in records:
             try:
                 self._deliver(record)
                 self.coordinator.acknowledge(record["id"], record["payload_digest"])
             except Exception as exc:
-                pending.append({"id": record["id"], "kind": record["kind"], "error_type": type(exc).__name__})
+                pending.append(
+                    {
+                        "id": record["id"],
+                        "kind": record["kind"],
+                        "error_type": type(exc).__name__,
+                    }
+                )
                 # Exception text could contain platform credentials or URLs.
-                logging.warning("schema-4 outbox %s pending (%s)", record["id"], type(exc).__name__)
+                logging.warning(
+                    "schema-4 outbox %s pending (%s)", record["id"], type(exc).__name__
+                )
             else:
                 delivered.append(record["id"])
         return {"delivered": delivered, "pending": pending}
@@ -153,7 +168,23 @@ class GitCodeDelivery:
         outcome = aggregate_results(plan, receipt, delivered, current=fresh)
         if envelope["phase"] == "AGGREGATE_RESULT":
             old = envelope.get("outcome")
-            if not isinstance(old, dict) or old.get("test_result") not in {"PASS", "FAIL", "STALE"}:
+            if isinstance(old, dict) and old.get("test_result") == "PENDING":
+                pending = aggregate_results(plan, receipt, [], current=True)
+                check = channel.read_slot(plan, "aggregate")
+                if (
+                    canonical(old) != canonical(pending)
+                    or check.get("status") != "in_progress"
+                    or check.get("conclusion") is not None
+                    or canonical(channel._payload(check)) != canonical(envelope)
+                ):
+                    raise DeliveryError("PENDING_AGGREGATE_IDENTITY_CONFLICT")
+                channel.publish_aggregate(plan, receipt, delivered, current=fresh)
+                return outcome
+            if not isinstance(old, dict) or old.get("test_result") not in {
+                "PASS",
+                "FAIL",
+                "STALE",
+            }:
                 raise DeliveryError("INVALID_TERMINAL_AGGREGATE")
             historical = aggregate_results(
                 plan, receipt, delivered, current=old["test_result"] != "STALE"
@@ -163,7 +194,8 @@ class GitCodeDelivery:
             check = channel.read_slot(plan, "aggregate")
             if (
                 check.get("status") != "completed"
-                or check.get("conclusion") != ("success" if old["test_result"] == "PASS" else "failure")
+                or check.get("conclusion")
+                != ("success" if old["test_result"] == "PASS" else "failure")
                 or canonical(channel._payload(check)) != canonical(envelope)
             ):
                 raise DeliveryError("TERMINAL_AGGREGATE_API_CONFLICT")
