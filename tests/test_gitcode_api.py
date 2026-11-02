@@ -1,7 +1,10 @@
 """Fixtures mirror observed GitCode v5 fields, including absent embedded IDs."""
 
 import copy
+import io
 import unittest
+import urllib.error
+from unittest.mock import Mock, patch
 from urllib.parse import unquote
 
 from ci_core.gitcode_api import GitCodeAPIError, GitCodeClient, repository_id
@@ -236,6 +239,77 @@ class GitCodeAPITests(unittest.TestCase):
         client = GitCodeClient(self.transport.repo, "9075802", token="never-print-this")
         self.assertNotIn("never-print-this", repr(client))
         self.assertNotIn("never-print-this", str(client))
+
+    def test_http_timing_finally_covers_invalid_json_shape_and_oversize(self):
+        client = GitCodeClient(self.transport.repo, "9075802", token="synthetic-secret")
+        cases = (
+            (b"not-json", False, "invalid_response"),
+            (b'{"ok":true}', True, "invalid_response"),
+            (b"x" * (4 * 1024**2 + 1), False, "invalid_response"),
+        )
+        for payload, expect_list, expected_outcome in cases:
+            response = io.BytesIO(payload)
+            response.status = 200
+            client._opener = Mock()
+            client._opener.open.return_value = response
+            with patch("ci_core.gitcode_api._emit_http_timing") as emit:
+                with self.assertRaises(Exception):
+                    client._get("/safe/path", expect_list=expect_list)
+            self.assertEqual(
+                [call.args[0] for call in emit.call_args_list], ["attempt", "logical"]
+            )
+            for call in emit.call_args_list:
+                self.assertEqual(call.kwargs["outcome"], expected_outcome)
+                self.assertEqual(call.kwargs["status"], 200)
+                self.assertNotIn("exception", call.kwargs)
+
+    def test_http_timing_distinguishes_attempts_from_logical_backoff_total(self):
+        client = GitCodeClient(self.transport.repo, "9075802", token="synthetic-secret")
+        response = io.BytesIO(b'{"ok":true}')
+        response.status = 200
+        client._opener = Mock()
+        client._opener.open.side_effect = [
+            urllib.error.HTTPError(
+                "https://hidden.invalid/path?token=secret", 503, "busy", {}, None
+            ),
+            response,
+        ]
+        clock = [0.0]
+
+        def monotonic():
+            return clock[0]
+
+        def backoff(seconds):
+            clock[0] += seconds
+
+        with (
+            patch("ci_core.gitcode_api._emit_http_timing") as emit,
+            patch("ci_core.gitcode_api.time.sleep", side_effect=backoff) as sleep,
+            patch("ci_core.gitcode_api.time.monotonic", side_effect=monotonic),
+        ):
+            self.assertEqual(client._get("/safe/path"), {"ok": True})
+        self.assertEqual(
+            [call.args[0] for call in emit.call_args_list],
+            ["attempt", "attempt", "logical"],
+        )
+        self.assertEqual(
+            [call.kwargs["outcome"] for call in emit.call_args_list],
+            ["http_error", "success", "success"],
+        )
+        self.assertEqual(emit.call_args_list[-1].kwargs["attempts"], 2)
+        self.assertEqual(
+            [call.kwargs["elapsed_ms"] for call in emit.call_args_list[:2]],
+            [0, 0],
+        )
+        self.assertEqual(emit.call_args_list[-1].kwargs["elapsed_ms"], 1000)
+        sleep.assert_called_once_with(1)
+        self.assertTrue(
+            all(
+                "secret" not in repr(call.kwargs)
+                and "hidden.invalid" not in repr(call.kwargs)
+                for call in emit.call_args_list
+            )
+        )
 
     def test_no_revision_is_fabricated_from_updated_at(self):
         self.transport.pr["updated_at"] = "2026-11-01T00:00:00Z"

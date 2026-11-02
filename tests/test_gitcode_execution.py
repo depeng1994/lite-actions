@@ -347,6 +347,30 @@ class GitCodeExecutionTests(unittest.TestCase):
         self.assertNotIn("github.com", command)
         self.assertNotIn("gitcode.com", command)
 
+    def test_cleanup_stage_timing_uses_only_safe_run_and_case_ids(self):
+        runtime = self.runtime()
+        with (
+            patch.object(backend, "verify_node"),
+            patch.object(backend, "request_stop"),
+            patch.object(backend, "owned_processes_gone"),
+            patch.object(backend, "scan_idle"),
+            patch("ci_core.gitcode_timing.emit_stage") as emit,
+        ):
+            self.assertTrue(
+                backend.cleanup_captured(
+                    runtime,
+                    stop=True,
+                    stream=io.StringIO(),
+                    run_id=100,
+                    case_id=self.item["case_id"],
+                )
+            )
+        emit.assert_called_once()
+        args, kwargs = emit.call_args
+        self.assertEqual(args[0], "cleanup")
+        self.assertEqual(kwargs["run_id"], 100)
+        self.assertEqual(kwargs["case_id"], self.item["case_id"])
+
     def test_rebuilt_container_is_never_cleaned_by_name(self):
         runtime = self.runtime()
         response = SimpleNamespace(

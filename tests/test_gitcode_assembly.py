@@ -1,11 +1,16 @@
 """Trusted wiring tests use synthetic env values and no live credentials/network."""
 
 import tempfile
+import threading
 import unittest
 from dataclasses import asdict
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from ci_core.executor import Execution
+from ci_core.gitcode_api import GitCodeClient
+from ci_core.gitcode_artifacts import ArtifactError
 from ci_core.gitcode_assembly import (
     AssemblyError,
     assemble_blue,
@@ -14,6 +19,7 @@ from ci_core.gitcode_assembly import (
     load_release,
 )
 from ci_core.gitcode_contract import canonical
+from ci_core.gitcode_platform import PlatformError
 from tests.test_gitcode_pipeline import HostingAPI
 
 
@@ -23,6 +29,7 @@ class AssemblyTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         fixture = HostingAPI(self.root)
+        self.fixture = fixture
         self.config = {
             "schema": 1,
             "sdk_sha": "a" * 40,
@@ -107,6 +114,239 @@ class AssemblyTests(unittest.TestCase):
             broker.reader.read_snapshot.__self__, broker.read_authority.__self__
         )
         self.assertIs(bridge.reader.read_snapshot.__self__, bridge.authority)
+
+    def test_real_assemble_blue_broker_counts_fresh_authority_and_persists_revocation(
+        self,
+    ):
+        class GitCodeTransport:
+            def __init__(transport_self):
+                self_fixture = self.fixture
+                identity = self_fixture.intent["pr"]
+                transport_self.repo = self.config["personal_repo"]
+                transport_self.metadata = {
+                    "id": int(self.config["policy"]["gitcode_repo_id"]),
+                    "full_name": transport_self.repo,
+                    "default_branch": "master",
+                }
+                transport_self.pr = {
+                    "number": identity["number"],
+                    "state": "open",
+                    "merged_at": None,
+                    "user": {"login": self.config["policy"]["allowed_actors"][0]},
+                    "head": {
+                        "ref": identity["head_ref"],
+                        "sha": identity["head_sha"],
+                        "repo": {"full_name": transport_self.repo},
+                    },
+                    "base": {
+                        "ref": identity["base_ref"],
+                        "sha": identity["base_sha"],
+                        "repo": {"full_name": transport_self.repo},
+                    },
+                }
+                transport_self.branches = {
+                    identity["head_ref"]: identity["head_sha"],
+                    identity["base_ref"]: identity["base_sha"],
+                }
+                transport_self.calls = []
+
+            def __call__(transport_self, path):
+                from urllib.parse import unquote
+
+                transport_self.calls.append(path)
+                if path == "/user":
+                    return {"login": self.config["github_actor"]}
+                if path == "/repos/" + transport_self.repo:
+                    return dict(transport_self.metadata)
+                if (
+                    path
+                    == f"/repos/{transport_self.repo}/pulls/{self.fixture.intent['pr']['number']}"
+                ):
+                    return dict(transport_self.pr)
+                if "/branches/" in path:
+                    ref = unquote(path.split("/branches/", 1)[1])
+                    return {"name": ref, "commit": {"id": transport_self.branches[ref]}}
+                raise AssertionError("unexpected fake GitCode route")
+
+        class FakeGitHub:
+            def __init__(fake_self, token, repo, *, api_version, schema4_repo_id):
+                fake_self.repo = repo
+                fake_self.repo_id = schema4_repo_id
+                fake_self.api = "https://api.github.com/repos/" + repo
+                fake_self.calls = []
+                fake_self.run_status = "in_progress"
+
+            def request(fake_self, method, path, data=None):
+                fake_self.calls.append((method, path))
+                if method == "GET" and path == "/actions/runs/100":
+                    return {
+                        "id": 100,
+                        "run_attempt": 1,
+                        "head_sha": self.config["policy"]["control_sha"],
+                        "head_branch": "master",
+                        "workflow_id": self.config["policy"]["workflow_id"],
+                        "event": "workflow_dispatch",
+                        "repository": {
+                            "id": self.config["policy"]["github_repo_id"],
+                            "full_name": fake_self.repo,
+                        },
+                        "path": self.config["policy"]["workflow_path"],
+                        "actor": {"login": self.config["github_actor"]},
+                        "status": fake_self.run_status,
+                    }
+                raise AssertionError("unexpected fake GitHub route")
+
+        transport = GitCodeTransport()
+        real_client = GitCodeClient
+
+        def gitcode_factory(repo, repo_id, **kwargs):
+            return real_client(repo, repo_id, transport=transport, **kwargs)
+
+        with (
+            patch(
+                "ci_core.gitcode_assembly.GitCodeClient", side_effect=gitcode_factory
+            ),
+            patch("ci_core.gitcode_assembly.GitHubClient", FakeGitHub),
+        ):
+            adapter = assemble_blue(
+                [self.path],
+                environment=self.environment,
+                state_directory=self.root / "assembled-blue-state",
+            )
+
+        broker = next(iter(adapter.brokers.values()))
+        provider = broker.verify_event.__self__
+        provider.clock = lambda: 1100
+        broker.clock = lambda: 1100
+        intent = provider.create_intent(
+            self.fixture.intent["pr"]["number"],
+            [{"test_id": "dispatch_smoke_8p"}],
+            pipeline="smoke",
+        )
+        # Use the real producer/artifact reader fixture to obtain a VerifiedRequest
+        # for the exact intent enrolled by the assembled Blue authority provider.
+        self.fixture.intent = intent
+        self.fixture.run["display_title"] = (
+            "lite-gitcode:" + intent["bridge"]["bridge_nonce"]
+        )
+        plan = self.fixture.produce()
+        self.fixture.job.update(status="completed", conclusion="success")
+        loaded = self.fixture.reader.load(
+            100, self.root / "assembled-reader-load", now=1100
+        )
+        self.assertIsNotNone(loaded)
+        run = dict(self.fixture.run)
+        broker.reader.early_intent = lambda run_id, *, now: (intent, run)
+        broker.reader.load = lambda run_id, destination, *, now: loaded
+
+        transport.calls.clear()
+        accepted = broker.admit(100)
+        self.assertIsNotNone(accepted)
+        self.assertEqual(accepted.verified.plan["plan_digest"], plan["plan_digest"])
+        # Initial admission observation + post-materialization observation.
+        self.assertEqual(len(transport.calls), 12)
+        self.assertEqual(sum("/pulls/" in path for path in transport.calls), 4)
+        self.assertEqual(sum("/branches/" in path for path in transport.calls), 4)
+
+        for stage in ("preallocation", "before_launch", "finish_pass"):
+            before = len(transport.calls)
+            broker.startable_source(accepted)
+            self.assertEqual(len(transport.calls) - before, 6, stage)
+            broker.reader.actual_run(100)
+        before = len(transport.calls)
+        self.assertTrue(broker.assert_plan_current(plan))  # aggregate publication guard
+        self.assertEqual(len(transport.calls) - before, 6, "aggregate_publish")
+        broker.reader.actual_run(100)
+
+        # Exercise the actual assembled RuntimeAdapter work -> before_launch ->
+        # finish(PASS) -> flush/current callback path. Only the external result
+        # publication transport is stubbed; every freshness/lease guard is real.
+        class MemoryState:
+            def __init__(state_self, record):
+                state_self.records = {"assembled-case": record}
+
+            def read(state_self):
+                return state_self.records
+
+            def update(state_self, key, **fields):
+                state_self.records[key].update(fields)
+
+        case = plan["cases"][0]
+        record = {
+            "protocol": 4,
+            "gitcode": {
+                "request_id": f"{plan['github']['repo_id']}/{plan['github']['run_id']}/{plan['github']['run_attempt']}",
+                "execution_id": accepted.execution_id,
+                "plan_digest": plan["plan_digest"],
+            },
+            "item": case,
+            "phase": "QUEUED",
+        }
+        adapter.clock = lambda: 1100
+        adapter.router = SimpleNamespace(
+            worker="blue",
+            state=MemoryState(record),
+            pools={},
+            root=self.root,
+            workers={"blue": {}},
+            active={},
+        )
+
+        def cpu_only_executor(**kwargs):
+            cleanup = {
+                "nodes": [
+                    {
+                        "host_id": "synthetic-host:22",
+                        "container_id": "a" * 64,
+                        "image_id": "sha256:" + "b" * 64,
+                        "task_marker": "assembly-cpu-only",
+                        "device_ids": list(range(8)),
+                    }
+                ]
+            }
+            kwargs["capture"]({"lease_id": "lease-assembly-cpu", "cleanup": cleanup})
+            kwargs["before_launch"]()
+            return Execution(
+                0, ["CPU-only adapter regression"], self.root / "cpu.log", True
+            )
+
+        adapter.executor = cpu_only_executor
+        adapter.delivery.flush = lambda: {"delivered": [], "pending": []}
+        publish_current_calls = []
+
+        def publish_complete(verified, receipt, results, *, current):
+            publish_current_calls.append(current())
+            return {"test_result": "PASS" if publish_current_calls[-1] else "STALE"}
+
+        adapter.delivery.publish_complete = publish_complete
+        adapter.work("assembled-case", case, threading.Event())
+        self.assertEqual(
+            adapter.router.state.read()["assembled-case"]["report"]["status"], "PASS"
+        )
+        before = len(transport.calls)
+        adapter.flush()
+        self.assertEqual(publish_current_calls, [True])
+        self.assertEqual(len(transport.calls) - before, 6)
+        self.assertEqual(
+            adapter.router.state.read()["assembled-case"]["phase"], "REPORTED"
+        )
+
+        github = broker.reader.github
+        github.run_status = "completed"
+        with self.assertRaisesRegex(ArtifactError, "NOT_AUTHORIZED_OR_ACTIVE"):
+            broker.reader.actual_run(100)
+
+        # Base branch movement between guards is a new observation and a durable
+        # revocation. It must not reuse the earlier positive guard result.
+        transport.branches["master"] = "e" * 40
+        with self.assertRaisesRegex(PlatformError, "REVOKED"):
+            broker.assert_plan_current(plan)
+        with broker.coordinator._connection() as db:
+            revoked = db.execute(
+                "SELECT revoked FROM source_intents WHERE id=?",
+                (intent["bridge"]["dispatch_intent_id"],),
+            ).fetchone()[0]
+        self.assertEqual(revoked, 1)
 
     def test_manual_api_capture_is_explicit_and_wired_without_shared_hosted_db(self):
         self.config["manual_capture"] = {

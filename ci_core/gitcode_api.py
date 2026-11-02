@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -26,6 +27,33 @@ from ci_core.gitcode_source import require_ref, require_sha
 
 API_ROOT = "https://api.gitcode.com/api/v5"
 REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
+
+
+def _http_timing_logger():
+    """Dedicated safe logger; never changes root or third-party log levels."""
+    logger = logging.getLogger("lite_actions.gitcode_http_timing")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    if not any(
+        getattr(handler, "_lite_actions_timing", False) for handler in logger.handlers
+    ):
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        handler._lite_actions_timing = True
+        logger.addHandler(handler)
+    return logger
+
+
+def _emit_http_timing(event, *, method, status, outcome, attempts, elapsed_ms):
+    _http_timing_logger().info(
+        "gitcode_http_timing event=%s method=%s status=%s outcome=%s attempts=%d elapsed_ms=%d",
+        event,
+        method,
+        status,
+        outcome,
+        attempts,
+        elapsed_ms,
+    )
 
 
 class GitCodeAPIError(RuntimeError):
@@ -167,75 +195,96 @@ class GitCodeClient:
             if not isinstance(result, list if expect_list else dict):
                 raise GitCodeAPIError("INVALID_GITCODE_API_RESPONSE")
             return result
-        for attempt in range(3):
-            request = urllib.request.Request(
-                f"https://api.gitcode.com/api/v{api_version}" + path,
-                headers={
-                    "Authorization": "Bearer " + self._token,
-                    "Accept": "application/json",
-                    "User-Agent": "lite-actions-gitcode-v4",
-                    **(
-                        {"Content-Type": "application/json"}
-                        if _log_query is not None
-                        else {}
-                    ),
-                },
-                method="GET" if _log_query is None else "POST",
-                data=None if _log_query is None else canonical(_log_query),
+        logical_started = time.monotonic()
+        logical_outcome, logical_status, attempts = "error", 0, 0
+        method = "POST" if _log_query is not None else "GET"
+        try:
+            for attempt in range(3):
+                attempts = attempt + 1
+                request = urllib.request.Request(
+                    f"https://api.gitcode.com/api/v{api_version}" + path,
+                    headers={
+                        "Authorization": "Bearer " + self._token,
+                        "Accept": "application/json",
+                        "User-Agent": "lite-actions-gitcode-v4",
+                        **(
+                            {"Content-Type": "application/json"}
+                            if _log_query is not None
+                            else {}
+                        ),
+                    },
+                    method=method,
+                    data=None if _log_query is None else canonical(_log_query),
+                )
+                attempt_started = time.monotonic()
+                attempt_outcome, attempt_status = "error", 0
+                retry_delay = None
+                try:
+                    with self._opener.open(request, timeout=self.timeout) as response:
+                        attempt_status = getattr(response, "status", 200)
+                        logical_status = attempt_status
+                        payload = response.read(4 * 1024**2 + 1)
+                    if len(payload) > 4 * 1024**2:
+                        raise GitCodeAPIError("GITCODE_RESPONSE_SIZE_LIMIT")
+                    result = load_json(
+                        b'{"response":' + payload + b"}", limit=4 * 1024**2 + 32
+                    )["response"]
+                    if not isinstance(result, list if expect_list else dict):
+                        raise GitCodeAPIError("INVALID_GITCODE_API_RESPONSE")
+                    attempt_outcome = logical_outcome = "success"
+                    logical_status = attempt_status
+                    return result
+                except urllib.error.HTTPError as exc:
+                    attempt_status = exc.code
+                    logical_status = attempt_status
+                    exc.close()
+                    attempt_outcome = logical_outcome = "http_error"
+                    if attempt_status in (429, 500, 502, 503, 504) and attempt < 2:
+                        retry_delay = 2**attempt
+                    else:
+                        raise GitCodeAPIError(
+                            "GITCODE_AUTHORITY_HTTP_ERROR", status=attempt_status
+                        ) from None
+                except (OSError, TimeoutError):
+                    attempt_outcome = logical_outcome = "transport_error"
+                    if attempt < 2:
+                        retry_delay = 2**attempt
+                    else:
+                        raise GitCodeAPIError("GITCODE_AUTHORITY_UNREACHABLE") from None
+                except GitCodeAPIError:
+                    attempt_outcome = logical_outcome = "invalid_response"
+                    raise
+                except Exception:
+                    # Invalid JSON, duplicate keys, malformed schema, oversized
+                    # body and unexpected parser failures are timed without
+                    # serializing exception text or response content.
+                    attempt_outcome = logical_outcome = "invalid_response"
+                    raise
+                finally:
+                    _emit_http_timing(
+                        "attempt",
+                        method=method,
+                        status=attempt_status,
+                        outcome=attempt_outcome,
+                        attempts=attempts,
+                        elapsed_ms=max(
+                            0, round((time.monotonic() - attempt_started) * 1000)
+                        ),
+                    )
+                if retry_delay is not None:
+                    # Keep backoff in logical-call duration, not per-attempt time.
+                    time.sleep(retry_delay)
+                    continue
+            raise GitCodeAPIError("GITCODE_AUTHORITY_UNREACHABLE")
+        finally:
+            _emit_http_timing(
+                "logical",
+                method=method,
+                status=logical_status,
+                outcome=logical_outcome,
+                attempts=attempts,
+                elapsed_ms=max(0, round((time.monotonic() - logical_started) * 1000)),
             )
-            started = time.monotonic()
-            try:
-                with self._opener.open(request, timeout=self.timeout) as response:
-                    status = getattr(response, "status", 200)
-                    payload = response.read(4 * 1024**2 + 1)
-                if len(payload) > 4 * 1024**2:
-                    raise GitCodeAPIError("GITCODE_RESPONSE_SIZE_LIMIT")
-                # Keep strict duplicate-key/non-finite checks for array responses.
-                result = load_json(
-                    b'{"response":' + payload + b"}", limit=4 * 1024**2 + 32
-                )["response"]
-                if not isinstance(result, list if expect_list else dict):
-                    raise GitCodeAPIError("INVALID_GITCODE_API_RESPONSE")
-                logging.getLogger(__name__).info(
-                    "gitcode_http_observation method=%s path=%s status=%d attempt=%d elapsed_ms=%d",
-                    request.method,
-                    path.split("?", 1)[0],
-                    status,
-                    attempt + 1,
-                    round((time.monotonic() - started) * 1000),
-                )
-                return result
-            except urllib.error.HTTPError as exc:
-                status = exc.code
-                exc.close()
-                logging.getLogger(__name__).warning(
-                    "gitcode_http_observation method=%s path=%s status=%d attempt=%d elapsed_ms=%d",
-                    request.method,
-                    path.split("?", 1)[0],
-                    status,
-                    attempt + 1,
-                    round((time.monotonic() - started) * 1000),
-                )
-                if status in (429, 500, 502, 503, 504) and attempt < 2:
-                    time.sleep(2**attempt)
-                    continue
-                raise GitCodeAPIError(
-                    "GITCODE_AUTHORITY_HTTP_ERROR", status=status
-                ) from None
-            except (OSError, TimeoutError):
-                logging.getLogger(__name__).warning(
-                    "gitcode_http_observation method=%s path=%s status=transport_error attempt=%d elapsed_ms=%d",
-                    request.method,
-                    path.split("?", 1)[0],
-                    attempt + 1,
-                    round((time.monotonic() - started) * 1000),
-                )
-                if attempt < 2:
-                    time.sleep(2**attempt)
-                    continue
-                # Do not propagate a Request/exception with secret headers.
-                raise GitCodeAPIError("GITCODE_AUTHORITY_UNREACHABLE") from None
-        raise GitCodeAPIError("GITCODE_AUTHORITY_UNREACHABLE")
 
     def repository(self) -> dict:
         data = self._get("/repos/" + self.repo)

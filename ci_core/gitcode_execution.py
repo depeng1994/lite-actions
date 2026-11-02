@@ -26,6 +26,7 @@ from ci_core.gitcode_contract import canonical, load_json
 from ci_core.gitcode_interfaces import inspect_directory
 from ci_core.gitcode_source import extract_verified_archive, extract_verified_source
 from ci_core.gitcode_store import StoredExecution
+from ci_core.gitcode_timing import timed_stage
 from ci_core.ssh_runner import DEST_ROOT, owned_processes_gone
 from ci_core.ssh_runner import cancel as stop_owned
 from ci_core.transport import run as transport_run
@@ -472,7 +473,7 @@ def verify_case_node(node, runtime, item):
     return evidence
 
 
-def cleanup_captured(runtime, *, stop, stream):
+def _cleanup_captured_impl(runtime, *, stop, stream):
     """No source/Artifact/API reads; only immutable captured ID + process marker."""
     nodes = runtime["cleanup"]["nodes"]
     clean = True
@@ -499,6 +500,11 @@ def cleanup_captured(runtime, *, stop, stream):
     return clean
 
 
+def cleanup_captured(runtime, *, stop, stream, run_id=0, case_id=None):
+    with timed_stage("cleanup", run_id=run_id, case_id=case_id):
+        return _cleanup_captured_impl(runtime, stop=stop, stream=stream)
+
+
 def execute(
     *,
     stored,
@@ -517,6 +523,7 @@ def execute(
     if case is None or not case.get("enabled"):
         raise ValueError("VERIFIED_PHYSICAL_LEASE_REQUIRED")
     plan = stored.verified.plan
+    timing_run_id = plan.get("github", {}).get("run_id", 0)
     with tempfile.TemporaryDirectory(prefix="lite-gitcode-verified-") as tmp:
         profile = bundle_profile(stored, item, Path(tmp))
     nodes = capture_nodes(case, pools)
@@ -571,7 +578,16 @@ def execute(
         try:
             phase("STAGING")
             with ThreadPoolExecutor(max_workers=len(nodes)) as workers:
-                list(workers.map(lambda node: stage_node(node, stored, runtime), nodes))
+                with timed_stage(
+                    "stage_nodes",
+                    run_id=timing_run_id,
+                    case_id=item["case_id"],
+                ):
+                    list(
+                        workers.map(
+                            lambda node: stage_node(node, stored, runtime), nodes
+                        )
+                    )
             stored.verify_files()
             before_launch()  # API authority + current generation after ALL staging.
             if cancel.is_set() or time.time() >= plan["deadline"]:
@@ -584,34 +600,49 @@ def execute(
             with ThreadPoolExecutor(max_workers=len(nodes)) as workers:
                 pending = set()
                 try:
-                    for node in nodes:
-                        before_launch()
-                        if cancel.is_set():
-                            raise InterruptedError(
-                                "schema-4 cancellation during launch"
-                            )
-                        pending.add(workers.submit(launch_node, node, runtime, item))
-                        launched = True
-                    rc = 0
-                    while pending:
-                        if cancel.is_set():
-                            raise InterruptedError("schema-4 cancelled while running")
-                        if time.time() >= deadline:
-                            raise TimeoutError("schema-4 execution deadline")
-                        if time.monotonic() >= next_authority:
+                    with timed_stage(
+                        "os_launch_and_wait",
+                        run_id=timing_run_id,
+                        case_id=item["case_id"],
+                    ):
+                        for node in nodes:
                             before_launch()
-                            next_authority = time.monotonic() + 10
-                        done, pending = wait(
-                            pending, timeout=1, return_when=FIRST_COMPLETED
-                        )
-                        for future in done:
-                            code = future.result()
-                            if code != 0:
-                                rc = code
-                                raise ChildProcessError("a captured node failed")
+                            if cancel.is_set():
+                                raise InterruptedError(
+                                    "schema-4 cancellation during launch"
+                                )
+                            pending.add(
+                                workers.submit(launch_node, node, runtime, item)
+                            )
+                            launched = True
+                        rc = 0
+                        while pending:
+                            if cancel.is_set():
+                                raise InterruptedError(
+                                    "schema-4 cancelled while running"
+                                )
+                            if time.time() >= deadline:
+                                raise TimeoutError("schema-4 execution deadline")
+                            if time.monotonic() >= next_authority:
+                                before_launch()
+                                next_authority = time.monotonic() + 10
+                            done, pending = wait(
+                                pending, timeout=1, return_when=FIRST_COMPLETED
+                            )
+                            for future in done:
+                                code = future.result()
+                                if code != 0:
+                                    rc = code
+                                    raise ChildProcessError("a captured node failed")
                 except BaseException:
                     # Stop siblings before the executor waits for blocked SSH threads.
-                    clean = cleanup_captured(runtime, stop=True, stream=stream)
+                    clean = cleanup_captured(
+                        runtime,
+                        stop=True,
+                        stream=stream,
+                        run_id=timing_run_id,
+                        case_id=item["case_id"],
+                    )
                     raise
             if rc == 0:
                 before_launch()
@@ -644,7 +675,16 @@ def execute(
         finally:
             phase("CLEANING")
             if launched:
-                clean = cleanup_captured(runtime, stop=rc != 0, stream=stream) and clean
+                clean = (
+                    cleanup_captured(
+                        runtime,
+                        stop=rc != 0,
+                        stream=stream,
+                        run_id=timing_run_id,
+                        case_id=item["case_id"],
+                    )
+                    and clean
+                )
             stream.write(
                 f"CASE_RESULT {item['test_id']} {'PASS' if rc == 0 and clean else 'FAIL'} {rc}\n"
             )

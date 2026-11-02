@@ -20,6 +20,7 @@ from ci_core.gitcode_contract import (
 )
 from ci_core.gitcode_delivery import GitCodeDelivery
 from ci_core.gitcode_state import Admission, StateError
+from ci_core.gitcode_timing import timed_stage
 from ci_core.worker_probe import probe
 
 
@@ -169,7 +170,8 @@ class GitCodeRouterAdapter:
                     self.recover_execution(snapshot, run=run)
             self.delivery.flush()
             return
-        accepted = broker.admit(run["id"])
+        with timed_stage("admit", run_id=run["id"]):
+            accepted = broker.admit(run["id"])
         if accepted is None:
             return
         if not accepted.duplicate:
@@ -227,9 +229,14 @@ class GitCodeRouterAdapter:
 
     def guard(self, record):
         broker, verified, receipt = self.context(record)
-        return broker.startable_source(
-            AcceptedRequest(verified, Admission(receipt, {}))
-        )
+        with timed_stage(
+            "guard",
+            run_id=verified.plan["github"]["run_id"],
+            case_id=record["item"]["case_id"],
+        ):
+            return broker.startable_source(
+                AcceptedRequest(verified, Admission(receipt, {}))
+            )
 
     def transition(self, key, phase, **fields):
         # No schema-3 progress comment, even when the Checks API is unavailable.
@@ -252,28 +259,36 @@ class GitCodeRouterAdapter:
         captured = None
 
         def before_launch():
-            if cancel.is_set():
-                raise InterruptedError("schema-4 cancellation requested")
-            refreshed_by_plan_check = broker.assert_plan_current(verified.plan)
-            broker.reader.actual_run(verified.plan["github"]["run_id"])
-            if not refreshed_by_plan_check:
-                broker.refresh(
-                    verified.plan["pr"]["repo_id"], verified.plan["pr"]["number"]
-                )
-            self.coordinator.assert_startable(eid, now=self.now())
-            if captured is not None:
-                self.coordinator.assert_lease_active(
-                    eid,
-                    cid,
-                    captured["lease_id"],
-                    captured["fencing_token"],
-                    now=self.now(),
-                )
+            with timed_stage(
+                "before_launch",
+                run_id=verified.plan["github"]["run_id"],
+                case_id=cid,
+            ):
+                if cancel.is_set():
+                    raise InterruptedError("schema-4 cancellation requested")
+                refreshed_by_plan_check = broker.assert_plan_current(verified.plan)
+                broker.reader.actual_run(verified.plan["github"]["run_id"])
+                if not refreshed_by_plan_check:
+                    broker.refresh(
+                        verified.plan["pr"]["repo_id"], verified.plan["pr"]["number"]
+                    )
+                self.coordinator.assert_startable(eid, now=self.now())
+                if captured is not None:
+                    self.coordinator.assert_lease_active(
+                        eid,
+                        cid,
+                        captured["lease_id"],
+                        captured["fencing_token"],
+                        now=self.now(),
+                    )
 
         if item["kind"] == "worker_probe":
             before_launch()
             self.transition(key, "RUNNING")
-            outcome = probe()
+            with timed_stage(
+                "os_probe", run_id=verified.plan["github"]["run_id"], case_id=cid
+            ):
+                outcome = probe()
             lines = (outcome.stdout + outcome.stderr).splitlines()
             expected = self.router.workers["blue"].get("expected_hostname")
             okay = outcome.returncode == 0 and (
@@ -294,18 +309,21 @@ class GitCodeRouterAdapter:
             return captured
 
         try:
-            outcome = self.executor(
-                stored=stored,
-                item=item,
-                case=case,
-                execution_id=eid,
-                pools=self.router.pools,
-                root=self.router.root,
-                cancel=cancel,
-                capture=capture,
-                before_launch=before_launch,
-                phase=lambda value: self.transition(key, value),
-            )
+            with timed_stage(
+                "os_execution", run_id=verified.plan["github"]["run_id"], case_id=cid
+            ):
+                outcome = self.executor(
+                    stored=stored,
+                    item=item,
+                    case=case,
+                    execution_id=eid,
+                    pools=self.router.pools,
+                    root=self.router.root,
+                    cancel=cancel,
+                    capture=capture,
+                    before_launch=before_launch,
+                    phase=lambda value: self.transition(key, value),
+                )
         except ExternalNpuOccupancy:
             self.coordinator.retry_unlaunched_case(eid, cid, now=self.now())
             raise
@@ -330,7 +348,12 @@ class GitCodeRouterAdapter:
         eid, cid = receipt["canonical_execution_id"], record["item"]["case_id"]
         if status == "PASS":
             try:
-                self.guard(record)
+                with timed_stage(
+                    "finish_guard",
+                    run_id=verified.plan["github"]["run_id"],
+                    case_id=cid,
+                ):
+                    self.guard(record)
             except Exception:
                 status, rc, lines = (
                     "CANCELLED",
@@ -339,13 +362,18 @@ class GitCodeRouterAdapter:
                 )
         runtime = record.get("runtime") or {}
         if runtime.get("lease_id"):
-            released = self.coordinator.complete_lease(
-                eid,
-                cid,
-                runtime["lease_id"],
-                runtime["fencing_token"],
-                cleanup_verified=bool(clean),
-            )
+            with timed_stage(
+                "cleanup_ack",
+                run_id=verified.plan["github"]["run_id"],
+                case_id=cid,
+            ):
+                released = self.coordinator.complete_lease(
+                    eid,
+                    cid,
+                    runtime["lease_id"],
+                    runtime["fencing_token"],
+                    cleanup_verified=bool(clean),
+                )
             clean = clean and released
         if not clean and status == "PASS":
             status, rc = "INFRA_ERROR", 125
@@ -512,6 +540,14 @@ class GitCodeRouterAdapter:
                     "schema-4 authority response pending (%s)", type(exc).__name__
                 )
 
+    def _aggregate_current(self, broker, plan, snapshot):
+        refreshed_by_plan_check = broker.assert_plan_current(plan)
+        broker.reader.actual_run(plan["github"]["run_id"])
+        if not refreshed_by_plan_check:
+            broker.refresh(plan["pr"]["repo_id"], plan["pr"]["number"])
+        self.coordinator.assert_startable(snapshot["id"], now=self.now())
+        return True
+
     def flush(self):
         self.delivery.flush()
         for snapshot in self.coordinator.pending_execution_snapshots():
@@ -527,20 +563,17 @@ class GitCodeRouterAdapter:
                 def current():
                     broker = self.broker(plan)
                     try:
-                        refreshed_by_plan_check = broker.assert_plan_current(plan)
-                        broker.reader.actual_run(plan["github"]["run_id"])
-                        if not refreshed_by_plan_check:
-                            broker.refresh(plan["pr"]["repo_id"], plan["pr"]["number"])
-                        self.coordinator.assert_startable(
-                            snapshot["id"], now=self.now()
-                        )
+                        with timed_stage(
+                            "aggregate_guard", run_id=plan["github"]["run_id"]
+                        ):
+                            return self._aggregate_current(broker, plan, snapshot)
                     except Exception:
                         return False
-                    return True
 
-                self.delivery.publish_complete(
-                    verified, receipt, results, current=current
-                )
+                with timed_stage("aggregate_publish", run_id=plan["github"]["run_id"]):
+                    self.delivery.publish_complete(
+                        verified, receipt, results, current=current
+                    )
                 publisher = self.publishers.get(
                     (
                         plan["github"]["repo_id"],
@@ -551,7 +584,10 @@ class GitCodeRouterAdapter:
                 if publisher is not None:
                     # A failed/unknown GitCode write remains pending without
                     # re-running cases or acknowledging aggregate delivery.
-                    publisher.publish(verified, receipt, results, current=current)
+                    with timed_stage(
+                        "gitcode_publish", run_id=plan["github"]["run_id"]
+                    ):
+                        publisher.publish(verified, receipt, results, current=current)
                 self.coordinator.mark_aggregate_delivered(
                     snapshot["id"], receipt, now=self.now()
                 )

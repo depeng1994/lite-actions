@@ -85,16 +85,35 @@ class GitCodeAdmissionBroker:
         return self._plan_check_refreshes_authority(self.verify_plan)
 
     def _plan_check_refreshes_authority(self, callback) -> bool:
-        """Whether this exact production callback performs a fresh shared PR observation."""
+        """Recognize only exact bound production methods from trusted assembly.
+
+        This is a capability check, not duck typing: wrappers, partials,
+        monkeypatched methods, subclasses and generic callbacks retain refresh.
+        Production `assemble_blue` binds both methods directly on one exact
+        ObservedGitCodeAuthority instance and shares its Coordinator/policy.
+        """
         from ci_core.gitcode_platform import ObservedGitCodeAuthority
 
-        provider = getattr(callback, "__self__", None)
-        return (
-            type(provider) is ObservedGitCodeAuthority
-            and getattr(self.verify_plan, "__self__", None) is provider
-            and provider.coordinator.path.resolve() == self.coordinator.path.resolve()
-            and provider.policy == self.reader.policy
-        )
+        provider = getattr(self.verify_plan, "__self__", None)
+        callback_func = getattr(callback, "__func__", None)
+        if (
+            type(provider) is not ObservedGitCodeAuthority
+            or getattr(self.verify_plan, "__func__", None)
+            is not ObservedGitCodeAuthority.verify_plan
+            or getattr(self.verify_event, "__self__", None) is not provider
+            or getattr(self.verify_event, "__func__", None)
+            is not ObservedGitCodeAuthority.verify_event
+            or getattr(callback, "__self__", None) is not provider
+            or callback_func
+            not in {
+                ObservedGitCodeAuthority.verify_event,
+                ObservedGitCodeAuthority.verify_plan,
+            }
+            or provider.coordinator.path.resolve() != self.coordinator.path.resolve()
+            or provider.policy != self.reader.policy
+        ):
+            return False
+        return True
 
     def observe_event_current(self, intent) -> EventProof:
         """Freshly observe source authority exactly once for this admission guard."""
