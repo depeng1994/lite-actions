@@ -2,6 +2,7 @@
 
 import copy
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -77,6 +78,39 @@ class AuthorityChannelTests(unittest.TestCase):
         slot = self.api.channel.read_slot(self.plan, "authority")
         self.assertEqual(slot["status"], "in_progress")
         self.assertIsNone(slot["conclusion"])
+
+    def test_concrete_hosted_readonly_client_parallel_run_receipt_then_proof(self):
+        from ci_core.gitcode_app import ReadOnlyChecksClient
+        from ci_core.github import GitHubClient
+
+        github = GitHubClient(
+            "synthetic", self.api.repo, schema4_repo_id=self.api.repo_id
+        )
+        barrier = threading.Barrier(2)
+        calls = []
+        lock = threading.Lock()
+
+        def request(method, path, data=None):
+            with lock:
+                calls.append(path)
+                index = len(calls)
+            if index <= 2:
+                barrier.wait(timeout=2)
+            return self.api.request(method, path, data)
+
+        github.request = request
+        github.download_artifact = self.api.download_artifact
+        self.api.reader.github = github
+        self.api.channel.client = ReadOnlyChecksClient(
+            github, app_id=self.api.policy.app_id
+        )
+        self.assertIsNone(self.client(self.plan))
+        self.assertIn("/actions/runs/", calls[0] + calls[1])
+        self.assertIn("/check-runs/", calls[0] + calls[1])
+        self.assertEqual(
+            calls[-1],
+            "/check-runs/" + str(self.plan["result_slots"]["authority"]["id"]),
+        )
 
     def test_same_owner_receipt_is_read_once_per_call_not_cached_between_polls(self):
         with patch.object(

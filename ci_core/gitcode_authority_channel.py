@@ -18,6 +18,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from ci_core.gitcode_artifacts import JSON_LIMIT, unzip_one
+from ci_core.gitcode_concurrency import read_pair
 from ci_core.gitcode_contract import (
     AUTHORITY_PROTOCOL,
     VerifiedRequest,
@@ -276,13 +277,30 @@ class HostedCurrent:
     def __call__(self, target):
         _plan(VerifiedRequest(canonical(target)))
         owner = self._own_plan(target)
-        run = self.reader.actual_run(self.owner_run_id)
-        owner_envelope = self.channel.read_receipt(owner)
-        # _own_plan returns this exact target object only for the owning run.
-        # Reuse within this call, never across polls or canonical generations.
-        target_envelope = (
-            owner_envelope if owner is target else self.channel.read_receipt(target)
+        from ci_core.gitcode_app import ReadOnlyChecksClient
+        from ci_core.github import GitHubClient
+
+        # Only the concrete read-only Hosted client is eligible: no App token
+        # refresh/signing client or unknown test transport is run concurrently.
+        checks = self.channel.client
+        parallel = (
+            type(self.reader.github) is GitHubClient
+            and type(checks) is ReadOnlyChecksClient
+            and checks.client is self.reader.github
         )
+
+        def receipts():
+            envelope = self.channel.read_receipt(owner)
+            return envelope, (
+                envelope if owner is target else self.channel.read_receipt(target)
+            )
+
+        run, envelopes = read_pair(
+            lambda: self.reader.actual_run(self.owner_run_id),
+            receipts,
+            enabled=parallel,
+        )
+        owner_envelope, target_envelope = envelopes
         if owner_envelope is None or target_envelope is None:
             return None
         owner_receipt, target_receipt = (

@@ -19,6 +19,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable
 
+from ci_core.gitcode_concurrency import read_pair
 from ci_core.gitcode_contract import canonical, load_json, positive, validate_pr
 from ci_core.gitcode_source import require_ref, require_sha
 
@@ -80,6 +81,24 @@ class GitCodeClient:
             not isinstance(token, str) or not token or "\n" in token or "\r" in token
         ):
             raise GitCodeAPIError("GITCODE_READ_CREDENTIAL_REQUIRED")
+
+    def _parallel_reads_safe(self):
+        return type(self) is GitCodeClient and (
+            self._transport is None
+            or getattr(self._transport, "parallel_reads_safe", False) is True
+        )
+
+    def _independent_reader(self):
+        # Each task owns its HTTP opener. Tokens/configuration are immutable;
+        # no refresh/session/cookie state is shared between concurrent requests.
+        return GitCodeClient(
+            self.repo,
+            self.repo_id,
+            token=self._token,
+            transport=self._transport,
+            timeout=self.timeout,
+            allowed_head_repositories=self.allowed_head_repositories,
+        )
 
     @classmethod
     def from_environment(
@@ -444,8 +463,16 @@ class GitCodeClient:
         run_id, job_id = self._action_id(run_id), self._action_id(job_id)
         self.repository()
         base = f"/repos/{self.repo}/actions/runs/{run_id}"
-        run = self._action_run_snapshot(self._get(base, api_version=8), run_id)
-        job = self._job_snapshot(self._get(base + "/jobs/" + job_id, api_version=8))
+        parallel = self._parallel_reads_safe()
+        run_reader = self._independent_reader() if parallel else self
+        job_reader = self._independent_reader() if parallel else self
+        raw_run, raw_job = read_pair(
+            lambda: run_reader._get(base, api_version=8),
+            lambda: job_reader._get(base + "/jobs/" + job_id, api_version=8),
+            enabled=parallel,
+        )
+        run = self._action_run_snapshot(raw_run, run_id)
+        job = self._job_snapshot(raw_job)
         if job["id"] != job_id:
             raise GitCodeAPIError("GITCODE_ACTION_JOB_IDENTITY_CHANGED")
         return {"run": run, "job": job}
@@ -728,12 +755,23 @@ class GitCodeClient:
         identity = self._pull_identity(
             normalized, allowed_base_refs=(base_ref,), allowed_actors=(actor,)
         )
-        head = (
-            self._head_client(identity["head_repo_path"]).branch(identity["head_ref"])
-            if state == "open"
-            else identity["head_sha"]
+        source = self._head_client(identity["head_repo_path"])
+        parallel = (
+            state == "open"
+            and self._parallel_reads_safe()
+            and source._parallel_reads_safe()
         )
-        base = self.branch(identity["base_ref"])
+        head_reader = source._independent_reader() if parallel else source
+        base_reader = self._independent_reader() if parallel else self
+        head, base = read_pair(
+            lambda: (
+                head_reader.branch(identity["head_ref"])
+                if state == "open"
+                else identity["head_sha"]
+            ),
+            lambda: base_reader.branch(identity["base_ref"]),
+            enabled=parallel,
+        )
         after = self.pull(number)
         self.repository()
 

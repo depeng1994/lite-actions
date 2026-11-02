@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import subprocess
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -62,6 +63,7 @@ class GitHubClient:
         self.api_version = api_version
         self.api = f"https://api.github.com/repos/{repo}"
         self.token = token
+        self._counter_lock = threading.Lock()
         self.sent_bytes = 0
         self.requests = 0
 
@@ -108,8 +110,9 @@ class GitHubClient:
             head += f"Content-Length: {len(payload)}\r\n"
         head += "\r\n"
         uploaded = len(head.encode()) + len(payload or b"")
-        self.sent_bytes += uploaded
-        self.requests += 1
+        with self._counter_lock:
+            self.sent_bytes += uploaded
+            self.requests += 1
         request = urllib.request.Request(
             url, data=payload, method=method, headers=headers
         )
