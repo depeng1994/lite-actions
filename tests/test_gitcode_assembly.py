@@ -60,6 +60,7 @@ class AssemblyTests(unittest.TestCase):
         self.assertIs(runtime.producer.github, runtime.reader.github)
         self.assertIsNot(runtime.reader.channel.client, runtime.reader.github)
         self.assertIsNone(runtime.authority)
+        self.assertIsNone(runtime.reader.read_snapshot)
         self.assertTrue((self.root / "state").is_dir())
         self.assertFalse((self.root / "state" / "authority.sqlite3").exists())
         with self.assertRaisesRegex(AssemblyError, "HOSTED_CURRENT_AUTHORITY"):
@@ -84,6 +85,10 @@ class AssemblyTests(unittest.TestCase):
         self.assertEqual(broker.read_authority.__self__.path, bridge.authority.path)
         self.assertEqual(broker.coordinator.path.name, "coordinator.sqlite3")
         self.assertEqual(broker.store.root.name, "requests")
+        self.assertIs(
+            broker.reader.read_snapshot.__self__, broker.read_authority.__self__
+        )
+        self.assertIs(bridge.reader.read_snapshot.__self__, bridge.authority)
 
     def test_missing_token_has_no_gh_fallback_or_secret_error(self):
         del self.environment["LITE_ACTIONS_GITHUB_TOKEN"]

@@ -110,9 +110,21 @@ class LoadedRequest:
 class GitCodeArtifactReader:
     """Trusted clients and policy are supplied by deployment, not by a Request."""
 
-    def __init__(self, *, policy: ControlPolicy, github, personal, channel, catalog):
+    def __init__(
+        self,
+        *,
+        policy: ControlPolicy,
+        github,
+        personal,
+        channel,
+        catalog,
+        read_snapshot=None,
+    ):
         self.policy, self.github, self.personal = policy, github, personal
         self.channel, self.catalog = channel, catalog
+        # Trusted control-host callback commits the exact API observation before
+        # stale input rejection. Hosted readers have no durable authority ledger.
+        self.read_snapshot = read_snapshot
         repo = MODEL_REPOSITORIES[policy.github_repo_id][0]
         if (
             github.repo != repo
@@ -236,6 +248,8 @@ class GitCodeArtifactReader:
         return content, hashlib.sha256(content).hexdigest()
 
     def _snapshot(self, number):
+        if self.read_snapshot is not None:
+            return self.read_snapshot(number)
         return self.personal.open_pull_snapshot(
             number,
             allowed_base_refs=self.policy.allowed_base_refs,

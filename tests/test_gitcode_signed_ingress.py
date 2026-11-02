@@ -8,9 +8,10 @@ from pathlib import Path
 from unittest.mock import Mock
 
 from ci_core.gitcode_admission import GitCodeAdmissionBroker
+from ci_core.gitcode_artifacts import ArtifactError
 from ci_core.gitcode_contract import canonical
 from ci_core.gitcode_platform import ObservedGitCodeAuthority, PlatformError
-from ci_core.gitcode_state import Coordinator
+from ci_core.gitcode_state import Coordinator, StateError
 from ci_core.gitcode_store import GitCodeRequestStore
 from tests import test_gitcode_attestation as attestation_fixtures
 from tests.test_gitcode_contract import fixture
@@ -98,7 +99,7 @@ class SignedIngressTests(unittest.TestCase):
             github_run=self.run,
         )
 
-    def test_real_producer_signed_sidecar_broker_and_atomic_coordinator_chain(self):
+    def _exercise_real_signed_chain(self):
         hosted = Path(self.tmp.name) / "hosted"
         hosted.mkdir()
         api = HostingAPI(hosted)
@@ -126,6 +127,7 @@ class SignedIngressTests(unittest.TestCase):
         self.now = 1100
         self.provider = self.reopen()
         envelope = self.signed.sign()
+        api.reader.read_snapshot = self.provider.read_snapshot
         # Real Producer creates immutable inputs/slots from signed intent only;
         # it neither instantiates a fresh authority ledger nor needs generation.
         plan = api.produce()
@@ -203,6 +205,39 @@ class SignedIngressTests(unittest.TestCase):
             self.provider.verify_event(self.signed.intent)
         self.coordinator.assert_startable(accepted.execution_id, now=self.now)
         self.provider.verify_plan(accepted.verified.plan)
+        return api, accepted, broker
+
+    def test_real_producer_signed_sidecar_broker_and_atomic_coordinator_chain(self):
+        self._exercise_real_signed_chain()
+
+    def test_reader_rejection_persists_exact_observed_b_before_api_returns_a(self):
+        api, accepted, broker = self._exercise_real_signed_chain()
+        original = copy.deepcopy(self.snapshot)
+        self.snapshot["identity"]["base_sha"] = "e" * 40
+        self.now += 1
+        # The reader rejects before broker.refresh. Its one authenticated B read
+        # must already have revoked A atomically, not be lost on exception.
+        before = self.client.authority_snapshot.call_count
+        with self.assertRaisesRegex(ArtifactError, "EARLY_INTENT_VERSION_STALE"):
+            broker.admit(100)
+        self.assertEqual(self.client.authority_snapshot.call_count, before + 1)
+        with self.coordinator._connection() as db:
+            row = db.execute(
+                "SELECT revision, snapshot FROM source_observations"
+            ).fetchone()
+            self.assertEqual(row["revision"], 2)
+            self.assertIn("e" * 40, row["snapshot"])
+        self.snapshot = original
+        self.now += 1
+        broker.refresh(self.policy.gitcode_repo_id, api.intent["pr"]["number"])
+        with self.assertRaises(StateError):
+            self.coordinator.assert_startable(accepted.execution_id, now=self.now)
+        with self.assertRaises(PlatformError):
+            self.provider.verify_plan(accepted.verified.plan)
+        with self.coordinator._connection() as db:
+            self.assertEqual(
+                db.execute("SELECT revision FROM source_observations").fetchone()[0], 3
+            )
 
     def test_valid_original_enrollment_and_restart_keep_same_proof(self):
         self.enroll()

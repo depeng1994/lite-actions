@@ -161,6 +161,15 @@ class ObservedGitCodeAuthority:
                 (repo_id, number),
             ).fetchone()[0]
 
+    def read_snapshot(self, number):
+        """Persist the exact authenticated observation before reader validation."""
+        authority = self.read_authority(self.policy.gitcode_repo_id, number)
+        return {
+            "identity": authority.pr,
+            "state": authority.state,
+            "authorized": authority.authorized,
+        }
+
     def read_authority(self, repo_id, number):
         if repo_id != self.policy.gitcode_repo_id:
             raise PlatformError("UNAUTHORIZED_AUTHORITY_SCOPE")

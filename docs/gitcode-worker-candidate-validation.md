@@ -18,3 +18,9 @@ State version 5 unifies source observations, immutable intents, invalidations an
 ## Remaining acceptance gates
 
 Real protected GitCode hosted original-event identity/time and secret restrictions, separate emitter signing authorization/public-key pin, reviewed exact SDK/control/default-branch deployment config, native Actions run and current result evidence, single existing Blue controlled validation, review/CLA/upstream merge remain external gates. Parent has separately verified the dedicated Checks App/key installation; no real secret was read by these tests. Historical PR comments are evidence only, not native GitCode Check success or merge approval. Automatic Actions enrollment remains disabled without reviewed provenance; manual/periodic tests do not satisfy it.
+
+## Reader observation boundary correction
+
+Independent review identified that stale early-intent rejection could occur after the Blue reader directly observed B but before the shared ledger saw it. All Blue/Bridge reader snapshot calls now route through the durable authority transaction and return that exact committed snapshot; Hosted retains no fresh authority ledger. Regression drives an existing canonical A through reader-observed B rejection before broker refresh, then restores A and verifies revision advancement and permanent old execution/plan revocation. No exception-time second read or untrusted intent snapshot can fabricate the B observation.
+
+Final corrected regression: 425 tests PASS (34.575 s), ruff check/format, compileall, diff check PASS. Log: /root/gitcode-forward-work/tt-worker-observation-final-regression.log. Independent audit reran all 24 signed-ingress/assembly tests PASS and confirmed this observation boundary closed.

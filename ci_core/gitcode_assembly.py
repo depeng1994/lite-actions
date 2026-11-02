@@ -449,6 +449,7 @@ def _assemble(
             attestation_policy=attestation_policy,
             action_client=action_client,
         )
+        reader.read_snapshot = authority.read_snapshot
     publisher = None
     publication = config.get("publication", {"enabled": False})
     if publication["enabled"] and role in {"blue", "bridge"}:
