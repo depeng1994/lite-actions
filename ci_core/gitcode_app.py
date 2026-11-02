@@ -311,7 +311,12 @@ class ChecksAppClient:
         if not allowed:
             raise AppError("CHECKS_CLIENT_ENDPOINT_NOT_ALLOWED")
         # Exactly one request: CheckRunChannel owns unknown-write recovery.
-        client = GitHubClient(self.tokens(), self.repo, api_version=API_VERSION)
+        client = GitHubClient(
+            self.tokens(),
+            self.repo,
+            api_version=API_VERSION,
+            schema4_repo_id=self.repo_id,
+        )
         try:
             return client.request(method, path, data)
         except urllib.error.HTTPError as exc:

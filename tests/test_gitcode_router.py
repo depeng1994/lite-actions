@@ -609,7 +609,11 @@ class GitCodeRouterTests(unittest.TestCase):
             1,
         )
         router.gitcode.responders[
-            (self.plan["control"]["control_sha"], self.plan["github"]["workflow_id"])
+            (
+                self.plan["github"]["repo_id"],
+                self.plan["control"]["control_sha"],
+                self.plan["github"]["workflow_id"],
+            )
         ] = responder
         with patch.object(router.gitcode, "resolve_request", return_value=verified):
             router.gitcode.respond_authority()
@@ -643,7 +647,11 @@ class GitCodeRouterTests(unittest.TestCase):
         publisher = Mock()
         publisher.publish.side_effect = OSError("publication unavailable")
         router.gitcode.publishers[
-            (self.plan["control"]["control_sha"], self.plan["github"]["workflow_id"])
+            (
+                self.plan["github"]["repo_id"],
+                self.plan["control"]["control_sha"],
+                self.plan["github"]["workflow_id"],
+            )
         ] = publisher
         with self.assertLogs(level="WARNING"):
             router.tick()

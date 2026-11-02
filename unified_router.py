@@ -51,11 +51,6 @@ def main():
     )
     with single_agent():
         token = authorization()
-        client = (
-            MultiRepoGitHubClient(token, repos)
-            if len(repos) > 1
-            else GitHubClient(token, repos[0])
-        )
         gitcode_adapter = None
         if a.gitcode_config:
             from ci_core.gitcode_assembly import assemble_blue
@@ -65,6 +60,16 @@ def main():
                 environment=os.environ,
                 state_directory=a.gitcode_state_directory,
             )
+        schema4_clients = (
+            tuple(b.reader.github for b in gitcode_adapter.brokers.values())
+            if gitcode_adapter is not None
+            else ()
+        )
+        client = (
+            MultiRepoGitHubClient(token, repos, schema4_clients=schema4_clients)
+            if len(repos) > 1 or schema4_clients
+            else GitHubClient(token, repos[0])
+        )
         router = Router(
             ROOT,
             a.worker_id,

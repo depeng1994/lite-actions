@@ -30,11 +30,33 @@ def authorization() -> str:
 
 
 class GitHubClient:
-    def __init__(self, token: str, repo: str = REPO, *, api_version="2022-11-28"):
-        if repo not in SUPPORTED_REPOS:
-            raise ValueError("untrusted GitHub repository")
+    def __init__(
+        self,
+        token: str,
+        repo: str = REPO,
+        *,
+        api_version="2022-11-28",
+        schema4_repo_id=None,
+    ):
+        if schema4_repo_id is None:
+            if repo not in SUPPORTED_REPOS:
+                raise ValueError("untrusted GitHub repository")
+            repo_id = 1210038933 if repo == TORCHTITAN_REPO else 1438625957
+        else:
+            from ci_core.gitcode_contract import MODEL_REPOSITORIES
+
+            if (
+                type(schema4_repo_id) is not int
+                or schema4_repo_id not in MODEL_REPOSITORIES
+                or MODEL_REPOSITORIES[schema4_repo_id][0] != repo
+            ):
+                raise ValueError("untrusted schema-4 GitHub repository binding")
+            repo_id = schema4_repo_id
         self.repo = repo
-        self.repo_id = 1210038933 if repo == TORCHTITAN_REPO else 1438625957
+        self.repo_id = repo_id
+        # Personal staging is explicit schema-4 only; schema-3 allowlists and
+        # global defaults are never expanded by constructing this client.
+        self.schema4_only = repo not in SUPPORTED_REPOS
         if api_version not in ("2022-11-28", "2026-03-10"):
             raise ValueError("unsupported GitHub API version")
         self.api_version = api_version
@@ -292,6 +314,8 @@ class GitHubClient:
             if self.repo == VLLM_REPO
             else ("workflow_dispatch", "pull_request")
         )
+        if self.schema4_only:
+            events = ("workflow_dispatch",)
         for event in events:
             for status in ("queued", "in_progress"):
                 data = self.request(
@@ -313,6 +337,17 @@ class GitHubClient:
                         "queued",
                         "in_progress",
                     }:
+                        continue
+                    if self.schema4_only and (
+                        run.get("event") != "workflow_dispatch"
+                        or not any(
+                            isinstance(run.get(field), str)
+                            and run[field].startswith("lite-gitcode:")
+                            for field in ("display_title", "name")
+                        )
+                        or run.get("repository", {}).get("id") != self.repo_id
+                        or run.get("repository", {}).get("full_name") != self.repo
+                    ):
                         continue
                     identity = (run["id"], run.get("run_attempt", 1))
                     if identity not in runs or run["status"] == "in_progress":
@@ -424,8 +459,19 @@ class GitHubClient:
 class MultiRepoGitHubClient:
     """One poller returns runs from all configured repositories."""
 
-    def __init__(self, token: str, repos: tuple[str, ...]):
+    def __init__(self, token: str, repos: tuple[str, ...], *, schema4_clients=()):
         self.clients = {repo: GitHubClient(token, repo) for repo in repos}
+        for client in schema4_clients:
+            from ci_core.gitcode_contract import MODEL_REPOSITORIES
+
+            if (
+                not isinstance(client, GitHubClient)
+                or client.repo_id not in MODEL_REPOSITORIES
+                or MODEL_REPOSITORIES[client.repo_id][0] != client.repo
+            ):
+                raise ValueError("untrusted schema-4 poll client")
+            if client.repo not in self.clients:
+                self.clients[client.repo] = client
 
     def for_repo(self, repo: str) -> GitHubClient:
         return self.clients[repo]

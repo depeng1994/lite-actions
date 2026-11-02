@@ -22,6 +22,7 @@ from urllib.parse import urlencode
 from ci_core.gitcode_contract import (
     BRIDGE_KEYS,
     MODEL_REPOSITORIES,
+    TORCHTITAN_REPOSITORY_IDS,
     ControlPolicy,
     VerifiedRequest,
     canonical,
@@ -499,7 +500,7 @@ class GitCodeArtifactReader:
                 dependencies=tuple(contents["manifest"]["dependencies"]),
             )
             source_directory = extract_verified_source(source, workspace / "source")
-            if self.policy.github_repo_id == 1210038933:
+            if self.policy.github_repo_id in TORCHTITAN_REPOSITORY_IDS:
                 from ci_core.gitcode_interfaces import inspect_directory
 
                 inspect_directory(

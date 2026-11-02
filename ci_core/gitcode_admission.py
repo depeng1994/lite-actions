@@ -14,7 +14,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from ci_core.gitcode_contract import VerifiedRequest, request_id
+from ci_core.gitcode_contract import (
+    TORCHTITAN_REPOSITORY_IDS,
+    VerifiedRequest,
+    request_id,
+)
 from ci_core.gitcode_state import Admission, Authority, EventProof
 from ci_core.gitcode_store import StoredExecution
 
@@ -51,7 +55,7 @@ class GitCodeAdmissionBroker:
         verify_plan: Callable[[dict], EventProof] | None = None,
         enroll_intent: Callable[[dict, dict], bool] | None = None,
     ):
-        if reader.policy.github_repo_id != 1210038933:
+        if reader.policy.github_repo_id not in TORCHTITAN_REPOSITORY_IDS:
             raise AdmissionError("TORCHTITAN_GITCODE_SCOPE_ONLY")
         self.reader, self.coordinator, self.store = reader, coordinator, store
         self.read_authority, self.verify_event, self.clock = (
@@ -123,6 +127,7 @@ class GitCodeAdmissionBroker:
             "run_id": run_id,
             "run_attempt": 1,
             "control_sha": self.reader.policy.control_sha,
+            "workflow_id": self.reader.policy.workflow_id,
         }
         self.coordinator.register_intent(intent, delivery, proof)
         # Early registration grants cancellation ownership, NOT resource access.

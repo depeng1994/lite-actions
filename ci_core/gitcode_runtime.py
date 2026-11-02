@@ -10,10 +10,14 @@ from __future__ import annotations
 import logging
 import time
 
-from ci_core.contract import TORCHTITAN_REPO
 from ci_core.executor import ExternalNpuOccupancy
 from ci_core.gitcode_admission import AcceptedRequest
-from ci_core.gitcode_contract import request_id, source_identity
+from ci_core.gitcode_contract import (
+    MODEL_REPOSITORIES,
+    TORCHTITAN_REPOSITORY_IDS,
+    request_id,
+    source_identity,
+)
 from ci_core.gitcode_delivery import GitCodeDelivery
 from ci_core.gitcode_state import Admission, StateError
 from ci_core.worker_probe import probe
@@ -50,10 +54,10 @@ class GitCodeRouterAdapter:
         self.coordinator = brokers[0].coordinator
         for broker in brokers:
             policy = broker.reader.policy
-            key = (policy.control_sha, policy.workflow_id)
+            key = (policy.github_repo_id, policy.control_sha, policy.workflow_id)
             if (
                 key in self.brokers
-                or policy.github_repo_id != 1210038933
+                or policy.github_repo_id not in TORCHTITAN_REPOSITORY_IDS
                 or broker.coordinator is not self.coordinator
                 or broker.store.root != brokers[0].store.root
                 or not policy.enabled
@@ -85,21 +89,30 @@ class GitCodeRouterAdapter:
         self.recover()
 
     def broker(self, plan):
+        if plan["control"]["github_repo_id"] != plan["github"]["repo_id"]:
+            raise RuntimeError4("SCHEMA4_PLAN_REPOSITORY_MISMATCH")
         return self.brokers[
-            (plan["control"]["control_sha"], plan["github"]["workflow_id"])
+            (
+                plan["github"]["repo_id"],
+                plan["control"]["control_sha"],
+                plan["github"]["workflow_id"],
+            )
         ]
 
     def resolve_request(self, rid):
         reference = self.coordinator.request_reference(rid)
         # All brokers share the same reviewed, persistent request store.
-        return next(iter(self.brokers.values())).store.load_plan(
+        verified = next(iter(self.brokers.values())).store.load_plan(
             rid, reference["plan_digest"]
         )
+        self.broker(verified.plan)
+        if request_id(verified.plan) != rid:
+            raise RuntimeError4("ROUTER_RETAINED_REQUEST_ID_MISMATCH")
+        return verified
 
-    @staticmethod
-    def handles(run):
+    def handles(self, run):
         return (
-            run.get("_ci_repo") == TORCHTITAN_REPO
+            self._run_broker(run) is not None
             and run.get("event") == "workflow_dispatch"
             and any(
                 isinstance(run.get(field), str)
@@ -108,13 +121,26 @@ class GitCodeRouterAdapter:
             )
         )
 
+    def _run_broker(self, run):
+        repository = run.get("repository") or {}
+        repo_id = repository.get("id")
+        if type(repo_id) is not int or repo_id not in TORCHTITAN_REPOSITORY_IDS:
+            return None
+        expected_repo = MODEL_REPOSITORIES[repo_id][0]
+        if (
+            repository.get("full_name") != expected_repo
+            or run.get("_ci_repo") != expected_repo
+        ):
+            return None
+        return self.brokers.get((repo_id, run.get("head_sha"), run.get("workflow_id")))
+
     def receive(self, run):
-        broker = self.brokers.get((run["head_sha"], run["workflow_id"]))
+        broker = self._run_broker(run)
         if broker is None:
             raise RuntimeError4("SCHEMA4_CONTROL_RELEASE_NOT_APPROVED")
         if run.get("run_attempt", 1) != 1:
             raise RuntimeError4("SCHEMA4_NATIVE_RERUN_REFUSED")
-        rid = f"1210038933/{run['id']}/1"
+        rid = f"{broker.reader.policy.github_repo_id}/{run['id']}/1"
         try:
             reference = self.coordinator.request_reference(rid)
         except StateError as exc:
@@ -153,6 +179,14 @@ class GitCodeRouterAdapter:
     def enqueue(self, plan, receipt, run):
         from ci_core.router import task_key
 
+        broker = self.broker(plan)
+        if (
+            self._run_broker(run) is not broker
+            or run.get("id") != plan["github"]["run_id"]
+            or run.get("run_attempt", 1) != plan["github"]["run_attempt"]
+        ):
+            raise RuntimeError4("ROUTER_RUN_PLAN_IDENTITY_MISMATCH")
+
         for item in plan["cases"]:
             key = task_key(run, item)
             old = self.router.state.read().get(key)
@@ -170,7 +204,7 @@ class GitCodeRouterAdapter:
                 protocol=4,
                 gitcode=binding,
                 phase="QUEUED",
-                repo=TORCHTITAN_REPO,
+                repo=MODEL_REPOSITORIES[plan["github"]["repo_id"]][0],
                 run=run,
                 item=item,
                 digest=plan["plan_digest"],
@@ -353,15 +387,36 @@ class GitCodeRouterAdapter:
 
     def cancel_run(self, payload):
         repo_id = payload.get("repo_id")
-        if repo_id != 1210038933:
+        candidates = [
+            broker
+            for (rid, sha, workflow), broker in self.brokers.items()
+            if rid == repo_id
+            and sha == payload.get("control_sha")
+            and ("workflow_id" not in payload or workflow == payload["workflow_id"])
+        ]
+        if (
+            type(repo_id) is not int
+            or repo_id not in TORCHTITAN_REPOSITORY_IDS
+            or not candidates
+        ):
             raise RuntimeError4("CANCEL_RUN_REPOSITORY_MISMATCH")
-        client = next(iter(self.brokers.values())).reader.github
+        # Repository-scoped read clients may differ per release. For legacy
+        # payloads without workflow ID, require one unambiguous configured client.
+        clients = {id(b.reader.github): b.reader.github for b in candidates}
+        if len(clients) != 1:
+            raise RuntimeError4("CANCEL_RUN_AMBIGUOUS_RELEASE")
+        client = next(iter(clients.values()))
         current = client.request("GET", f"/actions/runs/{payload['run_id']}")
+        key = (repo_id, payload["control_sha"], current.get("workflow_id"))
         if (
             current.get("id") != payload["run_id"]
             or current.get("repository", {}).get("id") != repo_id
-            or current.get("repository", {}).get("full_name") != TORCHTITAN_REPO
+            or current.get("repository", {}).get("full_name")
+            != MODEL_REPOSITORIES[repo_id][0]
             or current.get("head_sha") != payload["control_sha"]
+            or key not in self.brokers
+            or self.brokers[key] not in candidates
+            or current.get("event") != "workflow_dispatch"
         ):
             raise RuntimeError4("CANCEL_RUN_IDENTITY_CHANGED")
         if current.get("run_attempt") != payload.get("run_attempt", 1):
@@ -420,7 +475,11 @@ class GitCodeRouterAdapter:
                 plan = verified.plan
                 if plan.get("authority_protocol") != "artifact-check-v1":
                     continue
-                key = (plan["control"]["control_sha"], plan["github"]["workflow_id"])
+                key = (
+                    plan["github"]["repo_id"],
+                    plan["control"]["control_sha"],
+                    plan["github"]["workflow_id"],
+                )
                 responder = self.responders.get(key)
                 if responder is None:
                     continue
@@ -467,7 +526,11 @@ class GitCodeRouterAdapter:
                     verified, receipt, results, current=current
                 )
                 publisher = self.publishers.get(
-                    (plan["control"]["control_sha"], plan["github"]["workflow_id"])
+                    (
+                        plan["github"]["repo_id"],
+                        plan["control"]["control_sha"],
+                        plan["github"]["workflow_id"],
+                    )
                 )
                 if publisher is not None:
                     # A failed/unknown GitCode write remains pending without
@@ -510,7 +573,11 @@ class GitCodeRouterAdapter:
             "head_branch": "master",
             "path": plan["github"]["workflow_path"],
             "workflow_id": plan["github"]["workflow_id"],
-            "_ci_repo": TORCHTITAN_REPO,
+            "_ci_repo": MODEL_REPOSITORIES[plan["github"]["repo_id"]][0],
+            "repository": {
+                "id": plan["github"]["repo_id"],
+                "full_name": MODEL_REPOSITORIES[plan["github"]["repo_id"]][0],
+            },
             "created_at": "1970-01-01T00:00:00Z",
         }
         self.enqueue(plan, receipt, run)

@@ -11,15 +11,21 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any
 
 from ci_core.gitcode_source import MERGE_POLICY, require_ref, require_sha
 
 VLLM_BLUE_SMOKE_DOCKER = "vllm_hccl_smoke"
-MODEL_REPOSITORIES = {
-    1210038933: ("cann-framework/torchtitan-npu", "master"),
-    1438625957: ("cann-framework/vllm-ascend", "main"),
-}
+TORCHTITAN_REPOSITORY_IDS = frozenset({1210038933, 1245430804})
+STAGING_GITHUB_REPO_ID = 1245430804
+MODEL_REPOSITORIES = MappingProxyType(
+    {
+        1210038933: ("cann-framework/torchtitan-npu", "master"),
+        1438625957: ("cann-framework/vllm-ascend", "main"),
+        1245430804: ("depeng1994/torchtitan-npu", "master"),
+    }
+)
 PR_KEYS = {
     "repo_id",
     "number",
@@ -229,10 +235,27 @@ class ControlPolicy:
     prepare_job_name: str = "prepare-gitcode"
     max_duration_seconds: int = 28_800
     allowed_head_repositories: tuple[tuple[str, str], ...] = ()
+    deployment_profile: str = "production"
 
     def __post_init__(self):
         if self.github_repo_id not in MODEL_REPOSITORIES:
             raise ContractError("CONTROL_REPOSITORY_NOT_AUTHORIZED")
+        if self.github_repo_id == STAGING_GITHUB_REPO_ID:
+            if (
+                self.deployment_profile != "personal-staging"
+                or self.gitcode_repo_id != "9075802"
+                or self.upstream_repo_id != "9075802"
+                or self.upstream_default_ref != "master"
+                or self.allowed_base_refs != ("master",)
+                or any(
+                    binding != ("depeng1994/torchtitan-npu", "9075802")
+                    for binding in self.allowed_head_repositories
+                )
+                or self.app_id == 5575236
+            ):
+                raise ContractError("PERSONAL_STAGING_BINDING_REQUIRED")
+        elif self.deployment_profile != "production":
+            raise ContractError("PRODUCTION_PROFILE_REQUIRED")
         for value in (self.workflow_id, self.app_id, self.max_duration_seconds):
             positive(value)
         require_sha(self.control_sha)

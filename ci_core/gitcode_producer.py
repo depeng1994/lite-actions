@@ -14,6 +14,7 @@ from ci_core.gitcode_artifacts import BUNDLE_LIMIT, JSON_LIMIT, GitCodeArtifactR
 from ci_core.gitcode_bridge import GitCodeBridge
 from ci_core.gitcode_contract import (
     MODEL_REPOSITORIES,
+    TORCHTITAN_REPOSITORY_IDS,
     canonical,
     digest,
     positive,
@@ -198,7 +199,7 @@ class GitCodeProducer:
         handle.verify()
         if "git-" + handle.git_version != self.policy.git_builder_version:
             raise ProducerError("MERGE_BUILDER_VERSION_MISMATCH")
-        if self.policy.github_repo_id == 1210038933:
+        if self.policy.github_repo_id in TORCHTITAN_REPOSITORY_IDS:
             from ci_core.gitcode_interfaces import inspect_bundle
 
             inspect_bundle(

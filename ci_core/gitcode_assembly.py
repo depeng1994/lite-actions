@@ -28,6 +28,8 @@ from ci_core.gitcode_bridge import DispatchJournal, GitCodeBridge
 from ci_core.gitcode_checks import CheckRunChannel, CreationJournal
 from ci_core.gitcode_contract import (
     MODEL_REPOSITORIES,
+    STAGING_GITHUB_REPO_ID,
+    TORCHTITAN_REPOSITORY_IDS,
     ControlPolicy,
     canonical,
     load_json,
@@ -114,8 +116,13 @@ def load_release(path: Path) -> dict:
         )
     except TypeError:
         raise AssemblyError("INVALID_CONTROL_POLICY_FIELDS") from None
-    if policy.github_repo_id != 1210038933 or not policy.enabled:
+    if policy.github_repo_id not in TORCHTITAN_REPOSITORY_IDS or not policy.enabled:
         raise AssemblyError("EXPLICIT_TORCHTITAN_RELEASE_REQUIRED")
+    if policy.github_repo_id == STAGING_GITHUB_REPO_ID and (
+        value["personal_repo"] != "depeng1994/torchtitan-npu"
+        or value["upstream_repo"] != "depeng1994/torchtitan-npu"
+    ):
+        raise AssemblyError("PERSONAL_STAGING_REPOSITORY_PATH_REQUIRED")
     repository_id(policy.gitcode_repo_id)
     repository_id(policy.upstream_repo_id)
     positive(value["checks_installation_id"])
@@ -208,6 +215,8 @@ def _bind_authority_directory(root, config):
         "gitcode_repo_id": config["policy"].gitcode_repo_id,
         "personal_repo": config["personal_repo"],
         "authority_mode": config["authority_mode"],
+        "github_repo_id": config["policy"].github_repo_id,
+        "deployment_profile": config["policy"].deployment_profile,
     }
     path = root / "authority-binding.json"
     try:
@@ -361,6 +370,7 @@ def _assemble(
         _secret(environment, "LITE_ACTIONS_GITHUB_TOKEN"),
         MODEL_REPOSITORIES[policy.github_repo_id][0],
         api_version=API_VERSION,
+        schema4_repo_id=policy.github_repo_id,
     )
     token = _secret(environment, "LITE_ACTIONS_GITCODE_TOKEN")
     personal = GitCodeClient(
@@ -526,7 +536,12 @@ def assemble_blue(config_paths, *, environment, state_directory):
     # storage (which may require a version migration).
     configurations = [load_release(path) for path in config_paths]
     bindings = {
-        (config["personal_repo"], config["policy"].gitcode_repo_id)
+        (
+            config["personal_repo"],
+            config["policy"].gitcode_repo_id,
+            config["policy"].github_repo_id,
+            config["policy"].deployment_profile,
+        )
         for config in configurations
     }
     if len(bindings) != 1:
@@ -578,7 +593,11 @@ def assemble_blue(config_paths, *, environment, state_directory):
             )
         )
     publishers = {
-        (runtime.policy.control_sha, runtime.policy.workflow_id): runtime.publisher
+        (
+            runtime.policy.github_repo_id,
+            runtime.policy.control_sha,
+            runtime.policy.workflow_id,
+        ): runtime.publisher
         for runtime in runtimes
         if runtime.publisher is not None
     }
@@ -587,14 +606,16 @@ def assemble_blue(config_paths, *, environment, state_directory):
         if runtime.authority_protocol is not None:
             from ci_core.gitcode_authority_channel import AuthorityResponder
 
-            responders[(runtime.policy.control_sha, runtime.policy.workflow_id)] = (
-                AuthorityResponder(
-                    runtime.reader,
-                    runtime.reader.channel,
-                    resolve_request=broker.resolve_request,
-                    cleanup_journal=CreationJournal(
-                        root / "authority-closures.sqlite3"
-                    ),
+            responders[
+                (
+                    runtime.policy.github_repo_id,
+                    runtime.policy.control_sha,
+                    runtime.policy.workflow_id,
                 )
+            ] = AuthorityResponder(
+                runtime.reader,
+                runtime.reader.channel,
+                resolve_request=broker.resolve_request,
+                cleanup_journal=CreationJournal(root / "authority-closures.sqlite3"),
             )
     return GitCodeRouterAdapter(brokers, publishers=publishers, responders=responders)
