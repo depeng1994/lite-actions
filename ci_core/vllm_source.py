@@ -14,7 +14,7 @@ import re
 import zipfile
 
 from ci_core.contract import VLLM_REPO
-from ci_core.vllm_ascend import BLUE_CASES
+from ci_core.vllm_ascend import BLUE_CASES, BLUE_SMOKE_SUITE
 
 REPO_ID = 1438625957
 FORK_ID = 1440390070
@@ -125,9 +125,7 @@ def check_current(client, source, *, check_run=False):
         ):
             raise ValueError("STALE_NATIVE_SOURCE: Head/Base/authorization changed")
         labels = {x["name"] for x in pr.get("labels", [])}
-        tests = ["vllm_worker_os_blue", "dispatch_smoke_a3_8p"]
-        if "lite-a3-16p" in labels:
-            tests.append("dispatch_smoke_a3_16p")
+        tests = list(BLUE_SMOKE_SUITE)
         if "lite-a3-blue" not in labels or tests != source["test_ids"]:
             raise ValueError("STALE_NATIVE_SOURCE: case selection changed")
     if check_run:

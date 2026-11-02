@@ -8,6 +8,7 @@ BLUE_CASES = {
     "dispatch_smoke_a3_8p": (1, 8, 180),
     "dispatch_smoke_a3_16p": (2, 8, 240),
 }
+BLUE_SMOKE_SUITE = tuple(BLUE_CASES)
 A5_CASES = {
     "dispatch_smoke_a5_8p": (1, 8, 120),
     "dispatch_smoke_a5_32p": (4, 8, 240),

@@ -22,7 +22,7 @@ def fixture():
     defaults = dict(
         worker="blue", target_pool="a3_shared_blue", docker="vllm_hccl_smoke"
     )
-    ids = ["vllm_worker_os_blue", "dispatch_smoke_a3_8p"]
+    ids = ["vllm_worker_os_blue", "dispatch_smoke_a3_8p", "dispatch_smoke_a3_16p"]
     cases = []
     for name in ids:
         d = definition(name)
@@ -207,13 +207,41 @@ class NativeBlueTests(unittest.TestCase):
             lambda p: p["head"].update(sha="f" * 40),
             lambda p: p["base"].update(ref="other"),
             lambda p: p.update(state="closed"),
-            lambda p: p["labels"].append({"name": "lite-a3-16p"}),
             lambda p: p.update(labels=[]),
         ):
             self.pr = copy.deepcopy(original)
             mutation(self.pr)
             with self.assertRaisesRegex(ValueError, "STALE"):
                 check_current(self.client, self.source)
+
+    def test_default_blue_pr_suite_includes_os_8p_and_16p(self):
+        self.assertEqual(
+            self.source["test_ids"],
+            ["vllm_worker_os_blue", "dispatch_smoke_a3_8p", "dispatch_smoke_a3_16p"],
+        )
+        self.assertEqual(
+            self.plan["cases"][2]["resources"], {"nodes": 2, "devices_per_node": 8}
+        )
+        self.assertEqual(self.plan["cases"][2]["docker"], "vllm_hccl_smoke")
+        self.assertEqual(self.read(), self.source)
+
+    def test_incomplete_automatic_pr_suite_is_never_current(self):
+        for ids in (
+            ["vllm_worker_os_blue", "dispatch_smoke_a3_8p"],
+            ["dispatch_smoke_a3_16p"],
+            [],
+            list(reversed(self.source["test_ids"])),
+        ):
+            with (
+                self.subTest(ids=ids),
+                self.assertRaisesRegex(ValueError, "case selection"),
+            ):
+                check_current(self.client, {**self.source, "test_ids": ids})
+
+    def test_legacy_16p_label_does_not_change_or_duplicate_required_suite(self):
+        self.pr["labels"].append({"name": "lite-a3-16p"})
+        check_current(self.client, self.source)
+        self.assertEqual(self.read(), self.source)
 
     def test_cancelled_run_and_new_attempt_block_launch_or_publish(self):
         for state in (
