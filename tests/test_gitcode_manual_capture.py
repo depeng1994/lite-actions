@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from ci_core.gitcode_admission import GitCodeAdmissionBroker
+from ci_core.gitcode_assembly import AssembledRuntime, AssemblyError
 from ci_core.gitcode_contract import digest
 from ci_core.gitcode_manual_capture import (
     ManualCaptureError,
@@ -107,6 +108,10 @@ class ManualCaptureTests(unittest.TestCase):
         self.client.action_run.side_effect = lambda *a: copy.deepcopy(self.run)
         self.client.action_jobs.side_effect = lambda *a: [copy.deepcopy(self.job)]
         self.client.action_job.side_effect = lambda *a: copy.deepcopy(self.job)
+        self.client.action_capture_snapshot.side_effect = lambda *a: {
+            "run": copy.deepcopy(self.run),
+            "job": copy.deepcopy(self.job),
+        }
         self.client.action_step_logs.side_effect = lambda *a, **k: copy.deepcopy(
             self.logs
         )
@@ -168,6 +173,113 @@ class ManualCaptureTests(unittest.TestCase):
             self.assertNotIn("workflow_source_sha", evidence["metadata"])
             self.assertNotIn("original_event_at", evidence["metadata"])
             self.assertEqual(db.execute("SELECT count(*) FROM leases").fetchone()[0], 0)
+
+    def runtime_with_admitted_plan(self):
+        self.api.reader.read_snapshot = self.provider.read_snapshot
+        self.api.produce()
+        broker = GitCodeAdmissionBroker(
+            reader=self.api.reader,
+            coordinator=self.db,
+            store=GitCodeRequestStore(self.root / "requests"),
+            workspace=self.root / "admit",
+            read_authority=self.provider.read_authority,
+            verify_event=self.provider.verify_event,
+            verify_plan=self.provider.verify_plan,
+            clock=lambda: self.now,
+            enroll_intent=lambda intent, run: (
+                self.provider.enroll_manual(intent, github_run=run) is None
+            ),
+        )
+        self.api.job.update(status="completed", conclusion="success")
+        accepted = broker.admit(100)
+        self.api.reader.channel.publish_receipt(
+            accepted.verified.plan, accepted.admission.receipt
+        )
+        runtime = AssembledRuntime(
+            self.api.policy,
+            None,
+            self.api.reader,
+            None,
+            self.provider,
+            self.root,
+            lambda: self.now,
+            "blue",
+            coordinator=self.db,
+        )
+        return runtime, accepted.verified.plan
+
+    def test_current_uses_one_fresh_pr_read_and_retained_capture_no_logs(self):
+        runtime, plan = self.runtime_with_admitted_plan()
+        self.client.reset_mock()
+        self.assertTrue(runtime.current(plan))
+        self.client.authority_snapshot.assert_called_once()
+        self.client.action_capture_snapshot.assert_called_once()
+        self.client.action_step_logs.assert_not_called()
+
+    def test_current_observed_change_rejects_and_cannot_revive_after_aba(self):
+        runtime, plan = self.runtime_with_admitted_plan()
+        old = copy.deepcopy(self.snapshot)
+        self.snapshot["identity"]["head_sha"] = "f" * 40
+        with self.assertRaises(PlatformError):
+            runtime.current(plan)
+        self.snapshot = old
+        with self.assertRaises(PlatformError):
+            runtime.current(plan)
+
+    def test_current_receipt_network_race_rechecks_committed_generation(self):
+        runtime, plan = self.runtime_with_admitted_plan()
+        read = self.api.reader.channel.read_receipt
+
+        def raced(plan):
+            receipt = read(plan)
+            self.snapshot["identity"]["head_sha"] = "f" * 40
+            self.provider.read_authority(plan["pr"]["repo_id"], plan["pr"]["number"])
+            return receipt
+
+        with patch.object(self.api.reader.channel, "read_receipt", side_effect=raced):
+            with self.assertRaises(StateError):
+                runtime.current(plan)
+
+    def test_current_rejects_other_coordinator_or_generic_provider(self):
+        runtime, plan = self.runtime_with_admitted_plan()
+        runtime.coordinator = Coordinator(self.root / "other.sqlite3")
+        with self.assertRaisesRegex(AssemblyError, "SHARED_COORDINATOR"):
+            runtime.current(plan)
+        runtime.coordinator = self.db
+        runtime.authority = Mock()
+        with self.assertRaisesRegex(AssemblyError, "SHARED_COORDINATOR"):
+            runtime.current(plan)
+
+    def test_retained_capture_checks_job_changes_without_reading_new_logs(self):
+        self.enroll()
+        self.logs["log"] = "unread changes are not claimed as detected"
+        self.client.action_step_logs.reset_mock()
+        self.provider.verify_event(self.intent)
+        self.client.action_step_logs.assert_not_called()
+        self.job["exec_id"] = "different-execution"
+        with self.assertRaisesRegex(PlatformError, "REVOKED_BY_ACTION"):
+            self.provider.verify_event(self.intent)
+        self.job["exec_id"] = "execution-a"
+        with self.assertRaisesRegex(PlatformError, "TRUSTED_INTENT_REVOKED"):
+            self.provider.verify_event(self.intent)
+
+    def test_retained_capture_api_failure_and_late_pr_read_fail_closed(self):
+        self.enroll()
+        self.client.action_capture_snapshot.side_effect = OSError("offline")
+        with self.assertRaises(OSError):
+            self.provider.verify_event(self.intent)
+        self.client.action_capture_snapshot.side_effect = lambda *a: {
+            "run": copy.deepcopy(self.run),
+            "job": copy.deepcopy(self.job),
+        }
+
+        def late(*a, **kw):
+            self.now = self.intent["deadline"]
+            return copy.deepcopy(self.snapshot)
+
+        self.client.authority_snapshot.side_effect = late
+        with self.assertRaisesRegex(PlatformError, "EXPIRED"):
+            self.provider.verify_event(self.intent)
 
     def test_exact_capture_recovery_no_new_rights_and_changed_gh_owner_rejected(self):
         self.enroll()
@@ -262,7 +374,7 @@ class ManualCaptureTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(PlatformError, "SOURCE_EQUIVOCATION"):
             self.enroll(changed)
-        with self.assertRaisesRegex(PlatformError, "REVOKED_BY_ACTION"):
+        with self.assertRaisesRegex(PlatformError, "TRUSTED_INTENT_REVOKED"):
             self.provider.verify_event(self.intent)
 
     def test_unavailable_api_never_creates_ledger_intent(self):

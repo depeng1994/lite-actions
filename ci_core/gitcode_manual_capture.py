@@ -325,3 +325,52 @@ def verify_manual_capture(
         digest({"payload": payload, "job": job}),
         intent,
     )
+
+
+def verify_retained_manual_capture(attested, policy, client):
+    """Fresh revocation check of durable evidence, not new log authorization.
+
+    Only the ledger owner supplies ``attested``. Unknown requests must use the
+    full double-read enrollment path. Unread log mutations are not detected.
+    """
+    if (
+        policy is None
+        or not policy.enabled
+        or not policy.control.enabled
+        or client.repo_id != policy.control.gitcode_repo_id
+        or attested.issuer_repo_id != client.repo_id
+        or attested.key_id != policy.key_id
+        or attested.capture_kind != "manual_api"
+    ):
+        raise ManualCaptureError("MANUAL_RETAINED_POLICY_MISMATCH")
+    fresh = client.action_capture_snapshot(
+        attested.gitcode_run_id, attested.capture_job_id
+    )
+    run, job = fresh["run"], fresh["job"]
+    expected = {
+        "workflow_run_id": attested.gitcode_run_id,
+        "workflow_id": policy.workflow_id,
+        "file_path": policy.workflow_path,
+        "head_sha": policy.control.control_sha,
+        "head_branch": "master",
+        "event": "Manual",
+        "attempt": 1,
+        "exist_in_default_branch": True,
+    }
+    if any(type(run.get(k)) is not type(v) or run[k] != v for k, v in expected.items()):
+        raise ManualCaptureRevoked("MANUAL_RUN_IDENTITY_CHANGED")
+    if run.get("status") not in policy.allowed_run_statuses:
+        raise ManualCaptureRevoked("MANUAL_RUN_NOT_CURRENT")
+    payload = {
+        "schema": 1,
+        "kind": "manual-current-observation",
+        "captured_at": attested.captured_at,
+        "intent": attested.intent,
+    }
+    if (
+        job.get("id") != attested.capture_job_id
+        or digest({"payload": payload, "job": job}) != attested.envelope_digest
+        or job.get("status") != "COMPLETED"
+    ):
+        raise ManualCaptureRevoked("MANUAL_IMMUTABLE_CAPTURE_CHANGED")
+    return attested

@@ -401,6 +401,12 @@ class GitCodeClient:
             raise GitCodeAPIError("INVALID_GITCODE_ACTION_RUN_ID")
         self.repository()
         run = self._get(f"/repos/{self.repo}/actions/runs/{run_id}", api_version=8)
+        return self._action_run_snapshot(run, run_id)
+
+    @staticmethod
+    def _action_run_snapshot(run, run_id):
+        if not isinstance(run, dict):
+            raise GitCodeAPIError("GITCODE_ACTION_METADATA_INVALID")
         if run.get("workflow_run_id") != run_id:
             raise GitCodeAPIError("GITCODE_ACTION_RUN_IDENTITY_MISMATCH")
         positive(run.get("attempt"))
@@ -427,6 +433,22 @@ class GitCodeClient:
                 "exist_in_default_branch",
             )
         }
+
+    def action_capture_snapshot(self, run_id: str, job_id: str) -> dict:
+        """Fresh retained-capture recheck with exactly three scoped reads.
+
+        This does not discover a capture or prove initial membership. Use the
+        full listing/enrollment path first and compare this observation with
+        that retained proof. No cache or atomic-snapshot claim is introduced.
+        """
+        run_id, job_id = self._action_id(run_id), self._action_id(job_id)
+        self.repository()
+        base = f"/repos/{self.repo}/actions/runs/{run_id}"
+        run = self._action_run_snapshot(self._get(base, api_version=8), run_id)
+        job = self._job_snapshot(self._get(base + "/jobs/" + job_id, api_version=8))
+        if job["id"] != job_id:
+            raise GitCodeAPIError("GITCODE_ACTION_JOB_IDENTITY_CHANGED")
+        return {"run": run, "job": job}
 
     @staticmethod
     def _action_id(value):

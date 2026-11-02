@@ -315,28 +315,23 @@ class AssembledRuntime:
             or plan["github"]["workflow_id"] != self.policy.workflow_id
         ):
             raise AssemblyError("CURRENT_REQUEST_RELEASE_MISMATCH")
-        self.reader._actual_run(plan["github"]["run_id"], allow_completed=True)
-        proof = self.authority.verify_plan(plan)
-        authority = self.authority.read_authority(
-            plan["pr"]["repo_id"], plan["pr"]["number"]
-        )
-        if not (
-            authority.state == "open"
-            and authority.authorized
-            and canonical(authority.pr) == canonical(plan["pr"])
-            and authority.revision == proof.version_revision
+        from ci_core.gitcode_platform import ObservedGitCodeAuthority
+
+        if (
+            type(self.authority) is not ObservedGitCodeAuthority
+            or self.coordinator is None
+            or self.authority.coordinator.path != self.coordinator.path
+            or self.authority.policy != self.policy
         ):
-            return False
-        if self.coordinator is None:
             raise AssemblyError("SHARED_COORDINATOR_AUTHORITY_REQUIRED")
-        # PR freshness alone cannot prove current selector/rerun publication
-        # ownership. Use the exact retained receipt and transactional generation.
-        self.coordinator.reconcile(
-            plan["pr"]["repo_id"],
-            plan["pr"]["number"],
-            lambda: authority,
-            now=int(self.clock()),
-        )
+        self.reader._actual_run(plan["github"]["run_id"], allow_completed=True)
+        # This concrete provider binds the exact Plan to its retained intent,
+        # then freshly observes/reconciles PR authority in the SAME transaction.
+        # Do not repeat the entire API snapshot; do not substitute a generic
+        # EventProof callback or cached Authority for that guarantee.
+        self.authority.verify_plan(plan)
+        # Receipt network I/O may race a subsequent observation. The final
+        # assert_startable below rechecks durable generations with fresh time.
         reference = self.coordinator.request_reference(request_id(plan))
         envelope = self.reader.channel.read_receipt(plan)
         if (

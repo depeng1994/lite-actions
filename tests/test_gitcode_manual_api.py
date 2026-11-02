@@ -55,6 +55,78 @@ class ManualAPITests(unittest.TestCase):
             return copy.deepcopy(self.job)
         raise AssertionError("unexpected path")
 
+    def capture_client(self, *, run_changes=None, job_changes=None):
+        run = dict(
+            workflow_run_id="run-1",
+            attempt=1,
+            start_time=1000,
+            head_sha="a" * 40,
+            head_branch="master",
+            workflow_id="workflow-1",
+            file_path=".gitcode/capture.yml",
+            event="MANUAL",
+            status="COMPLETED",
+            exist_in_default_branch=True,
+        )
+        run.update(run_changes or {})
+        job = copy.deepcopy(self.job)
+        job.update(job_changes or {})
+        values = {
+            "/repos/owner/repo": dict(
+                id=1, full_name="owner/repo", default_branch="master"
+            ),
+            "/api/v8/repos/owner/repo/actions/runs/run-1": run,
+            "/api/v8/repos/owner/repo/actions/runs/run-1/jobs/job-1": job,
+        }
+        transport = Mock(side_effect=lambda path: copy.deepcopy(values[path]))
+        return GitCodeClient("owner/repo", "1", transport=transport), transport
+
+    def test_retained_capture_exact_three_fresh_reads_and_full_safe_metadata(self):
+        client, transport = self.capture_client()
+        expected_job = client._job_snapshot(self.job)
+        for _ in range(2):
+            observed = client.action_capture_snapshot("run-1", "job-1")
+            self.assertEqual(observed["job"], expected_job)
+            self.assertEqual(observed["run"]["workflow_run_id"], "run-1")
+            self.assertNotIn("SECRET", json.dumps(observed))
+        self.assertEqual(transport.call_count, 6)
+        self.assertEqual(
+            [c.args[0] for c in transport.call_args_list[:3]],
+            [
+                "/repos/owner/repo",
+                "/api/v8/repos/owner/repo/actions/runs/run-1",
+                "/api/v8/repos/owner/repo/actions/runs/run-1/jobs/job-1",
+            ],
+        )
+
+    def test_retained_capture_bad_path_ids_rejected_before_io(self):
+        client, transport = self.capture_client()
+        for run, job in (
+            ("../run", "job-1"),
+            ("run-1", "x/y"),
+            (True, "job-1"),
+            ("run-1", "x?token=value"),
+            ("run-1", "x" * 101),
+        ):
+            with self.assertRaises(GitCodeAPIError):
+                client.action_capture_snapshot(run, job)
+        transport.assert_not_called()
+
+    def test_retained_capture_wrong_run_or_job_and_malformed_metadata_refused(self):
+        for run_changes, job_changes in (
+            ({"workflow_run_id": "other"}, {}),
+            ({"exist_in_default_branch": "true"}, {}),
+            ({"status": []}, {}),
+            ({}, {"id": "other", "steps": []}),
+            ({}, {"steps": [{**self.step, "job_run_id": "other"}]}),
+            ({}, {"sequence": True}),
+        ):
+            client, _ = self.capture_client(
+                run_changes=run_changes, job_changes=job_changes
+            )
+            with self.assertRaises(GitCodeAPIError):
+                client.action_capture_snapshot("run-1", "job-1")
+
     def test_scoped_jobs_and_detail_strip_sensitive_fields(self):
         job = self.client.action_job("run-1", "job-1")
         self.assertNotIn("SECRET", json.dumps(job))

@@ -306,6 +306,7 @@ class ObservedGitCodeAuthority:
             from ci_core.gitcode_manual_capture import (
                 ManualCaptureError,
                 verify_manual_capture,
+                verify_retained_manual_capture,
             )
 
             if (
@@ -314,13 +315,18 @@ class ObservedGitCodeAuthority:
             ):
                 raise PlatformError("MANUAL_CAPTURE_POLICY_RETIRED")
             try:
-                current = verify_manual_capture(
-                    attested.intent,
-                    self.manual_capture_policy,
-                    self.action_client,
-                    now=int(self.clock()),
-                    first_enrollment=False,
-                )
+                if enrolling:
+                    current = verify_manual_capture(
+                        attested.intent,
+                        self.manual_capture_policy,
+                        self.action_client,
+                        now=int(self.clock()),
+                        first_enrollment=False,
+                    )
+                else:
+                    current = verify_retained_manual_capture(
+                        attested, self.manual_capture_policy, self.action_client
+                    )
             except ManualCaptureError as exc:
                 raise TerminalActionRevoked("MANUAL_SOURCE_TERMINALLY_REVOKED") from exc
             if current.envelope_digest != attested.envelope_digest:
@@ -576,6 +582,11 @@ class ObservedGitCodeAuthority:
                 (attested.source_key,),
             ).fetchone()
             if source is not None:
+                # Authenticated full capture read actually observed equivocation.
+                # Preserve revocation even though the replacement is rejected.
+                if trigger_kind == "manual_api":
+                    self._revoke_source_intent(db, source["intent_id"])
+                    db.commit()
                 raise PlatformError("TRUSTED_CAPTURE_SOURCE_EQUIVOCATION")
             replay = db.execute(
                 "SELECT source_intents.intent FROM source_attestations JOIN source_intents ON source_intents.id=source_attestations.intent_id "
