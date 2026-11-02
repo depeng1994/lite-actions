@@ -89,6 +89,7 @@ class CoordinatorTests(unittest.TestCase):
 
     def test_duplicate_delivery_claims_entire_canonical_execution(self):
         first = self.admitted()
+        self.bind(first, lease="lease-active-spec")
         plan, ctx = self.new_delivery()
         self.register(plan, ctx)
         second = self.claim(plan, ctx)
@@ -97,6 +98,14 @@ class CoordinatorTests(unittest.TestCase):
             first.receipt["canonical_execution_id"],
             second.receipt["canonical_execution_id"],
         )
+        self.assertEqual(
+            first.receipt["publication_revision"],
+            second.receipt["publication_revision"],
+        )
+        self.assertEqual(
+            first.receipt["execution_generation"],
+            second.receipt["execution_generation"],
+        )
         self.assertEqual(second.canonical["request_id"], request_id(self.plan))
         self.assertEqual(second.canonical["result_slots"], self.plan["result_slots"])
         with sqlite3.connect(self.path) as db:
@@ -104,6 +113,7 @@ class CoordinatorTests(unittest.TestCase):
                 db.execute("SELECT count(*) FROM executions").fetchone()[0], 1
             )
             self.assertEqual(db.execute("SELECT count(*) FROM cases").fetchone()[0], 2)
+            self.assertEqual(db.execute("SELECT count(*) FROM leases").fetchone()[0], 1)
 
     def test_concurrent_repeated_claim_is_idempotent(self):
         self.register()
