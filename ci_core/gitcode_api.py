@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import re
 import time
@@ -182,8 +183,10 @@ class GitCodeClient:
                 method="GET" if _log_query is None else "POST",
                 data=None if _log_query is None else canonical(_log_query),
             )
+            started = time.monotonic()
             try:
                 with self._opener.open(request, timeout=self.timeout) as response:
+                    status = getattr(response, "status", 200)
                     payload = response.read(4 * 1024**2 + 1)
                 if len(payload) > 4 * 1024**2:
                     raise GitCodeAPIError("GITCODE_RESPONSE_SIZE_LIMIT")
@@ -193,10 +196,26 @@ class GitCodeClient:
                 )["response"]
                 if not isinstance(result, list if expect_list else dict):
                     raise GitCodeAPIError("INVALID_GITCODE_API_RESPONSE")
+                logging.getLogger(__name__).info(
+                    "gitcode_http_observation method=%s path=%s status=%d attempt=%d elapsed_ms=%d",
+                    request.method,
+                    path.split("?", 1)[0],
+                    status,
+                    attempt + 1,
+                    round((time.monotonic() - started) * 1000),
+                )
                 return result
             except urllib.error.HTTPError as exc:
                 status = exc.code
                 exc.close()
+                logging.getLogger(__name__).warning(
+                    "gitcode_http_observation method=%s path=%s status=%d attempt=%d elapsed_ms=%d",
+                    request.method,
+                    path.split("?", 1)[0],
+                    status,
+                    attempt + 1,
+                    round((time.monotonic() - started) * 1000),
+                )
                 if status in (429, 500, 502, 503, 504) and attempt < 2:
                     time.sleep(2**attempt)
                     continue
@@ -204,6 +223,13 @@ class GitCodeClient:
                     "GITCODE_AUTHORITY_HTTP_ERROR", status=status
                 ) from None
             except (OSError, TimeoutError):
+                logging.getLogger(__name__).warning(
+                    "gitcode_http_observation method=%s path=%s status=transport_error attempt=%d elapsed_ms=%d",
+                    request.method,
+                    path.split("?", 1)[0],
+                    attempt + 1,
+                    round((time.monotonic() - started) * 1000),
+                )
                 if attempt < 2:
                     time.sleep(2**attempt)
                     continue

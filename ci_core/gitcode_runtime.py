@@ -254,11 +254,12 @@ class GitCodeRouterAdapter:
         def before_launch():
             if cancel.is_set():
                 raise InterruptedError("schema-4 cancellation requested")
-            broker.assert_plan_current(verified.plan)
+            refreshed_by_plan_check = broker.assert_plan_current(verified.plan)
             broker.reader.actual_run(verified.plan["github"]["run_id"])
-            broker.refresh(
-                verified.plan["pr"]["repo_id"], verified.plan["pr"]["number"]
-            )
+            if not refreshed_by_plan_check:
+                broker.refresh(
+                    verified.plan["pr"]["repo_id"], verified.plan["pr"]["number"]
+                )
             self.coordinator.assert_startable(eid, now=self.now())
             if captured is not None:
                 self.coordinator.assert_lease_active(
@@ -526,9 +527,10 @@ class GitCodeRouterAdapter:
                 def current():
                     broker = self.broker(plan)
                     try:
-                        broker.assert_plan_current(plan)
+                        refreshed_by_plan_check = broker.assert_plan_current(plan)
                         broker.reader.actual_run(plan["github"]["run_id"])
-                        broker.refresh(plan["pr"]["repo_id"], plan["pr"]["number"])
+                        if not refreshed_by_plan_check:
+                            broker.refresh(plan["pr"]["repo_id"], plan["pr"]["number"])
                         self.coordinator.assert_startable(
                             snapshot["id"], now=self.now()
                         )

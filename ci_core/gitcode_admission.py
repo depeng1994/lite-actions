@@ -70,11 +70,26 @@ class GitCodeAdmissionBroker:
             raise AdmissionError("ADMISSION_WORKSPACE_CANNOT_BE_SYMLINK")
         self.workspace.mkdir(parents=True, exist_ok=True, mode=0o700)
 
-    def assert_plan_current(self, plan):
-        if self.verify_plan is not None:
-            proof = self.verify_plan(plan)
-            if not isinstance(proof, EventProof):
-                raise AdmissionError("AUTHENTICATED_PLAN_PROOF_REQUIRED")
+    def assert_plan_current(self, plan) -> bool:
+        """Verify the Plan and report whether that read also refreshed authority.
+
+        Only the exact production ObservedGitCodeAuthority bound to this same
+        Coordinator can satisfy the refresh. Generic callbacks keep the explicit
+        refresh path; this is a same-guard optimization, never cross-guard cache.
+        """
+        if self.verify_plan is None:
+            return False
+        proof = self.verify_plan(plan)
+        if not isinstance(proof, EventProof):
+            raise AdmissionError("AUTHENTICATED_PLAN_PROOF_REQUIRED")
+        from ci_core.gitcode_platform import ObservedGitCodeAuthority
+
+        provider = getattr(self.verify_plan, "__self__", None)
+        return (
+            type(provider) is ObservedGitCodeAuthority
+            and provider.coordinator.path.resolve() == self.coordinator.path.resolve()
+            and provider.policy == self.reader.policy
+        )
 
     def _now(self):
         now = self.clock()
@@ -144,8 +159,9 @@ class GitCodeAdmissionBroker:
             retained = self.store.save(loaded)
             # Download/staging may outlive authority freshness. Reconcile again
             # before the atomic claim; source/manifest identity alone is not a grant.
-            self.refresh(pr["repo_id"], pr["number"])
-            self.assert_plan_current(retained.plan)
+            refreshed_by_plan_check = self.assert_plan_current(retained.plan)
+            if not refreshed_by_plan_check:
+                self.refresh(pr["repo_id"], pr["number"])
             admission = self.coordinator.claim(retained, now=self._now())
         return AcceptedRequest(retained, admission)
 
@@ -166,9 +182,10 @@ class GitCodeAdmissionBroker:
         reference = self.coordinator.request_reference(request_id(plan))
         if reference["receipt"] != accepted.admission.receipt:
             raise AdmissionError("PERSISTED_RECEIPT_MISMATCH")
-        self.assert_plan_current(plan)
+        refreshed_by_plan_check = self.assert_plan_current(plan)
         self.reader.actual_run(plan["github"]["run_id"])
-        self.refresh(plan["pr"]["repo_id"], plan["pr"]["number"])
+        if not refreshed_by_plan_check:
+            self.refresh(plan["pr"]["repo_id"], plan["pr"]["number"])
         self.coordinator.assert_startable(accepted.execution_id, now=self._now())
         return self.store.load_execution(request_id(plan), plan["plan_digest"])
 
