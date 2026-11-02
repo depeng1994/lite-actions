@@ -547,7 +547,7 @@ class GitCodeRouterTests(unittest.TestCase):
             }
         migrated = Coordinator(self.coordinator.path)
         with sqlite3.connect(migrated.path) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 3)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 4)
             self.assertEqual(
                 {
                     table: db.execute("SELECT * FROM " + table).fetchall()

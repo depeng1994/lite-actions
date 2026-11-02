@@ -143,7 +143,7 @@ class GitCodeAdmissionBroker:
     def reconcile_registered(self) -> dict:
         """Track dispatched/Prepare-stage scopes without requiring active Run lists."""
         refreshed, unavailable = [], []
-        for repo_id, number in self.coordinator.registered_scopes():
+        for repo_id, number in self.coordinator.iter_registered_scopes():
             try:
                 self.refresh(repo_id, number)
             except Exception as exc:

@@ -27,7 +27,7 @@ from ci_core.gitcode_contract import (
     validate_pr,
 )
 
-STATE_VERSION = 3
+STATE_VERSION = 4
 
 
 class StateError(ValueError):
@@ -113,6 +113,9 @@ CREATE TABLE outbox (
  payload_json TEXT NOT NULL, acknowledged INTEGER NOT NULL DEFAULT 0,
  UNIQUE(kind, entity_id)
 );
+CREATE TABLE outbox_attempts (
+ outbox_id INTEGER PRIMARY KEY REFERENCES outbox(id), sequence INTEGER NOT NULL
+);
 """
 
 
@@ -164,9 +167,9 @@ class Coordinator:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connection() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, 2, STATE_VERSION):
+            if version not in (0, 1, 2, 3, STATE_VERSION):
                 raise StateError("UNSUPPORTED_COORDINATOR_STATE_VERSION")
-            if version in (1, 2):
+            if version in (1, 2, 3):
                 # Upgrade atomically: keep generations, leases and outbox intact.
                 # Historical v1 results without an exit code are not fabricated.
                 connection.execute("BEGIN IMMEDIATE")
@@ -199,6 +202,19 @@ class Coordinator:
                         "published_at",
                     ]:
                         raise StateError("PUBLICATION_RECEIPT_MIGRATION_CONFLICT")
+                    connection.execute(
+                        "CREATE TABLE IF NOT EXISTS outbox_attempts ("
+                        "outbox_id INTEGER PRIMARY KEY REFERENCES outbox(id), "
+                        "sequence INTEGER NOT NULL)"
+                    )
+                    columns = [
+                        row[1]
+                        for row in connection.execute(
+                            "PRAGMA table_info(outbox_attempts)"
+                        )
+                    ]
+                    if columns != ["outbox_id", "sequence"]:
+                        raise StateError("OUTBOX_ATTEMPT_MIGRATION_CONFLICT")
                     connection.execute(f"PRAGMA user_version={STATE_VERSION}")
                     connection.commit()
                 except BaseException:
@@ -847,6 +863,38 @@ class Coordinator:
             raise StateError("REGISTERED_SCOPE_VISIBILITY_INCOMPLETE")
         return [(row["repo_id"], row["number"]) for row in rows]
 
+    def iter_registered_scopes(self, page_size: int = 100):
+        """Keyset pages over retained history without holding a DB lock over I/O.
+
+        The upper bound is captured once so newly appended scopes cannot make
+        a tick unbounded. Concurrent lower-key inserts are picked up next tick.
+        Absence in a scan never implies closure or permission to execute.
+        """
+        if type(page_size) is not int or not 1 <= page_size <= 1000:
+            raise StateError("INVALID_SCOPE_PAGE_SIZE")
+        with self._connection() as connection:
+            last = connection.execute(
+                "SELECT repo_id,number FROM pr_versions "
+                "ORDER BY repo_id DESC,number DESC LIMIT 1"
+            ).fetchone()
+        if last is None:
+            return
+        upper = (last["repo_id"], last["number"])
+        after = ("", 0)
+        while True:
+            with self._connection() as connection:
+                rows = connection.execute(
+                    "SELECT repo_id,number FROM pr_versions "
+                    "WHERE (repo_id,number) > (?,?) AND (repo_id,number) <= (?,?) "
+                    "ORDER BY repo_id,number LIMIT ?",
+                    (*after, *upper, page_size),
+                ).fetchall()
+            if not rows:
+                return
+            for row in rows:
+                after = (row["repo_id"], row["number"])
+                yield after
+
     def pending_outbox(self, limit: int = 100) -> list[dict]:
         if type(limit) is not int or not 1 <= limit <= 1000:
             raise StateError("INVALID_OUTBOX_PAGE_SIZE")
@@ -860,11 +908,34 @@ class Coordinator:
                     "payload_digest": digest(json.loads(row["payload_json"])),
                 }
                 for row in connection.execute(
-                    "SELECT * FROM outbox WHERE acknowledged=0 ORDER BY "
+                    "SELECT outbox.* FROM outbox LEFT JOIN outbox_attempts "
+                    "ON outbox.id=outbox_attempts.outbox_id "
+                    "WHERE acknowledged=0 ORDER BY COALESCE(sequence,0), "
                     "CASE WHEN kind IN ('CANCEL_RUN','CANCEL_EXECUTION','LEASE_CLEANUP') THEN 0 ELSE 1 END,id LIMIT ?",
                     (limit,),
                 )
             ]
+
+    def attempted(self, outbox_id: int, payload_digest: str) -> None:
+        """Rotate durable retry order before I/O, including crash/lost-response.
+
+        This is not an acknowledgement or execution grant. Fixed slot identity
+        and idempotent cancellation callbacks remain responsible for replay.
+        """
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT payload_json FROM outbox WHERE id=?", (outbox_id,)
+            ).fetchone()
+            if row is None or digest(json.loads(row[0])) != payload_digest:
+                raise StateError("OUTBOX_ATTEMPT_IDENTITY_MISMATCH")
+            sequence = connection.execute(
+                "SELECT COALESCE(MAX(sequence),0)+1 FROM outbox_attempts"
+            ).fetchone()[0]
+            connection.execute(
+                "INSERT INTO outbox_attempts VALUES(?,?) "
+                "ON CONFLICT(outbox_id) DO UPDATE SET sequence=excluded.sequence",
+                (outbox_id, sequence),
+            )
 
     def acknowledge(self, outbox_id: int, payload_digest: str) -> None:
         with self._transaction() as connection:

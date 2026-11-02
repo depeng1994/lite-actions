@@ -151,6 +151,42 @@ class GitCodeAPITests(unittest.TestCase):
             with self.assertRaises(GitCodeAPIError):
                 GitCodeClient(repo, "9075802", transport=self.transport)
 
+    def test_discovery_paginates_and_never_uses_cached_list_identity(self):
+        calls = []
+
+        def transport(path):
+            calls.append(path)
+            if "/pulls?" not in path:
+                return self.transport(path)
+            page = int(path.rsplit("page=", 1)[1])
+            if page == 1:
+                return [{"number": i, "state": "open"} for i in range(1, 101)]
+            return [{"number": 101, "state": "open", "base": {"sha": "stale"}}]
+
+        self.client._transport = transport
+        self.assertEqual(self.client.open_pull_numbers(), list(range(1, 102)))
+        self.assertEqual(sum("/pulls?" in path for path in calls), 2)
+
+    def test_discovery_incomplete_and_duplicate_pages_fail_closed(self):
+        def transport(path):
+            if "/pulls?" not in path:
+                return self.transport(path)
+            return [{"number": i, "state": "open"} for i in range(1, 101)]
+
+        self.client._transport = transport
+        with self.assertRaisesRegex(GitCodeAPIError, "DISCOVERY_INCOMPLETE"):
+            self.client.open_pull_numbers(max_pages=1)
+        with self.assertRaisesRegex(GitCodeAPIError, "CHANGED_DURING_SCAN"):
+            self.client.open_pull_numbers(max_pages=2)
+
+    def test_discovery_rejects_object_response_and_non_open_row(self):
+        for value in ({"number": 1}, [{"number": 1, "state": "closed"}]):
+            self.client._transport = lambda path: (
+                value if "/pulls?" in path else self.transport(path)
+            )
+            with self.assertRaises(GitCodeAPIError):
+                self.client.open_pull_numbers()
+
     def test_token_is_not_exposed_in_repr(self):
         client = GitCodeClient(self.transport.repo, "9075802", token="never-print-this")
         self.assertNotIn("never-print-this", repr(client))

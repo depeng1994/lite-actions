@@ -112,6 +112,7 @@ class GitCodeDelivery:
         delivered, pending = [], []
         for record in records:
             try:
+                self.coordinator.attempted(record["id"], record["payload_digest"])
                 self._deliver(record)
                 self.coordinator.acknowledge(record["id"], record["payload_digest"])
             except Exception as exc:

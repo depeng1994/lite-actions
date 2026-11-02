@@ -22,18 +22,29 @@ REPO = "cann-framework/torchtitan-npu"
 class AppTokenTests(unittest.TestCase):
     def setUp(self):
         self.now = 1800000000
-        self.installation = {"id": 91, "app_id": 42, "suspended_at": None, "permissions": {"checks": "write"}}
+        self.installation = {
+            "id": 91,
+            "app_id": 42,
+            "suspended_at": None,
+            "permissions": {"checks": "write"},
+        }
         self.reply = {
             "token": "synthetic-installation-token",
-            "expires_at": dt.datetime.fromtimestamp(self.now + 3600, dt.UTC).isoformat(),
+            "expires_at": dt.datetime.fromtimestamp(
+                self.now + 3600, dt.UTC
+            ).isoformat(),
             "permissions": {"checks": "write", "metadata": "read"},
             "repositories": [{"id": REPO_ID, "full_name": REPO}],
         }
         self.calls = []
         self.signer = Mock(return_value=b"synthetic-signature")
         self.tokens = app.InstallationTokens(
-            app_id=42, installation_id=91, repo_id=REPO_ID,
-            signer=self.signer, transport=self.transport, clock=lambda: self.now,
+            app_id=42,
+            installation_id=91,
+            repo_id=REPO_ID,
+            signer=self.signer,
+            transport=self.transport,
+            clock=lambda: self.now,
         )
 
     def transport(self, method, path, bearer, payload=None):
@@ -45,10 +56,18 @@ class AppTokenTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 2)
         jwt = self.calls[0][2]
         header, claims, _ = jwt.split(".")
-        decode = lambda s: json.loads(base64.urlsafe_b64decode(s + "=" * (-len(s) % 4)))
+
+        def decode(s):
+            return json.loads(base64.urlsafe_b64decode(s + "=" * (-len(s) % 4)))
+
         self.assertEqual(decode(header), {"alg": "RS256", "typ": "JWT"})
-        self.assertEqual(decode(claims), {"iss": "42", "iat": self.now - 60, "exp": self.now + 540})
-        self.assertEqual(self.calls[1][3], {"repository_ids": [REPO_ID], "permissions": {"checks": "write"}})
+        self.assertEqual(
+            decode(claims), {"iss": "42", "iat": self.now - 60, "exp": self.now + 540}
+        )
+        self.assertEqual(
+            self.calls[1][3],
+            {"repository_ids": [REPO_ID], "permissions": {"checks": "write"}},
+        )
         self.assertEqual(self.calls[1][1], "/app/installations/91/access_tokens")
         self.assertNotIn(self.reply["token"], repr(self.tokens))
         self.assertNotIn(jwt, repr(self.tokens))
@@ -66,7 +85,9 @@ class AppTokenTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 2)
         self.now += 1
         self.reply["token"] = "synthetic-refreshed-token"
-        self.reply["expires_at"] = dt.datetime.fromtimestamp(self.now + 3600, dt.UTC).isoformat()
+        self.reply["expires_at"] = dt.datetime.fromtimestamp(
+            self.now + 3600, dt.UTC
+        ).isoformat()
         self.assertEqual(self.tokens(), "synthetic-refreshed-token")
         self.assertEqual(len(self.calls), 4)
 
@@ -79,21 +100,35 @@ class AppTokenTests(unittest.TestCase):
 
     def test_invalid_app_or_installation_never_mints_token(self):
         for changes in (
-            {"id": 92}, {"app_id": 43}, {"id": True},
-            {"suspended_at": "2026-01-01"}, {"permissions": {"checks": "read"}},
+            {"id": 92},
+            {"app_id": 43},
+            {"id": True},
+            {"suspended_at": "2026-01-01"},
+            {"permissions": {"checks": "read"}},
         ):
             with self.subTest(changes=changes):
                 self.tokens.invalidate()
                 self.calls.clear()
-                self.installation = {"id": 91, "app_id": 42, "suspended_at": None, "permissions": {"checks": "write"}, **changes}
+                self.installation = {
+                    "id": 91,
+                    "app_id": 42,
+                    "suspended_at": None,
+                    "permissions": {"checks": "write"},
+                    **changes,
+                }
                 with self.assertRaisesRegex(app.AppError, "INSTALLATION"):
                     self.tokens()
                 self.assertEqual([c[0] for c in self.calls], ["GET"])
 
     def test_repositories_must_be_exact_single_stable_identity(self):
-        for value in (None, [], [{"id": REPO_ID}], [{"id": True, "full_name": REPO}],
-                      [{"id": REPO_ID, "full_name": "intruder/model"}],
-                      [{"id": REPO_ID, "full_name": REPO}] * 2):
+        for value in (
+            None,
+            [],
+            [{"id": REPO_ID}],
+            [{"id": True, "full_name": REPO}],
+            [{"id": REPO_ID, "full_name": "intruder/model"}],
+            [{"id": REPO_ID, "full_name": REPO}] * 2,
+        ):
             with self.subTest(value=value):
                 self.tokens.invalidate()
                 self.reply["repositories"] = value
@@ -101,8 +136,13 @@ class AppTokenTests(unittest.TestCase):
                     self.tokens()
 
     def test_overprivileged_or_readonly_token_is_rejected(self):
-        for value in ({"checks": "read"}, {"checks": "write", "contents": "write"},
-                      {"checks": "write", "actions": "read"}, {"checks": "write", "metadata": "write"}, None):
+        for value in (
+            {"checks": "read"},
+            {"checks": "write", "contents": "write"},
+            {"checks": "write", "actions": "read"},
+            {"checks": "write", "metadata": "write"},
+            None,
+        ):
             with self.subTest(value=value):
                 self.tokens.invalidate()
                 self.reply["permissions"] = value
@@ -110,9 +150,14 @@ class AppTokenTests(unittest.TestCase):
                     self.tokens()
 
     def test_expiry_must_be_bounded_timezone_aware_and_fresh(self):
-        for value in (None, "invalid", "2027-01-01T00:00:00", True,
-                      dt.datetime.fromtimestamp(self.now + 50, dt.UTC).isoformat(),
-                      dt.datetime.fromtimestamp(self.now + 7200, dt.UTC).isoformat()):
+        for value in (
+            None,
+            "invalid",
+            "2027-01-01T00:00:00",
+            True,
+            dt.datetime.fromtimestamp(self.now + 50, dt.UTC).isoformat(),
+            dt.datetime.fromtimestamp(self.now + 7200, dt.UTC).isoformat(),
+        ):
             with self.subTest(value=value):
                 self.tokens.invalidate()
                 self.reply["expires_at"] = value
@@ -138,8 +183,15 @@ class AppTokenTests(unittest.TestCase):
         self.assertEqual(self.tokens.transport.call_count, 2)
 
     def test_app_endpoints_cannot_be_redirected_to_other_services(self):
-        for method, path in (("GET", "https://intruder.invalid"), ("POST", "/repos/a/b"), ("DELETE", "/app/installations/91")):
-            with self.subTest(path=path), patch.object(app.urllib.request, "build_opener") as opener:
+        for method, path in (
+            ("GET", "https://intruder.invalid"),
+            ("POST", "/repos/a/b"),
+            ("DELETE", "/app/installations/91"),
+        ):
+            with (
+                self.subTest(path=path),
+                patch.object(app.urllib.request, "build_opener") as opener,
+            ):
                 with self.assertRaisesRegex(app.AppError, "ENDPOINT"):
                     app.app_request(method, path, "synthetic")
                 opener.assert_not_called()
@@ -148,11 +200,20 @@ class AppTokenTests(unittest.TestCase):
         client = app.ChecksAppClient(self.tokens)
         with patch.object(app, "GitHubClient") as factory:
             factory.return_value.request.return_value = {"id": 123}
-            for method, path in (("POST", "/check-runs"), ("PATCH", "/check-runs/123"), ("GET", "/check-runs/123"),
-                                 ("GET", "/commits/" + "a" * 40 + "/check-runs?filter=all")):
+            for method, path in (
+                ("POST", "/check-runs"),
+                ("PATCH", "/check-runs/123"),
+                ("GET", "/check-runs/123"),
+                ("GET", "/commits/" + "a" * 40 + "/check-runs?filter=all"),
+            ):
                 self.assertEqual(client.request(method, path), {"id": 123})
-            for method, path in (("POST", "/actions/workflows/1/dispatches"), ("DELETE", "/check-runs/123"),
-                                 ("PATCH", "/git/refs/heads/master"), ("GET", "//intruder.invalid"), ("POST", "/check-runs?override=1")):
+            for method, path in (
+                ("POST", "/actions/workflows/1/dispatches"),
+                ("DELETE", "/check-runs/123"),
+                ("PATCH", "/git/refs/heads/master"),
+                ("GET", "//intruder.invalid"),
+                ("POST", "/check-runs?override=1"),
+            ):
                 with self.assertRaisesRegex(app.AppError, "ENDPOINT"):
                     client.request(method, path)
             self.assertEqual(factory.call_count, 4)
@@ -160,14 +221,27 @@ class AppTokenTests(unittest.TestCase):
 
     def test_unauthorized_response_invalidates_without_replaying_write(self):
         client = app.ChecksAppClient(self.tokens)
-        error = urllib.error.HTTPError("https://api.github.com", 401, "secret-should-not-leak", {}, None)
+        error = urllib.error.HTTPError(
+            "https://api.github.com", 401, "secret-should-not-leak", {}, None
+        )
         with patch.object(app, "GitHubClient") as factory:
             factory.return_value.request.side_effect = error
-            with self.assertRaisesRegex(app.AppError, "CHECKS_HTTP_ERROR_401") as raised:
+            with self.assertRaisesRegex(
+                app.AppError, "CHECKS_HTTP_ERROR_401"
+            ) as raised:
                 client.request("POST", "/check-runs", {"name": "case"})
             self.assertEqual(factory.return_value.request.call_count, 1)
             self.assertIsNone(self.tokens._cached)
             self.assertNotIn("secret-should-not-leak", str(raised.exception))
+
+    def test_unknown_checks_write_reaches_journal_recovery_without_retry(self):
+        client = app.ChecksAppClient(self.tokens)
+        with patch.object(app, "GitHubClient") as factory:
+            factory.return_value.request.side_effect = TimeoutError("synthetic secret")
+            with self.assertRaises(OSError) as raised:
+                client.request("POST", "/check-runs", {"name": "case"})
+            self.assertEqual(factory.return_value.request.call_count, 1)
+            self.assertNotIn("synthetic secret", str(raised.exception))
 
 
 class KeyFileTests(unittest.TestCase):
@@ -193,16 +267,64 @@ class KeyFileTests(unittest.TestCase):
     def test_synthetic_rsa_signature_is_verifiable_and_has_no_secret_environment(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            key, public, signature = root / "key.pem", root / "public.pem", root / "sig.bin"
-            subprocess.run(["/usr/bin/openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048", "-out", str(key)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            key, public, signature = (
+                root / "key.pem",
+                root / "public.pem",
+                root / "sig.bin",
+            )
+            subprocess.run(
+                [
+                    "/usr/bin/openssl",
+                    "genpkey",
+                    "-algorithm",
+                    "RSA",
+                    "-pkeyopt",
+                    "rsa_keygen_bits:2048",
+                    "-out",
+                    str(key),
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
             key.chmod(0o600)
-            subprocess.run(["/usr/bin/openssl", "pkey", "-in", str(key), "-pubout", "-out", str(public)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(
+                [
+                    "/usr/bin/openssl",
+                    "pkey",
+                    "-in",
+                    str(key),
+                    "-pubout",
+                    "-out",
+                    str(public),
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
             real_run = subprocess.run
-            with patch.dict(os.environ, SYNTHETIC_PLATFORM_SECRET="not-a-real-secret"), patch.object(app.subprocess, "run", wraps=real_run) as invoked:
+            with (
+                patch.dict(os.environ, SYNTHETIC_PLATFORM_SECRET="not-a-real-secret"),
+                patch.object(app.subprocess, "run", wraps=real_run) as invoked,
+            ):
                 signature.write_bytes(app.OpenSSLSigner(key)(b"synthetic-jwt-payload"))
-                self.assertNotIn("SYNTHETIC_PLATFORM_SECRET", invoked.call_args.kwargs["env"])
+                self.assertNotIn(
+                    "SYNTHETIC_PLATFORM_SECRET", invoked.call_args.kwargs["env"]
+                )
                 self.assertNotIn("shell", invoked.call_args.kwargs)
-            verified = subprocess.run(["/usr/bin/openssl", "dgst", "-sha256", "-verify", str(public), "-signature", str(signature)], input=b"synthetic-jwt-payload", capture_output=True)
+            verified = subprocess.run(
+                [
+                    "/usr/bin/openssl",
+                    "dgst",
+                    "-sha256",
+                    "-verify",
+                    str(public),
+                    "-signature",
+                    str(signature),
+                ],
+                input=b"synthetic-jwt-payload",
+                capture_output=True,
+            )
             self.assertEqual(verified.returncode, 0)
 
 

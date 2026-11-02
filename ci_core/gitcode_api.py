@@ -53,7 +53,7 @@ class GitCodeClient:
         repo_id: str,
         *,
         token: str | None = None,
-        transport: Callable[[str], dict] | None = None,
+        transport: Callable[[str], dict | list] | None = None,
         timeout: int = 15,
     ):
         if not isinstance(repo, str) or not REPOSITORY.fullmatch(repo):
@@ -79,7 +79,7 @@ class GitCodeClient:
     def __repr__(self):
         return f"GitCodeClient(repo={self.repo!r}, repo_id={self.repo_id!r})"
 
-    def _get(self, path: str) -> dict:
+    def _get(self, path: str, *, expect_list: bool = False) -> dict | list:
         if (
             not path.startswith("/")
             or path.startswith("//")
@@ -90,7 +90,7 @@ class GitCodeClient:
             raise GitCodeAPIError("UNSAFE_GITCODE_API_PATH")
         if self._transport is not None:
             result = self._transport(path)
-            if not isinstance(result, dict):
+            if not isinstance(result, list if expect_list else dict):
                 raise GitCodeAPIError("INVALID_GITCODE_API_RESPONSE")
             return result
         for attempt in range(3):
@@ -106,7 +106,15 @@ class GitCodeClient:
             try:
                 with self._opener.open(request, timeout=self.timeout) as response:
                     payload = response.read(4 * 1024**2 + 1)
-                return load_json(payload, limit=4 * 1024**2)
+                if len(payload) > 4 * 1024**2:
+                    raise GitCodeAPIError("GITCODE_RESPONSE_SIZE_LIMIT")
+                # Keep strict duplicate-key/non-finite checks for array responses.
+                result = load_json(
+                    b'{"response":' + payload + b"}", limit=4 * 1024**2 + 32
+                )["response"]
+                if not isinstance(result, list if expect_list else dict):
+                    raise GitCodeAPIError("INVALID_GITCODE_API_RESPONSE")
+                return result
             except urllib.error.HTTPError as exc:
                 status = exc.code
                 exc.close()
@@ -158,6 +166,38 @@ class GitCodeClient:
         if type(data.get("number")) is not int or data["number"] != number:
             raise GitCodeAPIError("GITCODE_PR_NUMBER_MISMATCH")
         return data
+
+    def open_pull_numbers(self, *, max_pages: int = 10) -> list[int]:
+        """Bounded discovery only; every PR still needs a fresh authority read.
+
+        Pagination is not an atomic repository snapshot. A periodic caller must
+        repeat scans; never interpret absence as closure or revoke on absence.
+        """
+        positive(max_pages)
+        if max_pages > 100:
+            raise GitCodeAPIError("GITCODE_DISCOVERY_BUDGET_EXCEEDED")
+        metadata = self.repository()
+        numbers = set()
+        for page in range(1, max_pages + 1):
+            rows = self._get(
+                f"/repos/{self.repo}/pulls?state=open&sort=created"
+                f"&direction=asc&per_page=100&page={page}",
+                expect_list=True,
+            )
+            if len(rows) > 100:
+                raise GitCodeAPIError("GITCODE_INVALID_DISCOVERY_PAGE")
+            for row in rows:
+                if not isinstance(row, dict):
+                    raise GitCodeAPIError("GITCODE_INVALID_DISCOVERY_ROW")
+                number = positive(row.get("number"))
+                if row.get("state") != "open" or number in numbers:
+                    raise GitCodeAPIError("GITCODE_DISCOVERY_CHANGED_DURING_SCAN")
+                numbers.add(number)
+            if len(rows) < 100:
+                if self.repository() != metadata:
+                    raise GitCodeAPIError("GITCODE_REPOSITORY_CHANGED_DURING_SCAN")
+                return sorted(numbers)
+        raise GitCodeAPIError("GITCODE_DISCOVERY_INCOMPLETE")
 
     def _pull_identity(
         self,
