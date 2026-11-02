@@ -72,3 +72,23 @@ For the concrete production `ObservedGitCodeAuthority`, `verify_plan()` calls `v
 - SDK request budget: remove the known same-guard duplicate refresh; do not cap or suppress required freshness reads.
 - Waiter overhead after aggregate completion: aim for <=15 seconds including polling wake-up and final validations; measure before tightening the poll interval.
 - OS smoke: 3 minutes remains a product target, not established by this evidence. The 7m21 sample does not prove a 7m21 fixed lower bound, but it also does not support a claim that poll tuning alone can reach 3 minutes. Need per-step OS logs and wait-loop timings from a PM-owned run.
+
+## Second-pass completion (2026-11-02)
+
+G's full DAG review was incorporated. The first pre-registration admission guard was also redundant for the concrete provider: `verify_event()` itself executes `_observe()` and commits the current PR authority/revocation to the same Coordinator. Added `observe_event_current()` so `admit()` skips its preceding `refresh()` only when `verify_event` and `verify_plan` are bound to the same exact concrete `ObservedGitCodeAuthority`, same resolved Coordinator path, and same reader policy. Generic callbacks, cross-database providers, cross-provider callbacks, and policy mismatch retain explicit refresh. The post-materialization admission guard remains a separate new observation; it independently verifies Plan and refreshes only when its own concrete verification did not already observe authority.
+
+Additional regression coverage:
+
+- Real `GitCodeAdmissionBroker.observe_event_current()` with concrete provider: one fresh authority snapshot, no second explicit refresh.
+- Real `GitCodeAdmissionBroker.assert_plan_current()` with concrete provider: exactly one new authority snapshot per call; repeated guard invocation performs another observation (no cross-stage cache).
+- Real `startable_source()` entry: one fresh authority snapshot plus the exact GitHub Run read; duplicate refresh spy is not called; second entry repeats both observations.
+- Generic callback path: explicit refresh/read-authority and event-proof callbacks are called.
+- Cross-DB, cross-policy, and wrong-reader-policy capability checks refuse the optimization.
+- Runtime regression instruments repeated `before_launch`, `finish(PASS)` and aggregate guard calls: every guard re-verifies and re-reads GitHub Run, while same-guard duplicate refresh is absent.
+- Negative runtime regressions revoke the GitHub Run between staging and launch and after execution before finish; no NPU-case PASS is accepted. Existing aggregate cancellation test verifies a canceled GH Run cannot publish current aggregate success. Existing suite retains PR base/head ABA, cleanup, lease fencing, receipt and timeout tests.
+
+Second-pass SDK validation: `ruff` passed on changed SDK files; `compileall` passed; full suite **519 passed in 47.83s** (final run).
+
+## OS execution duration evidence
+
+Reviewed the retained `manual-os7-terminal-safe-evidence-20261102.json`, `manual-os-68ad-final-safe-evidence-20261102.json`, `os4-gh41438604990-cancel-journal-20261102.json`, and `retained-current-parallel-9gc1gh-latency-20261102.json`. The OS7 evidence preserves GitCode manual-capture/forward job and Hosted aggregate-result timing, but its GitHub selected log collection is empty and it has no authenticated OS process launch/exit or cleanup timestamps. The other inspected evidence is a cancelled wait job or API-read latency sample, not an OS process journal. Recursive search of retained top-level JSON evidence found no OS process start/end timing fields. Therefore **actual OS execution duration is UNKNOWN**; do not infer it from the 7m21 wait-job wall clock or Hosted PASS timestamp.

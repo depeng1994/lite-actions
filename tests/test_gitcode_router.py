@@ -218,6 +218,78 @@ class GitCodeRouterTests(unittest.TestCase):
         self.drain(router)
         self.assertEqual(len(self.executed), 2)
 
+    def test_runtime_rechecks_each_launch_finish_and_aggregate_guard_without_same_guard_refresh(self):
+        router = self.make_router()
+        router.gitcode.maintain = Mock()  # isolate request-scoped guards from periodic reconciliation
+        observed = {}
+
+        def instrumented_execute(**kwargs):
+            broker = router.gitcode.broker(self.plan)
+            if "assertions" not in observed:
+                broker.assert_plan_current = Mock(return_value=True)
+                broker.reader.actual_run = Mock(return_value=self.api.run)
+                broker.refresh = Mock()
+                observed.update(broker=broker, assertions=broker.assert_plan_current)
+            kwargs["before_launch"]()
+            kwargs["before_launch"]()
+            return self.execute_ok(**kwargs)
+
+        self.execute = instrumented_execute
+        router.tick()
+        self.drain(router)
+        broker = observed["broker"]
+        # Three independent before_launch calls per case (two explicit plus
+        # the executor's post-lease call), then finish(PASS) and aggregate.
+        self.assertGreaterEqual(broker.assert_plan_current.call_count, 8)
+        self.assertEqual(broker.reader.actual_run.call_count, broker.assert_plan_current.call_count)
+        self.assertEqual(broker.refresh.call_count, 0)
+        self.assertTrue(all(r["report"]["status"] == "PASS" for r in router.state.read().values()))
+
+    def test_github_run_revocation_between_staging_and_launch_is_not_executed(self):
+        def cancelled_before_launch(**kwargs):
+            self.api.run.update(status="completed", conclusion="cancelled")
+            kwargs["before_launch"]()
+            self.fail("cancelled GH run reached launch")
+
+        self.execute = cancelled_before_launch
+        router = self.make_router()
+        router.tick()
+        futures = [future for future, _, _ in list(router.active.values())]
+        for future in futures:
+            future.result(timeout=15)
+        self.assertEqual(self.executed, [])
+        self.assertTrue(
+            all(
+                r.get("report", {}).get("status") != "PASS"
+                for r in router.state.read().values()
+                if r.get("item", {}).get("kind") != "worker_probe"
+            )
+        )
+
+    def test_github_run_revocation_after_execution_blocks_finish_pass(self):
+        def cancelled_before_finish(**kwargs):
+            result = self.execute_ok(**kwargs)
+            self.api.run.update(status="completed", conclusion="cancelled")
+            return result
+
+        self.execute = cancelled_before_finish
+        router = self.make_router()
+        router.tick()
+        futures = [future for future, _, _ in list(router.active.values())]
+        for future in futures:
+            try:
+                future.result(timeout=15)
+            except Exception:
+                pass
+        router.pump()
+        self.assertTrue(
+            all(
+                r.get("report", {}).get("status") != "PASS"
+                for r in router.state.read().values()
+                if r.get("item", {}).get("kind") != "worker_probe"
+            )
+        )
+
     def test_failed_prepare_never_queues_or_takes_a_device_lease(self):
         self.api.job.update(conclusion="failure")
         router = self.make_router()

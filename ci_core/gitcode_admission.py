@@ -82,14 +82,29 @@ class GitCodeAdmissionBroker:
         proof = self.verify_plan(plan)
         if not isinstance(proof, EventProof):
             raise AdmissionError("AUTHENTICATED_PLAN_PROOF_REQUIRED")
+        return self._plan_check_refreshes_authority(self.verify_plan)
+
+    def _plan_check_refreshes_authority(self, callback) -> bool:
+        """Whether this exact production callback performs a fresh shared PR observation."""
         from ci_core.gitcode_platform import ObservedGitCodeAuthority
 
-        provider = getattr(self.verify_plan, "__self__", None)
+        provider = getattr(callback, "__self__", None)
         return (
             type(provider) is ObservedGitCodeAuthority
+            and getattr(self.verify_plan, "__self__", None) is provider
             and provider.coordinator.path.resolve() == self.coordinator.path.resolve()
             and provider.policy == self.reader.policy
         )
+
+    def observe_event_current(self, intent) -> EventProof:
+        """Freshly observe source authority exactly once for this admission guard."""
+        pr = intent["pr"]
+        if not self._plan_check_refreshes_authority(self.verify_event):
+            self.refresh(pr["repo_id"], pr["number"])
+        proof = self.verify_event(intent)
+        if not isinstance(proof, EventProof):
+            raise AdmissionError("AUTHENTICATED_EVENT_PROOF_REQUIRED")
+        return proof
 
     def _now(self):
         now = self.clock()
@@ -132,10 +147,7 @@ class GitCodeAdmissionBroker:
             if enrolled is not True:
                 raise AdmissionError("DURABLE_INGRESS_ACK_REQUIRED")
         pr = intent["pr"]
-        self.refresh(pr["repo_id"], pr["number"])
-        proof = self.verify_event(intent)
-        if not isinstance(proof, EventProof):
-            raise AdmissionError("AUTHENTICATED_EVENT_PROOF_REQUIRED")
+        proof = self.observe_event_current(intent)
         delivery = {
             "request_id": f"{self.reader.policy.github_repo_id}/{run_id}/1",
             "repo_id": self.reader.policy.github_repo_id,
