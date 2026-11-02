@@ -452,7 +452,21 @@ class GitCodeRouterAdapter:
         try:
             broker.assert_plan_current(plan)
             broker.reader._actual_run(plan["github"]["run_id"], allow_completed=True)
-            broker.refresh(plan["pr"]["repo_id"], plan["pr"]["number"])
+            from ci_core.gitcode_platform import ObservedGitCodeAuthority
+
+            provider = getattr(broker.verify_plan, "__self__", None)
+            fresh_shared_observation = (
+                type(provider) is ObservedGitCodeAuthority
+                and provider.coordinator.path.resolve()
+                == broker.coordinator.path.resolve()
+                == self.coordinator.path.resolve()
+                and provider.policy == broker.reader.policy
+            )
+            # Only this concrete provider has just freshly observed AND
+            # reconciled the exact Plan in our durable Coordinator transaction.
+            # Generic/optional callbacks retain the old explicit refresh path.
+            if not fresh_shared_observation:
+                broker.refresh(plan["pr"]["repo_id"], plan["pr"]["number"])
             reference = self.coordinator.request_reference(request_id(plan))
             if (
                 reference["plan_digest"] != plan["plan_digest"]

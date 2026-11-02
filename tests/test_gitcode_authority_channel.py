@@ -4,6 +4,7 @@ import copy
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from ci_core.gitcode_authority_channel import (
     AuthorityChannelError,
@@ -164,9 +165,15 @@ class AuthorityChannelTests(unittest.TestCase):
             return ident
 
         self.api.upload = upload
-        self.api.reader.load_results = lambda *args, **kwargs: VerifiedRequest(
-            canonical(duplicate)
-        )
+
+        # Preserve the real load_results keyword-only interface. Only its
+        # platform materialization boundary is synthetic in this protocol test.
+        def load(run_id, workspace, *, now, results_only):
+            self.assertEqual(run_id, 200)
+            self.assertTrue(results_only)
+            return SimpleNamespace(verified=VerifiedRequest(canonical(duplicate)))
+
+        self.api.reader._load = load
         client = HostedCurrent(
             self.api.reader,
             self.api.channel,
@@ -187,6 +194,35 @@ class AuthorityChannelTests(unittest.TestCase):
         self.assertTrue(client(self.plan))
         self.assertEqual(calls, [(self.plan, self.receipt)])
         self.assertIn("lite-authority-200-1", self.api.uploads)
+
+        original_receipt = self.api.channel.read_receipt
+
+        def changed_generation(plan):
+            envelope = copy.deepcopy(original_receipt(plan))
+            if plan["github"]["run_id"] == 200:
+                envelope["receipt"]["execution_generation"] += 1
+            return envelope
+
+        self.api.channel.read_receipt = changed_generation
+        with self.assertRaisesRegex(AuthorityChannelError, "GENERATION_MISMATCH"):
+            client(self.plan)
+
+    def test_follower_owner_uses_real_completed_results_reader(self):
+        target = copy.deepcopy(self.plan)
+        target["github"]["run_id"] = 999
+        self.api.run.update(status="completed", conclusion="success")
+        self.api.job.update(status="completed", conclusion="success")
+        # Actual reader, authenticated-artifact fixture and actual keyword-only
+        # load_results API; no replacement of load_results or _load.
+        self.assertEqual(self.client._own_plan(target), self.plan)
+
+    def test_follower_owner_rejects_actual_reader_identity_failure(self):
+        target = copy.deepcopy(self.plan)
+        target["github"]["run_id"] = 999
+        self.api.run["head_sha"] = "f" * 40
+        with self.assertRaises(ValueError):
+            self.client._own_plan(target)
+        self.assertIsNone(self.client._owner)
 
     def test_waiter_cannot_finish_until_fresh_proof_after_complete_results(self):
         waiter = GitCodeWaiter(self.verified, self.api.channel, current=self.client)

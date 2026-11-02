@@ -267,10 +267,7 @@ class HostedCurrent:
         if self.owner_run_id == target["github"]["run_id"]:
             return target
         if self._owner is None:
-            with tempfile.TemporaryDirectory(dir=self.root) as directory:
-                value = self.reader.load_results(
-                    self.owner_run_id, Path(directory) / "owner", now=int(self.clock())
-                )
+            value = self.reader.load_results(self.owner_run_id, now=int(self.clock()))
             if value is None:
                 raise AuthorityChannelError("OWNING_REQUEST_UNAVAILABLE")
             self._owner = _plan(value)

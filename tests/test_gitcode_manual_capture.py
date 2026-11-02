@@ -10,8 +10,8 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from ci_core.gitcode_admission import GitCodeAdmissionBroker
-from ci_core.gitcode_assembly import AssembledRuntime, AssemblyError
-from ci_core.gitcode_contract import digest
+from ci_core.gitcode_assembly import AssembledRuntime, AssemblyError, assemble_blue
+from ci_core.gitcode_contract import digest, request_id
 from ci_core.gitcode_manual_capture import (
     PLATFORM_STEP_KEYS,
     ManualCaptureError,
@@ -310,6 +310,79 @@ class ManualCaptureTests(unittest.TestCase):
             coordinator=self.db,
         )
         return runtime, accepted.verified.plan
+
+    def factory_blue_with_admitted_plan(self):
+        runtime, plan = self.runtime_with_admitted_plan()
+        config = {
+            "policy": self.api.policy,
+            "personal_repo": "depeng1994/torchtitan-npu",
+        }
+        with (
+            patch("ci_core.gitcode_assembly.load_release", return_value=config),
+            patch("ci_core.gitcode_assembly._assemble", return_value=runtime),
+        ):
+            adapter = assemble_blue(
+                [self.root / "synthetic-release.json"],
+                environment={},
+                state_directory=self.root,
+            )
+        adapter.clock = lambda: self.now
+        verified = adapter.resolve_request(request_id(plan))
+        receipt = adapter.coordinator.request_reference(request_id(plan))["receipt"]
+        return adapter, verified, receipt
+
+    def test_actual_blue_factory_callback_one_observation_with_synthetic_network_budget(
+        self,
+    ):
+        adapter, verified, receipt = self.factory_blue_with_admitted_plan()
+
+        def source(*a, **kw):
+            self.now += 6  # Six sequential PR reads, synthetic one-second costs.
+            return copy.deepcopy(self.snapshot)
+
+        def origin(*a):
+            self.now += 3  # Three retained run/job reads, not measured latency.
+            return {"run": copy.deepcopy(self.run), "job": copy.deepcopy(self.job)}
+
+        self.client.authority_snapshot.side_effect = source
+        self.client.action_capture_snapshot.side_effect = origin
+        self.client.reset_mock()
+        actual = self.api.reader._actual_run
+
+        def github(*a, **kw):
+            self.now += 1
+            return actual(*a, **kw)
+
+        start = self.now
+        with patch.object(self.api.reader, "_actual_run", side_effect=github):
+            self.assertTrue(adapter.current_authority(verified, receipt))
+        self.client.authority_snapshot.assert_called_once()
+        self.client.action_capture_snapshot.assert_called_once()
+        self.assertEqual(self.now - start, 10)  # Old actual entrypoint needed 16.
+
+    def test_actual_blue_factory_callback_rechecks_revocation_after_github_io(self):
+        adapter, verified, receipt = self.factory_blue_with_admitted_plan()
+        actual = self.api.reader._actual_run
+
+        def race(*a, **kw):
+            run = actual(*a, **kw)
+            self.snapshot["identity"]["head_sha"] = "f" * 40
+            self.provider.read_authority(
+                verified.plan["pr"]["repo_id"], verified.plan["pr"]["number"]
+            )
+            return run
+
+        with patch.object(self.api.reader, "_actual_run", side_effect=race):
+            self.assertFalse(adapter.current_authority(verified, receipt))
+
+    def test_actual_blue_factory_callback_generic_proof_retains_explicit_refresh(self):
+        adapter, verified, receipt = self.factory_blue_with_admitted_plan()
+        broker = adapter.broker(verified.plan)
+        proof = self.provider.verify_plan(verified.plan)
+        broker.verify_plan = lambda plan: proof
+        self.client.authority_snapshot.reset_mock()
+        self.assertTrue(adapter.current_authority(verified, receipt))
+        self.client.authority_snapshot.assert_called_once()
 
     def test_current_uses_one_fresh_pr_read_and_retained_capture_no_logs(self):
         runtime, plan = self.runtime_with_admitted_plan()
