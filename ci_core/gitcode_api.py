@@ -585,6 +585,20 @@ class GitCodeClient:
             result["steps"].append(normalized)
         return result
 
+    @classmethod
+    def _job_identity(cls, row):
+        # Listing is discovery, not evidence of capture completion. Unrelated
+        # forward jobs are legitimately RUNNING with null completion metadata.
+        if not isinstance(row, dict):
+            raise GitCodeAPIError("GITCODE_ACTION_JOB_INVALID")
+        return {
+            "id": cls._action_id(row.get("id")),
+            **{
+                field: cls._action_text(row.get(field))
+                for field in ("identifier", "name", "status")
+            },
+        }
+
     def action_jobs(self, run_id: str) -> list[dict]:
         """Bounded documented v8 listing; not proof of workflow provenance."""
         run_id = self._action_id(run_id)
@@ -600,8 +614,10 @@ class GitCodeClient:
             or not 0 <= total <= 100
         ):
             raise GitCodeAPIError("GITCODE_ACTION_JOBS_INCOMPLETE")
-        result = [self._job_snapshot(row) for row in jobs]
-        if len({row["id"] for row in result}) != len(result):
+        result = [self._job_identity(row) for row in jobs]
+        if len({row["id"] for row in result}) != len(result) or len(
+            {row["identifier"] for row in result}
+        ) != len(result):
             raise GitCodeAPIError("GITCODE_ACTION_JOBS_DUPLICATE")
         return result
 
@@ -813,3 +829,82 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+SAFE_API_DIAGNOSTIC_CODES = frozenset(
+    [
+        "CONFLICTING_HEAD_REPOSITORY_BINDING",
+        "EXTERNAL_FORK_NOT_AUTHORIZED",
+        "GITCODE_ACTION_COMMAND_METADATA_INVALID",
+        "GITCODE_ACTION_DEFAULT_BRANCH_PROOF_MISSING",
+        "GITCODE_ACTION_INPUT_DUPLICATE_OR_INVALID",
+        "GITCODE_ACTION_INPUT_METADATA_INVALID",
+        "GITCODE_ACTION_JOBS_DUPLICATE",
+        "GITCODE_ACTION_JOBS_INCOMPLETE",
+        "GITCODE_ACTION_JOB_IDENTITY_CHANGED",
+        "GITCODE_ACTION_JOB_INVALID",
+        "GITCODE_ACTION_JOB_METADATA_INVALID",
+        "GITCODE_ACTION_JOB_NOT_IN_RUN",
+        "GITCODE_ACTION_METADATA_INVALID",
+        "GITCODE_ACTION_RUN_IDENTITY_MISMATCH",
+        "GITCODE_ACTION_SCRIPT_SIZE_LIMIT",
+        "GITCODE_ACTION_STEPS_INVALID",
+        "GITCODE_ACTION_STEP_INVALID",
+        "GITCODE_ACTION_STEP_METADATA_INVALID",
+        "GITCODE_ACTION_STEP_NOT_IN_JOB",
+        "GITCODE_ACTION_STEP_OWNERSHIP_MISMATCH",
+        "GITCODE_API_VERSION_NOT_ALLOWED",
+        "GITCODE_AUTHENTICATED_ACTOR_REQUIRED",
+        "GITCODE_AUTHORITY_HTTP_ERROR",
+        "GITCODE_AUTHORITY_UNREACHABLE",
+        "GITCODE_BASE_REF_NOT_AUTHORIZED",
+        "GITCODE_BRANCH_IDENTITY_MISMATCH",
+        "GITCODE_COMMIT_IDENTITY_CONFLICT",
+        "GITCODE_DEFAULT_BRANCH_CHANGED_DURING_READ",
+        "GITCODE_DISCOVERY_BUDGET_EXCEEDED",
+        "GITCODE_DISCOVERY_CHANGED_DURING_SCAN",
+        "GITCODE_DISCOVERY_INCOMPLETE",
+        "GITCODE_INVALID_DISCOVERY_PAGE",
+        "GITCODE_INVALID_DISCOVERY_ROW",
+        "GITCODE_LOG_BUDGET_INVALID",
+        "GITCODE_LOG_INCOMPLETE",
+        "GITCODE_LOG_PAGE_NOT_CONTIGUOUS",
+        "GITCODE_LOG_QUERY_INVALID",
+        "GITCODE_LOG_SIZE_LIMIT",
+        "GITCODE_POST_QUERY_NOT_ALLOWED",
+        "GITCODE_PR_ACTOR_NOT_AUTHORIZED",
+        "GITCODE_PR_CHANGED_DURING_READ",
+        "GITCODE_PR_NOT_OPEN",
+        "GITCODE_PR_NUMBER_MISMATCH",
+        "GITCODE_PR_REFS_MISSING",
+        "GITCODE_READ_CREDENTIAL_REQUIRED",
+        "GITCODE_REPOSITORY_CHANGED_DURING_SCAN",
+        "GITCODE_REPOSITORY_IDENTITY_CHANGED",
+        "GITCODE_RESPONSE_SIZE_LIMIT",
+        "GITCODE_UNKNOWN_PR_STATE",
+        "INVALID_GITCODE_ACTION_ID",
+        "INVALID_GITCODE_ACTION_RUN_ID",
+        "INVALID_GITCODE_API_RESPONSE",
+        "INVALID_GITCODE_REPOSITORY_ID",
+        "INVALID_GITCODE_REPOSITORY_PATH",
+        "INVALID_HEAD_REPOSITORY_BINDING",
+        "INVALID_SOURCE_ROLE",
+        "TARGET_REPOSITORY_IDENTITY_MISMATCH",
+        "UNSAFE_GITCODE_API_PATH",
+    ]
+)
+
+
+def safe_api_diagnostic(error):
+    """Fixed code/status only; never log HTTP bodies, URLs or arbitrary args."""
+    if not isinstance(error, GitCodeAPIError):
+        return type(error).__name__
+    code = (
+        error.code
+        if isinstance(error.code, str) and error.code in SAFE_API_DIAGNOSTIC_CODES
+        else "UNCLASSIFIED"
+    )
+    status = (
+        error.status if type(error.status) is int and 100 <= error.status <= 599 else 0
+    )
+    return "GitCodeAPIError:" + code + ":HTTP" + str(status)

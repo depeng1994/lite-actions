@@ -160,11 +160,13 @@ class Router:
             try:
                 self._receive_one(run)
             except Exception as exc:
+                from ci_core.gitcode_api import safe_api_diagnostic
+
                 logging.warning(
                     "request unavailable: %s/%s (%s)",
                     run.get("_ci_repo", REPO),
                     run.get("id"),
-                    type(exc).__name__,
+                    safe_api_diagnostic(exc),
                 )
 
     def _receive_one(self, run):

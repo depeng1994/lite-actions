@@ -67,3 +67,10 @@ Design §4.2 permits explicitly declared non-runtime gitlinks, never silent omis
 The profile requires the exact `:torchtitan-smoke-agent-metadata-v1` suffix on trusted `policy_version`; absence of the profile with that suffix also fails closed. `policy_version` is already bound into the immutable Plan and request specification digest and checked against deployment policy, preventing reuse of an old specification as the new dependency profile. Activation must update the reviewed release explicitly; no credential or platform permission is added.
 
 The reviewed OS probe does not import merge-source code. The trusted 8P/16P smoke path invokes the fixed HCCL supervisor and source `smoke_payload.py`, using installed torch/torch_npu; it performs no package installation, agent-directory traversal or KPBot import. This declaration does not make arbitrary PR payload dependencies available: a changed payload requiring an omitted dependency must fail rather than fetch it. Training is outside this exception.
+
+
+## Active-job discovery is not capture authorization
+
+The fifth real Manual run exposed a valid `manual_forward` job in RUNNING state with an explicitly null `end_time`, while `manual_capture` was COMPLETED with integer timestamps. The old all-job parser incorrectly required completion metadata before it could discover the capture. Job-list discovery now validates complete bounded listing, unique IDs and identifiers, and fixed identity fields only. It does not interpret another job's partial steps/times or grant rights from a summary. The selected capture is independently fetched by its exact ID and still passes the full strict timestamp, command, platform envelope and ownership checks; missing or null capture completion time remains an error. No capture-age or status gate changes, and already-too-old unknown captures cannot be revived.
+
+Blue admission logs may now include an explicitly allowlisted GitCode API error code and numeric HTTP status. Unknown error arguments, response bodies, URLs, query strings and credential values are never included. This diagnostic does not change refusal behavior.

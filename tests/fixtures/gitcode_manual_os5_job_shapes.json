@@ -1,0 +1,56 @@
+{
+  "jobs": [
+    {
+      "identifier": "manual_capture",
+      "status": "COMPLETED",
+      "shape": {
+        "sequence": {
+          "type": "int",
+          "is_null": false,
+          "present": true
+        },
+        "start_time": {
+          "type": "int",
+          "is_null": false,
+          "present": true
+        },
+        "end_time": {
+          "type": "int",
+          "is_null": false,
+          "present": true
+        },
+        "apply_time": {
+          "type": "int",
+          "is_null": false,
+          "present": true
+        }
+      }
+    },
+    {
+      "identifier": "manual_forward",
+      "status": "RUNNING",
+      "shape": {
+        "sequence": {
+          "type": "int",
+          "is_null": false,
+          "present": true
+        },
+        "start_time": {
+          "type": "int",
+          "is_null": false,
+          "present": true
+        },
+        "end_time": {
+          "type": "NoneType",
+          "is_null": true,
+          "present": true
+        },
+        "apply_time": {
+          "type": "int",
+          "is_null": false,
+          "present": true
+        }
+      }
+    }
+  ]
+}

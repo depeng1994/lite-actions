@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import unittest
+from pathlib import Path
 from unittest.mock import Mock
 
 from ci_core.gitcode_api import GitCodeAPIError, GitCodeClient
@@ -185,13 +186,92 @@ class ManualAPITests(unittest.TestCase):
         ):
             self.step["inputs"] = inputs
             with self.assertRaises(GitCodeAPIError):
-                self.client.action_jobs("run-1")
+                self.client.action_job("run-1", "job-1")
 
     def test_missing_script_never_invents_digest(self):
         self.step["inputs"] = [{"key": "shell", "value": "bash"}]
         self.assertNotIn(
-            "script_sha256", self.client.action_jobs("run-1")[0]["steps"][0]
+            "script_sha256", self.client.action_job("run-1", "job-1")["steps"][0]
         )
+
+    def test_real_os5_job_shape_has_null_only_for_running_forward_completion(self):
+        fixture = json.loads(
+            (
+                Path(__file__).parent
+                / "fixtures"
+                / "gitcode_manual_os5_job_shapes.json"
+            ).read_text()
+        )
+        capture, forward = fixture["jobs"]
+        self.assertEqual(
+            (capture["identifier"], capture["status"]), ("manual_capture", "COMPLETED")
+        )
+        self.assertEqual(
+            (forward["identifier"], forward["status"]), ("manual_forward", "RUNNING")
+        )
+        self.assertFalse(capture["shape"]["end_time"]["is_null"])
+        self.assertEqual(
+            forward["shape"]["end_time"],
+            {"type": "NoneType", "is_null": True, "present": True},
+        )
+
+    def test_running_forward_null_end_does_not_block_completed_capture_discovery(self):
+        original = self.transport
+        running = {
+            "id": "forward-1",
+            "identifier": "manual_forward",
+            "name": "forward",
+            "status": "RUNNING",
+            "sequence": 2,
+            "start_time": 2000,
+            "end_time": None,
+            "steps": [{"end_time": None}],
+            "env": "SECRET",
+        }
+
+        def transport(path, **kwargs):
+            if path.endswith("/jobs"):
+                return {"total_count": 2, "jobs": [copy.deepcopy(self.job), running]}
+            return original(path, **kwargs)
+
+        self.client._transport = transport
+        listed = self.client.action_jobs("run-1")
+        self.assertEqual(len(listed), 2)
+        self.assertEqual(set(listed[0]), {"id", "identifier", "name", "status"})
+        self.assertNotIn("SECRET", json.dumps(listed))
+        self.assertEqual(
+            self.client.action_job("run-1", "job-1")["status"], "COMPLETED"
+        )
+        self.job["end_time"] = None
+        with self.assertRaisesRegex(GitCodeAPIError, "JOB_METADATA_INVALID"):
+            self.client.action_job("run-1", "job-1")
+
+    def test_discovery_identifier_missing_or_ambiguous_never_silently_filtered(self):
+        for row in (
+            {**self.job, "id": "second"},
+            {**self.job, "id": "second", "identifier": None},
+        ):
+            self.client._get = Mock(
+                return_value={"total_count": 2, "jobs": [self.job, row]}
+            )
+            self.client.repository = Mock()
+            with self.assertRaises(GitCodeAPIError):
+                self.client.action_jobs("run-1")
+
+    def test_safe_diagnostic_never_emits_arbitrary_error_or_status(self):
+        from ci_core.gitcode_api import safe_api_diagnostic
+
+        self.assertEqual(
+            safe_api_diagnostic(GitCodeAPIError("GITCODE_ACTION_JOB_METADATA_INVALID")),
+            "GitCodeAPIError:GITCODE_ACTION_JOB_METADATA_INVALID:HTTP0",
+        )
+        self.assertEqual(
+            safe_api_diagnostic(
+                GitCodeAPIError("secret token query body", status="secret")
+            ),
+            "GitCodeAPIError:UNCLASSIFIED:HTTP0",
+        )
+        self.assertEqual(safe_api_diagnostic(ValueError("secret")), "ValueError")
 
     def test_complete_logs_follow_opaque_offsets_not_text_lengths(self):
         value = self.client.action_step_logs("run-1", "job-1", "step-1")
@@ -218,7 +298,7 @@ class ManualAPITests(unittest.TestCase):
             self.client.action_step_logs("run-1", "job-1", "other")
         self.step["job_run_id"] = "different-job"
         with self.assertRaisesRegex(GitCodeAPIError, "OWNERSHIP"):
-            self.client.action_jobs("run-1")
+            self.client.action_job("run-1", "job-1")
 
     def test_incomplete_and_duplicate_job_lists_refused(self):
         for data in (
