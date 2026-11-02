@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 import subprocess
 import urllib.error
@@ -11,9 +12,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 
-from ci_core.contract import REPO, SUPPORTED_REPOS
-
-VLLM_REPO = "torchtitan-npu/vllm-ascend"
+from ci_core.contract import REPO, SUPPORTED_REPOS, TORCHTITAN_REPO, VLLM_REPO
 
 API = f"https://api.github.com/repos/{REPO}"
 
@@ -31,17 +30,28 @@ def authorization() -> str:
 
 
 class GitHubClient:
-    def __init__(self, token: str, repo: str = REPO):
+    def __init__(self, token: str, repo: str = REPO, *, api_version="2022-11-28"):
         if repo not in SUPPORTED_REPOS:
             raise ValueError("untrusted GitHub repository")
         self.repo = repo
+        self.repo_id = 1210038933 if repo == TORCHTITAN_REPO else 1438625957
+        if api_version not in ("2022-11-28", "2026-03-10"):
+            raise ValueError("unsupported GitHub API version")
+        self.api_version = api_version
         self.api = f"https://api.github.com/repos/{repo}"
         self.token = token
         self.sent_bytes = 0
         self.requests = 0
 
     def request(self, method: str, path: str, data: dict | None = None):
-        if not path.startswith("/") or "://" in path:
+        if (
+            not isinstance(path, str)
+            or (path and not path.startswith("/"))
+            or path.startswith("//")
+            or "://" in path
+            or "\\" in path
+            or ".." in path.split("/")
+        ):
             raise ValueError("relative GitHub API path required")
         url = self.api + path
         payload = (
@@ -49,11 +59,16 @@ class GitHubClient:
             if data is not None
             else None
         )
-        if payload is not None and len(payload) > 7000:
-            raise ValueError("POST payload exceeds 7000 bytes")
+        budget = (
+            64 * 1024
+            if path.startswith("/check-runs")
+            else (32 * 1024 if path.endswith("/dispatches") else 7000)
+        )
+        if payload is not None and len(payload) > budget:
+            raise ValueError("API payload exceeds endpoint budget")
         headers = {
             "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
+            "X-GitHub-Api-Version": self.api_version,
             "Authorization": f"Bearer {self.token}",
             "User-Agent": "lite-actions",
         }
@@ -76,9 +91,78 @@ class GitHubClient:
         request = urllib.request.Request(
             url, data=payload, method=method, headers=headers
         )
-        with urllib.request.urlopen(request, timeout=30) as response:
-            data = response.read()
+
+        # Repository aliases/redirects must not silently change trusted identity.
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
+
+        with urllib.request.build_opener(NoRedirect()).open(
+            request, timeout=30
+        ) as response:
+            data = response.read(8 * 1024**2 + 1)
+            if len(data) > 8 * 1024**2:
+                raise ValueError("GitHub response exceeds endpoint budget")
             return json.loads(data) if data else None
+
+    def download_artifact(self, artifact_id: int, *, limit: int) -> bytes:
+        """Bounded two-hop download: the GitHub credential never follows a redirect."""
+        if type(artifact_id) is not int or artifact_id < 1:
+            raise ValueError("invalid artifact ID")
+        if type(limit) is not int or not 1 <= limit <= 512 * 1024**2:
+            raise ValueError("invalid artifact byte budget")
+
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
+
+        opener = urllib.request.build_opener(NoRedirect())
+        request = urllib.request.Request(
+            self.api + f"/actions/artifacts/{artifact_id}/zip",
+            headers={
+                "Authorization": "Bearer " + self.token,
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": self.api_version,
+            },
+        )
+        self.requests += 1
+        try:
+            with opener.open(request, timeout=20):
+                raise ValueError("artifact download did not redirect")
+        except urllib.error.HTTPError as exc:
+            code, location = exc.code, exc.headers.get("Location")
+            exc.close()
+            if code != 302:
+                raise RuntimeError(f"artifact API unavailable (HTTP {code})") from None
+        except (OSError, TimeoutError):
+            raise RuntimeError("artifact API unavailable") from None
+        parts = urllib.parse.urlsplit(location or "")
+        host = (parts.hostname or "").lower()
+        if (
+            parts.scheme != "https"
+            or parts.username
+            or parts.password
+            or parts.port not in (None, 443)
+            or parts.fragment
+            or not (
+                host.endswith(".blob.core.windows.net")
+                or host.endswith(".actions.githubusercontent.com")
+            )
+        ):
+            raise ValueError("untrusted artifact download destination")
+        try:
+            # No Authorization header, cookies, or redirect-following on signed URLs.
+            with opener.open(urllib.request.Request(location), timeout=60) as response:
+                value = response.headers.get("Content-Length")
+                if value is not None and int(value) > limit:
+                    raise ValueError("artifact download exceeds byte budget")
+                payload = response.read(limit + 1)
+        except (OSError, TimeoutError):
+            # A signed URL is itself a secret: do not expose it in exception text.
+            raise RuntimeError("artifact storage unavailable") from None
+        if len(payload) > limit:
+            raise ValueError("artifact download exceeds byte budget")
+        return payload
 
     def normalize_pr_run(self, run: dict) -> dict | None:
         """Bind a pull_request run to exactly one current upstream PR head.
@@ -140,7 +224,9 @@ class GitHubClient:
         import re
 
         title = run.get("display_title") or ""
-        match = re.fullmatch(r"lite-a5-pr-(\d+)-([0-9a-f]{40})", title)
+        match = re.fullmatch(
+            r"lite-(?:a5|vllm)-pr-(\d+)-([0-9a-f]{40})(?:-([0-9a-f]{40}))?", title
+        )
         if (
             not match
             or run.get("path", "").rsplit("/", 1)[-1]
@@ -163,7 +249,41 @@ class GitHubClient:
             or pr.get("head", {}).get("sha") != sha
         ):
             return None
-        return {**run, "head_sha": sha, "_ci_pr_number": pr_number}
+        return {
+            **run,
+            "head_sha": sha,
+            "_ci_pr_number": pr_number,
+            **({"_ci_control_sha": match[3]} if match[3] else {}),
+        }
+
+    def normalize_native_recheck(self, run):
+        import re
+
+        title = run.get("display_title", "")
+        if not title.startswith("lite-vllm-recheck-"):
+            return run
+        match = re.fullmatch(
+            r"lite-vllm-recheck-([1-9][0-9]*)-([0-9a-f]{40})-([0-9a-f]{32})", title
+        )
+        if (
+            not match
+            or run.get("head_sha") != match[2]
+            or run.get("head_branch") != "main"
+            or run.get("actor", {}).get("login")
+            not in {"depeng1994", "github-actions[bot]"}
+        ):
+            return None
+        pr = self.request("GET", f"/pulls/{match[1]}")
+        normalized = self.normalize_target_pr_run(
+            {
+                **run,
+                "display_title": f"lite-vllm-pr-{match[1]}-{pr.get('head', {}).get('sha', '')}-{match[2]}",
+                "actor": {"login": "depeng1994"},
+            }
+        )
+        if normalized is None:
+            return None
+        return {**normalized, "display_title": title, "actor": run["actor"]}
 
     def running_workflows(self) -> list[dict]:
         runs = {}
@@ -178,10 +298,17 @@ class GitHubClient:
                     "GET", f"/actions/runs?event={event}&status={status}&per_page=100"
                 )
                 for run in data.get("workflow_runs", []):
+                    run = {
+                        **run,
+                        "_ci_control_sha": run.get("head_sha"),
+                        "_ci_control_ref": run.get("head_branch"),
+                    }
                     if event == "pull_request":
                         run = self.normalize_pr_run(run)
                     elif event == "pull_request_target":
                         run = self.normalize_target_pr_run(run)
+                    elif self.repo == VLLM_REPO:
+                        run = self.normalize_native_recheck(run)
                     if run is None or run.get("status") not in {
                         "queued",
                         "in_progress",
@@ -306,5 +433,12 @@ class MultiRepoGitHubClient:
     def running_workflows(self) -> list[dict]:
         runs = []
         for client in self.clients.values():
-            runs.extend(client.running_workflows())
+            try:
+                runs.extend(client.running_workflows())
+            except Exception as exc:
+                logging.warning(
+                    "repository poll unavailable: %s (%s)",
+                    client.repo,
+                    type(exc).__name__,
+                )
         return sorted(runs, key=lambda r: (r.get("created_at", ""), r["id"]))

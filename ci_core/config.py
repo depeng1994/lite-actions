@@ -107,7 +107,11 @@ def execution_node(node, environment):
     execution_ssh = node["ssh"] + "/" + container
     if run(execution_ssh, "id -u", timeout=30).stdout.strip() != "0":
         raise ValueError("EXECUTION_PID_VISIBILITY_REQUIRED")
-    return {**node, **captured, "ssh": execution_ssh}
+    selected = {**node, **captured, "ssh": execution_ssh}
+    if environment == "vllm_hccl_smoke":
+        # TorchTitan-specific dependency overlays must not contaminate vLLM.
+        selected.pop("pythonpath", None)
+    return selected
 
 
 def runtime_case(item, pools, worker):

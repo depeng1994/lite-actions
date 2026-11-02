@@ -82,7 +82,7 @@ def inspect_archive(archive: Path, selection: dict, *, repo=None) -> list[dict]:
 
     repo = REPO if repo is None else repo
 
-    if repo == "torchtitan-npu/vllm-ascend":
+    if repo == "cann-framework/vllm-ascend":
         from ci_core.vllm_ascend import definition
 
         if "test_id" in selection:

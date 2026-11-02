@@ -23,16 +23,30 @@ class PullIsolationTests(unittest.TestCase):
 
     def test_one_repository_403_does_not_block_other_repository(self):
         client = MultiRepoGitHubClient("fixture", (TORCHTITAN_REPO, VLLM_REPO))
-        client.clients[TORCHTITAN_REPO].running_workflows = Mock(side_effect=HTTPError(
-            "https://api.github.com/fixture", 403, "forbidden", {}, None))
-        healthy = {"id": 100, "created_at": "2026-11-01T00:00:00Z", "_ci_repo": VLLM_REPO}
+        client.clients[TORCHTITAN_REPO].running_workflows = Mock(
+            side_effect=HTTPError(
+                "https://api.github.com/fixture", 403, "forbidden", {}, None
+            )
+        )
+        healthy = {
+            "id": 100,
+            "created_at": "2026-11-01T00:00:00Z",
+            "_ci_repo": VLLM_REPO,
+        }
         client.clients[VLLM_REPO].running_workflows = Mock(return_value=[healthy])
         self.assertEqual(client.running_workflows(), [healthy])
 
     def test_bad_request_does_not_stop_next_request(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {
-            "LITE_ACTIONS_ALLOWED_ACTORS": "maintainer", "LITE_ACTIONS_STATE_DIR": "",
-        }):
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.dict(
+                os.environ,
+                {
+                    "LITE_ACTIONS_ALLOWED_ACTORS": "maintainer",
+                    "LITE_ACTIONS_STATE_DIR": "",
+                },
+            ),
+        ):
             root = Path(tmp)
             write_workspace(root)
             service = Service([definition("os", kind="worker_probe")], root)
@@ -46,16 +60,28 @@ class PullIsolationTests(unittest.TestCase):
 
             router = Router(root, "blue", service, "reporter")
             try:
-                with service.connected(), patch.object(service, "ci_request", side_effect=load):
+                with (
+                    service.connected(),
+                    patch.object(service, "ci_request", side_effect=load),
+                ):
                     router.receive(service.running_workflows())
-                    self.assertEqual([r["run"]["id"] for r in router.state.read().values()], [21])
+                    self.assertEqual(
+                        [r["run"]["id"] for r in router.state.read().values()], [21]
+                    )
             finally:
                 router.close()
 
     def test_unavailable_run_cannot_launch_but_healthy_run_finishes(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {
-            "LITE_ACTIONS_ALLOWED_ACTORS": "maintainer", "LITE_ACTIONS_STATE_DIR": "",
-        }):
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.dict(
+                os.environ,
+                {
+                    "LITE_ACTIONS_ALLOWED_ACTORS": "maintainer",
+                    "LITE_ACTIONS_STATE_DIR": "",
+                },
+            ),
+        ):
             root = Path(tmp)
             write_workspace(root)
             service = Service([definition("os", kind="worker_probe")], root)
@@ -86,19 +112,33 @@ class PullIsolationTests(unittest.TestCase):
 
     def test_target_pr_keeps_control_sha_separate_from_source_sha(self):
         client = GitHubClient("fixture", VLLM_REPO)
-        run = {"id": 1, "run_attempt": 1, "status": "in_progress", "head_sha": "c" * 40,
-               "head_branch": "main", "event": "pull_request_target",
-               "path": ".github/workflows/lite_actions_dispatcher_smoke.yml",
-               "display_title": "lite-a5-pr-7-" + "a" * 40,
-               "actor": {"login": "depeng1994"}}
-        pull = {"state": "open", "draft": False, "user": {"login": "depeng1994"},
-                "base": {"ref": "main", "repo": {"full_name": VLLM_REPO}},
-                "head": {"sha": "a" * 40, "repo": {"full_name": "depeng1994/vllm-ascend"}}}
+        run = {
+            "id": 1,
+            "run_attempt": 1,
+            "status": "in_progress",
+            "head_sha": "c" * 40,
+            "head_branch": "main",
+            "event": "pull_request_target",
+            "path": ".github/workflows/lite_actions_dispatcher_smoke.yml",
+            "display_title": "lite-a5-pr-7-" + "a" * 40,
+            "actor": {"login": "depeng1994"},
+        }
+        pull = {
+            "state": "open",
+            "draft": False,
+            "user": {"login": "depeng1994"},
+            "base": {"ref": "main", "repo": {"full_name": VLLM_REPO}},
+            "head": {"sha": "a" * 40, "repo": {"full_name": "depeng1994/vllm-ascend"}},
+        }
 
         def request(method, path, data=None):
             if path == "/pulls/7":
                 return pull
-            return {"workflow_runs": [run] if "event=pull_request_target" in path and "status=in_progress" in path else []}
+            return {
+                "workflow_runs": [run]
+                if "event=pull_request_target" in path and "status=in_progress" in path
+                else []
+            }
 
         with patch.object(client, "request", side_effect=request):
             result = client.running_workflows()
@@ -118,37 +158,75 @@ class ArtifactTransportTests(unittest.TestCase):
         def open_request(request, **kwargs):
             requests.append(request)
             if len(requests) == 1:
-                raise HTTPError(request.full_url, 302, "redirect", {
-                    "Location": "https://productionresults.blob.core.windows.net/x?sig=fixture",
-                }, None)
+                raise HTTPError(
+                    request.full_url,
+                    302,
+                    "redirect",
+                    {
+                        "Location": "https://productionresults.blob.core.windows.net/x?sig=fixture",
+                    },
+                    None,
+                )
             return response
 
         with patch("urllib.request.build_opener", return_value=Mock(open=open_request)):
             self.assertEqual(client.download_artifact(10, limit=4), b"data")
-        self.assertEqual(requests[0].get_header("Authorization"), "Bearer test-secret-not-real")
+        self.assertEqual(
+            requests[0].get_header("Authorization"), "Bearer test-secret-not-real"
+        )
         self.assertIsNone(requests[1].get_header("Authorization"))
 
     def test_private_http_userinfo_and_off_domain_redirects_are_rejected(self):
         client = GitHubClient("fixture", VLLM_REPO)
         for destination in (
-            "http://productionresults.blob.core.windows.net/x", "https://127.0.0.1/x",
-            "https://attacker.invalid/x", "https://user@productionresults.blob.core.windows.net/x",
+            "http://productionresults.blob.core.windows.net/x",
+            "https://127.0.0.1/x",
+            "https://attacker.invalid/x",
+            "https://user@productionresults.blob.core.windows.net/x",
             "https://productionresults.blob.core.windows.net:8443/x",
         ):
-            error = HTTPError("https://api.github.com/fixture", 302, "redirect", {"Location": destination}, None)
-            with patch("urllib.request.build_opener", return_value=Mock(open=Mock(side_effect=error))):
-                with self.subTest(destination=destination), self.assertRaisesRegex(ValueError, "destination"):
+            error = HTTPError(
+                "https://api.github.com/fixture",
+                302,
+                "redirect",
+                {"Location": destination},
+                None,
+            )
+            with patch(
+                "urllib.request.build_opener",
+                return_value=Mock(open=Mock(side_effect=error)),
+            ):
+                with (
+                    self.subTest(destination=destination),
+                    self.assertRaisesRegex(ValueError, "destination"),
+                ):
                     client.download_artifact(10, limit=100)
 
     def test_second_redirect_is_not_followed_or_exposed_in_exception(self):
         client = GitHubClient("fixture", VLLM_REPO)
-        first = HTTPError("https://api.github.com/fixture", 302, "redirect", {
-            "Location": "https://productionresults.blob.core.windows.net/x?sig=DO_NOT_PRINT",
-        }, None)
-        second = HTTPError("https://productionresults.blob.core.windows.net/x?sig=DO_NOT_PRINT", 302,
-                           "redirect", {"Location": "https://attacker.invalid"}, None)
-        with patch("urllib.request.build_opener", return_value=Mock(open=Mock(side_effect=[first, second]))):
-            with self.assertRaisesRegex(RuntimeError, "artifact storage unavailable") as caught:
+        first = HTTPError(
+            "https://api.github.com/fixture",
+            302,
+            "redirect",
+            {
+                "Location": "https://productionresults.blob.core.windows.net/x?sig=DO_NOT_PRINT",
+            },
+            None,
+        )
+        second = HTTPError(
+            "https://productionresults.blob.core.windows.net/x?sig=DO_NOT_PRINT",
+            302,
+            "redirect",
+            {"Location": "https://attacker.invalid"},
+            None,
+        )
+        with patch(
+            "urllib.request.build_opener",
+            return_value=Mock(open=Mock(side_effect=[first, second])),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError, "artifact storage unavailable"
+            ) as caught:
                 client.download_artifact(10, limit=100)
         self.assertNotIn("DO_NOT_PRINT", str(caught.exception))
 

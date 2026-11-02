@@ -410,7 +410,35 @@ def extract_verified_source(
     Reject all links and special files. Cache hits must call handle.verify()
     again. This function never imports source code or chooses another provider.
     """
-    bundle = handle.verify()
+    return extract_verified_archive(
+        handle.verify(),
+        handle.bundle_sha256,
+        destination,
+        max_files=max_files,
+        max_unpacked_bytes=max_unpacked_bytes,
+        max_bundle_bytes=max_bundle_bytes,
+    )
+
+
+def extract_verified_archive(
+    bundle: Path,
+    expected_sha256: str,
+    destination: Path,
+    *,
+    max_files: int = 100_000,
+    max_unpacked_bytes: int = 2 * 1024**3,
+    max_bundle_bytes: int = 512 * 1024**2,
+) -> Path:
+    """Shared safe extraction for source and independently pinned runner bundles."""
+    bundle = Path(bundle)
+    if (
+        not isinstance(expected_sha256, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256)
+        or bundle.is_symlink()
+        or not bundle.is_file()
+        or sha256_file(bundle) != expected_sha256
+    ):
+        raise SourceError("SOURCE_BUNDLE_DIGEST_MISMATCH")
     if bundle.stat().st_size > max_bundle_bytes:
         raise SourceError("SOURCE_BUNDLE_SIZE_LIMIT")
     destination = Path(destination)

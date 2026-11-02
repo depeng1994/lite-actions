@@ -49,6 +49,7 @@ class Router:
         self.light = ThreadPoolExecutor(max_workers=1)
         self.active = {}
         self.plans = {}
+        self.unavailable_runs = set()
         # Unknown children survive a dispatcher crash. Fail closed before admitting overlap.
         for key, r in self.state.read().items():
             if r.get("phase") in {"RESERVED", "STAGING", "RUNNING", "CLEANING"}:
@@ -139,43 +140,69 @@ class Router:
 
     def receive(self, runs):
         for run in sorted(runs, key=lambda r: (r.get("created_at", ""), r["id"])):
-            if not self.eligible(run):
-                continue
-            identity = (
-                run.get("_ci_repo", REPO),
-                run["id"],
-                run.get("run_attempt", 1),
-                run["head_sha"],
-            )
-            plan = self.plans.get(identity)
+            try:
+                self._receive_one(run)
+            except Exception as exc:
+                logging.warning(
+                    "request unavailable: %s/%s (%s)",
+                    run.get("_ci_repo", REPO),
+                    run.get("id"),
+                    type(exc).__name__,
+                )
+
+    def _receive_one(self, run):
+        if not self.eligible(run):
+            return
+        identity = (
+            run.get("_ci_repo", REPO),
+            run["id"],
+            run.get("run_attempt", 1),
+            run["head_sha"],
+        )
+        plan = self.plans.get(identity)
+        if plan is None:
+            plan = self.client_for(run).ci_request(run)
             if plan is None:
-                plan = self.client_for(run).ci_request(run)
-                if plan is None:
-                    continue
-                parse_plan(
-                    plan,
-                    run,
-                    run["path"].rsplit("/", 1)[-1],
-                    repo=run.get("_ci_repo", REPO),
-                )
-                self.plans[identity] = plan
-            for item in plan["cases"]:
-                if item["worker"] != self.worker:
-                    continue
-                key = task_key(run, item)
-                if key in self.state.read():
-                    continue
-                self.state.update(
-                    key,
-                    phase="QUEUED",
-                    repo=run.get("_ci_repo", REPO),
-                    run=run,
-                    item=item,
-                    digest=plan["plan_digest"],
-                    defaults=plan["defaults"],
-                    queued_at=time.time(),
-                )
-                self.transition(key, "QUEUED")
+                return
+            parse_plan(
+                plan,
+                run,
+                run["path"].rsplit("/", 1)[-1],
+                repo=run.get("_ci_repo", REPO),
+            )
+            self.plans[identity] = plan
+        owned = [c for c in plan["cases"] if c["worker"] == self.worker]
+        if owned and all(task_key(run, c) in self.state.read() for c in owned):
+            return
+        if run.get("_ci_repo", REPO) == VLLM_REPO:
+            from ci_core.vllm_source import is_blue_plan, read_source
+
+            if is_blue_plan(plan):
+                source = read_source(self.client_for(run), run, plan)
+                if source is None:
+                    return
+                run = {
+                    **run,
+                    "_ci_source": source,
+                    "_ci_execution_sha": source["source_sha"],
+                }
+        for item in plan["cases"]:
+            if item["worker"] != self.worker:
+                continue
+            key = task_key(run, item)
+            if key in self.state.read():
+                continue
+            self.state.update(
+                key,
+                phase="QUEUED",
+                repo=run.get("_ci_repo", REPO),
+                run=run,
+                item=item,
+                digest=plan["plan_digest"],
+                defaults=plan["defaults"],
+                queued_at=time.time(),
+            )
+            self.transition(key, "QUEUED")
 
     def claim(self, case):
         options = candidates(case, self.pools)
@@ -246,6 +273,25 @@ class Router:
 
     def finish(self, key, status, rc, lines, clean=True):
         r = self.state.read()[key]
+        if status == "PASS" and r["run"].get("_ci_source"):
+            from ci_core.vllm_source import check_current
+
+            try:
+                check_current(
+                    self.client_for(r["run"]), r["run"]["_ci_source"], check_run=True
+                )
+            except ValueError:
+                status, rc, lines = (
+                    "CANCELLED",
+                    130,
+                    ["STALE: native Head/Base or run changed before publication"],
+                )
+            except Exception:
+                status, rc, lines = (
+                    "INFRA_ERROR",
+                    125,
+                    ["Native source authority unavailable before publication"],
+                )
         self.state.update(
             key,
             phase="PENDING_REPORT",
@@ -262,8 +308,14 @@ class Router:
             self.transition(key, "STAGING")
             with tempfile.TemporaryDirectory(prefix="lite-definition-") as tmp:
                 source_repo = run.get("_ci_repo", REPO)
-                archive = model_archive(
-                    run["head_sha"], Path(tmp), source_repo=source_repo
+                archive = (
+                    Path(tmp) / "unused-probe-source"
+                    if source_repo == VLLM_REPO and item["kind"] == "worker_probe"
+                    else model_archive(
+                        run.get("_ci_execution_sha", run["head_sha"]),
+                        Path(tmp),
+                        source_repo=source_repo,
+                    )
                 )
                 verify_definition(archive, item, r["defaults"], repo=source_repo)
             if cancel.is_set():
@@ -285,6 +337,11 @@ class Router:
                     (p.stdout + p.stderr).splitlines(),
                 )
                 return
+            if run.get("_ci_source"):
+                from ci_core.vllm_source import check_current
+
+                check_current(self.client_for(run), run["_ci_source"], check_run=True)
+                case = {**case, "native_source": run["_ci_source"]}
             subrun = {
                 **run,
                 "_ci_test_id": item["test_id"],
@@ -299,6 +356,9 @@ class Router:
                     self.transition(key, phase)
 
             subrun["_ci_phase_callback"] = on_phase
+            subrun["_ci_runtime_callback"] = lambda runtime: self.state.update(
+                key, runtime=runtime
+            )
             execution = execute(case, subrun, root=self.root)
             self.transition(key, "CLEANING")
             from ci_core.reporting import case_passed
@@ -365,6 +425,11 @@ class Router:
             ),
         )
         for key, r in queued:
+            if (
+                r["run"].get("_ci_repo", REPO),
+                r["run"]["id"],
+            ) in self.unavailable_runs:
+                continue
             if key in self.active:
                 continue
             item = r["item"]
@@ -388,9 +453,9 @@ class Router:
                 if pool:
                     blocked_pools.add(pool)
                 continue
+            lease = None
             try:
                 case = None
-                lease = None
                 if not light:
                     case = runtime_case(item, self.pools, self.worker)
                     case["_temporarily_unavailable"] = [
@@ -413,6 +478,8 @@ class Router:
                 )
                 self.active[key] = (future, event, r["run"]["id"])
             except Exception as exc:
+                if lease:
+                    lease.close()
                 self.finish(key, "INFRA_ERROR", 125, [str(exc)[:180]])
 
     def flush(self):
@@ -435,6 +502,7 @@ class Router:
         # Outbox survives completed GitHub Runs; never depend on an active-run listing.
         self.flush()
         statuses = {}
+        self.unavailable_runs = set()
         for key, r in self.state.read().items():
             if r.get("phase") not in {
                 "QUEUED",
@@ -447,8 +515,33 @@ class Router:
             run = r["run"]
             ident = (run.get("_ci_repo", REPO), run["id"])
             if ident not in statuses:
-                statuses[ident] = self.client_for(run).workflow_status(run["id"])
+                try:
+                    statuses[ident] = self.client_for(run).workflow_status(run["id"])
+                except Exception as exc:
+                    statuses[ident] = None
+                    self.unavailable_runs.add(ident)
+                    logging.warning(
+                        "run status unavailable: %s (%s)", ident, type(exc).__name__
+                    )
             current = statuses[ident]
+            if current is not None and run.get("_ci_source"):
+                from ci_core.vllm_source import check_current
+
+                try:
+                    check_current(self.client_for(run), run["_ci_source"])
+                except ValueError:
+                    current = {
+                        **current,
+                        "status": "completed",
+                        "conclusion": "cancelled",
+                    }
+                    if key in self.active:
+                        self.active[key][1].set()
+                except Exception:
+                    self.unavailable_runs.add(ident)
+                    current = None
+            if current is None:
+                continue
             superseded = current.get("run_attempt", r["run"].get("run_attempt", 1)) > r[
                 "run"
             ].get("run_attempt", 1)

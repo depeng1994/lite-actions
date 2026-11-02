@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from ci_core.config import execution_node, load
+from ci_core.config import load
 from ci_core.executor import remote_preflight, task_dir
 from ci_core.job_state import JobState
 from ci_core.transport import run
@@ -39,18 +39,24 @@ for p in pathlib.Path('/proc').glob('[0-9]*/environ'):
   if marker in p.read_bytes().split(b'\\x00'):raise SystemExit('owned process still active')
  except (FileNotFoundError,ProcessLookupError):pass
 """
-    lookup = {n["host_id"]: n for n in pools[runtime["pool"]]["nodes"]}
-    for allocation in record["allocation"]:
-        node = execution_node(lookup[allocation["host_id"]], runtime["docker"])
+    from ci_core.ssh_runner import allocations
+
+    for node in allocations(runtime, pools):
         run(
             node["ssh"],
             "python3 -c " + shlex.quote(script) + " " + shlex.quote(stamp),
             timeout=30,
         )
-    from ci_core.executor import prepare_profile
-
-    profile = prepare_profile(runtime, subrun)
-    remote_preflight(runtime, pools, ascend_env=profile["ASCEND_SET_ENV_PATH"])
+    setup = runtime.get("ascend_set_env_path")
+    if (
+        not isinstance(setup, str)
+        or not setup.startswith("/")
+        or any(c in setup for c in "\r\n\0")
+    ):
+        raise ValueError(
+            "persisted cleanup environment missing; manual reconciliation required"
+        )
+    remote_preflight(runtime, pools, ascend_env=setup)
     state.update(
         a.task_key,
         quarantined=False,

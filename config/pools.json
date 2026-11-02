@@ -24,7 +24,7 @@
         "priority": 1,
         "environments": {
           "vllm_hccl_smoke": {
-            "container_id": "a7af292308d526be3dbea52439b15df01e70b978242dd3d888e272d4fb013053",
+            "container_id": "9128bc83d0e2314669597e9db63a327b0809860df617c0f8fe968559f63851fc",
             "image_id": "sha256:f81de6249765738a06b5c187dcf0968dfd0ce828e8b6b16a2771de2b0e78217c",
             "image_ref": "quay.io/ascend/vllm-ascend:v0.23.0-a3-openeuler"
           }
@@ -57,7 +57,7 @@
         "priority": 0,
         "environments": {
           "vllm_hccl_smoke": {
-            "container_id": "384504e60112f8ada3522e47af43847d20e9f55f07988f55f27c2bacfe90cae1",
+            "container_id": "c33953f779ae16fdf46b5db195305cf0aed4febf30fd13bf2dfa0831c0301421",
             "image_id": "sha256:f81de6249765738a06b5c187dcf0968dfd0ce828e8b6b16a2771de2b0e78217c",
             "image_ref": "quay.io/ascend/vllm-ascend:v0.23.0-a3-openeuler"
           }

@@ -232,7 +232,13 @@ def remote_preflight(
         if case.get("docker"):
             from ci_core.config import execution_node
 
-            probe_host = execution_node(node, case["docker"])["ssh"]
+            if case.get("bound_nodes") is not None:
+                from ci_core.ssh_runner import allocations
+
+                captured = {n["host_id"]: n for n in allocations(case, pools)}
+                probe_host = captured[request["host_id"]]["ssh"]
+            else:
+                probe_host = execution_node(node, case["docker"])["ssh"]
 
         def inspect(round_number: int, stage: str):
             proc = transport_run(probe_host, command, timeout=40, check=False)
@@ -380,7 +386,11 @@ def prepare_profile(case: dict, run: dict) -> dict:
 
     with tempfile.TemporaryDirectory(prefix="lite-model-") as tmp:
         source_repo = run.get("_ci_repo", TORCHTITAN_REPO)
-        archive = model_archive(run["head_sha"], Path(tmp), source_repo=source_repo)
+        archive = model_archive(
+            run.get("_ci_execution_sha", run["head_sha"]),
+            Path(tmp),
+            source_repo=source_repo,
+        )
         definition = resolve_test(
             archive,
             run["_ci_test_id"],
@@ -399,10 +409,16 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
         raise InterruptedError("cancelled before launch")
     environment = prepare_profile(case, run)
     setup = environment["ASCEND_SET_ENV_PATH"]
+    case = {**case, "ascend_set_env_path": setup}
     pools = json.loads((root / "config/pools.json").read_text())
     from ci_core.scheduler import validate_allocation
 
     validate_allocation(case, pools, case["allocation"])
+    if case.get("docker") == "vllm_hccl_smoke":
+        from ci_core.ssh_runner import allocations
+
+        case = {**case, "bound_nodes": allocations(case, pools)}
+    run.get("_ci_runtime_callback", lambda value: None)(case)
     log_dir = task_dir(run, root)
     log_dir.mkdir(parents=True, exist_ok=True)
     logfile = log_dir / "pipeline.log"
@@ -418,7 +434,7 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
         "--test-id",
         run["_ci_test_id"],
         "--sha",
-        run["head_sha"],
+        run.get("_ci_execution_sha", run["head_sha"]),
         "--stamp",
         log_dir.name,
         "--remote-dir",
@@ -538,11 +554,16 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
 
         location = metadata(logfile)
         selected_hosts = {n["host_id"] for n in case["allocation"]}
-        approved = {
-            execution_node(n, case["docker"])["ssh"]
-            for n in pools[case["pool"]]["nodes"]
-            if n["host_id"] in selected_hosts
-        }
+        if case.get("bound_nodes") is not None:
+            from ci_core.ssh_runner import allocations
+
+            approved = {n["ssh"] for n in allocations(case, pools)}
+        else:
+            approved = {
+                execution_node(n, case["docker"])["ssh"]
+                for n in pools[case["pool"]]["nodes"]
+                if n["host_id"] in selected_hosts
+            }
         excerpt = select_remote(
             location["host"],
             location["path"],

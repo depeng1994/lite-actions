@@ -22,7 +22,6 @@ from ci_core.gitcode_contract import (
     BRIDGE_KEYS,
     MODEL_REPOSITORIES,
     PLAN_KEYS,
-    ContractError,
     ControlPolicy,
     VerifiedRequest,
     canonical,
@@ -147,7 +146,8 @@ class GitCodeArtifactReader:
             type(repository.get("id")) is not int
             or repository.get("id") != policy.github_repo_id
             or repository.get("full_name") != repo
-            or run.get("path") not in (policy.workflow_path, policy.workflow_path + "@" + ref)
+            or run.get("path")
+            not in (policy.workflow_path, policy.workflow_path + "@" + ref)
             or (run.get("actor") or {}).get("login") not in policy.allowed_actors
             or run.get("status") not in ("queued", "in_progress")
         ):
@@ -183,13 +183,17 @@ class GitCodeArtifactReader:
         ):
             raise ArtifactError("ARTIFACT_OWNER_NAME_SIZE_OR_EXPIRY_MISMATCH")
         value = item.get("digest")
-        if not isinstance(value, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", value):
+        if not isinstance(value, str) or not re.fullmatch(
+            r"sha256:[0-9a-f]{64}", value
+        ):
             raise ArtifactError("ARTIFACT_API_DIGEST_REQUIRED")
         return item
 
     def _named(self, name, run):
         query = urlencode({"name": name, "per_page": 10, "page": 1})
-        listing = self.github.request("GET", f"/actions/runs/{run['id']}/artifacts?{query}")
+        listing = self.github.request(
+            "GET", f"/actions/runs/{run['id']}/artifacts?{query}"
+        )
         if (
             not isinstance(listing, dict)
             or type(listing.get("total_count")) is not int
@@ -206,7 +210,9 @@ class GitCodeArtifactReader:
         return self._metadata(item.get("id"), name, run, limit=JSON_LIMIT)
 
     def _read(self, metadata, role):
-        payload = self.github.download_artifact(metadata["id"], limit=metadata["size_in_bytes"])
+        payload = self.github.download_artifact(
+            metadata["id"], limit=metadata["size_in_bytes"]
+        )
         if (
             len(payload) != metadata["size_in_bytes"]
             or hashlib.sha256(payload).hexdigest() != metadata["digest"][7:]
@@ -227,22 +233,40 @@ class GitCodeArtifactReader:
         )
 
     def _validate_intent(self, intent, run, now):
-        shape(intent, {
-            "schema", "source_provider", "pr", "control_repo_id", "control_sha",
-            "workflow_path", "pipeline", "selectors", "bridge", "deadline",
-        })
+        shape(
+            intent,
+            {
+                "schema",
+                "source_provider",
+                "pr",
+                "control_repo_id",
+                "control_sha",
+                "workflow_path",
+                "pipeline",
+                "selectors",
+                "bridge",
+                "deadline",
+            },
+        )
         if (
-            type(intent["schema"]) is not int or intent["schema"] != 1
+            type(intent["schema"]) is not int
+            or intent["schema"] != 1
             or intent["source_provider"] != "gitcode"
             or intent["control_repo_id"] != self.policy.github_repo_id
             or intent["control_sha"] != self.policy.control_sha
             or intent["workflow_path"] != self.policy.workflow_path
             or intent["pipeline"] not in ("smoke", "nightly")
-            or (self.policy.github_repo_id == 1438625957 and intent["pipeline"] != "smoke")
+            or (
+                self.policy.github_repo_id == 1438625957
+                and intent["pipeline"] != "smoke"
+            )
         ):
             raise ArtifactError("EARLY_INTENT_CONTROL_MISMATCH")
-        validate_pr(intent["pr"], allowed_repo_id=self.policy.gitcode_repo_id,
-                    allowed_refs=self.policy.allowed_base_refs)
+        validate_pr(
+            intent["pr"],
+            allowed_repo_id=self.policy.gitcode_repo_id,
+            allowed_refs=self.policy.allowed_base_refs,
+        )
         select_cases(intent["selectors"], self.catalog)
         shape(intent["bridge"], BRIDGE_KEYS)
         bridge = intent["bridge"]
@@ -259,11 +283,14 @@ class GitCodeArtifactReader:
             raise ArtifactError("EARLY_INTENT_ACTOR_OR_NONCE_MISMATCH")
         positive(intent["deadline"])
         if not bridge["event_created_at"] <= now < intent["deadline"] or (
-            intent["deadline"] - bridge["event_created_at"] > self.policy.max_duration_seconds
+            intent["deadline"] - bridge["event_created_at"]
+            > self.policy.max_duration_seconds
         ):
             raise ArtifactError("EARLY_INTENT_DEADLINE_INVALID")
         current = self._snapshot(intent["pr"]["number"])
-        if canonical(current) != canonical({"identity": intent["pr"], "state": "open", "authorized": True}):
+        if canonical(current) != canonical(
+            {"identity": intent["pr"], "state": "open", "authorized": True}
+        ):
             raise ArtifactError("EARLY_INTENT_VERSION_STALE")
         canonical(intent, limit=16 * 1024)
 
@@ -281,8 +308,11 @@ class GitCodeArtifactReader:
         job_id = positive(plan["github"].get("prepare_job_id"))
         job = self.github.request("GET", f"/actions/jobs/{job_id}")
         expected = {
-            "id": job_id, "run_id": run["id"], "run_attempt": 1,
-            "head_sha": self.policy.control_sha, "name": self.policy.prepare_job_name,
+            "id": job_id,
+            "run_id": run["id"],
+            "run_attempt": 1,
+            "head_sha": self.policy.control_sha,
+            "name": self.policy.prepare_job_name,
         }
         if not isinstance(job, dict) or any(
             type(job.get(k)) is not type(v) or job.get(k) != v
@@ -305,7 +335,9 @@ class GitCodeArtifactReader:
         shape(plan, PLAN_KEYS, "INVALID_SCHEMA4_PLAN")
         if type(plan["schema"]) is not int or plan["schema"] != 4:
             raise ArtifactError("SCHEMA4_REQUEST_REQUIRED")
-        if plan["plan_digest"] != digest({k: v for k, v in plan.items() if k != "plan_digest"}):
+        if plan["plan_digest"] != digest(
+            {k: v for k, v in plan.items() if k != "plan_digest"}
+        ):
             raise ArtifactError("PLAN_DIGEST_MISMATCH")
         if (
             plan["github"].get("repo_id") != self.policy.github_repo_id
@@ -327,17 +359,25 @@ class GitCodeArtifactReader:
             item = self._metadata(ref["id"], name, run, limit=limit)
             hex_digest(ref["zip_sha256"])
             hex_digest(ref["content_sha256"])
-            if item["size_in_bytes"] != ref["size"] or item["digest"][7:] != ref["zip_sha256"]:
+            if (
+                item["size_in_bytes"] != ref["size"]
+                or item["digest"][7:] != ref["zip_sha256"]
+            ):
                 raise ArtifactError("ARTIFACT_PLAN_METADATA_MISMATCH")
             content, content_digest = self._read(item, role)
             if content_digest != ref["content_sha256"]:
                 raise ArtifactError("ARTIFACT_CONTENT_DIGEST_MISMATCH")
             contents[role] = content
             observations[role] = {
-                "id": item["id"], "name": item["name"], "size": item["size_in_bytes"],
-                "zip_sha256": item["digest"][7:], "content_sha256": content_digest,
+                "id": item["id"],
+                "name": item["name"],
+                "size": item["size_in_bytes"],
+                "zip_sha256": item["digest"][7:],
+                "content_sha256": content_digest,
                 "repo_id": item["workflow_run"]["repository_id"],
-                "run_id": item["workflow_run"]["id"], "run_attempt": 1, "expired": False,
+                "run_id": item["workflow_run"]["id"],
+                "run_attempt": 1,
+                "expired": False,
             }
         self._validate_intent(contents["intent"], run, now)
         slots = {}
@@ -350,26 +390,38 @@ class GitCodeArtifactReader:
         if job is None:
             raise ArtifactError("PREPARE_CHANGED_DURING_DOWNLOAD")
         verified = verify_request(
-            plan, policy=self.policy, catalog=self.catalog, run=run,
-            prepare_job=job, artifacts=observations, slots=slots,
-            manifest=contents["manifest"], intent=contents["intent"],
-            current_pr=self._snapshot(plan["pr"]["number"]), now=now,
+            plan,
+            policy=self.policy,
+            catalog=self.catalog,
+            run=run,
+            prepare_job=job,
+            artifacts=observations,
+            slots=slots,
+            manifest=contents["manifest"],
+            intent=contents["intent"],
+            current_pr=self._snapshot(plan["pr"]["number"]),
+            now=now,
         )
         workspace = Path(workspace)
         if workspace.exists() or workspace.is_symlink():
             raise ArtifactError("ARTIFACT_WORKSPACE_MUST_BE_NEW")
         workspace.mkdir(mode=0o700, parents=True)
         try:
-            source_path, runner_path = workspace / "source.tar.gz", workspace / "runner.tar.gz"
+            source_path, runner_path = (
+                workspace / "source.tar.gz",
+                workspace / "runner.tar.gz",
+            )
             source_path.write_bytes(contents["source"])
             runner_path.write_bytes(contents["runner"])
             source = SourceHandle(
-                provider="gitcode", head_sha=plan["pr"]["head_sha"],
+                provider="gitcode",
+                head_sha=plan["pr"]["head_sha"],
                 base_sha=plan["pr"]["base_sha"],
                 tested_merge_sha=plan["merge"]["tested_merge_sha"],
                 tested_tree_sha=plan["merge"]["tested_tree_sha"],
                 bundle_sha256=plan["artifacts"]["source"]["content_sha256"],
-                bundle_path=str(source_path), merge_policy=plan["merge"]["policy"],
+                bundle_path=str(source_path),
+                merge_policy=plan["merge"]["policy"],
                 git_version=plan["merge"]["builder_version"],
                 dependencies=tuple(contents["manifest"]["dependencies"]),
             )
@@ -380,9 +432,18 @@ class GitCodeArtifactReader:
                 runner_path, plan["control"]["runner_sha256"], workspace / "runner"
             )
             (workspace / "plan.json").write_bytes(canonical(plan))
-            (workspace / "source-manifest.json").write_bytes(canonical(contents["manifest"]))
-            return LoadedRequest(verified, source, runner_path, source_directory,
-                                 runner_directory, contents["intent"], run)
+            (workspace / "source-manifest.json").write_bytes(
+                canonical(contents["manifest"])
+            )
+            return LoadedRequest(
+                verified,
+                source,
+                runner_path,
+                source_directory,
+                runner_directory,
+                contents["intent"],
+                run,
+            )
         except BaseException:
             shutil.rmtree(workspace)
             raise
