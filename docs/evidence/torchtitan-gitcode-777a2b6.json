@@ -1,0 +1,96 @@
+{
+  "schema": 1,
+  "overall_status": "INCOMPLETE_TORCHTITAN_GITCODE_E2E_NOT_ACCEPTED",
+  "worker_code_commit": "777a2b6ef44c9283f8122379c8c4f9ea666fe6fb",
+  "worker_tree": "ba407603c8ed147028923346772ec2fae8a0e563",
+  "model_code_commit": "efe4e701226000223c341507ffea51199cbe0e9d",
+  "model_tree": "811d9e61b0d1361fd516609b3f030c2e009d9be0",
+  "validated_at_utc": "2026-11-02T03:02:16.782078+00:00",
+  "worker_tests": {
+    "count": 300,
+    "result": "PASS",
+    "scope": "CPU_LOCAL_GIT_MOCK_AND_LOCAL_SUBPROCESSES_NOT_PLATFORM_E2E"
+  },
+  "model_runner_tests": {
+    "count": 14,
+    "result": "PASS",
+    "scope": "CPU_ONLY"
+  },
+  "lint": {
+    "result": "PASS",
+    "tracked_python_files": 74
+  },
+  "coordinator_state_version": 3,
+  "new_hardware_tasks": 0,
+  "production_worker_switched": false,
+  "logs": {
+    "exact-777a2b6-tests.log": {
+      "sha256": "4c940d1c15d8a00d906aaa32182cf79be30e3fda4bea5c461841d8a0ed6475de",
+      "remote_path": "/root/gitcode-forward-work/exact-777a2b6-tests.log"
+    },
+    "exact-777a2b6-lint.log": {
+      "sha256": "7737f64bdeed2e673ac42cc5fbc82afed5a07d36d04165755c519e91e0e68701",
+      "remote_path": "/root/gitcode-forward-work/exact-777a2b6-lint.log"
+    },
+    "exact-tt-efe4e70-tests.log": {
+      "sha256": "8f97a95d10db029bd497d160f6ec9071073384ca7fdf303f54108a32a176e49c",
+      "remote_path": "/root/gitcode-forward-work/exact-tt-efe4e70-tests.log"
+    }
+  },
+  "cross_repository_runner_contract": {
+    "scope": "CROSS_REPOSITORY_CPU_CONTRACT_ONLY_NOT_GITCODE_SOURCE_OR_NPU_E2E",
+    "model_commit": "efe4e701226000223c341507ffea51199cbe0e9d",
+    "trusted_runner_sha256": "a04be5e6cce9967484de42e2cc563c867663139f0e5efd32132d82d6ed05b9a7",
+    "runner_bytes": 7935,
+    "cases": [
+      {
+        "case": "dispatch_smoke_8p",
+        "result": "PASS_STATIC_INTERFACE_CONTRACT",
+        "source_paths_checked": 1
+      },
+      {
+        "case": "dispatch_smoke_16p",
+        "result": "PASS_STATIC_INTERFACE_CONTRACT",
+        "source_paths_checked": 1
+      },
+      {
+        "case": "dsv4_flash_a3_8p_example",
+        "result": "PASS_STATIC_INTERFACE_CONTRACT",
+        "source_paths_checked": 4
+      },
+      {
+        "case": "dsv4_flash_a3_8p_adamw",
+        "result": "PASS_STATIC_INTERFACE_CONTRACT",
+        "source_paths_checked": 4
+      },
+      {
+        "case": "dsv4_flash_a3_16p_example",
+        "result": "PASS_STATIC_INTERFACE_CONTRACT",
+        "source_paths_checked": 4
+      }
+    ]
+  },
+  "production": {
+    "release": "f4b15e32b8348d0762cb808a85f7ea0a6f33745a",
+    "records": 94,
+    "inflight": [],
+    "quarantines": [
+      "migration_guard_50262de0804176e228efa26ff0acf8eb72eb5b363205b9e2e4bdded4ef956a7c"
+    ],
+    "active": "active"
+  },
+  "external_observations": {
+    "gitcode_credential_file": "EXISTS_METADATA_ONLY_VALUE_NOT_EXPOSED",
+    "gitcode_authenticated_read": "BLOCKED_BY_TOOL_SAFETY_NOT_RETRIED_VIA_OTHER_CREDENTIAL_PATHS",
+    "gitcode_unauthenticated_repository_api": {
+      "cann/torchtitan-npu": 401,
+      "depeng1994/torchtitan-npu": 401
+    },
+    "current_gh_login_installations_query": 403,
+    "torchtitan_repository_secret_names": [
+      "DEPLOY_KEY"
+    ],
+    "app_capability": "DEDICATED_PREPARE_BLUE_APP_NOT_ESTABLISHED_ORG_INHERITANCE_NOT_RULED_OUT",
+    "official_gitcode_upstream_written": false
+  }
+}
