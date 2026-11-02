@@ -40,9 +40,9 @@ class AuthorityChannelTests(unittest.TestCase):
         self.responder = AuthorityResponder(
             self.api.reader,
             self.api.channel,
-            resolve_request=lambda rid: self.verified
-            if rid == request_id(self.plan)
-            else None,
+            resolve_request=lambda rid: (
+                self.verified if rid == request_id(self.plan) else None
+            ),
             cleanup_journal=CreationJournal(self.root / "authority-closures.sqlite3"),
             clock=lambda: self.now,
         )
@@ -64,10 +64,9 @@ class AuthorityChannelTests(unittest.TestCase):
             self.responder.respond(
                 self.verified,
                 self.receipt,
-                current=lambda verified, receipt: called.append(
-                    (verified.plan, receipt)
-                )
-                or True,
+                current=lambda verified, receipt: (
+                    called.append((verified.plan, receipt)) or True
+                ),
             )
         )
         self.assertTrue(self.client(self.plan))
@@ -181,8 +180,9 @@ class AuthorityChannelTests(unittest.TestCase):
         self.responder.respond(
             VerifiedRequest(canonical(duplicate)),
             receipt,
-            current=lambda verified, received: calls.append((verified.plan, received))
-            or True,
+            current=lambda verified, received: (
+                calls.append((verified.plan, received)) or True
+            ),
         )
         self.assertTrue(client(self.plan))
         self.assertEqual(calls, [(self.plan, self.receipt)])

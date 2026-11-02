@@ -172,10 +172,8 @@ class SignedIngressTests(unittest.TestCase):
 
         original_run = copy.deepcopy(self.client.action_run.return_value)
         duplicate_run = {**original_run, "workflow_run_id": "d" * 32}
-        self.client.action_run.side_effect = (
-            lambda run_id: original_run
-            if run_id == original_run["workflow_run_id"]
-            else duplicate_run
+        self.client.action_run.side_effect = lambda run_id: (
+            original_run if run_id == original_run["workflow_run_id"] else duplicate_run
         )
         self.signed.intent = copy.deepcopy(api.intent)
         self.signed.intent["bridge"].update(
