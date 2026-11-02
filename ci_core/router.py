@@ -34,7 +34,7 @@ def task_key(run, item):
 
 
 class Router:
-    def __init__(self, root, worker, client, author):
+    def __init__(self, root, worker, client, author, *, gitcode_adapter=None):
         if not author:
             raise ValueError("LITE_ACTIONS_RESULT_AUTHOR is required")
         self.root, self.worker, self.client, self.author = (
@@ -45,13 +45,28 @@ class Router:
         )
         self.workers, self.pools = load(self.root, worker)
         self.state = JobState(self.root)
+        if any(
+            type(r.get("protocol", 3)) is not int or r.get("protocol", 3) not in (3, 4)
+            for r in self.state.read().values()
+        ):
+            raise ValueError("unknown persisted execution protocol")
         self.training = ThreadPoolExecutor(max_workers=4)
         self.light = ThreadPoolExecutor(max_workers=1)
         self.active = {}
         self.plans = {}
         self.unavailable_runs = set()
+        self.gitcode = gitcode_adapter
+        if (
+            any(r.get("protocol") == 4 for r in self.state.read().values())
+            and self.gitcode is None
+        ):
+            raise ValueError("schema-4 persisted state requires its compatible runtime")
+        if self.gitcode is not None:
+            self.gitcode.bind(self)
         # Unknown children survive a dispatcher crash. Fail closed before admitting overlap.
         for key, r in self.state.read().items():
+            if r.get("protocol") == 4:
+                continue
             if r.get("phase") in {"RESERVED", "STAGING", "RUNNING", "CLEANING"}:
                 result = report(
                     r["run"],
@@ -123,6 +138,8 @@ class Router:
         )
 
     def transition(self, key, phase, **fields):
+        if self.state.read().get(key, {}).get("protocol") == 4:
+            return self.gitcode.transition(key, phase, **fields)
         self.state.update(key, phase=phase, **fields)
         r = self.state.read()[key]
         try:
@@ -151,6 +168,9 @@ class Router:
                 )
 
     def _receive_one(self, run):
+        if self.gitcode is not None and self.gitcode.handles(run):
+            self.gitcode.receive(run)
+            return
         if not self.eligible(run):
             return
         identity = (
@@ -273,6 +293,8 @@ class Router:
 
     def finish(self, key, status, rc, lines, clean=True):
         r = self.state.read()[key]
+        if r.get("protocol") == 4:
+            return self.gitcode.finish(key, status, rc, lines, clean)
         if status == "PASS" and r["run"].get("_ci_source"):
             from ci_core.vllm_source import check_current
 
@@ -305,6 +327,9 @@ class Router:
         run = r["run"]
         launched = False
         try:
+            if r.get("protocol") == 4:
+                self.gitcode.work(key, case, cancel)
+                return
             self.transition(key, "STAGING")
             with tempfile.TemporaryDirectory(prefix="lite-definition-") as tmp:
                 source_repo = run.get("_ci_repo", REPO)
@@ -393,11 +418,19 @@ class Router:
                 + [{"allocation": case["allocation"], "until": time.time() + 60}],
             )
         except subprocess.TimeoutExpired:
+            if r.get("protocol") == 4 and (
+                self.state.read()[key].get("runtime") or {}
+            ).get("lease_id"):
+                launched = True
             self.finish(
                 key, "TIMED_OUT", 124, ["Worker operation timed out"], not launched
             )
         except Exception as exc:
             logging.exception("case failure %s", key)
+            if r.get("protocol") == 4 and (
+                self.state.read()[key].get("runtime") or {}
+            ).get("lease_id"):
+                launched = True
             self.finish(
                 key,
                 "INFRA_ERROR",
@@ -412,7 +445,23 @@ class Router:
     def pump(self):
         for key, (future, event, runid) in list(self.active.items()):
             if future.done():
-                future.result()
+                if self.state.read()[key].get("protocol") != 4:
+                    future.result()
+                else:
+                    try:
+                        future.result()
+                    except Exception as exc:
+                        record = self.state.read()[key]
+                        self.state.update(
+                            key,
+                            phase="RECONCILE_REQUIRED",
+                            quarantined=bool(record.get("allocation")),
+                        )
+                        logging.error(
+                            "schema-4 case requires reconciliation: %s (%s)",
+                            key,
+                            type(exc).__name__,
+                        )
                 del self.active[key]
         records = self.state.read()
         blocked_pools = set()
@@ -456,6 +505,8 @@ class Router:
             lease = None
             try:
                 case = None
+                if r.get("protocol") == 4:
+                    self.gitcode.guard(r)
                 if not light:
                     case = runtime_case(item, self.pools, self.worker)
                     case["_temporarily_unavailable"] = [
@@ -484,7 +535,7 @@ class Router:
 
     def flush(self):
         for key, r in self.state.read().items():
-            if r.get("phase") != "PENDING_REPORT":
+            if r.get("phase") != "PENDING_REPORT" or r.get("protocol") == 4:
                 continue
             try:
                 post(
@@ -499,6 +550,13 @@ class Router:
                 logging.warning("result remains pending: %s", key)
 
     def tick(self):
+        if self.gitcode is not None:
+            try:
+                self.gitcode.maintain()
+            except Exception as exc:
+                logging.warning(
+                    "schema-4 maintenance unavailable (%s)", type(exc).__name__
+                )
         # Outbox survives completed GitHub Runs; never depend on an active-run listing.
         self.flush()
         statuses = {}
@@ -555,6 +613,13 @@ class Router:
         self.receive(self.client.running_workflows())
         self.pump()
         self.flush()
+        if self.gitcode is not None:
+            try:
+                self.gitcode.flush()
+            except Exception as exc:
+                logging.warning(
+                    "schema-4 delivery unavailable (%s)", type(exc).__name__
+                )
 
     def close(self):
         for _, event, _ in self.active.values():
@@ -562,3 +627,10 @@ class Router:
         self.training.shutdown(wait=True)
         self.light.shutdown(wait=True)
         self.flush()
+        if self.gitcode is not None:
+            try:
+                self.gitcode.flush()
+            except Exception as exc:
+                logging.warning(
+                    "schema-4 delivery unavailable (%s)", type(exc).__name__
+                )

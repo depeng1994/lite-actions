@@ -12,7 +12,7 @@ from ci_core.gitcode_contract import (
     source_identity,
     validate_pipeline,
 )
-from ci_core.gitcode_state import Coordinator, StateError
+from ci_core.gitcode_state import STATE_VERSION, Coordinator, StateError
 from tests.test_gitcode_contract import fixture, receipt_for
 from tests.test_gitcode_pipeline import HostingAPI
 
@@ -101,7 +101,9 @@ class RecoveryVersionTests(unittest.TestCase):
             restored = Coordinator(path)
             self.assertEqual(restored.pending_outbox(), before)
             with sqlite3.connect(path) as db:
-                self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 2)
+                self.assertEqual(
+                    db.execute("PRAGMA user_version").fetchone()[0], STATE_VERSION
+                )
 
     def test_v1_results_without_exit_evidence_are_not_assumed_successful(self):
         with tempfile.TemporaryDirectory() as temp:

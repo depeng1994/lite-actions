@@ -27,7 +27,7 @@ from ci_core.gitcode_contract import (
     validate_pr,
 )
 
-STATE_VERSION = 2
+STATE_VERSION = 3
 
 
 class StateError(ValueError):
@@ -104,6 +104,10 @@ CREATE TABLE leases (
  case_id TEXT NOT NULL, lease_id TEXT NOT NULL UNIQUE, cleanup_json TEXT NOT NULL,
  state TEXT NOT NULL, UNIQUE(execution_id, case_id)
 );
+CREATE TABLE publication_receipts (
+ execution_id TEXT PRIMARY KEY REFERENCES executions(id),
+ plan_digest TEXT NOT NULL, receipt_digest TEXT NOT NULL, published_at INTEGER NOT NULL
+);
 CREATE TABLE outbox (
  id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, entity_id TEXT NOT NULL,
  payload_json TEXT NOT NULL, acknowledged INTEGER NOT NULL DEFAULT 0,
@@ -160,26 +164,41 @@ class Coordinator:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connection() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, STATE_VERSION):
+            if version not in (0, 1, 2, STATE_VERSION):
                 raise StateError("UNSUPPORTED_COORDINATOR_STATE_VERSION")
-            if version == 1:
-                # Never invent exit 0 for a historical result that omitted it.
-                # An empty/result-free v1 ledger can be upgraded without losing
-                # generations, cancellation intents, leases, or pending reports.
+            if version in (1, 2):
+                # Upgrade atomically: keep generations, leases and outbox intact.
+                # Historical v1 results without an exit code are not fabricated.
                 connection.execute("BEGIN IMMEDIATE")
                 try:
-                    rows = connection.execute(
-                        "SELECT result_json FROM cases WHERE result_json IS NOT NULL"
-                    ).fetchall()
-                    rows += connection.execute(
-                        "SELECT payload_json FROM outbox WHERE kind='CASE_RESULT'"
-                    ).fetchall()
-                    for row in rows:
-                        result = json.loads(row[0])
-                        if type(result.get("exit_code")) is not int:
-                            raise StateError(
-                                "SCHEMA4_RESULT_MIGRATION_REQUIRES_EXIT_EVIDENCE"
-                            )
+                    if version == 1:
+                        rows = connection.execute(
+                            "SELECT result_json FROM cases WHERE result_json IS NOT NULL"
+                        ).fetchall()
+                        rows += connection.execute(
+                            "SELECT payload_json FROM outbox WHERE kind='CASE_RESULT'"
+                        ).fetchall()
+                        for row in rows:
+                            if type(json.loads(row[0]).get("exit_code")) is not int:
+                                raise StateError(
+                                    "SCHEMA4_RESULT_MIGRATION_REQUIRES_EXIT_EVIDENCE"
+                                )
+                    connection.execute(
+                        "CREATE TABLE IF NOT EXISTS publication_receipts (execution_id TEXT PRIMARY KEY REFERENCES executions(id), plan_digest TEXT NOT NULL, receipt_digest TEXT NOT NULL, published_at INTEGER NOT NULL)"
+                    )
+                    columns = [
+                        row[1]
+                        for row in connection.execute(
+                            "PRAGMA table_info(publication_receipts)"
+                        )
+                    ]
+                    if columns != [
+                        "execution_id",
+                        "plan_digest",
+                        "receipt_digest",
+                        "published_at",
+                    ]:
+                        raise StateError("PUBLICATION_RECEIPT_MIGRATION_CONFLICT")
                     connection.execute(f"PRAGMA user_version={STATE_VERSION}")
                     connection.commit()
                 except BaseException:
@@ -873,4 +892,189 @@ class Coordinator:
                 "CANCEL_EXECUTION",
                 execution_id,
                 {"execution_id": execution_id},
+            )
+
+    def execution_snapshot(self, execution_id: str) -> dict:
+        """Read one canonical execution and cleanup bindings without network IO."""
+        text(execution_id, limit=100)
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT * FROM executions WHERE id=?", (execution_id,)
+            ).fetchone()
+            if row is None:
+                raise StateError("UNKNOWN_EXECUTION")
+            request = db.execute(
+                "SELECT receipt_json FROM requests WHERE id=?",
+                (row["canonical_request_id"],),
+            ).fetchone()
+            return {
+                "id": row["id"],
+                "plan": json.loads(row["plan_json"]),
+                "receipt": json.loads(request[0]),
+                "cancel_requested": bool(row["cancel_requested"]),
+                "aggregate_delivered": db.execute(
+                    "SELECT execution_id FROM publication_receipts WHERE execution_id=?",
+                    (execution_id,),
+                ).fetchone()
+                is not None,
+                "cases": [
+                    {
+                        "case_id": c["case_id"],
+                        "state": c["state"],
+                        "result": json.loads(c["result_json"])
+                        if c["result_json"] is not None
+                        else None,
+                    }
+                    for c in db.execute(
+                        "SELECT * FROM cases WHERE execution_id=? ORDER BY case_id",
+                        (execution_id,),
+                    )
+                ],
+                "leases": [
+                    {**dict(lease), "cleanup": json.loads(lease["cleanup_json"])}
+                    for lease in db.execute(
+                        "SELECT * FROM leases WHERE execution_id=? ORDER BY id",
+                        (execution_id,),
+                    )
+                ],
+            }
+
+    def execution_snapshots(self, limit: int = 1000) -> list[dict]:
+        positive(limit)
+        if limit > 1000:
+            raise StateError("EXECUTION_VISIBILITY_LIMIT")
+        with self._connection() as db:
+            ids = [
+                row[0]
+                for row in db.execute(
+                    "SELECT id FROM executions ORDER BY rowid LIMIT ?", (limit + 1,)
+                )
+            ]
+        if len(ids) > limit:
+            raise StateError("EXECUTION_VISIBILITY_INCOMPLETE")
+        return [self.execution_snapshot(value) for value in ids]
+
+    def claim_terminal_case(self, execution_id: str, case_id: str) -> None:
+        """Permit a non-executing terminal report after revocation, never a launch."""
+        with self._transaction() as db:
+            db.execute(
+                "UPDATE cases SET state='CLAIMED' WHERE execution_id=? AND case_id=? AND state='PLANNED'",
+                (execution_id, case_id),
+            )
+
+    def retry_unlaunched_case(
+        self, execution_id: str, case_id: str, *, now: int
+    ) -> None:
+        """Only external occupancy before captured lease/staging may retry."""
+        with self._transaction() as db:
+            execution = db.execute(
+                "SELECT * FROM executions WHERE id=?", (execution_id,)
+            ).fetchone()
+            lease = db.execute(
+                "SELECT id FROM leases WHERE execution_id=? AND case_id=?",
+                (execution_id, case_id),
+            ).fetchone()
+            if (
+                execution is None
+                or lease is not None
+                or not self._current(db, execution, now=now)
+            ):
+                raise StateError("CLAIM_RETRY_REVOKED_OR_ALREADY_BOUND")
+            changed = db.execute(
+                "UPDATE cases SET state='PLANNED' WHERE execution_id=? AND case_id=? AND state='CLAIMED' AND result_json IS NULL",
+                (execution_id, case_id),
+            )
+            if changed.rowcount != 1:
+                raise StateError("CASE_CANNOT_BE_REPLAYED")
+
+    def assert_lease_active(
+        self,
+        execution_id: str,
+        case_id: str,
+        lease_id: str,
+        fencing_token: int,
+        *,
+        now: int,
+    ) -> None:
+        """Check captured ownership and current generation immediately before use."""
+        if type(fencing_token) is not int or fencing_token < 1:
+            raise StateError("INVALID_FENCING_TOKEN")
+        with self._transaction() as db:
+            execution = db.execute(
+                "SELECT * FROM executions WHERE id=?", (execution_id,)
+            ).fetchone()
+            lease = db.execute(
+                "SELECT * FROM leases WHERE execution_id=? AND case_id=? AND lease_id=? AND id=?",
+                (execution_id, case_id, lease_id, fencing_token),
+            ).fetchone()
+            if (
+                execution is None
+                or not self._current(db, execution, now=now)
+                or lease is None
+                or lease["state"] != "ACTIVE"
+            ):
+                raise StateError("LEASE_OWNERSHIP_OR_GENERATION_REVOKED")
+
+    def pending_execution_snapshots(
+        self, *, recovery: bool = False, limit: int = 1000
+    ) -> list[dict]:
+        """Bounded outstanding work only; completed history is not polled each tick."""
+        positive(limit)
+        if limit > 1000 or type(recovery) is not bool:
+            raise StateError("EXECUTION_VISIBILITY_LIMIT")
+        where = (
+            "a.execution_id IS NULL OR EXISTS (SELECT 1 FROM leases l WHERE l.execution_id=e.id AND l.state IN ('ACTIVE','QUARANTINED'))"
+            if recovery
+            else "a.execution_id IS NULL AND NOT EXISTS (SELECT 1 FROM cases c WHERE c.execution_id=e.id AND c.state!='COMPLETED')"
+        )
+        with self._connection() as db:
+            rows = db.execute(
+                "SELECT e.id FROM executions e LEFT JOIN publication_receipts a ON a.execution_id=e.id WHERE "
+                + where
+                + " ORDER BY e.rowid LIMIT ?",
+                (limit + 1,),
+            ).fetchall()
+        if len(rows) > limit:
+            raise StateError("EXECUTION_VISIBILITY_INCOMPLETE")
+        return [self.execution_snapshot(row[0]) for row in rows]
+
+    def mark_aggregate_delivered(
+        self, execution_id: str, receipt: dict, *, now: int
+    ) -> None:
+        """Acknowledge confirmed fixed-ID aggregate delivery, never infer it from API absence."""
+        with self._transaction() as db:
+            execution = db.execute(
+                "SELECT * FROM executions WHERE id=?", (execution_id,)
+            ).fetchone()
+            if execution is None:
+                raise StateError("UNKNOWN_EXECUTION")
+            request = db.execute(
+                "SELECT * FROM requests WHERE id=?",
+                (execution["canonical_request_id"],),
+            ).fetchone()
+            if request is None or canonical(receipt) != canonical(
+                json.loads(request["receipt_json"])
+            ):
+                raise StateError("PUBLICATION_RECEIPT_MISMATCH")
+            plan = json.loads(execution["plan_json"])
+            cases = db.execute(
+                "SELECT * FROM cases WHERE execution_id=?", (execution_id,)
+            ).fetchall()
+            if len(cases) != len(plan["cases"]) or any(
+                c["state"] != "COMPLETED" or c["result_json"] is None for c in cases
+            ):
+                raise StateError("INCOMPLETE_AGGREGATE_CANNOT_BE_ACKNOWLEDGED")
+            encoded = digest(receipt)
+            old = db.execute(
+                "SELECT * FROM publication_receipts WHERE execution_id=?",
+                (execution_id,),
+            ).fetchone()
+            if old and (
+                old["plan_digest"] != plan["plan_digest"]
+                or old["receipt_digest"] != encoded
+            ):
+                raise StateError("PUBLICATION_RECEIPT_IMMUTABLE")
+            db.execute(
+                "INSERT OR IGNORE INTO publication_receipts VALUES(?,?,?,?)",
+                (execution_id, plan["plan_digest"], encoded, now),
             )
