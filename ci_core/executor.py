@@ -72,12 +72,24 @@ def task_dir(run: dict, root: Path) -> Path:
 
 
 def remote_task_name(run: dict) -> str:
-    """Human-readable execution-node folder: time + workflow + run_number.
+    """Native folders use immutable run/attempt identity, never display titles.
+
+    Legacy folders retain time + workflow + run_number for compatibility.
 
     GitHub's workflow run_number is the #6 shown in Actions, not the global
     run ID and not run_attempt. Append attempt only for reruns to avoid a
     collision with the original execution's immutable training logs.
     """
+    # Native run titles include H/C and are presentation, not filesystem identity.
+    # Reuse the already validated run/attempt/case log basename. Keep legacy
+    # TorchTitan and A5 paths unchanged for their cleanup/recovery contracts.
+    if run.get("_ci_source"):
+        if run.get("_ci_repo") != VLLM_REPO:
+            raise ValueError("invalid native execution repository")
+        for value in (run.get("id"), run.get("run_attempt", 1)):
+            if type(value) is not int or value < 1:
+                raise ValueError("invalid native execution identity")
+        return "vllm_" + task_dir(run, Path(".")).name
     name = run.get("name")
     if not isinstance(name, str) or not re.fullmatch(
         r"[A-Za-z0-9][A-Za-z0-9-]{0,63}", name
