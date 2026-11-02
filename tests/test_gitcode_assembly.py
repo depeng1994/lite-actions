@@ -90,6 +90,41 @@ class AssemblyTests(unittest.TestCase):
         )
         self.assertIs(bridge.reader.read_snapshot.__self__, bridge.authority)
 
+    def test_manual_api_capture_is_explicit_and_wired_without_shared_hosted_db(self):
+        self.config["manual_capture"] = {
+            "enabled": True,
+            "workflow_id": "manual-workflow",
+            "workflow_path": ".gitcode/workflows/manual_capture.yml",
+            "job_identifier": "manual_capture",
+            "step_identifier": "1",
+            "step_name": "Capture manual request",
+            "script_sha256": "a" * 64,
+            "shell": "bash",
+            "working_directory": "",
+            "request_authority": "github_dispatch_operator",
+        }
+        self.write()
+        runtime = self.hosted()
+        self.assertIsNone(runtime.authority)
+        adapter = assemble_blue(
+            [self.path],
+            environment=self.environment,
+            state_directory=self.root / "blue-state",
+        )
+        broker = next(iter(adapter.brokers.values()))
+        provider = broker.read_authority.__self__
+        self.assertIsNotNone(provider.manual_capture_policy)
+        self.assertIsNotNone(broker.enroll_intent)
+        self.assertIsNone(provider.attestation_policy)
+        provider.enroll_manual = Mock(return_value=None)
+        broker.reader.early_attestation = Mock(
+            side_effect=AssertionError("manual needs no signed sidecar")
+        )
+        self.assertTrue(broker.enroll_intent({"opaque": "intent"}, {"id": 9}))
+        provider.enroll_manual.assert_called_once_with(
+            {"opaque": "intent"}, github_run={"id": 9}
+        )
+
     def test_missing_token_has_no_gh_fallback_or_secret_error(self):
         del self.environment["LITE_ACTIONS_GITHUB_TOKEN"]
         with patch("ci_core.github.authorization") as fallback:

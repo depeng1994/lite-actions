@@ -28,7 +28,7 @@ from ci_core.gitcode_contract import (
     validate_pr,
 )
 
-STATE_VERSION = 5
+STATE_VERSION = 6
 
 
 class StateError(ValueError):
@@ -191,9 +191,9 @@ class Coordinator:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connection() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, 2, 3, 4, STATE_VERSION):
+            if version not in (0, 1, 2, 3, 4, 5, STATE_VERSION):
                 raise StateError("UNSUPPORTED_COORDINATOR_STATE_VERSION")
-            if version in (1, 2, 3, 4):
+            if version in (1, 2, 3, 4, 5):
                 # Upgrade atomically: keep generations, leases and outbox intact.
                 # Historical v1 results without an exit code are not fabricated.
                 connection.execute("BEGIN IMMEDIATE")

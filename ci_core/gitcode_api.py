@@ -9,6 +9,7 @@ operation-log IDs are deliberately NOT presented as a proven version revision.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -98,7 +99,12 @@ class GitCodeClient:
         return f"GitCodeClient(repo={self.repo!r}, repo_id={self.repo_id!r})"
 
     def _get(
-        self, path: str, *, expect_list: bool = False, api_version: int = 5
+        self,
+        path: str,
+        *,
+        expect_list: bool = False,
+        api_version: int = 5,
+        _log_query=None,
     ) -> dict | list:
         if type(api_version) is not int or api_version not in (5, 8):
             raise GitCodeAPIError("GITCODE_API_VERSION_NOT_ALLOWED")
@@ -110,8 +116,34 @@ class GitCodeClient:
             or "\\" in path
         ):
             raise GitCodeAPIError("UNSAFE_GITCODE_API_PATH")
+        if _log_query is not None and (
+            api_version != 8
+            or not re.fullmatch(
+                re.escape("/repos/" + self.repo)
+                + r"/actions/runs/[A-Za-z0-9_-]{1,100}/jobs/[A-Za-z0-9_-]{1,100}/logs",
+                path,
+            )
+        ):
+            raise GitCodeAPIError("GITCODE_POST_QUERY_NOT_ALLOWED")
+        if _log_query is not None:
+            if (
+                not isinstance(_log_query, dict)
+                or set(_log_query) != {"step_id", "offset", "limit", "sort"}
+                or type(_log_query.get("offset")) is not int
+                or not 0 <= _log_query["offset"] <= 2**63 - 1
+                or type(_log_query.get("limit")) is not int
+                or not 1 <= _log_query["limit"] <= 1000
+                or _log_query.get("sort") != "asc"
+            ):
+                raise GitCodeAPIError("GITCODE_LOG_QUERY_INVALID")
+            self._action_id(_log_query.get("step_id"))
         if self._transport is not None:
-            result = self._transport(path if api_version == 5 else "/api/v8" + path)
+            target = path if api_version == 5 else "/api/v8" + path
+            result = (
+                self._transport(target)
+                if _log_query is None
+                else self._transport(target, body=_log_query)
+            )
             if not isinstance(result, list if expect_list else dict):
                 raise GitCodeAPIError("INVALID_GITCODE_API_RESPONSE")
             return result
@@ -122,8 +154,14 @@ class GitCodeClient:
                     "Authorization": "Bearer " + self._token,
                     "Accept": "application/json",
                     "User-Agent": "lite-actions-gitcode-v4",
+                    **(
+                        {"Content-Type": "application/json"}
+                        if _log_query is not None
+                        else {}
+                    ),
                 },
-                method="GET",
+                method="GET" if _log_query is None else "POST",
+                data=None if _log_query is None else canonical(_log_query),
             )
             try:
                 with self._opener.open(request, timeout=self.timeout) as response:
@@ -389,6 +427,235 @@ class GitCodeClient:
                 "exist_in_default_branch",
             )
         }
+
+    @staticmethod
+    def _action_id(value):
+        if not isinstance(value, str) or not re.fullmatch(
+            r"[A-Za-z0-9_-]{1,100}", value
+        ):
+            raise GitCodeAPIError("INVALID_GITCODE_ACTION_ID")
+        return value
+
+    @staticmethod
+    def _action_text(value, *, nullable=False):
+        if nullable and value is None:
+            return None
+        if (
+            not isinstance(value, str)
+            or not 1 <= len(value) <= 256
+            or any(ord(c) < 32 for c in value)
+        ):
+            raise GitCodeAPIError("GITCODE_ACTION_METADATA_INVALID")
+        return value
+
+    @classmethod
+    def _job_snapshot(cls, row):
+        # Only explicit evidence fields survive. Never return inputs/env/secrets.
+        if not isinstance(row, dict):
+            raise GitCodeAPIError("GITCODE_ACTION_JOB_INVALID")
+        result = {"id": cls._action_id(row.get("id"))}
+        for field in ("name", "identifier", "status"):
+            result[field] = cls._action_text(row.get(field))
+        for field in ("sequence", "start_time", "end_time"):
+            value = row.get(field)
+            if type(value) is not int or not 0 <= value <= 2**63 - 1:
+                raise GitCodeAPIError("GITCODE_ACTION_JOB_METADATA_INVALID")
+            result[field] = value
+        for field in ("exec_id", "last_dispatch_id"):
+            if field in row:
+                result[field] = cls._action_id(row[field])
+        if "apply_time" in row:
+            value = row["apply_time"]
+            if value is not None and (
+                type(value) is not int or not 0 <= value <= 2**63 - 1
+            ):
+                raise GitCodeAPIError("GITCODE_ACTION_JOB_METADATA_INVALID")
+            result["apply_time"] = value
+        if "is_shadow" in row:
+            if type(row["is_shadow"]) is not bool:
+                raise GitCodeAPIError("GITCODE_ACTION_JOB_METADATA_INVALID")
+            result["is_shadow"] = row["is_shadow"]
+        steps = row.get("steps")
+        if not isinstance(steps, list) or len(steps) > 100:
+            raise GitCodeAPIError("GITCODE_ACTION_STEPS_INVALID")
+        result["steps"] = []
+        seen = set()
+        for step in steps:
+            if not isinstance(step, dict):
+                raise GitCodeAPIError("GITCODE_ACTION_STEP_INVALID")
+            ident = cls._action_id(step.get("id"))
+            if ident in seen or step.get("job_run_id") != result["id"]:
+                raise GitCodeAPIError("GITCODE_ACTION_STEP_OWNERSHIP_MISMATCH")
+            seen.add(ident)
+            normalized = {"id": ident, "job_run_id": result["id"]}
+            if "task" in step:
+                normalized["task"] = cls._action_text(step["task"])
+            inputs = step.get("inputs")
+            if inputs is not None:
+                if not isinstance(inputs, list) or len(inputs) > 100:
+                    raise GitCodeAPIError("GITCODE_ACTION_INPUT_METADATA_INVALID")
+                seen_inputs = set()
+                for entry in inputs:
+                    if not isinstance(entry, dict) or not isinstance(
+                        entry.get("key"), str
+                    ):
+                        raise GitCodeAPIError("GITCODE_ACTION_INPUT_METADATA_INVALID")
+                    key = entry["key"]
+                    if not 1 <= len(key) <= 256 or key in seen_inputs:
+                        raise GitCodeAPIError(
+                            "GITCODE_ACTION_INPUT_DUPLICATE_OR_INVALID"
+                        )
+                    seen_inputs.add(key)
+                    if key not in ("script", "shell", "working-directory"):
+                        continue
+                    value = entry.get("value")
+                    if not isinstance(value, str):
+                        raise GitCodeAPIError("GITCODE_ACTION_COMMAND_METADATA_INVALID")
+                    try:
+                        encoded = value.encode("utf-8")
+                    except UnicodeError:
+                        raise GitCodeAPIError(
+                            "GITCODE_ACTION_COMMAND_METADATA_INVALID"
+                        ) from None
+                    if key == "script":
+                        if len(encoded) > 128 * 1024:
+                            raise GitCodeAPIError("GITCODE_ACTION_SCRIPT_SIZE_LIMIT")
+                        # Preserve exact API bytes: no newline/Unicode normalization.
+                        normalized["script_sha256"] = hashlib.sha256(
+                            encoded
+                        ).hexdigest()
+                    else:
+                        if len(encoded) > 1024 or any(ord(c) < 32 for c in value):
+                            raise GitCodeAPIError(
+                                "GITCODE_ACTION_COMMAND_METADATA_INVALID"
+                            )
+                        normalized[
+                            "working_directory" if key == "working-directory" else key
+                        ] = value
+            for field in ("name", "status", "identifier"):
+                normalized[field] = cls._action_text(
+                    step.get(field), nullable=field == "identifier"
+                )
+            for field in ("sequence", "start_time", "end_time"):
+                value = step.get(field)
+                if type(value) is not int or not 0 <= value <= 2**63 - 1:
+                    raise GitCodeAPIError("GITCODE_ACTION_STEP_METADATA_INVALID")
+                normalized[field] = value
+            if "last_dispatch_id" in step:
+                normalized["last_dispatch_id"] = cls._action_id(
+                    step["last_dispatch_id"]
+                )
+            if "continue-on-error" in step:
+                value = step["continue-on-error"]
+                if value is not None and type(value) is not bool:
+                    raise GitCodeAPIError("GITCODE_ACTION_STEP_METADATA_INVALID")
+                normalized["continue-on-error"] = value
+            result["steps"].append(normalized)
+        return result
+
+    def action_jobs(self, run_id: str) -> list[dict]:
+        """Bounded documented v8 listing; not proof of workflow provenance."""
+        run_id = self._action_id(run_id)
+        self.repository()
+        data = self._get(
+            f"/repos/{self.repo}/actions/runs/{run_id}/jobs", api_version=8
+        )
+        jobs, total = data.get("jobs"), data.get("total_count")
+        if (
+            type(total) is not int
+            or not isinstance(jobs, list)
+            or total != len(jobs)
+            or not 0 <= total <= 100
+        ):
+            raise GitCodeAPIError("GITCODE_ACTION_JOBS_INCOMPLETE")
+        result = [self._job_snapshot(row) for row in jobs]
+        if len({row["id"] for row in result}) != len(result):
+            raise GitCodeAPIError("GITCODE_ACTION_JOBS_DUPLICATE")
+        return result
+
+    def action_job(self, run_id: str, job_id: str) -> dict:
+        run_id, job_id = self._action_id(run_id), self._action_id(job_id)
+        listed = [job for job in self.action_jobs(run_id) if job["id"] == job_id]
+        if len(listed) != 1:
+            raise GitCodeAPIError("GITCODE_ACTION_JOB_NOT_IN_RUN")
+        job = self._job_snapshot(
+            self._get(
+                f"/repos/{self.repo}/actions/runs/{run_id}/jobs/{job_id}", api_version=8
+            )
+        )
+        if job["id"] != job_id or job["identifier"] != listed[0]["identifier"]:
+            raise GitCodeAPIError("GITCODE_ACTION_JOB_IDENTITY_CHANGED")
+        return job
+
+    def action_step_logs(
+        self,
+        run_id: str,
+        job_id: str,
+        step_id: str,
+        *,
+        max_pages: int = 10,
+        max_bytes: int = 1024 * 1024,
+        limit: int = 1000,
+    ) -> dict:
+        """Read-only POST query, ascending contiguous pages from offset zero.
+
+        Completeness is only of this bounded API read, not workflow provenance
+        or immutable logs. Callers must verify terminal job/run and capture data.
+        Log text is returned in memory only; never printed by this client.
+        """
+        for value, maximum in (
+            (max_pages, 100),
+            (max_bytes, 4 * 1024**2),
+            (limit, 1000),
+        ):
+            if type(value) is not int or not 1 <= value <= maximum:
+                raise GitCodeAPIError("GITCODE_LOG_BUDGET_INVALID")
+        run_id, job_id, step_id = map(self._action_id, (run_id, job_id, step_id))
+        job = self.action_job(run_id, job_id)
+        if step_id not in {step["id"] for step in job["steps"]}:
+            raise GitCodeAPIError("GITCODE_ACTION_STEP_NOT_IN_JOB")
+        offset, size, pages = 0, 0, []
+        for _ in range(max_pages):
+            page = self._get(
+                f"/repos/{self.repo}/actions/runs/{run_id}/jobs/{job_id}/logs",
+                api_version=8,
+                _log_query={
+                    "step_id": step_id,
+                    "offset": offset,
+                    "limit": limit,
+                    "sort": "asc",
+                },
+            )
+            start, end, more, log = (
+                page.get(k) for k in ("start_offset", "end_offset", "has_more", "log")
+            )
+            if (
+                type(start) is not int
+                or type(end) is not int
+                or type(more) is not bool
+                or not isinstance(log, str)
+                or start != offset
+                or not start <= end <= 2**63 - 1
+                or (end == start and (more or log))
+            ):
+                raise GitCodeAPIError("GITCODE_LOG_PAGE_NOT_CONTIGUOUS")
+            size += len(log.encode("utf-8"))
+            if size > max_bytes:
+                raise GitCodeAPIError("GITCODE_LOG_SIZE_LIMIT")
+            pages.append({"start_offset": start, "end_offset": end, "log": log})
+            offset = end
+            if not more:
+                return {
+                    "run_id": run_id,
+                    "job_id": job_id,
+                    "step_id": step_id,
+                    "complete": True,
+                    "start_offset": 0,
+                    "end_offset": offset,
+                    "pages": pages,
+                    "log": "".join(p["log"] for p in pages),
+                }
+        raise GitCodeAPIError("GITCODE_LOG_INCOMPLETE")
 
     def authenticated_actor(self) -> str:
         data = self._get("/user")

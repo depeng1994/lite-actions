@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 from ci_core.executor import Execution, ExternalNpuOccupancy
 from ci_core.gitcode_admission import GitCodeAdmissionBroker
 from ci_core.gitcode_runtime import GitCodeRouterAdapter
-from ci_core.gitcode_state import Authority, Coordinator, EventProof
+from ci_core.gitcode_state import STATE_VERSION, Authority, Coordinator, EventProof
 from ci_core.gitcode_store import GitCodeRequestStore
 from ci_core.gitcode_waiter import GitCodeWaiter
 from ci_core.resources import ResourceBusy, reserve
@@ -547,7 +547,9 @@ class GitCodeRouterTests(unittest.TestCase):
             }
         migrated = Coordinator(self.coordinator.path)
         with sqlite3.connect(migrated.path) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 5)
+            self.assertEqual(
+                db.execute("PRAGMA user_version").fetchone()[0], STATE_VERSION
+            )
             self.assertEqual(
                 {
                     table: db.execute("SELECT * FROM " + table).fetchall()

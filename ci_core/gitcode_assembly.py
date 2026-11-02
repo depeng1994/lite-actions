@@ -81,7 +81,10 @@ def load_release(path: Path) -> dict:
     shape(
         value,
         CONFIG_KEYS
-        | (set(value) & {"publication", "authority_protocol", "attestation"}),
+        | (
+            set(value)
+            & {"publication", "authority_protocol", "attestation", "manual_capture"}
+        ),
     )
     if value.get("authority_protocol") not in (None, "artifact-check-v1"):
         raise AssemblyError("UNKNOWN_AUTHORITY_PROTOCOL")
@@ -191,7 +194,47 @@ def load_release(path: Path) -> dict:
         }
         if attestation_policy.head_repo_id not in allowed_heads:
             raise AssemblyError("ATTESTATION_HEAD_NOT_IN_CONTROL_POLICY")
-    return {**value, "policy": policy, "attestation_policy": attestation_policy}
+    manual = value.get("manual_capture", {"enabled": False})
+    if not isinstance(manual, dict) or type(manual.get("enabled")) is not bool:
+        raise AssemblyError("EXPLICIT_MANUAL_CAPTURE_POLICY_REQUIRED")
+    manual_policy = None
+    if not manual["enabled"]:
+        shape(manual, {"enabled"})
+    else:
+        from ci_core.gitcode_manual_capture import ManualCapturePolicy
+
+        required = {
+            "enabled",
+            "workflow_id",
+            "workflow_path",
+            "job_identifier",
+            "step_identifier",
+            "step_name",
+            "script_sha256",
+            "shell",
+            "working_directory",
+            "request_authority",
+        }
+        optional = {
+            "max_capture_age_seconds",
+            "clock_skew_seconds",
+            "allowed_run_statuses",
+        }
+        shape(manual, required | (set(manual) & optional))
+        values = dict(manual)
+        if "allowed_run_statuses" in values:
+            if not isinstance(values["allowed_run_statuses"], list):
+                raise AssemblyError("MANUAL_STATUS_LIST_REQUIRED")
+            values["allowed_run_statuses"] = tuple(values["allowed_run_statuses"])
+        manual_policy = ManualCapturePolicy(control=policy, **values)
+        if attestation_policy is not None:
+            raise AssemblyError("SOURCE_AUTHORITY_MODES_MUST_NOT_MIX")
+    return {
+        **value,
+        "policy": policy,
+        "attestation_policy": attestation_policy,
+        "manual_capture_policy": manual_policy,
+    }
 
 
 def _state_directory(path):
@@ -457,6 +500,7 @@ def _assemble(
             clock=clock,
             coordinator=shared_coordinator,
             attestation_policy=attestation_policy,
+            manual_capture_policy=config["manual_capture_policy"],
             action_client=action_client,
         )
         reader.read_snapshot = authority.read_snapshot
@@ -566,6 +610,9 @@ def assemble_blue(config_paths, *, environment, state_directory):
 
     def enroll_for(runtime):
         def enroll(intent, run):
+            if runtime.authority.manual_capture_policy is not None:
+                runtime.authority.enroll_manual(intent, github_run=run)
+                return True
             envelope = runtime.reader.early_attestation(run["id"])
             if envelope is None:
                 return False
@@ -587,7 +634,10 @@ def assemble_blue(config_paths, *, environment, state_directory):
                 verify_event=runtime.authority.verify_event,
                 verify_plan=runtime.authority.verify_plan,
                 enroll_intent=enroll_for(runtime)
-                if runtime.authority.attestation_policy is not None
+                if (
+                    runtime.authority.attestation_policy is not None
+                    or runtime.authority.manual_capture_policy is not None
+                )
                 else None,
                 clock=lambda: int(time.time()),
             )

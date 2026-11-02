@@ -47,6 +47,7 @@ class ObservedGitCodeAuthority:
         clock=time.time,
         *,
         attestation_policy=None,
+        manual_capture_policy=None,
         action_client=None,
         coordinator=None,
     ):
@@ -59,15 +60,15 @@ class ObservedGitCodeAuthority:
             clock,
         )
         self.attestation_policy = attestation_policy
+        self.manual_capture_policy = manual_capture_policy
         self.action_client = action_client or client
         self.path = Path(journal)
         if not self.path.is_absolute() or self.path.is_symlink():
             raise PlatformError("TRUSTED_ABSOLUTE_LEDGER_PATH_REQUIRED")
         if (
-            attestation_policy is not None
-            and attestation_policy.enabled
-            and coordinator is None
-        ):
+            (attestation_policy is not None and attestation_policy.enabled)
+            or (manual_capture_policy is not None and manual_capture_policy.enabled)
+        ) and coordinator is None:
             raise PlatformError("SIGNED_INGRESS_REQUIRES_SHARED_COORDINATOR")
         if self.path.exists():
             with sqlite3.connect(self.path) as old:
@@ -301,6 +302,30 @@ class ObservedGitCodeAuthority:
             return intent
 
     def _action_observation(self, attested, *, enrolling):
+        if getattr(attested, "capture_kind", None) == "manual_api":
+            from ci_core.gitcode_manual_capture import (
+                ManualCaptureError,
+                verify_manual_capture,
+            )
+
+            if (
+                self.manual_capture_policy is None
+                or attested.key_id != self.manual_capture_policy.key_id
+            ):
+                raise PlatformError("MANUAL_CAPTURE_POLICY_RETIRED")
+            try:
+                current = verify_manual_capture(
+                    attested.intent,
+                    self.manual_capture_policy,
+                    self.action_client,
+                    now=int(self.clock()),
+                    first_enrollment=False,
+                )
+            except ManualCaptureError as exc:
+                raise TerminalActionRevoked("MANUAL_SOURCE_TERMINALLY_REVOKED") from exc
+            if current.envelope_digest != attested.envelope_digest:
+                raise TerminalActionRevoked("MANUAL_IMMUTABLE_CAPTURE_CHANGED")
+            return current
         policy = self.attestation_policy
         if policy is None or not policy.enabled or attested.key_id != policy.key_id:
             raise PlatformError("TRUSTED_EMITTER_NOT_ENABLED_OR_KEY_RETIRED")
@@ -373,6 +398,87 @@ class ObservedGitCodeAuthority:
             raise PlatformError("SIGNED_RERUN_OPERATOR_POLICY_NOT_ENABLED")
         now = int(self.clock())
         attested = verify_envelope(envelope, intent, policy, now=now)
+        return self._enroll_capture(
+            intent,
+            envelope,
+            github_run=github_run,
+            policy=policy,
+            attested=attested,
+            trigger_kind="trusted_emitter",
+        )
+
+    def enroll_manual(self, intent, *, github_run):
+        """Authorized GH operator requests a NEW manual current observation.
+
+        GitCode log is an API-bound one-time wake, not original PR provenance.
+        Exact authenticated GH owner and entire intent digest are retained.
+        """
+        from dataclasses import replace
+
+        from ci_core.gitcode_manual_capture import verify_manual_capture
+
+        policy = self.manual_capture_policy
+        if not self.policy.enabled:
+            raise PlatformError("GITCODE_PROVIDER_DISABLED")
+        if policy is None or not policy.enabled:
+            raise PlatformError("MANUAL_API_CAPTURE_NOT_ENABLED")
+        if intent.get("bridge", {}).get("rerun_intent_id") != "initial":
+            raise PlatformError("MANUAL_CAPTURE_NATIVE_RERUN_FORBIDDEN")
+        actor = (github_run.get("actor") or {}).get("login")
+        if (
+            actor not in self.policy.allowed_actors
+            or actor != intent["bridge"]["actor"]
+            or github_run.get("display_title")
+            != "lite-gitcode:" + intent["bridge"]["bridge_nonce"]
+        ):
+            raise PlatformError("MANUAL_GITHUB_OPERATOR_OR_NONCE_MISMATCH")
+        delivery = {
+            "run_id": positive(github_run.get("id")),
+            "run_attempt": github_run.get("run_attempt"),
+            "actor": actor,
+            "repo_id": (github_run.get("repository") or {}).get("id"),
+            "control_sha": github_run.get("head_sha"),
+            "workflow_id": github_run.get("workflow_id"),
+            "intent_digest": digest(intent),
+        }
+        ident = intent["bridge"]["dispatch_intent_id"]
+        with self.connection() as db:
+            saved = db.execute(
+                "SELECT i.intent,i.revoked,a.payload FROM source_intents i JOIN source_attestations a ON i.id=a.intent_id WHERE i.id=?",
+                (ident,),
+            ).fetchone()
+        if saved is not None:
+            metadata = json.loads(saved["payload"])["metadata"]
+            if (
+                saved["revoked"]
+                or saved["intent"] != canonical(intent).decode()
+                or metadata.get("capture_kind") != "manual_api"
+                or canonical(metadata.get("github_delivery")) != canonical(delivery)
+            ):
+                raise PlatformError("MANUAL_CAPTURE_REPLAY_OR_DELIVERY_CHANGED")
+            return
+        attested = verify_manual_capture(
+            intent,
+            policy,
+            self.action_client,
+            now=int(self.clock()),
+            allow_terminal=True,
+        )
+        attested = replace(attested, github_delivery=delivery)
+        return self._enroll_capture(
+            intent,
+            {"kind": "manual-api-wake", "intent_digest": digest(intent)},
+            github_run=github_run,
+            policy=policy,
+            attested=attested,
+            trigger_kind="manual_api",
+        )
+
+    def _enroll_capture(
+        self, intent, envelope, *, github_run, policy, attested, trigger_kind
+    ):
+        ident = intent["bridge"]["dispatch_intent_id"]
+        now = int(self.clock())
         repo, branch = MODEL_REPOSITORIES[self.policy.github_repo_id]
         if (
             github_run.get("event") != "workflow_dispatch"
@@ -415,13 +521,14 @@ class ObservedGitCodeAuthority:
                 ).fetchone()
                 if collision is None and existing is None:
                     db.execute(
-                        "INSERT INTO source_intents(repo_id,id,semantic,number,revision,intent,revoked,trigger_kind,actor,authorized_rerun) VALUES(?,?,?,?,0,?,1,'trusted_emitter',?,0)",
+                        "INSERT INTO source_intents(repo_id,id,semantic,number,revision,intent,revoked,trigger_kind,actor,authorized_rerun) VALUES(?,?,?,?,0,?,1,?,?,0)",
                         (
                             self.policy.gitcode_repo_id,
                             ident,
                             "rejected:" + attested.envelope_digest,
                             intent["pr"]["number"],
                             canonical(intent).decode(),
+                            trigger_kind,
                             attested.actor,
                         ),
                     )
@@ -518,6 +625,17 @@ class ObservedGitCodeAuthority:
             ):
                 db.commit()
                 raise PlatformError("ATTESTED_SNAPSHOT_NOT_CURRENT")
+            if trigger_kind == "manual_api":
+                # All run/job/log/API reads, including the serialized PR read,
+                # have completed. Recheck with fresh time immediately before
+                # any new registration; old retained intents use recovery path.
+                fresh = int(self.clock())
+                if (
+                    fresh - attested.request_started_at > policy.max_capture_age_seconds
+                    or fresh >= intent["deadline"]
+                ):
+                    db.commit()  # Keep any observed revocation, never the stale request.
+                    raise PlatformError("MANUAL_CAPTURE_EXPIRED_DURING_VERIFICATION")
             active = db.execute(
                 "SELECT intent FROM source_intents WHERE repo_id=? AND number=? AND revision=? AND revoked=0 AND json_extract(intent,'$.pipeline')=?",
                 (
@@ -563,7 +681,7 @@ class ObservedGitCodeAuthority:
                     number,
                     authority.revision,
                     canonical(intent).decode(),
-                    "trusted_emitter",
+                    trigger_kind,
                     attested.actor,
                 ),
             )
@@ -649,7 +767,7 @@ class ObservedGitCodeAuthority:
                 raise PlatformError("UNKNOWN_OR_CHANGED_TRUSTED_INTENT")
             if row["revoked"]:
                 raise PlatformError("TRUSTED_INTENT_REVOKED")
-            if row["trigger_kind"] == "trusted_emitter":
+            if row["trigger_kind"] in {"trusted_emitter", "manual_api"}:
                 from types import SimpleNamespace
 
                 evidence = db.execute(
