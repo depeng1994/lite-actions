@@ -44,9 +44,14 @@ class GitCodeProducer:
         clock,
         source_builder=prepare_pr_source,
         authority_protocol=None,
+        source_dependency_profile=None,
     ):
         if authority_protocol not in (None, "artifact-check-v1"):
             raise ProducerError("UNKNOWN_AUTHORITY_PROTOCOL")
+        from ci_core.gitcode_dependencies import validate_profile_binding
+
+        validate_profile_binding(source_dependency_profile, policy.policy_version)
+        self.source_dependency_profile = source_dependency_profile
         self.authority_protocol = authority_protocol
         self.policy, self.catalog = policy, catalog
         self.github, self.personal, self.upstream = github, personal, upstream
@@ -58,6 +63,7 @@ class GitCodeProducer:
             personal=personal,
             channel=channel,
             catalog=catalog,
+            source_dependency_profile=source_dependency_profile,
         )
         self.bridge = GitCodeBridge(
             policy=policy,
@@ -185,6 +191,19 @@ class GitCodeProducer:
                 "intent", intent_path, run, name=f"dispatch-intent-{prefix}"
             )
         }
+        from ci_core.gitcode_dependencies import (
+            optional_gitlinks,
+            validate_dependencies,
+        )
+
+        dependency_map = optional_gitlinks(
+            self.source_dependency_profile,
+            intent["pipeline"],
+            [row["test_id"] for row in intent["selectors"]],
+        )
+        builder_options = (
+            {"optional_gitlinks": dependency_map} if dependency_map else {}
+        )
         handle, pr = self.source_builder(
             self.personal,
             intent["pr"]["number"],
@@ -193,9 +212,16 @@ class GitCodeProducer:
             allowed_actors=self.policy.allowed_actors,
             expected_git_version=self.policy.git_builder_version.removeprefix("git-"),
             expected_identity=intent["pr"],
+            **builder_options,
         )
         if canonical(pr) != canonical(intent["pr"]):
             raise ProducerError("PREPARED_PR_IDENTITY_MISMATCH")
+        validate_dependencies(
+            self.source_dependency_profile,
+            intent["pipeline"],
+            [row["test_id"] for row in intent["selectors"]],
+            list(handle.dependencies),
+        )
         handle.verify()
         if "git-" + handle.git_version != self.policy.git_builder_version:
             raise ProducerError("MERGE_BUILDER_VERSION_MISMATCH")

@@ -65,6 +65,84 @@ def safe_path(value: str) -> PurePosixPath:
     return path
 
 
+def validate_source_graph(entries: dict[str, tuple[str, str]]) -> None:
+    """Validate metadata only; never resolve a path on the host filesystem.
+
+    Symlink chains are intentionally unsupported. Directory traversal through
+    links must be acyclic, including cycles spanning multiple directories.
+    """
+    nodes = {"": ("dir", "")}
+    nodes.update(entries)
+    for name in entries:
+        path = safe_path(name)
+        for parent in path.parents:
+            key = "" if str(parent) == "." else str(parent)
+            if key in nodes and nodes[key][0] != "dir":
+                raise SourceError("UNSAFE_ARCHIVE_PARENT")
+            nodes.setdefault(key, ("dir", ""))
+    edges = {name: set() for name, (kind, _) in nodes.items() if kind == "dir"}
+    for name, (kind, target) in nodes.items():
+        if not name:
+            continue
+        parent = str(PurePosixPath(name).parent)
+        parent = "" if parent == "." else parent
+        if kind == "dir":
+            edges[parent].add(name)
+        elif kind == "link":
+            if (
+                not target
+                or target.startswith("/")
+                or "\\" in target
+                or any(ord(c) < 32 for c in target)
+                or len(target.encode("utf-8")) > 4096
+            ):
+                raise SourceError("UNSAFE_ARCHIVE_MEMBER")
+            parts = parent.split("/") if parent else []
+            for index, part in enumerate(target.split("/")):
+                if part in ("", "."):
+                    continue
+                if part == "..":
+                    if not parts:
+                        raise SourceError("UNSAFE_ARCHIVE_MEMBER")
+                    parts.pop()
+                else:
+                    if part == ".git":
+                        raise SourceError("UNSAFE_ARCHIVE_MEMBER")
+                    parts.append(part)
+                key = "/".join(parts)
+                node = nodes.get(key)
+                if node is None or node[0] == "link":
+                    raise SourceError("SOURCE_LINK_MISSING_OR_CHAINED")
+                if index < len(target.split("/")) - 1 and node[0] != "dir":
+                    raise SourceError("SOURCE_LINK_NON_DIRECTORY")
+            resolved = "/".join(parts)
+            node = nodes.get(resolved)
+            if node is None or node[0] not in ("file", "dir"):
+                raise SourceError("SOURCE_LINK_MISSING_OR_CHAINED")
+            if node[0] == "dir":
+                edges[parent].add(resolved)
+        elif kind != "file":
+            raise SourceError("UNSAFE_ARCHIVE_MEMBER")
+    # Iterative DFS avoids recursion-limit failures on untrusted depth.
+    colors = {}
+    for root in edges:
+        if colors.get(root) == 2:
+            continue
+        stack = [(root, False)]
+        while stack:
+            node, finished = stack.pop()
+            if finished:
+                colors[node] = 2
+                continue
+            if colors.get(node) == 1:
+                raise SourceError("SOURCE_DIRECTORY_LINK_CYCLE")
+            if colors.get(node) == 2:
+                continue
+            colors[node] = 1
+            stack.append((node, True))
+            stack.extend((child, False) for child in edges[node])
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -321,6 +399,26 @@ class MergeSourceBuilder:
         records = [entry for entry in raw.split(b"\0") if entry]
         if len(records) > self.max_files:
             raise SourceError("SOURCE_FILE_LIMIT")
+        graph = {}
+        link_targets = {}
+        for record in records:
+            meta, raw_name = record.split(b"\t", 1)
+            mode, kind, oid = meta.decode().split()
+            name = raw_name.decode("utf-8", errors="strict")
+            safe_path(name)
+            if kind == "commit" and mode == "160000":
+                continue  # Omitted dependencies cannot be symlink targets.
+            if kind != "blob" or mode not in ("100644", "100755", "120000"):
+                raise SourceError("UNSUPPORTED_SOURCE_FILE_MODE")
+            if mode == "120000":
+                target = self._git("cat-file", "blob", oid, max_output=4096).decode(
+                    "utf-8", errors="strict"
+                )
+                link_targets[name] = target
+                graph[name] = ("link", target)
+            else:
+                graph[name] = ("file", "")
+        validate_source_graph(graph)
         dependencies: list[dict] = []
         seen_dependencies = set()
         total = 0
@@ -353,8 +451,8 @@ class MergeSourceBuilder:
                                 }
                             )
                             continue
-                        if kind != "blob" or mode not in ("100644", "100755"):
-                            # Conservative initial policy: no symlinks, devices or hardlinks.
+                        if kind != "blob" or mode not in ("100644", "100755", "120000"):
+                            # No devices or hardlinks.
                             raise SourceError("UNSUPPORTED_SOURCE_FILE_MODE")
                         size = int(self._git("cat-file", "-s", oid))
                         total += size
@@ -375,7 +473,14 @@ class MergeSourceBuilder:
                         info.size = size
                         info.mode = 0o755 if mode == "100755" else 0o644
                         info.mtime = 0
-                        archive.addfile(info, io.BytesIO(content))
+                        if mode == "120000":
+                            info.type = tarfile.SYMTYPE
+                            info.linkname = link_targets[name]
+                            info.size = 0
+                            info.mode = 0o777
+                            archive.addfile(info)
+                        else:
+                            archive.addfile(info, io.BytesIO(content))
             if seen_dependencies != set(optional_gitlinks):
                 raise SourceError("DEPENDENCY_DECLARATION_MISMATCH")
             temporary.replace(output)
@@ -408,13 +513,14 @@ def extract_verified_source(
 ) -> Path:
     """Extract into a new private directory, atomically or not at all.
 
-    Reject all links and special files. Cache hits must call handle.verify()
+    Validate relative source symlinks; reject special files. Cache hits call handle.verify()
     again. This function never imports source code or chooses another provider.
     """
     return extract_verified_archive(
         handle.verify(),
         handle.bundle_sha256,
         destination,
+        allow_symlinks=True,
         max_files=max_files,
         max_unpacked_bytes=max_unpacked_bytes,
         max_bundle_bytes=max_bundle_bytes,
@@ -426,6 +532,7 @@ def extract_verified_archive(
     expected_sha256: str,
     destination: Path,
     *,
+    allow_symlinks: bool = False,
     max_files: int = 100_000,
     max_unpacked_bytes: int = 2 * 1024**3,
     max_bundle_bytes: int = 512 * 1024**2,
@@ -446,31 +553,89 @@ def extract_verified_archive(
     if destination.exists() or destination.is_symlink():
         raise SourceError("SOURCE_DESTINATION_EXISTS")
     scratch = Path(tempfile.mkdtemp(prefix=".source-", dir=destination.parent))
-    seen: set[str] = set()
+    # First pass validates the WHOLE graph. No payload or link is materialized.
+    members = {}
+    graph = {}
     total = 0
     try:
-        with tarfile.open(bundle, "r|gz", tarinfo=BoundedTarInfo) as archive:
-            for member in archive:
-                path = safe_path(member.name)
-                if member.name in seen or len(seen) >= max_files:
-                    raise SourceError("SOURCE_DUPLICATE_OR_FILE_LIMIT")
-                seen.add(member.name)
-                total += member.size
-                if member.size < 0 or total > max_unpacked_bytes:
-                    raise SourceError("SOURCE_SIZE_LIMIT")
-                target = scratch.joinpath(*path.parts)
-                if member.isdir():
-                    target.mkdir(mode=0o700, parents=True, exist_ok=True)
-                elif member.isfile() and not member.issparse():
-                    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                    incoming = archive.extractfile(member)
-                    if incoming is None:
-                        raise SourceError("SOURCE_FILE_UNREADABLE")
-                    with incoming, target.open("xb") as out:
-                        shutil.copyfileobj(incoming, out, length=1024 * 1024)
-                    target.chmod(0o755 if member.mode & 0o111 else 0o644)
-                else:
-                    raise SourceError("UNSAFE_ARCHIVE_MEMBER")
+        with bundle.open("rb") as source:
+            with tarfile.open(
+                fileobj=source, mode="r|gz", tarinfo=BoundedTarInfo
+            ) as archive:
+                for member in archive:
+                    safe_path(member.name)
+                    if member.name in members or len(members) >= max_files:
+                        raise SourceError("SOURCE_DUPLICATE_OR_FILE_LIMIT")
+                    total += member.size + (
+                        len(member.linkname.encode("utf-8")) if member.issym() else 0
+                    )
+                    if member.size < 0 or total > max_unpacked_bytes:
+                        raise SourceError("SOURCE_SIZE_LIMIT")
+                    kind = (
+                        "dir"
+                        if member.isdir()
+                        else "file"
+                        if member.isfile() and not member.issparse()
+                        else "link"
+                        if member.issym() and allow_symlinks
+                        else None
+                    )
+                    if kind is None or kind != "file" and member.size != 0:
+                        raise SourceError("UNSAFE_ARCHIVE_MEMBER")
+                    graph[member.name] = (
+                        kind,
+                        member.linkname if kind == "link" else "",
+                    )
+                    members[member.name] = (
+                        member.type,
+                        member.size,
+                        member.mode,
+                        member.linkname,
+                    )
+            validate_source_graph(graph)
+            source.seek(0)
+            pending = set(members)
+            with tarfile.open(
+                fileobj=source, mode="r|gz", tarinfo=BoundedTarInfo
+            ) as archive:
+                for member in archive:
+                    identity = (member.type, member.size, member.mode, member.linkname)
+                    if member.name not in pending or members[member.name] != identity:
+                        raise SourceError("SOURCE_ARCHIVE_CHANGED_DURING_READ")
+                    pending.remove(member.name)
+                    target = scratch.joinpath(*safe_path(member.name).parts)
+                    kind = graph[member.name][0]
+                    if kind == "dir":
+                        target.mkdir(mode=0o700, parents=True, exist_ok=True)
+                    elif kind == "file":
+                        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                        incoming = archive.extractfile(member)
+                        if incoming is None:
+                            raise SourceError("SOURCE_FILE_UNREADABLE")
+                        descriptor = os.open(
+                            target,
+                            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                            0o600,
+                        )
+                        with incoming, os.fdopen(descriptor, "wb") as out:
+                            shutil.copyfileobj(incoming, out, length=1024 * 1024)
+                        target.chmod(0o755 if member.mode & 0o111 else 0o644)
+            if pending:
+                raise SourceError("SOURCE_ARCHIVE_CHANGED_DURING_READ")
+            # Rehash the same opened file before publishing; replacing its path
+            # cannot substitute a different archive between the two passes.
+            source.seek(0)
+            digest = hashlib.sha256()
+            for block in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(block)
+            if digest.hexdigest() != expected_sha256:
+                raise SourceError("SOURCE_BUNDLE_DIGEST_MISMATCH")
+        # All payload writes are complete before any symlink exists.
+        for name, (kind, link) in graph.items():
+            if kind == "link":
+                target = scratch.joinpath(*safe_path(name).parts)
+                target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                os.symlink(link, target)
         scratch.rename(destination)
         return destination
     except (tarfile.TarError, OSError, UnicodeError) as exc:

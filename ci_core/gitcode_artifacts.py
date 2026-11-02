@@ -120,11 +120,16 @@ class GitCodeArtifactReader:
         channel,
         catalog,
         read_snapshot=None,
+        source_dependency_profile=None,
     ):
         self.policy, self.github, self.personal = policy, github, personal
         self.channel, self.catalog = channel, catalog
         # Trusted control-host callback commits the exact API observation before
         # stale input rejection. Hosted readers have no durable authority ledger.
+        from ci_core.gitcode_dependencies import validate_profile_binding
+
+        validate_profile_binding(source_dependency_profile, policy.policy_version)
+        self.source_dependency_profile = source_dependency_profile
         self.read_snapshot = read_snapshot
         repo = MODEL_REPOSITORIES[policy.github_repo_id][0]
         if (
@@ -475,6 +480,14 @@ class GitCodeArtifactReader:
             intent=contents["intent"],
             current_pr=self._snapshot(plan["pr"]["number"]),
             now=now,
+        )
+        from ci_core.gitcode_dependencies import validate_dependencies
+
+        validate_dependencies(
+            self.source_dependency_profile,
+            plan["pipeline"],
+            [case["test_id"] for case in plan["cases"]],
+            contents["manifest"]["dependencies"],
         )
         workspace = Path(workspace)
         if workspace.exists() or workspace.is_symlink():

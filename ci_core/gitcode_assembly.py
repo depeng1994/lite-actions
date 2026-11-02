@@ -83,11 +83,21 @@ def load_release(path: Path) -> dict:
         CONFIG_KEYS
         | (
             set(value)
-            & {"publication", "authority_protocol", "attestation", "manual_capture"}
+            & {
+                "publication",
+                "authority_protocol",
+                "attestation",
+                "manual_capture",
+                "source_dependency_profile",
+            }
         ),
     )
     if value.get("authority_protocol") not in (None, "artifact-check-v1"):
         raise AssemblyError("UNKNOWN_AUTHORITY_PROTOCOL")
+    from ci_core.gitcode_dependencies import PROFILE
+
+    if value.get("source_dependency_profile") not in (None, PROFILE):
+        raise AssemblyError("UNKNOWN_SOURCE_DEPENDENCY_PROFILE")
     publication = value.get("publication", {"enabled": False})
     if (
         not isinstance(publication, dict)
@@ -119,6 +129,11 @@ def load_release(path: Path) -> dict:
         )
     except TypeError:
         raise AssemblyError("INVALID_CONTROL_POLICY_FIELDS") from None
+    from ci_core.gitcode_dependencies import validate_profile_binding
+
+    validate_profile_binding(
+        value.get("source_dependency_profile"), policy.policy_version
+    )
     if policy.github_repo_id not in TORCHTITAN_REPOSITORY_IDS or not policy.enabled:
         raise AssemblyError("EXPLICIT_TORCHTITAN_RELEASE_REQUIRED")
     if policy.github_repo_id == STAGING_GITHUB_REPO_ID and (
@@ -447,6 +462,7 @@ def _assemble(
         personal=personal,
         channel=channel,
         catalog=config["catalog"],
+        source_dependency_profile=config.get("source_dependency_profile"),
     )
     bridge = GitCodeBridge(
         policy=policy,
@@ -470,6 +486,7 @@ def _assemble(
             upload=upload,
             clock=clock,
             authority_protocol=config.get("authority_protocol"),
+            source_dependency_profile=config.get("source_dependency_profile"),
         )
     authority = None
     if role in {"blue", "bridge"}:

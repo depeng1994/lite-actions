@@ -9,10 +9,12 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from ci_core.gitcode_source import (
     MergeSourceBuilder,
     SourceError,
+    extract_verified_archive,
     extract_verified_source,
     require_ref,
     sha256_file,
@@ -200,7 +202,7 @@ class MergeSourceTests(unittest.TestCase):
                 require_ref(ref)
         self.assertEqual(require_ref("feature/change-1"), "feature/change-1")
 
-    def test_lfs_and_symlinks_fail_closed(self):
+    def test_lfs_fails_closed_and_in_tree_symlink_is_preserved(self):
         self.write(
             "lfs.bin",
             "version https://git-lfs.github.com/spec/v1\noid sha256:"
@@ -213,8 +215,140 @@ class MergeSourceTests(unittest.TestCase):
         self.git("reset", "--hard", self.initial)
         (self.repo / "link").symlink_to("shared.txt")
         head = self.commit("symlink")
-        with self.assertRaisesRegex(SourceError, "UNSUPPORTED_SOURCE_FILE_MODE"):
-            self.builder().build(head_sha=head, base_sha=self.initial)
+        handle = self.builder().build(head_sha=head, base_sha=self.initial)
+        dest = extract_verified_source(handle, self.root / "linked-source")
+        self.assertTrue((dest / "link").is_symlink())
+        self.assertEqual(os.readlink(dest / "link"), "shared.txt")
+        self.assertEqual((dest / "link").read_bytes(), b"common\n")
+
+    def test_real_relative_file_and_directory_links_are_reproducible(self):
+        # Synthetic fixture content only; no repository agent instructions read.
+        self.write(".agents/AGENTS.md", "fixture-data-only")
+        self.write(".agents/skills/item.txt", "fixture-data-only")
+        (self.repo / "aliases").mkdir()
+        (self.repo / "aliases" / "AGENTS.md").symlink_to("../.agents/AGENTS.md")
+        (self.repo / "aliases" / "skills").symlink_to("../.agents/skills")
+        head = self.commit("fixture links")
+        one = self.builder().build(head_sha=head, base_sha=self.initial)
+        two = self.builder().build(head_sha=head, base_sha=self.initial)
+        self.assertEqual(one.bundle_sha256, two.bundle_sha256)
+        self.assertEqual(one.tested_tree_sha, self.git("rev-parse", head + "^{tree}"))
+        dest = extract_verified_source(one, self.root / "relative-links")
+        self.assertEqual(os.readlink(dest / "aliases/skills"), "../.agents/skills")
+        self.assertTrue((dest / "aliases/AGENTS.md").is_symlink())
+        with self.assertRaisesRegex(SourceError, "UNSAFE_ARCHIVE_MEMBER"):
+            extract_verified_archive(
+                Path(one.bundle_path), one.bundle_sha256, self.root / "runner-reject"
+            )
+
+    def link_entry(self, name, target):
+        entry = tarfile.TarInfo(name)
+        entry.type = tarfile.SYMTYPE
+        entry.linkname = target
+        return entry, b""
+
+    def test_complete_graph_rejects_missing_chained_escape_and_directory_cycles(self):
+        regular = tarfile.TarInfo("data")
+        fixtures = [
+            [self.link_entry("alias", "/etc/passwd")],
+            [self.link_entry("alias", "missing")],
+            [self.link_entry("alias", ".git/config")],
+            [
+                self.link_entry("alias", "data"),
+                self.link_entry("other", "alias"),
+                (regular, b""),
+            ],
+            [
+                self.link_entry("alias", "data"),
+                (regular, b""),
+                (tarfile.TarInfo("alias/child"), b""),
+            ],
+            [self.link_entry("a/link", "../a")],
+            [self.link_entry("a/link", "../b"), self.link_entry("b/link", "../a")],
+            [self.link_entry("a/link", "..")],
+            [self.link_entry("a/link", "../data/../a"), (regular, b"")],
+        ]
+        for index, entries in enumerate(fixtures):
+            dest = self.root / f"invalid-link-{index}"
+            with self.subTest(index=index), self.assertRaises(SourceError):
+                extract_verified_source(self.malicious_handle(entries), dest)
+            self.assertFalse(dest.exists())
+            self.assertEqual(list(self.root.glob(".source-*")), [])
+
+    def test_shared_directory_targets_and_links_before_targets_are_safe(self):
+        item = tarfile.TarInfo("z-target/item")
+        item.size = 4
+        handle = self.malicious_handle(
+            [
+                self.link_entry("a/alias", "../z-target"),
+                self.link_entry("b/alias", "../z-target"),
+                self.link_entry("top-a", "a"),
+                self.link_entry("top-b", "b"),
+                (item, b"data"),
+            ]
+        )
+        dest = extract_verified_source(handle, self.root / "diamond")
+        self.assertEqual((dest / "top-a/alias/item").read_bytes(), b"data")
+        self.assertEqual((dest / "top-b/alias/item").read_bytes(), b"data")
+        self.assertEqual(os.readlink(dest / "a/alias"), "../z-target")
+
+    def test_invalid_late_link_prevents_all_payload_writes(self):
+        payload = tarfile.TarInfo("first")
+        payload.size = 7
+        handle = self.malicious_handle(
+            [(payload, b"payload"), self.link_entry("last", "missing")]
+        )
+        with patch("ci_core.gitcode_source.os.open", wraps=os.open) as opened:
+            with self.assertRaises(SourceError):
+                extract_verified_source(handle, self.root / "late-invalid")
+            self.assertFalse(
+                any(call.args[1] & os.O_WRONLY for call in opened.call_args_list)
+            )
+
+    def test_exact_link_text_is_preserved_and_digest_bound(self):
+        (self.repo / "alias").symlink_to("shared.txt")
+        first = self.commit("link spelling one")
+        one = self.builder().build(head_sha=first, base_sha=self.initial)
+        (self.repo / "alias").unlink()
+        (self.repo / "alias").symlink_to("./shared.txt")
+        second = self.commit("link spelling two")
+        two = self.builder().build(head_sha=second, base_sha=self.initial)
+        self.assertNotEqual(one.bundle_sha256, two.bundle_sha256)
+        self.assertNotEqual(one.tested_tree_sha, two.tested_tree_sha)
+        dest = extract_verified_source(two, self.root / "link-spelling")
+        self.assertEqual(os.readlink(dest / "alias"), "./shared.txt")
+
+    def test_invalid_git_link_never_produces_archive(self):
+        (self.repo / "outside").symlink_to("../../etc/passwd")
+        head = self.commit("unsafe fixture link")
+        builder = self.builder()
+        with self.assertRaises(SourceError):
+            builder.build(head_sha=head, base_sha=self.initial)
+        self.assertEqual(list(builder.root.glob("*.tar.gz")), [])
+
+    def test_link_body_hardlink_device_and_link_size_budget_rejected(self):
+        link, _ = self.link_entry("link", "data")
+        link.size = 1
+        hard = tarfile.TarInfo("hard")
+        hard.type, hard.linkname = tarfile.LNKTYPE, "data"
+        device = tarfile.TarInfo("device")
+        device.type = tarfile.CHRTYPE
+        for index, (entry, body) in enumerate(
+            ((link, b"x"), (hard, b""), (device, b""))
+        ):
+            with self.assertRaises(SourceError):
+                extract_verified_source(
+                    self.malicious_handle([(entry, body)]),
+                    self.root / f"special-{index}",
+                )
+        regular = tarfile.TarInfo("data")
+        handle = self.malicious_handle(
+            [(regular, b""), self.link_entry("link", "data")]
+        )
+        with self.assertRaisesRegex(SourceError, "SOURCE_SIZE_LIMIT"):
+            extract_verified_source(
+                handle, self.root / "link-budget", max_unpacked_bytes=3
+            )
 
     def test_content_limits_and_cache_digest(self):
         with self.assertRaisesRegex(SourceError, "SOURCE_SIZE_LIMIT"):

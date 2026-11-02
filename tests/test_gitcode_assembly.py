@@ -55,6 +55,24 @@ class AssemblyTests(unittest.TestCase):
             state_directory=self.root / "state",
         )
 
+    def test_dependency_profile_is_explicit_bound_and_wired(self):
+        from ci_core.gitcode_dependencies import PROFILE, DependencyPolicyError
+
+        self.config["source_dependency_profile"] = PROFILE
+        self.write()
+        with self.assertRaises(DependencyPolicyError):
+            self.hosted()
+        self.config["policy"]["policy_version"] += ":" + PROFILE
+        self.write()
+        runtime = self.hosted()
+        self.assertEqual(runtime.reader.source_dependency_profile, PROFILE)
+        self.assertEqual(runtime.producer.source_dependency_profile, PROFILE)
+        self.assertEqual(runtime.producer.reader.source_dependency_profile, PROFILE)
+        del self.config["source_dependency_profile"]
+        self.write()
+        with self.assertRaises(DependencyPolicyError):
+            self.hosted()
+
     def test_concrete_hosted_clients_are_separate_and_no_authority_is_invented(self):
         runtime = self.hosted()
         self.assertIs(runtime.producer.github, runtime.reader.github)
