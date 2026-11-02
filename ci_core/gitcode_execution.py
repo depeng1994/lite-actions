@@ -18,6 +18,7 @@ import tempfile
 import time
 import uuid
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ci_core.executor import Execution, ExternalNpuOccupancy, _process_rows
@@ -127,16 +128,70 @@ def capture_nodes(case, pools):
     return nodes
 
 
-def scan_idle(nodes, setup, indexing, stream):
+def _scan_audit(node, audit_identity, status, rows=()):
+    """Pre-capture evidence: fixed fields only, never raw npu-smi or command."""
+    if audit_identity is None:
+        return
+    execution_id, case_id = audit_identity
+    numeric = [
+        {"chip": chip, "pid": pid}
+        for chip, pid, _ in rows
+        if type(chip) is int and type(pid) is int
+    ]
+    evidence = {
+        "execution_id": execution_id,
+        "case_id": case_id,
+        "utc": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+        "monotonic_ns": time.monotonic_ns(),
+        "node": node["position"],
+        "allocated_chips": list(node["device_ids"]),
+        "processes": numeric[:256],
+        "process_count": len(numeric),
+        "truncated": len(numeric) > 256,
+        "status": status,
+    }
+    # WARNING is intentional: the service's existing default journal level
+    # must retain first-scan IDLE as well as refusal before pipeline.log exists.
+    logging.warning(
+        "GITCODE_DEVICE_SCAN_AUDIT %s", json.dumps(evidence, sort_keys=True)
+    )
+
+
+def scan_idle(nodes, setup, indexing, stream, *, audit_identity=None):
     """Read-only Blue occupancy checks; never kill another user's process."""
+    if audit_identity is not None:
+        if (
+            not isinstance(audit_identity, tuple)
+            or len(audit_identity) != 2
+            or any(
+                not isinstance(value, str) or not IDENT.fullmatch(value)
+                for value in audit_identity
+            )
+            or any(
+                type(node.get("position")) is not int
+                or not isinstance(node.get("device_ids"), list)
+                or any(type(chip) is not int for chip in node["device_ids"])
+                for node in nodes
+            )
+        ):
+            raise ValueError("INVALID_SCAN_AUDIT_IDENTITY")
     for node in nodes:
-        verify_node(node)
-        response = transport_run(
-            node["ssh"],
-            "source " + quote(setup) + " >/dev/null 2>&1 && npu-smi info",
-            timeout=40,
-        )
-        rows = _process_rows(response.stdout, node["device_ids"], indexing=indexing)
+        try:
+            verify_node(node)
+            response = transport_run(
+                node["ssh"],
+                "source " + quote(setup) + " >/dev/null 2>&1 && npu-smi info",
+                timeout=40,
+            )
+        except Exception:
+            _scan_audit(node, audit_identity, "COMMAND_ERROR")
+            raise
+        try:
+            rows = _process_rows(response.stdout, node["device_ids"], indexing=indexing)
+        except Exception:
+            _scan_audit(node, audit_identity, "PARSE_ERROR")
+            raise
+        _scan_audit(node, audit_identity, "OCCUPIED" if rows else "IDLE", rows)
         stream.write(
             "GITCODE_DEVICE_SCAN "
             + json.dumps(
@@ -468,7 +523,13 @@ def execute(
     setup = profile["env_vars"]["ASCEND_SET_ENV_PATH"]
     # A busy external allocation remains a queueing condition, before any durable
     # execution lease or remote directory is created.
-    scan_idle(nodes, setup, pools[case["pool"]]["process_indexing"], io.StringIO())
+    scan_idle(
+        nodes,
+        setup,
+        pools[case["pool"]]["process_indexing"],
+        io.StringIO(),
+        audit_identity=(execution_id, item["case_id"]),
+    )
     if cancel.is_set() or time.time() >= plan["deadline"]:
         raise InterruptedError("schema-4 request cancelled or expired before staging")
     lease_id = uuid.uuid4().hex

@@ -286,7 +286,7 @@ class GitCodeExecutionTests(unittest.TestCase):
             patch.object(backend, "capture_nodes", return_value=[self.node]),
             patch.object(
                 backend, "scan_idle", side_effect=ExternalNpuOccupancy("busy")
-            ),
+            ) as scan,
             patch.object(backend, "stage_node") as stage,
         ):
             with self.assertRaises(ExternalNpuOccupancy):
@@ -302,6 +302,10 @@ class GitCodeExecutionTests(unittest.TestCase):
                     before_launch=self.guard,
                     phase=lambda value: None,
                 )
+            self.assertEqual(
+                scan.call_args.kwargs["audit_identity"],
+                ("execution-1", self.item["case_id"]),
+            )
             capture.assert_not_called()
             stage.assert_not_called()
 
