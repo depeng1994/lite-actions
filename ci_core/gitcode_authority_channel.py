@@ -277,9 +277,11 @@ class HostedCurrent:
         _plan(VerifiedRequest(canonical(target)))
         owner = self._own_plan(target)
         run = self.reader.actual_run(self.owner_run_id)
-        owner_envelope, target_envelope = (
-            self.channel.read_receipt(owner),
-            self.channel.read_receipt(target),
+        owner_envelope = self.channel.read_receipt(owner)
+        # _own_plan returns this exact target object only for the owning run.
+        # Reuse within this call, never across polls or canonical generations.
+        target_envelope = (
+            owner_envelope if owner is target else self.channel.read_receipt(target)
         )
         if owner_envelope is None or target_envelope is None:
             return None

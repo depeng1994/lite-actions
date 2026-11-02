@@ -501,8 +501,8 @@ class GitCodeRouterAdapter:
                 # Confirmed closures are durably acked; old history needs no API.
                 if responder.cleanup(verified, reference["receipt"]):
                     continue
-                # Only answer a waiting active owner Run, never an old rerun.
-                self.broker(plan).reader.actual_run(plan["github"]["run_id"])
+                # respond() itself independently verifies the active owning
+                # run before reading its challenge. Do not duplicate that GET.
                 responder.respond(
                     verified, reference["receipt"], current=self.current_authority
                 )

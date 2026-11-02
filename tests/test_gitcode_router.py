@@ -617,8 +617,12 @@ class GitCodeRouterTests(unittest.TestCase):
                 self.plan["github"]["workflow_id"],
             )
         ] = responder
-        with patch.object(router.gitcode, "resolve_request", return_value=verified):
+        with (
+            patch.object(router.gitcode, "resolve_request", return_value=verified),
+            patch.object(self.api.reader, "actual_run") as redundant_run,
+        ):
             router.gitcode.respond_authority()
+        redundant_run.assert_not_called()
         responder.respond.assert_called_once_with(
             verified, references[0]["receipt"], current=router.gitcode.current_authority
         )

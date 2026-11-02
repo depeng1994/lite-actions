@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from ci_core.gitcode_authority_channel import (
     AuthorityChannelError,
@@ -76,6 +77,16 @@ class AuthorityChannelTests(unittest.TestCase):
         slot = self.api.channel.read_slot(self.plan, "authority")
         self.assertEqual(slot["status"], "in_progress")
         self.assertIsNone(slot["conclusion"])
+
+    def test_same_owner_receipt_is_read_once_per_call_not_cached_between_polls(self):
+        with patch.object(
+            self.api.channel, "read_receipt", wraps=self.api.channel.read_receipt
+        ) as read:
+            self.assertIsNone(self.client(self.plan))
+            read.assert_called_once_with(self.plan)
+            read.reset_mock()
+            self.assertIsNone(self.client(self.plan))
+            read.assert_called_once_with(self.plan)
 
     def test_revoked_or_unavailable_never_returns_cached_pass(self):
         self.client(self.plan)
@@ -182,7 +193,13 @@ class AuthorityChannelTests(unittest.TestCase):
             owner_run_id=200,
             clock=lambda: self.now,
         )
-        self.assertIsNone(client(self.plan))
+        with patch.object(
+            self.api.channel, "read_receipt", wraps=self.api.channel.read_receipt
+        ) as read:
+            self.assertIsNone(client(self.plan))
+            self.assertEqual(read.call_count, 2)
+            self.assertEqual(read.call_args_list[0].args, (duplicate,))
+            self.assertEqual(read.call_args_list[1].args, (self.plan,))
         calls = []
         self.responder.respond(
             VerifiedRequest(canonical(duplicate)),
