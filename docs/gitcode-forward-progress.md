@@ -1,5 +1,7 @@
 # GitCode Forward 实施检查点：尚未完成端到端交付
 
+> **2026-11-02 Blue 生产验收更新**：vLLM GitHub 原生 Blue 默认 OS／8P／16P 已部署并完成手动、个人 PR、真失败恢复及 TorchTitan 兼容回归。详见 [当前 Blue 生产验收](vllm-blue-os-8p-16p-production.md) 与 [逐项机器记录](evidence/vllm-blue-os-8p-16p-production.json)。本文件下方为较早检查点；其 Blue 尚未发布的陈述不再代表当前状态。TorchTitan GitCode 的全量跨平台 DoD 以及已记录的 Base-only 竞争恢复缺口未因此关闭。
+
 > **2026-11-02 范围修订（优先适用）**：vLLM Ascend 只验收 GitHub 原生链路，不再要求 GitCode 个人仓、Bridge、状态回写或 GitCode 控制源同步。TorchTitan GitCode 链路不变。详见 [范围修订与已有 PR 实证](gitcode-forward-scope-20261102.md)；其中同时区分已通过的 Yellow A5 8P 与待验收的 Blue A3。下文相冲突的双 GitCode 仓要求以该修订为准。
 
 本记录区分已提交实现、精确提交回归、只读环境预检与尚未完成的跨平台验收。它不是设计文档 DoD 的通过声明。

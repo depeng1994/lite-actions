@@ -1,0 +1,1865 @@
+{
+  "schema": 1,
+  "scope": "VLLM_GITHUB_NATIVE_BLUE_OS_8P_16P_NOT_TORCHTITAN_GITCODE_E2E",
+  "worker_commit": "f4b15e32b8348d0762cb808a85f7ea0a6f33745a",
+  "control_commit": "cc5caeaf08b2e29b3dc41aced0ed023083dd7899",
+  "observed_at_utc": "2026-11-02T01:00:51.165345+00:00",
+  "runs": [
+    {
+      "repo": "cann-framework/vllm-ascend",
+      "run_id": 41368818404,
+      "attempt": 1,
+      "url": "https://github.com/cann-framework/vllm-ascend/actions/runs/41368818404/attempts/1",
+      "status": "completed",
+      "conclusion": "success",
+      "head_sha": "cc5caeaf08b2e29b3dc41aced0ed023083dd7899",
+      "expected": "success",
+      "jobs": [
+        {
+          "name": "prepare",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "dispatch_smoke_a3_16p",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "dispatch_smoke_a3_8p",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "vllm_worker_os_blue",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Lite-Actions-Smoke",
+          "status": "completed",
+          "conclusion": "success"
+        }
+      ],
+      "cases": [
+        {
+          "test_id": "vllm_worker_os_blue",
+          "phase": "REPORTED",
+          "status": "PASS",
+          "exit_code": 0,
+          "cleanup_verified": true,
+          "quarantined": false,
+          "plan_digest": "80baa6d09264252472c0955e1906efa776b2664cceede950eee925a7c7e93cc6",
+          "source": {
+            "attempt": 1,
+            "base_ref": "main",
+            "base_sha": "cc5caeaf08b2e29b3dc41aced0ed023083dd7899",
+            "control_sha": "cc5caeaf08b2e29b3dc41aced0ed023083dd7899",
+            "head_repo_id": 1438625957,
+            "head_sha": "cc5caeaf08b2e29b3dc41aced0ed023083dd7899",
+            "mode": "commit",
+            "plan_digest": "80baa6d09264252472c0955e1906efa776b2664cceede950eee925a7c7e93cc6",
+            "pr_number": 0,
+            "provider": "github",
+            "repository": "cann-framework/vllm-ascend",
+            "repository_id": 1438625957,
+            "run_id": 41368818404,
+            "schema": 1,
+            "source_sha": "cc5caeaf08b2e29b3dc41aced0ed023083dd7899",
+            "test_ids": [
+              "vllm_worker_os_blue",
+              "dispatch_smoke_a3_8p",
+              "dispatch_smoke_a3_16p"
+            ],
+            "tree_sha": "2b7e8615dce1a718c3bdf028c7f96dd20d8b2550"
+          },
+          "devices": [],
+          "container_bindings": []
+        },
+        {
+          "test_id": "dispatch_smoke_a3_8p",
+          "phase": "REPORTED",
+          "status": "PASS",
+          "exit_code": 0,
+          "cleanup_verified": true,
+          "quarantined": false,
+          "plan_digest": "80baa6d09264252472c0955e1906efa776b2664cceede950eee925a7c7e93cc6",
+          "source": {
+            "attempt": 1,
+            "base_ref": "main",
+            "base_sha": "cc5caeaf08b2e29b3dc41aced0ed023083dd7899",
+            "control_sha": "cc5caeaf08b2e29b3dc41aced0ed023083dd7899",
+            "head_repo_id": 1438625957,
+            "head_sha": "cc5caeaf08b2e29b3dc41aced0ed023083dd7899",
+            "mode": "commit",
+            "plan_digest": "80baa6d09264252472c0955e1906efa776b2664cceede950eee925a7c7e93cc6",
+            "pr_number": 0,
+            "provider": "github",
+            "repository": "cann-framework/vllm-ascend",
+            "repository_id": 1438625957,
+            "run_id": 41368818404,
+            "schema": 1,
+            "source_sha": "cc5caeaf08b2e29b3dc41aced0ed023083dd7899",
+            "test_ids": [
+              "vllm_worker_os_blue",
+              "dispatch_smoke_a3_8p",
+              "dispatch_smoke_a3_16p"
+            ],
+            "tree_sha": "2b7e8615dce1a718c3bdf028c7f96dd20d8b2550"
+          },
+          "devices": [
+            {
+              "node_port": "154",
+              "devices": [
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15
+              ]
+            }
+          ],
+          "container_bindings": [
+            {
+              "container_name": "vllm_hccl_smoke",
+              "container_id": "c33953f779ae16fdf46b5db195305cf0aed4febf30fd13bf2dfa0831c0301421",
+              "image_id": "sha256:f81de6249765738a06b5c187dcf0968dfd0ce828e8b6b16a2771de2b0e78217c",
+              "image_ref": "quay.io/ascend/vllm-ascend:v0.23.0-a3-openeuler",
+              "node_port": "154"
+            }
+          ],
+          "pipeline_log_sha256": "2b58a4f9789ed6d17b130a690eb19e814c415205ce19da789e0aa97008fbc8f0",
+          "case_pass_marker": true,
+          "case_failure_marker": false,
+          "intentional_failure_observed": false,
+          "empty_cleanup_scans": 2
+        },
+        {
+          "test_id": "dispatch_smoke_a3_16p",
+          "phase": "REPORTED",
+          "status": "PASS",
+          "exit_code": 0,
+          "cleanup_verified": true,
+          "quarantined": false,
+          "plan_digest": "80baa6d09264252472c0955e1906efa776b2664cceede950eee925a7c7e93cc6",
+          "source": {
+            "attempt": 1,
+            "base_ref": "main",
+            "base_sha": "cc5caeaf08b2e29b3dc41aced0ed023083dd7899",
+            "control_sha": "cc5caeaf08b2e29b3dc41aced0ed023083dd7899",
+            "head_repo_id": 1438625957,
+            "head_sha": "cc5caeaf08b2e29b3dc41aced0ed023083dd7899",
+            "mode": "commit",
+            "plan_digest": "80baa6d09264252472c0955e1906efa776b2664cceede950eee925a7c7e93cc6",
+            "pr_number": 0,
+            "provider": "github",
+            "repository": "cann-framework/vllm-ascend",
+            "repository_id": 1438625957,
+            "run_id": 41368818404,
+            "schema": 1,
+            "source_sha": "cc5caeaf08b2e29b3dc41aced0ed023083dd7899",
+            "test_ids": [
+              "vllm_worker_os_blue",
+              "dispatch_smoke_a3_8p",
+              "dispatch_smoke_a3_16p"
+            ],
+            "tree_sha": "2b7e8615dce1a718c3bdf028c7f96dd20d8b2550"
+          },
+          "devices": [
+            {
+              "node_port": "153",
+              "devices": [
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15
+              ]
+            },
+            {
+              "node_port": "154",
+              "devices": [
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7
+              ]
+            }
+          ],
+          "container_bindings": [
+            {
+              "container_name": "vllm_hccl_smoke",
+              "container_id": "9128bc83d0e2314669597e9db63a327b0809860df617c0f8fe968559f63851fc",
+              "image_id": "sha256:f81de6249765738a06b5c187dcf0968dfd0ce828e8b6b16a2771de2b0e78217c",
+              "image_ref": "quay.io/ascend/vllm-ascend:v0.23.0-a3-openeuler",
+              "node_port": "153"
+            },
+            {
+              "container_name": "vllm_hccl_smoke",
+              "container_id": "c33953f779ae16fdf46b5db195305cf0aed4febf30fd13bf2dfa0831c0301421",
+              "image_id": "sha256:f81de6249765738a06b5c187dcf0968dfd0ce828e8b6b16a2771de2b0e78217c",
+              "image_ref": "quay.io/ascend/vllm-ascend:v0.23.0-a3-openeuler",
+              "node_port": "154"
+            }
+          ],
+          "pipeline_log_sha256": "aa65b42326f9f72bdbfe16d30144f4bc5d977dbd06ff1ad1ab9821b786ed865a",
+          "case_pass_marker": true,
+          "case_failure_marker": false,
+          "intentional_failure_observed": false,
+          "empty_cleanup_scans": 4
+        }
+      ]
+    },
+    {
+      "repo": "cann-framework/torchtitan-npu",
+      "run_id": 41368844204,
+      "attempt": 1,
+      "url": "https://github.com/cann-framework/torchtitan-npu/actions/runs/41368844204/attempts/1",
+      "status": "completed",
+      "conclusion": "success",
+      "head_sha": "f20d073aec6bb7543b2e7db706d1e01b5298c8ca",
+      "expected": "success",
+      "jobs": [
+        {
+          "name": "ci / prepare",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "ci / dispatch_smoke_8p",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "ci / worker_os_blue",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "ci / dispatch_smoke_16p",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Lite-Actions-Smoke",
+          "status": "completed",
+          "conclusion": "success"
+        }
+      ],
+      "cases": [
+        {
+          "test_id": "worker_os_blue",
+          "phase": "REPORTED",
+          "status": "PASS",
+          "exit_code": 0,
+          "cleanup_verified": true,
+          "quarantined": false,
+          "plan_digest": "9d62d593e9c37def291625e015e4b1dc2abafbdcf8aa4d8ca49141e08722bd1c",
+          "source": null,
+          "devices": [],
+          "container_bindings": []
+        },
+        {
+          "test_id": "dispatch_smoke_8p",
+          "phase": "REPORTED",
+          "status": "PASS",
+          "exit_code": 0,
+          "cleanup_verified": true,
+          "quarantined": false,
+          "plan_digest": "9d62d593e9c37def291625e015e4b1dc2abafbdcf8aa4d8ca49141e08722bd1c",
+          "source": null,
+          "devices": [
+            {
+              "node_port": "154",
+              "devices": [
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15
+              ]
+            }
+          ],
+          "container_bindings": [],
+          "pipeline_log_sha256": "19f74b18b9e75558ce13bbb34a41aee957a4286569f8e4a170d194a4d87a526d",
+          "case_pass_marker": true,
+          "case_failure_marker": false,
+          "intentional_failure_observed": false,
+          "empty_cleanup_scans": 2
+        },
+        {
+          "test_id": "dispatch_smoke_16p",
+          "phase": "REPORTED",
+          "status": "PASS",
+          "exit_code": 0,
+          "cleanup_verified": true,
+          "quarantined": false,
+          "plan_digest": "9d62d593e9c37def291625e015e4b1dc2abafbdcf8aa4d8ca49141e08722bd1c",
+          "source": null,
+          "devices": [
+            {
+              "node_port": "153",
+              "devices": [
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15
+              ]
+            },
+            {
+              "node_port": "154",
+              "devices": [
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7
+              ]
+            }
+          ],
+          "container_bindings": [],
+          "pipeline_log_sha256": "adcec5284e2b7ce4eb10dd7cb29db9109ff933d80db42bb66e5c1362c43d0125",
+          "case_pass_marker": true,
+          "case_failure_marker": false,
+          "intentional_failure_observed": false,
+          "empty_cleanup_scans": 4
+        }
+      ]
+    },
+    {
+      "repo": "cann-framework/vllm-ascend",
+      "run_id": 41368985668,
+      "attempt": 1,
+      "url": "https://github.com/cann-framework/vllm-ascend/actions/runs/41368985668/attempts/1",
+      "status": "completed",
+      "conclusion": "failure",
+      "head_sha": "1336cad5dca578b673f5c67d639844a111baef55",
+      "expected": "failure",
+      "jobs": [
+        {
+          "name": "prepare",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "vllm_worker_os_blue",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "dispatch_smoke_a3_16p",
+          "status": "completed",
+          "conclusion": "failure"
+        },
+        {
+          "name": "dispatch_smoke_a3_8p",
+          "status": "completed",
+          "conclusion": "failure"
+        },
+        {
+          "name": "Lite-Actions-Smoke",
+          "status": "completed",
+          "conclusion": "failure"
+        }
+      ],
+      "cases": [
+        {
+          "test_id": "vllm_worker_os_blue",
+          "phase": "REPORTED",
+          "status": "PASS",
+          "exit_code": 0,
+          "cleanup_verified": true,
+          "quarantined": false,
+          "plan_digest": "39c6bd10cd627a7ca0732cadfa3c69e2f4b28a896bff5837747ff0be455950b3",
+          "source": {
+            "attempt": 1,
+            "base_ref": "main",
+            "base_sha": "cc5caeaf08b2e29b3dc41aced0ed023083dd7899",
+            "control_sha": "cc5caeaf08b2e29b3dc41aced0ed023083dd7899",
+            "head_repo_id": 1440390070,
+            "head_sha": "1336cad5dca578b673f5c67d639844a111baef55",
+            "mode": "merge_result",
+            "plan_digest": "39c6bd10cd627a7ca0732cadfa3c69e2f4b28a896bff5837747ff0be455950b3",
+            "pr_number": 4,
+            "provider": "github",
+            "repository": "cann-framework/vllm-ascend",
+            "repository_id": 1438625957,
+            "run_id": 41368985668,
+            "schema": 1,
+            "source_sha": "a8909c93c7d4636ae2e5afaa800e36f41ebd57cb",
+            "test_ids": [
+              "vllm_worker_os_blue",
+              "dispatch_smoke_a3_8p",
+              "dispatch_smoke_a3_16p"
+            ],
+            "tree_sha": "f2912ad60c06471100008ce34d68267fd953ad3d"
+          },
+          "devices": [],
+          "container_bindings": []
+        },
+        {
+          "test_id": "dispatch_smoke_a3_8p",
+          "phase": "REPORTED",
+          "status": "FAIL",
+          "exit_code": 1,
+          "cleanup_verified": true,
+          "quarantined": false,
+          "plan_digest": "39c6bd10cd627a7ca0732cadfa3c69e2f4b28a896bff5837747ff0be455950b3",
+          "source": {
+            "attempt": 1,
+            "base_ref": "main",
+            "base_sha": "cc5caeaf08b2e29b3dc41aced0ed023083dd7899",
+            "control_sha": "cc5caeaf08b2e29b3dc41aced0ed023083dd7899",
+            "head_repo_id": 1440390070,
+            "head_sha": "1336cad5dca578b673f5c67d639844a111baef55",
+            "mode": "merge_result",
+            "plan_digest": "39c6bd10cd627a7ca0732cadfa3c69e2f4b28a896bff5837747ff0be455950b3",
+            "pr_number": 4,
+            "provider": "github",
+            "repository": "cann-framework/vllm-ascend",
+            "repository_id": 1438625957,
+            "run_id": 41368985668,
+            "schema": 1,
+            "source_sha": "a8909c93c7d4636ae2e5afaa800e36f41ebd57cb",
+            "test_ids": [
+              "vllm_worker_os_blue",
+              "dispatch_smoke_a3_8p",
+              "dispatch_smoke_a3_16p"
+            ],
+            "tree_sha": "f2912ad60c06471100008ce34d68267fd953ad3d"
+          },
+          "devices": [
+            {
+              "node_port": "154",
+              "devices": [
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15
+              ]
+            }
+          ],
+          "container_bindings": [
+            {
+              "container_name": "vllm_hccl_smoke",
+              "container_id": "c33953f779ae16fdf46b5db195305cf0aed4febf30fd13bf2dfa0831c0301421",
+              "image_id": "sha256:f81de6249765738a06b5c187dcf0968dfd0ce828e8b6b16a2771de2b0e78217c",
+              "image_ref": "quay.io/ascend/vllm-ascend:v0.23.0-a3-openeuler",
+              "node_port": "154"
+            }
+          ],
+          "pipeline_log_sha256": "67ae514f9d35f72e66e6cf0a229dc201f1d536700af21a88a808b0c05d414dc7",
+          "case_pass_marker": false,
+          "case_failure_marker": true,
+          "intentional_failure_observed": false,
+          "empty_cleanup_scans": 2
+        },
+        {
+          "test_id": "dispatch_smoke_a3_16p",
+          "phase": "REPORTED",
+          "status": "FAIL",
+          "exit_code": 1,
+          "cleanup_verified": true,
+          "quarantined": false,
+          "plan_digest": "39c6bd10cd627a7ca0732cadfa3c69e2f4b28a896bff5837747ff0be455950b3",
+          "source": {
+            "attempt": 1,
+            "base_ref": "main",
+            "base_sha": "cc5caeaf08b2e29b3dc41aced0ed023083dd7899",
+            "control_sha": "cc5caeaf08b2e29b3dc41aced0ed023083dd7899",
+            "head_repo_id": 1440390070,
+            "head_sha": "1336cad5dca578b673f5c67d639844a111baef55",
+            "mode": "merge_result",
+            "plan_digest": "39c6bd10cd627a7ca0732cadfa3c69e2f4b28a896bff5837747ff0be455950b3",
+            "pr_number": 4,
+            "provider": "github",
+            "repository": "cann-framework/vllm-ascend",
+            "repository_id": 1438625957,
+            "run_id": 41368985668,
+            "schema": 1,
+            "source_sha": "a8909c93c7d4636ae2e5afaa800e36f41ebd57cb",
+            "test_ids": [
+              "vllm_worker_os_blue",
+              "dispatch_smoke_a3_8p",
+              "dispatch_smoke_a3_16p"
+            ],
+            "tree_sha": "f2912ad60c06471100008ce34d68267fd953ad3d"
+          },
+          "devices": [
+            {
+              "node_port": "153",
+              "devices": [
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15
+              ]
+            },
+            {
+              "node_port": "154",
+              "devices": [
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7
+              ]
+            }
+          ],
+          "container_bindings": [
+            {
+              "container_name": "vllm_hccl_smoke",
+              "container_id": "9128bc83d0e2314669597e9db63a327b0809860df617c0f8fe968559f63851fc",
+              "image_id": "sha256:f81de6249765738a06b5c187dcf0968dfd0ce828e8b6b16a2771de2b0e78217c",
+              "image_ref": "quay.io/ascend/vllm-ascend:v0.23.0-a3-openeuler",
+              "node_port": "153"
+            },
+            {
+              "container_name": "vllm_hccl_smoke",
+              "container_id": "c33953f779ae16fdf46b5db195305cf0aed4febf30fd13bf2dfa0831c0301421",
+              "image_id": "sha256:f81de6249765738a06b5c187dcf0968dfd0ce828e8b6b16a2771de2b0e78217c",
+              "image_ref": "quay.io/ascend/vllm-ascend:v0.23.0-a3-openeuler",
+              "node_port": "154"
+            }
+          ],
+          "pipeline_log_sha256": "f70d463f4ccdaa80edcfc3858a112ccb2a244e05cc870682583585f8f5407f9a",
+          "case_pass_marker": false,
+          "case_failure_marker": true,
+          "intentional_failure_observed": false,
+          "empty_cleanup_scans": 4
+        }
+      ]
+    },
+    {
+      "repo": "cann-framework/vllm-ascend",
+      "run_id": 41369868409,
+      "attempt": 1,
+      "url": "https://github.com/cann-framework/vllm-ascend/actions/runs/41369868409/attempts/1",
+      "status": "completed",
+      "conclusion": "success",
+      "head_sha": "13b02cd5f40cbe999f3968ba3904dff2255947c5",
+      "expected": "success",
+      "jobs": [
+        {
+          "name": "prepare",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "dispatch_smoke_a3_16p",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "dispatch_smoke_a3_8p",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "vllm_worker_os_blue",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Lite-Actions-Smoke",
+          "status": "completed",
+          "conclusion": "success"
+        }
+      ],
+      "cases": [
+        {
+          "test_id": "vllm_worker_os_blue",
+          "phase": "REPORTED",
+          "status": "PASS",
+          "exit_code": 0,
+          "cleanup_verified": true,
+          "quarantined": false,
+          "plan_digest": "c385815d1503d902a4eea439a00034acda135c599d931ab528e8f4b7d69963b5",
+          "source": {
+            "attempt": 1,
+            "base_ref": "main",
+            "base_sha": "cc5caeaf08b2e29b3dc41aced0ed023083dd7899",
+            "control_sha": "cc5caeaf08b2e29b3dc41aced0ed023083dd7899",
+            "head_repo_id": 1440390070,
+            "head_sha": "13b02cd5f40cbe999f3968ba3904dff2255947c5",
+            "mode": "merge_result",
+            "plan_digest": "c385815d1503d902a4eea439a00034acda135c599d931ab528e8f4b7d69963b5",
+            "pr_number": 4,
+            "provider": "github",
+            "repository": "cann-framework/vllm-ascend",
+            "repository_id": 1438625957,
+            "run_id": 41369868409,
+            "schema": 1,
+            "source_sha": "033eb6b8e111bbb6bd6abb3bdba59526dfc98b13",
+            "test_ids": [
+              "vllm_worker_os_blue",
+              "dispatch_smoke_a3_8p",
+              "dispatch_smoke_a3_16p"
+            ],
+            "tree_sha": "20e0d62a1f8b6d28cb16016d3a4aea938714d4a4"
+          },
+          "devices": [],
+          "container_bindings": []
+        },
+        {
+          "test_id": "dispatch_smoke_a3_8p",
+          "phase": "REPORTED",
+          "status": "PASS",
+          "exit_code": 0,
+          "cleanup_verified": true,
+          "quarantined": false,
+          "plan_digest": "c385815d1503d902a4eea439a00034acda135c599d931ab528e8f4b7d69963b5",
+          "source": {
+            "attempt": 1,
+            "base_ref": "main",
+            "base_sha": "cc5caeaf08b2e29b3dc41aced0ed023083dd7899",
+            "control_sha": "cc5caeaf08b2e29b3dc41aced0ed023083dd7899",
+            "head_repo_id": 1440390070,
+            "head_sha": "13b02cd5f40cbe999f3968ba3904dff2255947c5",
+            "mode": "merge_result",
+            "plan_digest": "c385815d1503d902a4eea439a00034acda135c599d931ab528e8f4b7d69963b5",
+            "pr_number": 4,
+            "provider": "github",
+            "repository": "cann-framework/vllm-ascend",
+            "repository_id": 1438625957,
+            "run_id": 41369868409,
+            "schema": 1,
+            "source_sha": "033eb6b8e111bbb6bd6abb3bdba59526dfc98b13",
+            "test_ids": [
+              "vllm_worker_os_blue",
+              "dispatch_smoke_a3_8p",
+              "dispatch_smoke_a3_16p"
+            ],
+            "tree_sha": "20e0d62a1f8b6d28cb16016d3a4aea938714d4a4"
+          },
+          "devices": [
+            {
+              "node_port": "154",
+              "devices": [
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15
+              ]
+            }
+          ],
+          "container_bindings": [
+            {
+              "container_name": "vllm_hccl_smoke",
+              "container_id": "c33953f779ae16fdf46b5db195305cf0aed4febf30fd13bf2dfa0831c0301421",
+              "image_id": "sha256:f81de6249765738a06b5c187dcf0968dfd0ce828e8b6b16a2771de2b0e78217c",
+              "image_ref": "quay.io/ascend/vllm-ascend:v0.23.0-a3-openeuler",
+              "node_port": "154"
+            }
+          ],
+          "pipeline_log_sha256": "495f35c09c57552130965a5947e866652f920b9c190d717816dd627be5bb5aaf",
+          "case_pass_marker": true,
+          "case_failure_marker": false,
+          "intentional_failure_observed": false,
+          "empty_cleanup_scans": 2
+        },
+        {
+          "test_id": "dispatch_smoke_a3_16p",
+          "phase": "REPORTED",
+          "status": "PASS",
+          "exit_code": 0,
+          "cleanup_verified": true,
+          "quarantined": false,
+          "plan_digest": "c385815d1503d902a4eea439a00034acda135c599d931ab528e8f4b7d69963b5",
+          "source": {
+            "attempt": 1,
+            "base_ref": "main",
+            "base_sha": "cc5caeaf08b2e29b3dc41aced0ed023083dd7899",
+            "control_sha": "cc5caeaf08b2e29b3dc41aced0ed023083dd7899",
+            "head_repo_id": 1440390070,
+            "head_sha": "13b02cd5f40cbe999f3968ba3904dff2255947c5",
+            "mode": "merge_result",
+            "plan_digest": "c385815d1503d902a4eea439a00034acda135c599d931ab528e8f4b7d69963b5",
+            "pr_number": 4,
+            "provider": "github",
+            "repository": "cann-framework/vllm-ascend",
+            "repository_id": 1438625957,
+            "run_id": 41369868409,
+            "schema": 1,
+            "source_sha": "033eb6b8e111bbb6bd6abb3bdba59526dfc98b13",
+            "test_ids": [
+              "vllm_worker_os_blue",
+              "dispatch_smoke_a3_8p",
+              "dispatch_smoke_a3_16p"
+            ],
+            "tree_sha": "20e0d62a1f8b6d28cb16016d3a4aea938714d4a4"
+          },
+          "devices": [
+            {
+              "node_port": "153",
+              "devices": [
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15
+              ]
+            },
+            {
+              "node_port": "154",
+              "devices": [
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7
+              ]
+            }
+          ],
+          "container_bindings": [
+            {
+              "container_name": "vllm_hccl_smoke",
+              "container_id": "9128bc83d0e2314669597e9db63a327b0809860df617c0f8fe968559f63851fc",
+              "image_id": "sha256:f81de6249765738a06b5c187dcf0968dfd0ce828e8b6b16a2771de2b0e78217c",
+              "image_ref": "quay.io/ascend/vllm-ascend:v0.23.0-a3-openeuler",
+              "node_port": "153"
+            },
+            {
+              "container_name": "vllm_hccl_smoke",
+              "container_id": "c33953f779ae16fdf46b5db195305cf0aed4febf30fd13bf2dfa0831c0301421",
+              "image_id": "sha256:f81de6249765738a06b5c187dcf0968dfd0ce828e8b6b16a2771de2b0e78217c",
+              "image_ref": "quay.io/ascend/vllm-ascend:v0.23.0-a3-openeuler",
+              "node_port": "154"
+            }
+          ],
+          "pipeline_log_sha256": "8640dc7e50410fe22e24db30ed104a37fb789c2b21b8baef948a173fd36e0458",
+          "case_pass_marker": true,
+          "case_failure_marker": false,
+          "intentional_failure_observed": false,
+          "empty_cleanup_scans": 4
+        }
+      ]
+    }
+  ],
+  "lock_snapshot": {
+    "at_utc": "2026-11-02T01:00:51.165345+00:00",
+    "active_allocations": [
+      {
+        "key": "migration_guard_50262de0804176e228efa26ff0acf8eb72eb5b363205b9e2e4bdded4ef956a7c",
+        "phase": "REPORTED",
+        "quarantined": true,
+        "devices": [
+          [
+            "153",
+            0
+          ],
+          [
+            "153",
+            1
+          ],
+          [
+            "153",
+            2
+          ],
+          [
+            "153",
+            3
+          ],
+          [
+            "153",
+            4
+          ],
+          [
+            "153",
+            5
+          ],
+          [
+            "153",
+            6
+          ],
+          [
+            "153",
+            7
+          ]
+        ]
+      }
+    ],
+    "duplicate_physical_device": false
+  },
+  "deployment": {
+    "schema": 1,
+    "at_utc": "20261102T004418Z",
+    "worker_sha": "f4b15e32b8348d0762cb808a85f7ea0a6f33745a",
+    "control_sha": "cc5caeaf08b2e29b3dc41aced0ed023083dd7899",
+    "previous_release": "/opt/lite-actions/releases/55d1909b53bb2552f8a6e291b4fe63311a4cc63b",
+    "release": "/opt/lite-actions/releases/f4b15e32b8348d0762cb808a85f7ea0a6f33745a",
+    "service_pid": 142932,
+    "state_records": 82,
+    "state_unchanged": true,
+    "quarantine_preserved": true,
+    "production_config_unchanged": true,
+    "hardware_acceptance": "PASSED_FOR_THIS_RELEASE"
+  },
+  "cpu_evidence": {
+    "exact-f4b15e3-tests.log": "81e948af27a3f85d65b29ea942431b8f60429dd57e181269ed9a8d727c5b2176",
+    "exact-f4b15e3-lint.log": "0c362e5498c31c62791113a7ab38129abf3f0ffc5d5ce814d379bd65a87bb464",
+    "exact-05216f3-tests.log": "54be38b7a251ab141d81437067bdbb903b656e77c276b49079267c568033319d",
+    "exact-05216f3-lint.log": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+    "exact-05216f3-actionlint.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "overall_status": "PASS_VLLM_BLUE_OS_8P_16P_PRODUCTION",
+  "finalized_at_utc": "2026-11-02T01:01:15.585098+00:00",
+  "hardware_evidence": [
+    {
+      "run_id": 41368818404,
+      "test_id": "dispatch_smoke_a3_8p",
+      "evidence": {
+        "all_reduce_sum": 28.0,
+        "payload_path": "/mnt/share/ci_tests/vllm_2026-11-02_08-45-06_run-41368818404_attempt-1_test-dispatch_smoke_a3_8p/node0/repo/.github/scripts/lite_actions/blue_hccl_payload.py",
+        "schema": 1,
+        "source_sha": "cc5caeaf08b2e29b3dc41aced0ed023083dd7899",
+        "status": "PASS",
+        "test_id": "dispatch_smoke_a3_8p",
+        "torch_npu_version": "2.10.0.post4",
+        "torch_version": "2.10.0+cpu",
+        "world_size": 8
+      }
+    },
+    {
+      "run_id": 41368818404,
+      "test_id": "dispatch_smoke_a3_16p",
+      "evidence": {
+        "all_reduce_sum": 120.0,
+        "payload_path": "/mnt/share/ci_tests/vllm_2026-11-02_08-45-06_run-41368818404_attempt-1_test-dispatch_smoke_a3_16p/node0/repo/.github/scripts/lite_actions/blue_hccl_payload.py",
+        "schema": 1,
+        "source_sha": "cc5caeaf08b2e29b3dc41aced0ed023083dd7899",
+        "status": "PASS",
+        "test_id": "dispatch_smoke_a3_16p",
+        "torch_npu_version": "2.10.0.post4",
+        "torch_version": "2.10.0+cpu",
+        "world_size": 16
+      }
+    },
+    {
+      "run_id": 41369868409,
+      "test_id": "dispatch_smoke_a3_8p",
+      "evidence": {
+        "all_reduce_sum": 28.0,
+        "payload_path": "/mnt/share/ci_tests/vllm_2026-11-02_08-56-55_run-41369868409_attempt-1_test-dispatch_smoke_a3_8p/node0/repo/.github/scripts/lite_actions/blue_hccl_payload.py",
+        "schema": 1,
+        "source_sha": "033eb6b8e111bbb6bd6abb3bdba59526dfc98b13",
+        "status": "PASS",
+        "test_id": "dispatch_smoke_a3_8p",
+        "torch_npu_version": "2.10.0.post4",
+        "torch_version": "2.10.0+cpu",
+        "world_size": 8
+      }
+    },
+    {
+      "run_id": 41369868409,
+      "test_id": "dispatch_smoke_a3_16p",
+      "evidence": {
+        "all_reduce_sum": 120.0,
+        "payload_path": "/mnt/share/ci_tests/vllm_2026-11-02_08-56-55_run-41369868409_attempt-1_test-dispatch_smoke_a3_16p/node0/repo/.github/scripts/lite_actions/blue_hccl_payload.py",
+        "schema": 1,
+        "source_sha": "033eb6b8e111bbb6bd6abb3bdba59526dfc98b13",
+        "status": "PASS",
+        "test_id": "dispatch_smoke_a3_16p",
+        "torch_npu_version": "2.10.0.post4",
+        "torch_version": "2.10.0+cpu",
+        "world_size": 16
+      }
+    }
+  ],
+  "negative_execution_evidence": [
+    {
+      "run_id": 41368985668,
+      "test_id": "dispatch_smoke_a3_8p",
+      "signature_observed": true,
+      "matching_lines": [
+        "[rank7]:     raise RuntimeError(\"EXPECTED_BLUE_ACCEPTANCE_PAYLOAD_FAILURE_20261102\")",
+        "[rank7]: RuntimeError: EXPECTED_BLUE_ACCEPTANCE_PAYLOAD_FAILURE_20261102"
+      ],
+      "cleanup_verified": true
+    },
+    {
+      "run_id": 41368985668,
+      "test_id": "dispatch_smoke_a3_16p",
+      "signature_observed": true,
+      "matching_lines": [
+        "[rank1]:     raise RuntimeError(\"EXPECTED_BLUE_ACCEPTANCE_PAYLOAD_FAILURE_20261102\")",
+        "[rank1]: RuntimeError: EXPECTED_BLUE_ACCEPTANCE_PAYLOAD_FAILURE_20261102"
+      ],
+      "cleanup_verified": true
+    }
+  ],
+  "current_pr": {
+    "number": 4,
+    "head_sha": "13b02cd5f40cbe999f3968ba3904dff2255947c5",
+    "base_sha": "cc5caeaf08b2e29b3dc41aced0ed023083dd7899",
+    "merge_sha": "033eb6b8e111bbb6bd6abb3bdba59526dfc98b13",
+    "tree_sha": "20e0d62a1f8b6d28cb16016d3a4aea938714d4a4",
+    "labels": [
+      "lite-a3-blue"
+    ],
+    "merged": false
+  },
+  "quarantine_preserved": true,
+  "worker_active": true,
+  "physical_lock_snapshots": [
+    {
+      "at_utc": "2026-11-02T00:48:20.142046+00:00",
+      "active_allocations": [
+        {
+          "key": "migration_guard_50262de0804176e228efa26ff0acf8eb72eb5b363205b9e2e4bdded4ef956a7c",
+          "phase": "REPORTED",
+          "quarantined": true,
+          "devices": [
+            [
+              "153",
+              0
+            ],
+            [
+              "153",
+              1
+            ],
+            [
+              "153",
+              2
+            ],
+            [
+              "153",
+              3
+            ],
+            [
+              "153",
+              4
+            ],
+            [
+              "153",
+              5
+            ],
+            [
+              "153",
+              6
+            ],
+            [
+              "153",
+              7
+            ]
+          ]
+        },
+        {
+          "key": "cann-framework/torchtitan-npu:41368844204:1:case_001_dispatch_smoke_8p",
+          "phase": "RUNNING",
+          "quarantined": false,
+          "devices": [
+            [
+              "154",
+              8
+            ],
+            [
+              "154",
+              9
+            ],
+            [
+              "154",
+              10
+            ],
+            [
+              "154",
+              11
+            ],
+            [
+              "154",
+              12
+            ],
+            [
+              "154",
+              13
+            ],
+            [
+              "154",
+              14
+            ],
+            [
+              "154",
+              15
+            ]
+          ]
+        }
+      ],
+      "duplicate_physical_device": false
+    },
+    {
+      "at_utc": "2026-11-02T00:49:34.966850+00:00",
+      "active_allocations": [
+        {
+          "key": "migration_guard_50262de0804176e228efa26ff0acf8eb72eb5b363205b9e2e4bdded4ef956a7c",
+          "phase": "REPORTED",
+          "quarantined": true,
+          "devices": [
+            [
+              "153",
+              0
+            ],
+            [
+              "153",
+              1
+            ],
+            [
+              "153",
+              2
+            ],
+            [
+              "153",
+              3
+            ],
+            [
+              "153",
+              4
+            ],
+            [
+              "153",
+              5
+            ],
+            [
+              "153",
+              6
+            ],
+            [
+              "153",
+              7
+            ]
+          ]
+        },
+        {
+          "key": "cann-framework/torchtitan-npu:41368844204:1:case_001_dispatch_smoke_8p",
+          "phase": "CLEANING",
+          "quarantined": false,
+          "devices": [
+            [
+              "154",
+              8
+            ],
+            [
+              "154",
+              9
+            ],
+            [
+              "154",
+              10
+            ],
+            [
+              "154",
+              11
+            ],
+            [
+              "154",
+              12
+            ],
+            [
+              "154",
+              13
+            ],
+            [
+              "154",
+              14
+            ],
+            [
+              "154",
+              15
+            ]
+          ]
+        },
+        {
+          "key": "cann-framework/torchtitan-npu:41368844204:1:case_002_dispatch_smoke_16p",
+          "phase": "STAGING",
+          "quarantined": false,
+          "devices": [
+            [
+              "153",
+              8
+            ],
+            [
+              "153",
+              9
+            ],
+            [
+              "153",
+              10
+            ],
+            [
+              "153",
+              11
+            ],
+            [
+              "153",
+              12
+            ],
+            [
+              "153",
+              13
+            ],
+            [
+              "153",
+              14
+            ],
+            [
+              "153",
+              15
+            ],
+            [
+              "154",
+              0
+            ],
+            [
+              "154",
+              1
+            ],
+            [
+              "154",
+              2
+            ],
+            [
+              "154",
+              3
+            ],
+            [
+              "154",
+              4
+            ],
+            [
+              "154",
+              5
+            ],
+            [
+              "154",
+              6
+            ],
+            [
+              "154",
+              7
+            ]
+          ]
+        }
+      ],
+      "duplicate_physical_device": false
+    },
+    {
+      "at_utc": "2026-11-02T00:50:11.184139+00:00",
+      "active_allocations": [
+        {
+          "key": "migration_guard_50262de0804176e228efa26ff0acf8eb72eb5b363205b9e2e4bdded4ef956a7c",
+          "phase": "REPORTED",
+          "quarantined": true,
+          "devices": [
+            [
+              "153",
+              0
+            ],
+            [
+              "153",
+              1
+            ],
+            [
+              "153",
+              2
+            ],
+            [
+              "153",
+              3
+            ],
+            [
+              "153",
+              4
+            ],
+            [
+              "153",
+              5
+            ],
+            [
+              "153",
+              6
+            ],
+            [
+              "153",
+              7
+            ]
+          ]
+        },
+        {
+          "key": "cann-framework/torchtitan-npu:41368844204:1:case_001_dispatch_smoke_8p",
+          "phase": "CLEANING",
+          "quarantined": false,
+          "devices": [
+            [
+              "154",
+              8
+            ],
+            [
+              "154",
+              9
+            ],
+            [
+              "154",
+              10
+            ],
+            [
+              "154",
+              11
+            ],
+            [
+              "154",
+              12
+            ],
+            [
+              "154",
+              13
+            ],
+            [
+              "154",
+              14
+            ],
+            [
+              "154",
+              15
+            ]
+          ]
+        },
+        {
+          "key": "cann-framework/torchtitan-npu:41368844204:1:case_002_dispatch_smoke_16p",
+          "phase": "RUNNING",
+          "quarantined": false,
+          "devices": [
+            [
+              "153",
+              8
+            ],
+            [
+              "153",
+              9
+            ],
+            [
+              "153",
+              10
+            ],
+            [
+              "153",
+              11
+            ],
+            [
+              "153",
+              12
+            ],
+            [
+              "153",
+              13
+            ],
+            [
+              "153",
+              14
+            ],
+            [
+              "153",
+              15
+            ],
+            [
+              "154",
+              0
+            ],
+            [
+              "154",
+              1
+            ],
+            [
+              "154",
+              2
+            ],
+            [
+              "154",
+              3
+            ],
+            [
+              "154",
+              4
+            ],
+            [
+              "154",
+              5
+            ],
+            [
+              "154",
+              6
+            ],
+            [
+              "154",
+              7
+            ]
+          ]
+        }
+      ],
+      "duplicate_physical_device": false
+    },
+    {
+      "at_utc": "2026-11-02T00:50:35.441815+00:00",
+      "active_allocations": [
+        {
+          "key": "migration_guard_50262de0804176e228efa26ff0acf8eb72eb5b363205b9e2e4bdded4ef956a7c",
+          "phase": "REPORTED",
+          "quarantined": true,
+          "devices": [
+            [
+              "153",
+              0
+            ],
+            [
+              "153",
+              1
+            ],
+            [
+              "153",
+              2
+            ],
+            [
+              "153",
+              3
+            ],
+            [
+              "153",
+              4
+            ],
+            [
+              "153",
+              5
+            ],
+            [
+              "153",
+              6
+            ],
+            [
+              "153",
+              7
+            ]
+          ]
+        },
+        {
+          "key": "cann-framework/torchtitan-npu:41368844204:1:case_002_dispatch_smoke_16p",
+          "phase": "RUNNING",
+          "quarantined": false,
+          "devices": [
+            [
+              "153",
+              8
+            ],
+            [
+              "153",
+              9
+            ],
+            [
+              "153",
+              10
+            ],
+            [
+              "153",
+              11
+            ],
+            [
+              "153",
+              12
+            ],
+            [
+              "153",
+              13
+            ],
+            [
+              "153",
+              14
+            ],
+            [
+              "153",
+              15
+            ],
+            [
+              "154",
+              0
+            ],
+            [
+              "154",
+              1
+            ],
+            [
+              "154",
+              2
+            ],
+            [
+              "154",
+              3
+            ],
+            [
+              "154",
+              4
+            ],
+            [
+              "154",
+              5
+            ],
+            [
+              "154",
+              6
+            ],
+            [
+              "154",
+              7
+            ]
+          ]
+        },
+        {
+          "key": "cann-framework/vllm-ascend:41368985668:1:case_001_dispatch_smoke_a3_8p",
+          "phase": "STAGING",
+          "quarantined": false,
+          "devices": [
+            [
+              "154",
+              8
+            ],
+            [
+              "154",
+              9
+            ],
+            [
+              "154",
+              10
+            ],
+            [
+              "154",
+              11
+            ],
+            [
+              "154",
+              12
+            ],
+            [
+              "154",
+              13
+            ],
+            [
+              "154",
+              14
+            ],
+            [
+              "154",
+              15
+            ]
+          ]
+        }
+      ],
+      "duplicate_physical_device": false
+    },
+    {
+      "at_utc": "2026-11-02T00:51:45.255416+00:00",
+      "active_allocations": [
+        {
+          "key": "migration_guard_50262de0804176e228efa26ff0acf8eb72eb5b363205b9e2e4bdded4ef956a7c",
+          "phase": "REPORTED",
+          "quarantined": true,
+          "devices": [
+            [
+              "153",
+              0
+            ],
+            [
+              "153",
+              1
+            ],
+            [
+              "153",
+              2
+            ],
+            [
+              "153",
+              3
+            ],
+            [
+              "153",
+              4
+            ],
+            [
+              "153",
+              5
+            ],
+            [
+              "153",
+              6
+            ],
+            [
+              "153",
+              7
+            ]
+          ]
+        },
+        {
+          "key": "cann-framework/torchtitan-npu:41368844204:1:case_002_dispatch_smoke_16p",
+          "phase": "CLEANING",
+          "quarantined": false,
+          "devices": [
+            [
+              "153",
+              8
+            ],
+            [
+              "153",
+              9
+            ],
+            [
+              "153",
+              10
+            ],
+            [
+              "153",
+              11
+            ],
+            [
+              "153",
+              12
+            ],
+            [
+              "153",
+              13
+            ],
+            [
+              "153",
+              14
+            ],
+            [
+              "153",
+              15
+            ],
+            [
+              "154",
+              0
+            ],
+            [
+              "154",
+              1
+            ],
+            [
+              "154",
+              2
+            ],
+            [
+              "154",
+              3
+            ],
+            [
+              "154",
+              4
+            ],
+            [
+              "154",
+              5
+            ],
+            [
+              "154",
+              6
+            ],
+            [
+              "154",
+              7
+            ]
+          ]
+        },
+        {
+          "key": "cann-framework/vllm-ascend:41368985668:1:case_001_dispatch_smoke_a3_8p",
+          "phase": "RUNNING",
+          "quarantined": false,
+          "devices": [
+            [
+              "154",
+              8
+            ],
+            [
+              "154",
+              9
+            ],
+            [
+              "154",
+              10
+            ],
+            [
+              "154",
+              11
+            ],
+            [
+              "154",
+              12
+            ],
+            [
+              "154",
+              13
+            ],
+            [
+              "154",
+              14
+            ],
+            [
+              "154",
+              15
+            ]
+          ]
+        }
+      ],
+      "duplicate_physical_device": false
+    },
+    {
+      "at_utc": "2026-11-02T00:53:16.433339+00:00",
+      "active_allocations": [
+        {
+          "key": "migration_guard_50262de0804176e228efa26ff0acf8eb72eb5b363205b9e2e4bdded4ef956a7c",
+          "phase": "REPORTED",
+          "quarantined": true,
+          "devices": [
+            [
+              "153",
+              0
+            ],
+            [
+              "153",
+              1
+            ],
+            [
+              "153",
+              2
+            ],
+            [
+              "153",
+              3
+            ],
+            [
+              "153",
+              4
+            ],
+            [
+              "153",
+              5
+            ],
+            [
+              "153",
+              6
+            ],
+            [
+              "153",
+              7
+            ]
+          ]
+        },
+        {
+          "key": "cann-framework/vllm-ascend:41368985668:1:case_002_dispatch_smoke_a3_16p",
+          "phase": "STAGING",
+          "quarantined": false,
+          "devices": [
+            [
+              "153",
+              8
+            ],
+            [
+              "153",
+              9
+            ],
+            [
+              "153",
+              10
+            ],
+            [
+              "153",
+              11
+            ],
+            [
+              "153",
+              12
+            ],
+            [
+              "153",
+              13
+            ],
+            [
+              "153",
+              14
+            ],
+            [
+              "153",
+              15
+            ],
+            [
+              "154",
+              0
+            ],
+            [
+              "154",
+              1
+            ],
+            [
+              "154",
+              2
+            ],
+            [
+              "154",
+              3
+            ],
+            [
+              "154",
+              4
+            ],
+            [
+              "154",
+              5
+            ],
+            [
+              "154",
+              6
+            ],
+            [
+              "154",
+              7
+            ]
+          ]
+        }
+      ],
+      "duplicate_physical_device": false
+    },
+    {
+      "at_utc": "2026-11-02T00:57:29.016780+00:00",
+      "active_allocations": [
+        {
+          "key": "migration_guard_50262de0804176e228efa26ff0acf8eb72eb5b363205b9e2e4bdded4ef956a7c",
+          "phase": "REPORTED",
+          "quarantined": true,
+          "devices": [
+            [
+              "153",
+              0
+            ],
+            [
+              "153",
+              1
+            ],
+            [
+              "153",
+              2
+            ],
+            [
+              "153",
+              3
+            ],
+            [
+              "153",
+              4
+            ],
+            [
+              "153",
+              5
+            ],
+            [
+              "153",
+              6
+            ],
+            [
+              "153",
+              7
+            ]
+          ]
+        }
+      ],
+      "duplicate_physical_device": false
+    },
+    {
+      "at_utc": "2026-11-02T01:00:51.165345+00:00",
+      "active_allocations": [
+        {
+          "key": "migration_guard_50262de0804176e228efa26ff0acf8eb72eb5b363205b9e2e4bdded4ef956a7c",
+          "phase": "REPORTED",
+          "quarantined": true,
+          "devices": [
+            [
+              "153",
+              0
+            ],
+            [
+              "153",
+              1
+            ],
+            [
+              "153",
+              2
+            ],
+            [
+              "153",
+              3
+            ],
+            [
+              "153",
+              4
+            ],
+            [
+              "153",
+              5
+            ],
+            [
+              "153",
+              6
+            ],
+            [
+              "153",
+              7
+            ]
+          ]
+        }
+      ],
+      "duplicate_physical_device": false
+    }
+  ],
+  "merge_gate_mode": "versioned_only",
+  "merge_gate": "NOT_PROVIDED",
+  "limitations": [
+    "This is the GitHub-native vLLM Blue smoke release, not completion of the TorchTitan GitCode-forward DoD.",
+    "A stale synthetic-merge Base was safely rejected in run 41368791253. The test PR was refreshed before the new-Head acceptance; autonomous recovery of that particular Base-only race is not claimed.",
+    "Manual explicit case subsets remain supported; empty manual selection still preserves the existing A5 8P route.",
+    "Yellow production state and required checks were not changed. No business or acceptance PR was merged."
+  ]
+}
