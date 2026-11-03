@@ -17,7 +17,8 @@ from .common import (
     canonical,
     context,
     emit_failure,
-    release,
+    branch,
+    repository,
     require,
     run_identity,
     snapshot,
@@ -42,7 +43,10 @@ def capture(
         "INVALID_PR_NUMBER",
     )
     run_identity(api, run_id, control)
-    release(api, control)
+    # Capture is provisional; Forward verifies the full GitHub release
+    # before dispatch and before accepting current results.
+    repository(api)
+    require(branch(api, "master") == control, "GITCODE_CONTROL_CHANGED")
     pr = snapshot(api, int(number))
     require(pr["base_sha"] == control, "CAPTURE_BASE_NOT_CONTROL")
     at = int(clock())

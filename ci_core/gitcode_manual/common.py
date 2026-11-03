@@ -107,6 +107,33 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def _github_rate_limit_fallback_route(path):
+    """Allow an authenticated retry only for fixed public control reads."""
+    root = "/repos/" + GH_REPO
+    if path in {root, root + "/branches/master", root + f"/actions/workflows/{GH_WORKFLOW_ID}"}:
+        return True
+    run = re.fullmatch(re.escape(root) + r"/actions/runs/[0-9]+(?:/jobs\?filter=latest&per_page=100)?", path)
+    if run:
+        return True
+    prefix = root + f"/actions/workflows/{GH_WORKFLOW_ID}/runs?"
+    if not path.startswith(prefix):
+        return False
+    try:
+        query = urllib.parse.parse_qs(path[len(prefix):], strict_parsing=True)
+    except ValueError:
+        return False
+    return (
+        set(query) == {"event", "branch", "head_sha", "actor", "per_page", "page"}
+        and query["event"] == ["workflow_dispatch"]
+        and query["branch"] == ["master"]
+        and len(query["head_sha"]) == 1
+        and bool(re.fullmatch(r"[0-9a-f]{40}", query["head_sha"][0]))
+        and query["actor"] == [ALLOWED_ACTOR]
+        and query["per_page"] == ["100"]
+        and query["page"] == ["1"]
+    )
+
+
 class API:
     def __init__(self, environment):
         self.gitcode_token = environment.get("ATOMGIT_TOKEN", "")
@@ -224,12 +251,35 @@ class API:
             with self.opener.open(request, timeout=20) as response:
                 raw = response.read(1024 * 1024 + 1)
         except urllib.error.HTTPError as error:
-            raise ManualForwardError(
-                "API_"
-                + api_route_label(service, path, dispatch=dispatch)
-                + "_HTTP_"
-                + str(error.code)
-            ) from None
+            # GitCode hosted runners share an anonymous GitHub quota. Retry only
+            # the explicitly allowlisted read once with the already scoped token.
+            retry = (
+                service == "github" and body is None and not dispatch
+                and not authenticated_read and error.code == 403
+                and error.headers is not None
+                and error.headers.get("X-RateLimit-Remaining") == "0"
+                and self.github_token
+                and not any(ord(c) < 32 for c in self.github_token)
+                and _github_rate_limit_fallback_route(path)
+            )
+            if retry:
+                headers["Authorization"] = "Bearer " + self.github_token
+                authenticated_request = urllib.request.Request(origin + path, headers=headers, method="GET")
+                try:
+                    with self.opener.open(authenticated_request, timeout=20) as response:
+                        raw = response.read(1024 * 1024 + 1)
+                except urllib.error.HTTPError as retry_error:
+                    raise ManualForwardError(
+                        "API_" + api_route_label(service, path, dispatch=False)
+                        + "_HTTP_" + str(retry_error.code)
+                    ) from None
+            else:
+                raise ManualForwardError(
+                    "API_"
+                    + api_route_label(service, path, dispatch=dispatch)
+                    + "_HTTP_"
+                    + str(error.code)
+                ) from None
         require(len(raw) <= 1024 * 1024, "API_RESPONSE_TOO_LARGE")
         if not raw:
             return None

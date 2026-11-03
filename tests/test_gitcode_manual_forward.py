@@ -687,6 +687,16 @@ class HostedManualTests(unittest.TestCase):
             ],
         )
 
+    def test_capture_uses_only_gitcode_and_forward_revalidates_github(self):
+        with patch.object(self.api, "gh", side_effect=AssertionError("unexpected GitHub read")):
+            self.api.log = capture.capture(
+                self.env, self.api, clock=lambda: self.now, nonce_factory=lambda: "n" * 32
+            ) + "\n"
+        with patch.object(self.api, "gh", side_effect=ManualForwardError("GITHUB_CONTROL_CHANGED")):
+            with self.assertRaisesRegex(ManualForwardError, "GITHUB_CONTROL_CHANGED"):
+                dispatch.retrieve_intent(self.api, self.env, clock=lambda: self.now)
+        self.assertEqual(self.api.posts, 0)
+
     def test_manual_only_attempt_repo_actor_and_case_boundaries(self):
         for field, value in (
             ("EVENT_NAME", "MR"),
@@ -1758,6 +1768,67 @@ class HostedManualTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(common.ManualForwardError, "CANNOT_WRITE"):
             api.gh("/issues", body={})
+
+    def test_exhausted_public_quota_retries_fixed_run_read_once_with_token(self):
+        api = common.API({"LITE_ACTIONS_GITHUB_TOKEN": "synthetic-github"})
+        rate_error = urllib.error.HTTPError("https://api.github.com/", 403, "limit", {"X-RateLimit-Remaining": "0"}, None)
+        response = Mock()
+        response.__enter__ = lambda _: response
+        response.__exit__ = lambda *a: False
+        response.read.return_value = b"{}"
+        api.opener.open = Mock(side_effect=[rate_error, response])
+        self.assertEqual(api.gh("/actions/runs/42"), {})
+        first, second = [call.args[0] for call in api.opener.open.call_args_list]
+        self.assertIsNone(first.get_header("Authorization"))
+        self.assertEqual(second.get_header("Authorization"), "Bearer synthetic-github")
+        self.assertEqual(first.full_url, second.full_url)
+        self.assertEqual(second.get_method(), "GET")
+
+    def test_rate_limit_fallback_is_closed_for_untrusted_or_missing_identity(self):
+        for suffix, headers, token in (
+            ("/issues/1", {"X-RateLimit-Remaining": "0"}, "synthetic-github"),
+            ("/actions/runs/42", {"X-RateLimit-Remaining": "1"}, "synthetic-github"),
+            ("/actions/runs/42", {"X-RateLimit-Remaining": "0"}, ""),
+            ("/actions/runs/42/jobs?filter=all", {"X-RateLimit-Remaining": "0"}, "synthetic-github"),
+        ):
+            with self.subTest(suffix=suffix, headers=headers, token=bool(token)):
+                api = common.API({"LITE_ACTIONS_GITHUB_TOKEN": token})
+                api.opener.open = Mock(side_effect=urllib.error.HTTPError("https://api.github.com/", 403, "forbidden", headers, None))
+                with self.assertRaises(common.ManualForwardError):
+                    api.gh(suffix)
+                self.assertEqual(api.opener.open.call_count, 1)
+                self.assertIsNone(api.opener.open.call_args.args[0].get_header("Authorization"))
+
+    def test_rate_limit_fallback_scope_and_single_retry(self):
+        root = "/repos/" + common.GH_REPO
+        runs = root + f"/actions/workflows/{common.GH_WORKFLOW_ID}/runs?"
+        good_query = (
+            "event=workflow_dispatch&branch=master&head_sha=" + "a" * 40
+            + "&actor=" + common.ALLOWED_ACTOR + "&per_page=100&page=1"
+        )
+        for path in (
+            root, root + "/branches/master",
+            root + f"/actions/workflows/{common.GH_WORKFLOW_ID}",
+            root + "/actions/runs/42", root + "/actions/runs/42/jobs?filter=latest&per_page=100",
+            runs + good_query,
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(common._github_rate_limit_fallback_route(path))
+        for path in (
+            root + "/actions/runs/42/jobs?filter=all",
+            root + "/actions/runs/42/../../secrets",
+            runs + good_query + "&page=2", runs + "invalid",
+        ):
+            with self.subTest(path=path):
+                self.assertFalse(common._github_rate_limit_fallback_route(path))
+        api = common.API({"LITE_ACTIONS_GITHUB_TOKEN": "synthetic-github"})
+        error = urllib.error.HTTPError(
+            "https://api.github.com/", 403, "limit", {"X-RateLimit-Remaining": "0"}, None
+        )
+        api.opener.open = Mock(side_effect=[error, error])
+        with self.assertRaisesRegex(common.ManualForwardError, "HTTP_403"):
+            api.gh("/actions/runs/42")
+        self.assertEqual(api.opener.open.call_count, 2)
 
     def test_authenticated_plan_reads_and_signed_artifact_redirect_are_forward_only(
         self,
