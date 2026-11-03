@@ -30,12 +30,13 @@ def capture(
 ):
     run_id, control = context(environment)
     test_case = environment.get("TEST_CASE", "worker_os_blue")
-    require(
-        test_case in {"worker_os_blue", "os_8p_16p"}, "MANUAL_TEST_CASE_NOT_ALLOWED"
-    )
-    selected_cases = (
-        ("worker_os_blue",) if test_case == "worker_os_blue" else ALLOWED_CASES
-    )
+    case_sets = {
+        "worker_os_blue": ("worker_os_blue",),
+        "os_8p": ALLOWED_CASES[:2],
+        "os_8p_16p": ALLOWED_CASES,
+    }
+    require(test_case in case_sets, "MANUAL_TEST_CASE_NOT_ALLOWED")
+    selected_cases = case_sets[test_case]
     selectors = [{"test_id": name} for name in selected_cases]
     number = environment.get("PR_NUMBER", "")
     require(

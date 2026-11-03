@@ -233,6 +233,10 @@ def verify_manual_capture(
             [
                 {"test_id": "worker_os_blue"},
                 {"test_id": "dispatch_smoke_8p"},
+            ],
+            [
+                {"test_id": "worker_os_blue"},
+                {"test_id": "dispatch_smoke_8p"},
                 {"test_id": "dispatch_smoke_16p"},
             ],
         )

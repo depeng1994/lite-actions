@@ -697,6 +697,34 @@ class HostedManualTests(unittest.TestCase):
                 dispatch.retrieve_intent(self.api, self.env, clock=lambda: self.now)
         self.assertEqual(self.api.posts, 0)
 
+    def test_os_8p_capture_round_trips_through_forward_and_worker_verifier(self):
+        self.env["TEST_CASE"] = "os_8p"
+        intent = self.emit()
+        self.assertEqual(
+            intent["selectors"],
+            [{"test_id": "worker_os_blue"}, {"test_id": "dispatch_smoke_8p"}],
+        )
+        from ci_core.gitcode_manual_capture import ManualCapturePolicy, verify_manual_capture
+
+        job = copy.deepcopy(self.api.job)
+        step = job["steps"][0]
+        step.update(script_sha256=CAPTURE_BOOTSTRAP_SHA256, shell="bash", working_directory=".")
+        del step["inputs"]
+        client = SimpleNamespace(
+            repo_id=common.GC_ID,
+            action_run=lambda _: copy.deepcopy(self.api.run),
+            action_jobs=lambda _: [copy.deepcopy(job)],
+            action_job=lambda *a: copy.deepcopy(job),
+            action_step_logs=lambda *a, **k: {"complete": True, "log": self.api.log},
+        )
+        policy = ManualCapturePolicy(
+            control=SimpleNamespace(gitcode_repo_id=common.GC_ID, control_sha=S, enabled=True),
+            workflow_id="wf1", workflow_path=common.GC_WORKFLOW,
+            job_identifier="manual_capture", step_identifier="1", step_name="Capture manual request",
+            script_sha256=CAPTURE_BOOTSTRAP_SHA256, shell="bash", working_directory=".", enabled=True,
+        )
+        self.assertEqual(verify_manual_capture(intent, policy, client, now=self.now).intent, intent)
+
     def test_manual_only_attempt_repo_actor_and_case_boundaries(self):
         for field, value in (
             ("EVENT_NAME", "MR"),
@@ -746,7 +774,7 @@ class HostedManualTests(unittest.TestCase):
             ],
         )
         for invalid in (
-            [{"test_id": "worker_os_blue"}, {"test_id": "dispatch_smoke_8p"}],
+            [{"test_id": "dispatch_smoke_8p"}, {"test_id": "worker_os_blue"}],
             [
                 {"test_id": "worker_os_blue"},
                 {"test_id": "dispatch_smoke_8p"},

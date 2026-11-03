@@ -264,6 +264,7 @@ def retrieve_intent(api, environment, *, clock=time.time, historical=False):
         intent["selectors"]
         in (
             [{"test_id": "worker_os_blue"}],
+            [{"test_id": name} for name in ALLOWED_CASES[:2]],
             [{"test_id": name} for name in ALLOWED_CASES],
         ),
         "CAPTURE_CASE_NOT_ALLOWED",
