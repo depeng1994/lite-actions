@@ -347,6 +347,15 @@ class GitCodeExecutionTests(unittest.TestCase):
         self.assertNotIn("github.com", command)
         self.assertNotIn("gitcode.com", command)
 
+    def test_isolated_python_uses_only_captured_interpreter_library_directory(self):
+        node = {**self.node, "python": "/opt/python/3.12/bin/python3"}
+        prefix = backend.isolated_python_environment(node)
+        self.assertIn("env -i", prefix)
+        self.assertIn("LD_LIBRARY_PATH=/opt/python/3.12/lib", prefix)
+        for value in ("python3", "/opt/../tmp/bin/python3", "/opt/bin/python3:/evil"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                backend.isolated_python_environment({**node, "python": value})
+
     def test_cleanup_stage_timing_uses_only_safe_run_and_case_ids(self):
         runtime = self.runtime()
         with (

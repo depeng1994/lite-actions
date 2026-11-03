@@ -56,6 +56,26 @@ def quote(value):
     return shlex.quote(str(value))
 
 
+def python_library_path(node):
+    """Derive the isolated loader path from the captured container interpreter."""
+    python = node.get("python")
+    if (
+        not isinstance(python, str)
+        or not re.fullmatch(r"/[A-Za-z0-9_./+\-]+", python)
+        or any(part in {".", ".."} for part in python.split("/"))
+        or Path(python).parent.name != "bin"
+    ):
+        raise ValueError("TRUSTED_CONTAINER_PYTHON_REQUIRED")
+    return str(Path(python).parent.parent / "lib")
+
+
+def isolated_python_environment(node):
+    return (
+        "env -i HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin "
+        + "LD_LIBRARY_PATH=" + quote(python_library_path(node)) + " "
+    )
+
+
 def verify_node(node):
     """Never follow a Docker name to a replacement container during recovery."""
     if (
@@ -125,6 +145,15 @@ def capture_nodes(case, pools):
         if not python.startswith("/") or any(c in python for c in "\n\r\0"):
             raise ValueError("TRUSTED_CONTAINER_PYTHON_REQUIRED")
         node["python"] = python
+        # Discovery runs in a login shell, but launch and cleanup use env -i.
+        # Prove the captured interpreter also starts in that exact environment
+        # before a durable lease or remote job directory is created.
+        transport_run(
+            node["ssh"],
+            isolated_python_environment(node)
+            + shlex.join([python, "-I", "-c", "import sys; assert sys.version_info >= (3, 10)"]),
+            timeout=20,
+        )
         nodes.append(node)
     return nodes
 
@@ -370,7 +399,8 @@ def runner_command(node, runtime, item, phase):
     )
     # Clear container inheritance as well as the dispatcher's environment.
     return (
-        "env -i HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin bash --noprofile --norc -c "
+        isolated_python_environment(node)
+        + "bash --noprofile --norc -c "
         + quote(inner)
     )
 
@@ -393,8 +423,7 @@ def launch_node(node, runtime, item):
     )
     return transport_run(
         node["ssh"],
-        "env -i HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin "
-        + command,
+        isolated_python_environment(node) + command,
         timeout=item["execution_timeout_seconds"] + 90,
         check=False,
     ).returncode
@@ -418,8 +447,7 @@ def request_stop(node):
     )
     transport_run(
         node["ssh"],
-        "env -i HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin "
-        + command,
+        isolated_python_environment(node) + command,
         timeout=30,
     )
     stop_owned(node, node["destination"], node["task_marker"])
