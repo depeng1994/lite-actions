@@ -285,6 +285,21 @@ class Router:
 
     def finish(self, key, status, rc, lines, clean=True):
         r = self.state.read()[key]
+        if status == "PASS" and r["run"].get("_ci_provider") == "gitcode":
+            try:
+                self.client_for(r["run"]).validate_current(r["run"])
+            except ValueError:
+                status, rc, lines = (
+                    "CANCELLED",
+                    130,
+                    ["GitCode run ended or changed before result publication"],
+                )
+            except Exception:
+                status, rc, lines = (
+                    "INFRA_ERROR",
+                    125,
+                    ["GitCode run identity could not be verified"],
+                )
         self.state.update(
             key,
             phase="PENDING_REPORT",
@@ -298,6 +313,8 @@ class Router:
         run = r["run"]
         launched = False
         try:
+            if run.get("_ci_provider") == "gitcode":
+                self.client_for(run).validate_current(run)
             self.transition(key, "STAGING")
             with tempfile.TemporaryDirectory(prefix="lite-definition-") as tmp:
                 source_repo = run.get("_ci_repo", REPO)
@@ -308,6 +325,8 @@ class Router:
                     provider=run.get("_ci_provider", "github"),
                 )
                 verify_definition(archive, item, r["defaults"], repo=source_repo)
+            if run.get("_ci_provider") == "gitcode":
+                self.client_for(run).validate_current(run)
             if cancel.is_set():
                 self.finish(key, "CANCELLED", 130, ["Cancelled before launch"])
                 return

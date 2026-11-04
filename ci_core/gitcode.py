@@ -77,10 +77,28 @@ class GitCodeClient:
                 if row.get("event") != "Manual" or row.get("status") != "RUNNING":
                     continue
                 run_id = row.get("workflow_run_id")
+                if not isinstance(run_id, str) or not re.fullmatch(
+                    r"[A-Za-z0-9_-]{1,128}", run_id
+                ):
+                    continue
                 details = self.request("GET", f"/actions/runs/{run_id}", api=8)
                 # This platform's runner does not expose the current attempt.
                 # Accept only a fresh run until its identity is available there.
                 if details.get("attempt") != 1:
+                    continue
+                if any(
+                    details.get(k) != row.get(k)
+                    for k in (
+                        "workflow_run_id",
+                        "event",
+                        "status",
+                        "head_sha",
+                        "head_branch",
+                        "file_path",
+                    )
+                ) or details.get("actor", {}).get("login") != row.get("actor", {}).get(
+                    "login"
+                ):
                     continue
                 start = row.get("start_time")
                 if not isinstance(start, (int, float)):
@@ -109,6 +127,23 @@ class GitCodeClient:
             if len(rows) < 100:
                 break
         return runs
+
+    def validate_current(self, run):
+        details = self.request("GET", f"/actions/runs/{run['id']}", api=8)
+        expected = {
+            "workflow_run_id": run["id"],
+            "attempt": run["run_attempt"],
+            "head_sha": run["head_sha"],
+            "head_branch": run["head_branch"],
+            "file_path": run["path"],
+            "event": "Manual",
+            "status": "RUNNING",
+        }
+        if (
+            any(details.get(k) != v for k, v in expected.items())
+            or details.get("actor", {}).get("login") != run["actor"]["login"]
+        ):
+            raise ValueError("GitCode run changed or ended")
 
     def ci_request(self, run):
         run_id, attempt = run["id"], run["run_attempt"]

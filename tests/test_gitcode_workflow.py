@@ -100,6 +100,7 @@ class GitCodeWorkflowTests(unittest.TestCase):
                 github.connected(),
                 patch.object(gitcode, "running_workflows", return_value=[run]),
                 patch.object(gitcode, "ci_request", return_value=plan),
+                patch.object(gitcode, "validate_current"),
                 patch.object(
                     gitcode,
                     "workflow_status",
