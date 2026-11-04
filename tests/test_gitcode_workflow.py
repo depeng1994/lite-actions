@@ -148,3 +148,139 @@ class GitCodeWorkflowTests(unittest.TestCase):
                     )
                 finally:
                     router.close()
+
+    def test_cross_platform_jobs_share_device_and_port_leases(self):
+        import threading
+
+        from ci_core.resources import ResourceBusy, reserve
+        from tests.scenarios import completed_execution
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_workspace(root)
+            github = Service([definition("github_smoke", kind="npu_smoke")], root)
+            gitcode = GitCodeClient("unused-token", "depeng1994/torchtitan-npu")
+            defaults = {
+                "worker": "blue",
+                "target_pool": "pool_blue",
+                "docker": "training",
+            }
+            case = normalize(definition("gitcode_smoke", kind="npu_smoke"), defaults, 0)
+            run = {
+                "_ci_provider": "gitcode",
+                "_ci_repo": gitcode.repo,
+                "id": "abcdef0123",
+                "run_attempt": 1,
+                "head_sha": "b" * 40,
+                "path": ".gitcode/workflows/lite-actions.yml",
+                "event": "workflow_dispatch",
+                "status": "in_progress",
+                "head_branch": "master",
+                "actor": {"login": "maintainer"},
+                "created_at": "2026-01-01T00:00:00Z",
+                "name": "Dispatcher-Smoke",
+                "run_number": 1,
+            }
+            plan = {
+                "schema": 3,
+                "repo": gitcode.repo,
+                "workflow": "lite-actions.yml",
+                "run_id": run["id"],
+                "attempt": 1,
+                "sha": run["head_sha"],
+                "defaults": defaults,
+                "cases": [case],
+            }
+            plan["plan_digest"] = digest(plan)
+            entered, release, allocations, comments = (
+                threading.Barrier(3),
+                threading.Event(),
+                [],
+                [],
+            )
+
+            def execute(selected, current, **kwargs):
+                allocations.append(selected)
+                entered.wait(10)
+                release.wait(10)
+                return completed_execution(root, selected, current)
+
+            def send(sha, body):
+                entry = {
+                    "id": len(comments) + 1,
+                    "body": body,
+                    "user": {"login": "reporter"},
+                }
+                comments.append(entry)
+                return entry
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "LITE_ACTIONS_ALLOWED_ACTORS": "maintainer",
+                        "LITE_ACTIONS_GITCODE_ALLOWED_ACTORS": "maintainer",
+                        "LITE_ACTIONS_STATE_DIR": "",
+                        "LITE_ACTIONS_RESOURCE_LOCK_ROOT": str(root / "locks"),
+                    },
+                ),
+                github.connected(),
+                patch.object(gitcode, "running_workflows", return_value=[run]),
+                patch.object(gitcode, "ci_request", return_value=plan),
+                patch.object(gitcode, "validate_current"),
+                patch.object(
+                    gitcode,
+                    "workflow_status",
+                    return_value={"status": "in_progress", "run_attempt": 1},
+                ),
+                patch.object(
+                    gitcode, "commit_comments", side_effect=lambda sha: comments
+                ),
+                patch.object(gitcode, "send_result", side_effect=send),
+                patch.object(gitcode, "request", return_value=None),
+                patch("ci_core.router.verify_definition"),
+                patch("ci_core.router.execute", side_effect=execute),
+            ):
+                router = Router(
+                    root,
+                    "blue",
+                    MultiPlatformClient(github, {gitcode.repo: gitcode}),
+                    "reporter",
+                )
+                router.pools["pool_blue"]["nodes"] = router.pools["pool_blue"]["nodes"][
+                    :1
+                ]
+                try:
+                    router.tick()
+                    entered.wait(10)
+                    left, right = allocations
+                    self.assertNotEqual(left["master_port"], right["master_port"])
+                    self.assertTrue(
+                        set(left["allocation"][0]["devices"]).isdisjoint(
+                            right["allocation"][0]["devices"]
+                        )
+                        or left["allocation"][0]["host_id"]
+                        != right["allocation"][0]["host_id"]
+                    )
+                    for selected in allocations:
+                        with (
+                            self.assertRaises(ResourceBusy),
+                            reserve(root / "locks/devices", selected["allocation"]),
+                        ):
+                            pass
+                    release.set()
+                    for future, _, _ in list(router.active.values()):
+                        future.result(10)
+                    router.pump()
+                    router.flush()
+                    self.assertEqual(github.results()[0]["status"], "PASS")
+                    result = [
+                        x for x in comments if x["body"].startswith("Lite-CI-V3 ")
+                    ]
+                    self.assertEqual(
+                        json.loads(result[0]["body"].split("\n", 1)[1])["status"],
+                        "PASS",
+                    )
+                finally:
+                    release.set()
+                    router.close()
