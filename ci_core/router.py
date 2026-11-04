@@ -177,44 +177,55 @@ class Router:
 
     def receive(self, runs):
         for run in sorted(runs, key=lambda r: (r.get("created_at", ""), str(r["id"]))):
-            if not self.eligible(run):
-                continue
-            identity = (
-                run.get("_ci_provider", "github"),
-                run.get("_ci_repo", REPO),
-                run["id"],
-                run.get("run_attempt", 1),
-                run["head_sha"],
-            )
-            plan = self.plans.get(identity)
+            try:
+                self._receive_one(run)
+            except Exception as exc:
+                logging.warning(
+                    "request unavailable: %s/%s (%s)",
+                    run.get("_ci_repo", REPO),
+                    run.get("id"),
+                    type(exc).__name__,
+                )
+
+    def _receive_one(self, run):
+        if not self.eligible(run):
+            return
+        identity = (
+            run.get("_ci_provider", "github"),
+            run.get("_ci_repo", REPO),
+            run["id"],
+            run.get("run_attempt", 1),
+            run["head_sha"],
+        )
+        plan = self.plans.get(identity)
+        if plan is None:
+            plan = self.client_for(run).ci_request(run)
             if plan is None:
-                plan = self.client_for(run).ci_request(run)
-                if plan is None:
-                    continue
-                parse_plan(
-                    plan,
-                    run,
-                    run["path"].rsplit("/", 1)[-1],
-                    repo=run.get("_ci_repo", REPO),
-                )
-                self.plans[identity] = plan
-            for item in plan["cases"]:
-                if item["worker"] != self.worker:
-                    continue
-                key = task_key(run, item)
-                if key in self.state.read():
-                    continue
-                self.state.update(
-                    key,
-                    phase="QUEUED",
-                    repo=run.get("_ci_repo", REPO),
-                    run=run,
-                    item=item,
-                    digest=plan["plan_digest"],
-                    defaults=plan["defaults"],
-                    queued_at=time.time(),
-                )
-                self.transition(key, "QUEUED")
+                return
+            parse_plan(
+                plan,
+                run,
+                run["path"].rsplit("/", 1)[-1],
+                repo=run.get("_ci_repo", REPO),
+            )
+            self.plans[identity] = plan
+        for item in plan["cases"]:
+            if item["worker"] != self.worker:
+                continue
+            key = task_key(run, item)
+            if key in self.state.read():
+                continue
+            self.state.update(
+                key,
+                phase="QUEUED",
+                repo=run.get("_ci_repo", REPO),
+                run=run,
+                item=item,
+                digest=plan["plan_digest"],
+                defaults=plan["defaults"],
+                queued_at=time.time(),
+            )
+            self.transition(key, "QUEUED")
 
     def claim(self, case):
         options = candidates(case, self.pools)
@@ -514,7 +525,13 @@ class Router:
                 run["id"],
             )
             if ident not in statuses:
-                statuses[ident] = self.client_for(run).workflow_status(run["id"])
+                try:
+                    statuses[ident] = self.client_for(run).workflow_status(run["id"])
+                except Exception as exc:
+                    logging.warning(
+                        "run status unavailable: %s (%s)", run["id"], type(exc).__name__
+                    )
+                    continue
             current = statuses[ident]
             superseded = current.get("run_attempt", r["run"].get("run_attempt", 1)) > r[
                 "run"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 import subprocess
 import urllib.error
@@ -306,5 +307,12 @@ class MultiRepoGitHubClient:
     def running_workflows(self) -> list[dict]:
         runs = []
         for client in self.clients.values():
-            runs.extend(client.running_workflows())
+            try:
+                runs.extend(client.running_workflows())
+            except Exception as exc:
+                logging.warning(
+                    "repository poll unavailable: %s (%s)",
+                    client.repo,
+                    type(exc).__name__,
+                )
         return sorted(runs, key=lambda r: (r.get("created_at", ""), r["id"]))
