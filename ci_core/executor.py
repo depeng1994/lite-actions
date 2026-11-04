@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ci_core.broadcast import broadcast_job
-from ci_core.contract import SUPPORTED_REPOS, TORCHTITAN_REPO, VLLM_REPO
+from ci_core.contract import GITCODE_REPOS, SUPPORTED_REPOS, TORCHTITAN_REPO, VLLM_REPO
 from ci_core.logs import metadata, select_remote
 from ci_core.registry import resolve_test
 
@@ -60,13 +60,19 @@ def task_dir(run: dict, root: Path) -> Path:
             raise ValueError("invalid CI task Test ID")
         suffix = f"_test-{test_id}"
     source_repo = run.get("_ci_repo", TORCHTITAN_REPO)
-    if source_repo not in SUPPORTED_REPOS:
+    provider = run.get("_ci_provider", "github")
+    if source_repo not in (GITCODE_REPOS if provider == "gitcode" else SUPPORTED_REPOS):
         raise ValueError("untrusted model repo")
     logs = root / "logs/runs"
     if source_repo == VLLM_REPO:
         logs = logs / "vllm-ascend"
+    if provider == "gitcode":
+        logs = logs / "gitcode" / source_repo
+    run_id = str(run["id"])
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", run_id):
+        raise ValueError("invalid run ID")
     return logs / (
-        f"{local:%Y-%m-%d_%H-%M-%S}_run-{int(run['id'])}"
+        f"{local:%Y-%m-%d_%H-%M-%S}_run-{run_id}"
         f"_attempt-{int(run.get('run_attempt', 1))}{suffix}"
     )
 
@@ -98,7 +104,11 @@ def remote_task_name(run: dict) -> str:
         if not isinstance(test_id, str) or not SELECTOR.fullmatch(test_id):
             raise ValueError("invalid CI test ID")
         suffix += f"_test-{test_id}"
-    prefix = "vllm_" if run.get("_ci_repo") == VLLM_REPO else ""
+    prefix = (
+        "gitcode_"
+        if run.get("_ci_provider") == "gitcode"
+        else ("vllm_" if run.get("_ci_repo") == VLLM_REPO else "")
+    )
     return f"{prefix}{local:%Y-%m-%d_%H-%M-%S}_run_{name}_{number}{suffix}"
 
 
@@ -380,7 +390,12 @@ def prepare_profile(case: dict, run: dict) -> dict:
 
     with tempfile.TemporaryDirectory(prefix="lite-model-") as tmp:
         source_repo = run.get("_ci_repo", TORCHTITAN_REPO)
-        archive = model_archive(run["head_sha"], Path(tmp), source_repo=source_repo)
+        archive = model_archive(
+            run["head_sha"],
+            Path(tmp),
+            source_repo=source_repo,
+            provider=run.get("_ci_provider", "github"),
+        )
         definition = resolve_test(
             archive,
             run["_ci_test_id"],
@@ -446,7 +461,11 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
                 stderr=subprocess.STDOUT,
                 env={
                     **os.environ,
-                    "LITE_ACTIONS_MODEL_REPO": run.get("_ci_repo", TORCHTITAN_REPO),
+                    "LITE_ACTIONS_MODEL_REPO": TORCHTITAN_REPO
+                    if run.get("_ci_provider") == "gitcode"
+                    else run.get("_ci_repo", TORCHTITAN_REPO),
+                    "LITE_ACTIONS_SOURCE_PROVIDER": run.get("_ci_provider", "github"),
+                    "LITE_ACTIONS_SOURCE_REPO": run.get("_ci_repo", TORCHTITAN_REPO),
                 },
                 start_new_session=True,
             )

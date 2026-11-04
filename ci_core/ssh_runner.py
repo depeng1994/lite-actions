@@ -50,13 +50,20 @@ def ssh(
     return run(host, command, timeout=timeout, check=check)
 
 
-def model_archive(sha: str, work: Path, *, source_repo: str = MODEL_REPO) -> Path:
+def model_archive(
+    sha: str, work: Path, *, source_repo: str = MODEL_REPO, provider: str = "github"
+) -> Path:
     """Return a SHA-verified source archive, cached to avoid double Git fetches."""
-    from ci_core.contract import SUPPORTED_REPOS
+    from ci_core.contract import GITCODE_REPOS, SUPPORTED_REPOS
 
-    if not SHA.fullmatch(sha) or source_repo not in SUPPORTED_REPOS:
+    if (
+        not SHA.fullmatch(sha)
+        or provider not in {"github", "gitcode"}
+        or source_repo
+        not in (GITCODE_REPOS if provider == "gitcode" else SUPPORTED_REPOS)
+    ):
         raise ValueError("invalid commit SHA / model repository")
-    cache_dir = ROOT / "cache" / "model-archives" / source_repo
+    cache_dir = ROOT / "cache" / "model-archives" / provider / source_repo
     cache_dir.mkdir(parents=True, exist_ok=True)
     cached = cache_dir / f"{sha}.tar.gz"
     lock_path = cache_dir / f"{sha}.lock"
@@ -75,7 +82,7 @@ def model_archive(sha: str, work: Path, *, source_repo: str = MODEL_REPO) -> Pat
                 "remote",
                 "add",
                 "origin",
-                f"https://github.com/{source_repo}.git",
+                f"https://{'gitcode.com' if provider == 'gitcode' else 'github.com'}/{source_repo}.git",
             ],
             check=True,
         )
@@ -87,7 +94,7 @@ def model_archive(sha: str, work: Path, *, source_repo: str = MODEL_REPO) -> Pat
                 capture_output=True,
             )
         except subprocess.CalledProcessError:
-            if source_repo != "torchtitan-npu/vllm-ascend":
+            if provider != "github" or source_repo != "torchtitan-npu/vllm-ascend":
                 raise
             # The PR source SHA might be unreachable via the base repository.
             # This fallback is a fixed, trusted Fork checked by PR admission.
@@ -472,9 +479,17 @@ def run(
     nodes = allocations(case, pools)
     base = f"{DEST_ROOT}/{remote_dir}"
     with tempfile.TemporaryDirectory(prefix="lite-ci-stage-") as tmp:
-        archive = model_archive(sha, Path(tmp))
+        provider = os.environ.get("LITE_ACTIONS_SOURCE_PROVIDER", "github")
+        source_repo = os.environ.get("LITE_ACTIONS_SOURCE_REPO", MODEL_REPO)
+        archive = model_archive(
+            sha, Path(tmp), source_repo=source_repo, provider=provider
+        )
         definition = resolve_test(
-            archive, test_case, nodes=len(nodes), ngpu=len(nodes[0]["devices"])
+            archive,
+            test_case,
+            nodes=len(nodes),
+            ngpu=len(nodes[0]["devices"]),
+            repo=source_repo,
         )
         # These values are resolved from the pinned SHA's OverrideDefinitions.
         # The Lite Actions JSON has no testcase-owned environment fields.

@@ -30,7 +30,8 @@ from ci_core.worker_probe import probe as probe_worker
 
 
 def task_key(run, item):
-    return f"{run.get('_ci_repo', REPO)}:{run['id']}:{run.get('run_attempt', 1)}:{item['case_id']}"
+    prefix = "gitcode:" if run.get("_ci_provider") == "gitcode" else ""
+    return f"{prefix}{run.get('_ci_repo', REPO)}:{run['id']}:{run.get('run_attempt', 1)}:{item['case_id']}"
 
 
 class Router:
@@ -70,6 +71,8 @@ class Router:
 
     def client_for(self, run):
         repo = run.get("_ci_repo", REPO)
+        if hasattr(self.client, "for_run"):
+            return self.client.for_run(run)
         if hasattr(self.client, "for_repo"):
             return self.client.for_repo(repo)
         if getattr(self.client, "repo", repo) != repo:
@@ -79,6 +82,41 @@ class Router:
     def eligible(self, run):
         repo = run.get("_ci_repo", REPO)
         filename = (run.get("path") or "").rsplit("/", 1)[-1]
+        if run.get("_ci_provider") == "gitcode":
+            from ci_core.contract import GITCODE_REPOS
+
+            actors = set(
+                filter(
+                    None,
+                    os.environ.get("LITE_ACTIONS_GITCODE_ALLOWED_ACTORS", "").split(
+                        ","
+                    ),
+                )
+            )
+            branches = set(
+                filter(
+                    None,
+                    os.environ.get(
+                        "LITE_ACTIONS_GITCODE_ALLOWED_BRANCHES", "master"
+                    ).split(","),
+                )
+            )
+            workflows = set(
+                filter(
+                    None,
+                    os.environ.get(
+                        "LITE_ACTIONS_GITCODE_WORKFLOWS", "lite-actions.yml"
+                    ).split(","),
+                )
+            )
+            return (
+                repo in GITCODE_REPOS
+                and filename in workflows
+                and run.get("event") == "workflow_dispatch"
+                and run.get("status") == "in_progress"
+                and run.get("head_branch") in branches
+                and run.get("actor", {}).get("login") in actors
+            )
         if repo == VLLM_REPO:
             actors_value = os.environ.get(
                 "LITE_ACTIONS_VLLM_ALLOWED_ACTORS", "depeng1994"
@@ -138,10 +176,11 @@ class Router:
             logging.warning("progress pending for %s", key)
 
     def receive(self, runs):
-        for run in sorted(runs, key=lambda r: (r.get("created_at", ""), r["id"])):
+        for run in sorted(runs, key=lambda r: (r.get("created_at", ""), str(r["id"]))):
             if not self.eligible(run):
                 continue
             identity = (
+                run.get("_ci_provider", "github"),
                 run.get("_ci_repo", REPO),
                 run["id"],
                 run.get("run_attempt", 1),
@@ -263,7 +302,10 @@ class Router:
             with tempfile.TemporaryDirectory(prefix="lite-definition-") as tmp:
                 source_repo = run.get("_ci_repo", REPO)
                 archive = model_archive(
-                    run["head_sha"], Path(tmp), source_repo=source_repo
+                    run["head_sha"],
+                    Path(tmp),
+                    source_repo=source_repo,
+                    provider=run.get("_ci_provider", "github"),
                 )
                 verify_definition(archive, item, r["defaults"], repo=source_repo)
             if cancel.is_set():
@@ -360,7 +402,7 @@ class Router:
             ((k, r) for k, r in records.items() if r.get("phase") == "QUEUED"),
             key=lambda kv: (
                 kv[1]["run"].get("created_at", ""),
-                kv[1]["run"]["id"],
+                str(kv[1]["run"]["id"]),
                 kv[1]["item"]["order"],
             ),
         )
@@ -425,7 +467,9 @@ class Router:
                     r["run"],
                     r["item"],
                     r["report"],
-                    self.author,
+                    os.environ.get("LITE_ACTIONS_GITCODE_RESULT_AUTHOR", self.author)
+                    if r["run"].get("_ci_provider") == "gitcode"
+                    else self.author,
                 )
                 self.state.update(key, phase="REPORTED")
             except Exception:
@@ -445,7 +489,11 @@ class Router:
             }:
                 continue
             run = r["run"]
-            ident = (run.get("_ci_repo", REPO), run["id"])
+            ident = (
+                run.get("_ci_provider", "github"),
+                run.get("_ci_repo", REPO),
+                run["id"],
+            )
             if ident not in statuses:
                 statuses[ident] = self.client_for(run).workflow_status(run["id"])
             current = statuses[ident]

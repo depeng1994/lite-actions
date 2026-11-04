@@ -10,6 +10,7 @@ from pathlib import Path
 
 from ci_core.config import load
 from ci_core.contract import configured_repos
+from ci_core.gitcode import GitCodeClient, MultiPlatformClient
 from ci_core.github import GitHubClient, MultiRepoGitHubClient, authorization
 from ci_core.resources import single_agent
 from ci_core.router import Router
@@ -37,12 +38,29 @@ def main():
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
     )
     with single_agent():
-        token = authorization()
-        client = (
-            MultiRepoGitHubClient(token, repos)
-            if len(repos) > 1
-            else GitHubClient(token, repos[0])
+        client = None
+        if os.environ.get("LITE_ACTIONS_GITHUB_ENABLED", "true").lower() == "true":
+            token = authorization()
+            client = (
+                MultiRepoGitHubClient(token, repos)
+                if len(repos) > 1
+                else GitHubClient(token, repos[0])
+            )
+        gitcode_repos = tuple(
+            filter(None, os.environ.get("LITE_ACTIONS_GITCODE_REPOS", "").split(","))
         )
+        if gitcode_repos:
+            client = MultiPlatformClient(
+                client,
+                {
+                    repo: GitCodeClient(
+                        os.environ.get("LITE_ACTIONS_GITCODE_TOKEN"), repo
+                    )
+                    for repo in gitcode_repos
+                },
+            )
+        if client is None:
+            raise ValueError("at least one source provider is required")
         router = Router(
             ROOT,
             a.worker_id,

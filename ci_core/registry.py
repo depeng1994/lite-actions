@@ -109,7 +109,22 @@ def inspect_archive(archive: Path, selection: dict, *, repo=None) -> list[dict]:
             if "suite" in selection
             else ["--test-id", selection["test_id"]]
         )
-        env = {**os.environ, "PYTHONPATH": str(folder)}
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if not any(
+                s in k.upper()
+                for s in (
+                    "TOKEN",
+                    "SECRET",
+                    "PASSWORD",
+                    "CREDENTIAL",
+                    "PRIVATE_KEY",
+                    "CHECKS_KEY",
+                )
+            )
+        }
+        env["PYTHONPATH"] = str(folder)
         proc = subprocess.run(
             argv, cwd=folder, env=env, capture_output=True, text=True, timeout=45
         )

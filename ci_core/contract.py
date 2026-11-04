@@ -15,6 +15,7 @@ import re
 TORCHTITAN_REPO = "cann-framework/torchtitan-npu"
 VLLM_REPO = "torchtitan-npu/vllm-ascend"
 SUPPORTED_REPOS = frozenset({TORCHTITAN_REPO, VLLM_REPO})
+GITCODE_REPOS = frozenset({"depeng1994/torchtitan-npu", "cann/torchtitan-npu"})
 REPO = os.environ.get("LITE_ACTIONS_MODEL_REPO", TORCHTITAN_REPO)
 if REPO not in SUPPORTED_REPOS:
     raise ValueError("unsupported model repository")
@@ -161,7 +162,8 @@ def create_plan(cases, *, run_id, attempt, sha, workflow, defaults, repo=REPO):
 
 
 def parse_plan(plan, run, workflow, *, repo=REPO):
-    if repo not in SUPPORTED_REPOS:
+    gitcode = run.get("_ci_provider") == "gitcode"
+    if repo not in (GITCODE_REPOS if gitcode else SUPPORTED_REPOS):
         raise ValueError("unsupported plan repository")
     if not isinstance(plan, dict) or set(plan) != {
         "schema",
@@ -175,13 +177,30 @@ def parse_plan(plan, run, workflow, *, repo=REPO):
         "plan_digest",
     }:
         raise ValueError("invalid plan structure")
+    run_id = plan["run_id"]
+    valid_run_id = (
+        isinstance(run_id, str) and bool(re.fullmatch(r"[A-Za-z0-9_-]{1,128}", run_id))
+        if gitcode
+        else type(run_id) is int and run_id > 0
+    )
     if (
         plan["schema"] != 3
         or plan["repo"] != repo
-        or workflow not in WORKFLOWS
+        or workflow
+        not in (
+            set(
+                filter(
+                    None,
+                    os.environ.get(
+                        "LITE_ACTIONS_GITCODE_WORKFLOWS", "lite-actions.yml"
+                    ).split(","),
+                )
+            )
+            if gitcode
+            else WORKFLOWS
+        )
         or plan["workflow"] != workflow
-        or type(plan["run_id"]) is not int
-        or plan["run_id"] < 1
+        or not valid_run_id
         or type(plan["attempt"]) is not int
         or plan["attempt"] < 1
         or plan["run_id"] != run["id"]
