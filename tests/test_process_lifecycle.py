@@ -1,6 +1,8 @@
 """CPU process lifecycle through the real remote supervisor and cleanup commands."""
 
+import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -10,6 +12,70 @@ from pathlib import Path
 from unittest.mock import patch
 
 from ci_core.ssh_runner import cancel, owned_processes_gone, remote_command
+
+
+@unittest.skipUnless(shutil.which("timeout"), "Requires timeout command")
+class DistributedSmokeLaunchTests(unittest.TestCase):
+    def test_each_node_receives_its_allocated_rank(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            setup = root / "set_env.sh"
+            setup.write_text("true\n")
+            nodes = [
+                {
+                    "node_ip": f"192.0.2.{i + 10}",
+                    "position": i,
+                    "devices": list(range(8)),
+                }
+                for i in range(2)
+            ]
+            profile = {
+                "kind": "npu_smoke",
+                "env_vars": {"ASCEND_SET_ENV_PATH": str(setup), "NODE_RANK": "invalid"},
+            }
+            for node in nodes:
+                destination = root / f"node{node['position']}"
+                repo = destination / "repo"
+                package = repo / "tests/integration_tests/tools/lite_actions"
+                package.mkdir(parents=True)
+                for folder in (
+                    repo / "tests",
+                    repo / "tests/integration_tests",
+                    repo / "tests/integration_tests/tools",
+                    package,
+                ):
+                    (folder / "__init__.py").write_text("")
+                (package / "entrypoint.py").write_text(
+                    "import json,os,pathlib\n"
+                    "pathlib.Path('rank.json').write_text(json.dumps("
+                    "{k: os.environ[k] for k in ('NODE_RANK','NODE_IPS','NNODES','NGPU')}))\n"
+                )
+                command = remote_command(
+                    node,
+                    nodes,
+                    profile,
+                    str(destination),
+                    "rank-check",
+                    30,
+                    "dispatch_smoke_16p",
+                )
+                subprocess.run(
+                    ["bash", "-lc", command],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=40,
+                )
+                result = json.loads((repo / "rank.json").read_text())
+                self.assertEqual(
+                    result,
+                    {
+                        "NODE_RANK": str(node["position"]),
+                        "NODE_IPS": "192.0.2.10,192.0.2.11",
+                        "NNODES": "2",
+                        "NGPU": "8",
+                    },
+                )
 
 
 @unittest.skipUnless(

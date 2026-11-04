@@ -313,6 +313,13 @@ def remote_command(
         "LITE_CI_JOB_ID": stamp,
         **runner["env_vars"],
     }
+    if runner.get("kind") == "npu_smoke":
+        position = node.get("position")
+        if type(position) is not int or not 0 <= position < len(nodes):
+            raise ValueError("invalid allocated node rank")
+        # The verified allocation already determines each node's position.
+        # Do not depend on container hostname or interface discovery.
+        env["NODE_RANK"] = str(position)
     if node.get("network_interface"):
         env["Network_Interface"] = node["network_interface"]
         if blue or VLLM:
@@ -581,6 +588,7 @@ def run(
         # The Lite Actions JSON has no testcase-owned environment fields.
         runner = {
             "source_sha": sha,
+            "kind": case.get("kind"),
             "mode": "single" if len(nodes) == 1 else "distributed",
             "env_vars": definition["env_vars"],
             "LITE_CI_MASTER_PORT": case.get("master_port", 16000),
