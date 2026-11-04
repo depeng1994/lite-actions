@@ -14,6 +14,11 @@ import zipfile
 from ci_core.contract import REPO, parse_plan
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 class GitCodeClient:
     def __init__(self, token, repo):
         if repo not in {"depeng1994/torchtitan-npu", "cann/torchtitan-npu"}:
@@ -25,7 +30,13 @@ class GitCodeClient:
         self.v5 = f"https://api.gitcode.com/api/v5/repos/{repo}"
 
     def request(self, method, path, data=None, *, api=5):
-        if not path.startswith("/") or "://" in path:
+        if (
+            not path.startswith("/")
+            or path.startswith("//")
+            or "://" in path
+            or "\\" in path
+            or ".." in path.split("/")
+        ):
             raise ValueError("relative GitCode API path required")
         payload = (
             json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode()
@@ -47,7 +58,9 @@ class GitCodeClient:
             headers=headers,
             method=method,
         )
-        with urllib.request.urlopen(req, timeout=30) as response:
+        with urllib.request.build_opener(NoRedirect()).open(
+            req, timeout=30
+        ) as response:
             raw = response.read(1024 * 1024)
         return json.loads(raw) if raw else None
 
@@ -164,10 +177,6 @@ class GitCodeClient:
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", str(artifact_id)):
             raise ValueError("invalid artifact ID")
 
-        class NoRedirect(urllib.request.HTTPRedirectHandler):
-            def redirect_request(self, req, fp, code, msg, headers, newurl):
-                return None
-
         req = urllib.request.Request(
             f"{self.v8}/actions/artifacts/{artifact_id}/zip",
             headers={"PRIVATE-TOKEN": self.token},
@@ -253,6 +262,6 @@ class MultiPlatformClient:
                 continue
             try:
                 runs.extend(client.running_workflows())
-            except Exception:
-                logging.exception("provider polling failed")
+            except Exception as exc:
+                logging.warning("provider polling failed (%s)", type(exc).__name__)
         return runs
