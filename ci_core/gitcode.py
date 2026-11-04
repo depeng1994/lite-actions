@@ -94,7 +94,22 @@ class GitCodeClient:
                     r"[A-Za-z0-9_-]{1,128}", run_id
                 ):
                     continue
-                details = self.request("GET", f"/actions/runs/{run_id}", api=8)
+                try:
+                    details = self.request("GET", f"/actions/runs/{run_id}", api=8)
+                except (
+                    urllib.error.URLError,
+                    TimeoutError,
+                    OSError,
+                    ValueError,
+                ) as exc:
+                    # A transient failure for one run must not prevent another
+                    # valid run in the same repository from being discovered.
+                    logging.warning(
+                        "GitCode run %s could not be read (%s); retrying next poll",
+                        run_id,
+                        type(exc).__name__,
+                    )
+                    continue
                 # This platform's runner does not expose the current attempt.
                 # Accept only a fresh run until its identity is available there.
                 if details.get("attempt") != 1:

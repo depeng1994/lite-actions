@@ -5,6 +5,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -77,6 +78,32 @@ class GitCodeWorkflowTests(unittest.TestCase):
             }
             plan["plan_digest"] = digest(plan)
             comments = []
+            details = {
+                "workflow_run_id": run["id"],
+                "attempt": 1,
+                "event": "Manual",
+                "status": "RUNNING",
+                "head_sha": run["head_sha"],
+                "head_branch": run["head_branch"],
+                "file_path": run["path"],
+                "actor": run["actor"],
+                "start_time": 1767225600,
+                "run_number": 1,
+            }
+
+            def request(method, path, **kwargs):
+                if path.startswith("/actions/runs?"):
+                    return {
+                        "workflow_runs": [
+                            {**details, "workflow_run_id": "temporarily_unavailable"},
+                            details,
+                        ]
+                    }
+                if path.endswith("/temporarily_unavailable"):
+                    raise urllib.error.URLError("temporary API failure")
+                if path.endswith("/" + run["id"]):
+                    return details
+                raise AssertionError(f"unexpected API request: {path}")
 
             def send(sha, body):
                 entry = {
@@ -98,7 +125,6 @@ class GitCodeWorkflowTests(unittest.TestCase):
                     },
                 ),
                 github.connected(),
-                patch.object(gitcode, "running_workflows", return_value=[run]),
                 patch.object(gitcode, "ci_request", return_value=plan),
                 patch.object(gitcode, "validate_current"),
                 patch.object(
@@ -110,7 +136,7 @@ class GitCodeWorkflowTests(unittest.TestCase):
                     gitcode, "commit_comments", side_effect=lambda sha: comments
                 ),
                 patch.object(gitcode, "send_result", side_effect=send),
-                patch.object(gitcode, "request", return_value=None),
+                patch.object(gitcode, "request", side_effect=request),
                 patch("ci_core.router.verify_definition"),
                 patch(
                     "ci_core.router.probe_worker",
