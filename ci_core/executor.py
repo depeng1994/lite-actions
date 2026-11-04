@@ -109,6 +109,14 @@ def remote_task_name(run: dict) -> str:
         if run.get("_ci_provider") == "gitcode"
         else ("vllm_" if run.get("_ci_repo") == VLLM_REPO else "")
     )
+    if run.get("_ci_provider") == "gitcode":
+        repo = run.get("_ci_repo", "").replace("/", "_")
+        run_id = str(run["id"])
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", run_id) or not re.fullmatch(
+            r"[A-Za-z0-9_-]+", repo
+        ):
+            raise ValueError("invalid GitCode remote identity")
+        return f"{prefix}{repo}_{run_id}_attempt-{attempt}{suffix}"
     return f"{prefix}{local:%Y-%m-%d_%H-%M-%S}_run_{name}_{number}{suffix}"
 
 

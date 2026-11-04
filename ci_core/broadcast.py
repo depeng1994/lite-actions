@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import re
 import subprocess
 import time
 from ipaddress import ip_address
 
-from ci_core.contract import REPO
+from ci_core.contract import GITCODE_REPOS, REPO
 
 BEIJING = dt.timezone(dt.timedelta(hours=8))
 BORDER = "*" * 80
@@ -40,6 +41,15 @@ def device_range(devices: list[int]) -> str:
 
 
 def action_url(run: dict) -> str:
+    if run.get("_ci_provider") == "gitcode":
+        repo, ident = run.get("_ci_repo"), run.get("id")
+        if (
+            repo not in GITCODE_REPOS
+            or not isinstance(ident, str)
+            or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", ident)
+        ):
+            raise ValueError("invalid GitCode run identity")
+        return f"https://gitcode.com/{repo}/actions/runs/{ident}"
     ident = int(run["id"])
     if ident <= 0:
         raise ValueError("invalid GitHub run id")
@@ -94,7 +104,7 @@ def notification(
     return (
         f"************** TorchTitan CI · {title} {timestamp} **************\n"
         f"\n"
-        f"【任务ID】：{int(run['id'])}\n"
+        f"【任务ID】：{run['id']}\n"
         f"{action_url(run)}\n"
         f"\n"
         f"【任务总体资源】：nodes={nnodes}，ngpus_per_node={ngpus_per_node}\n"

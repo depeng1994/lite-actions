@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from ci_core.broadcast import notification
 from ci_core.contract import digest, normalize
 from ci_core.gitcode import GitCodeClient, MultiPlatformClient
 from ci_core.router import Router, task_key
@@ -15,6 +16,25 @@ from tests.scenarios import Service, definition, write_workspace
 
 
 class GitCodeWorkflowTests(unittest.TestCase):
+    def test_gitcode_hardware_notification_uses_opaque_run_identity(self):
+        run = {
+            "_ci_provider": "gitcode",
+            "_ci_repo": "depeng1994/torchtitan-npu",
+            "id": "abc123",
+        }
+        message = notification(
+            run,
+            "begin",
+            node_rank=0,
+            node_ip="192.0.2.1",
+            devices=list(range(8)),
+            nnodes=1,
+            ngpus_per_node=8,
+        )
+        self.assertIn(
+            "https://gitcode.com/depeng1994/torchtitan-npu/actions/runs/abc123", message
+        )
+
     def test_gitcode_and_github_probes_report_to_their_own_repositories(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

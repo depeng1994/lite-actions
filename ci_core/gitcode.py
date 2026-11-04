@@ -203,6 +203,8 @@ class MultiPlatformClient:
         repo = run.get("_ci_repo", REPO)
         if self.github is None:
             raise ValueError("GitHub polling disabled")
+        if not hasattr(self.github, "for_repo") and self.github.repo != repo:
+            raise ValueError("run belongs to another GitHub repository")
         return (
             self.github.for_repo(repo)
             if hasattr(self.github, "for_repo")
