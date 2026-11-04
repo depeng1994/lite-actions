@@ -11,7 +11,7 @@ def marker(run, item):
 
 
 def report(run, item, plan_digest, status, rc, lines, cleanup_verified=True):
-    return dict(
+    result = dict(
         schema=3,
         repo=run.get("_ci_repo", REPO),
         workflow=run["path"].rsplit("/", 1)[-1],
@@ -30,6 +30,10 @@ def report(run, item, plan_digest, status, rc, lines, cleanup_verified=True):
         cleanup_verified=cleanup_verified,
         last_20_lines=[clean(x) for x in lines[:20]],
     )
+
+    if run.get("_ci_source"):
+        result["native_source"] = run["_ci_source"]
+    return result
 
 
 def body_for(run, item, result):

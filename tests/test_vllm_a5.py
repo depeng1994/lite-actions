@@ -16,7 +16,7 @@ from ci_core.contract import REPO, create_plan, normalize, parse_plan
 from ci_core.vllm_ascend import definition
 from ci_core.github import GitHubClient
 from types import SimpleNamespace
-assert REPO == 'torchtitan-npu/vllm-ascend'
+assert REPO == 'cann-framework/vllm-ascend'
 defaults = dict(worker='yellow',target_pool='a5_shared_yellow',docker='vllm-kimi-wangjinyin')
 cases = []
 for name in ('dispatch_smoke_a5_8p','dispatch_smoke_a5_32p'):
@@ -40,7 +40,7 @@ assert result['head_sha']==sha and result['_ci_pr_number']==7
 run['actor']['login']='other'
 assert Fake('fake').normalize_target_pr_run(run) is None
 """
-        env = {**os.environ, "LITE_ACTIONS_MODEL_REPO": "torchtitan-npu/vllm-ascend"}
+        env = {**os.environ, "LITE_ACTIONS_MODEL_REPO": "cann-framework/vllm-ascend"}
         proc = subprocess.run(
             [sys.executable, "-c", program],
             cwd=ROOT,

@@ -27,7 +27,7 @@ from ci_core.registry import SELECTOR, resolve_test
 ROOT = Path(__file__).resolve().parents[1]
 
 REPO = f"https://github.com/{MODEL_REPO}.git"
-VLLM = MODEL_REPO == "torchtitan-npu/vllm-ascend"
+VLLM = MODEL_REPO == "cann-framework/vllm-ascend"
 DEST_ROOT = "/mnt/share/ci_tests"
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 STAMP = re.compile(r"[0-9A-Za-z_-]+\Z")
@@ -55,6 +55,7 @@ def model_archive(
 ) -> Path:
     """Return a SHA-verified source archive, cached to avoid double Git fetches."""
     from ci_core.contract import GITCODE_REPOS, SUPPORTED_REPOS
+    from ci_core.source_cache import metadata_path, seal, verified
 
     if (
         not SHA.fullmatch(sha)
@@ -69,7 +70,7 @@ def model_archive(
     lock_path = cache_dir / f"{sha}.lock"
     with lock_path.open("a+") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        if cached.is_file() and cached.stat().st_size > 0:
+        if verified(cached, source_repo, sha):
             return cached
 
         repo = work / "repo"
@@ -94,7 +95,7 @@ def model_archive(
                 capture_output=True,
             )
         except subprocess.CalledProcessError:
-            if provider != "github" or source_repo != "torchtitan-npu/vllm-ascend":
+            if provider != "github" or source_repo != "cann-framework/vllm-ascend":
                 raise
             # The PR source SHA might be unreachable via the base repository.
             # This fallback is a fixed, trusted Fork checked by PR admission.
@@ -119,6 +120,8 @@ def model_archive(
         if actual != sha:
             raise RuntimeError("GitHub SHA mismatch")
 
+        # PR export-ignore/export-subst attributes must not change the tested tree.
+        (repo / ".git/info/attributes").write_text("* -export-ignore -export-subst\n")
         temp_archive = cache_dir / f".{sha}.{os.getpid()}.tmp"
         try:
             with temp_archive.open("wb") as output:
@@ -128,7 +131,7 @@ def model_archive(
                 )
                 assert pack.stdout is not None
                 with gzip.GzipFile(
-                    fileobj=output, mode="wb", compresslevel=1
+                    fileobj=output, mode="wb", compresslevel=1, mtime=0
                 ) as zipped:
                     shutil.copyfileobj(pack.stdout, zipped)
                 pack.stdout.close()
@@ -137,6 +140,7 @@ def model_archive(
             if temp_archive.stat().st_size == 0:
                 raise RuntimeError("empty source archive")
             os.replace(temp_archive, cached)
+            seal(cached, source_repo, sha)
         finally:
             temp_archive.unlink(missing_ok=True)
 
@@ -150,10 +154,30 @@ def model_archive(
         for stale in archives[20:]:
             if stale != cached:
                 stale.unlink(missing_ok=True)
+                metadata_path(stale).unlink(missing_ok=True)
         return cached
 
 
 def allocations(case: dict, pools: dict) -> list[dict]:
+    captured = case.get("bound_nodes")
+    if captured is not None:
+        from ci_core.container_binding import ContainerBinding
+
+        if case.get("docker") != "vllm_hccl_smoke" or not isinstance(captured, list):
+            raise ValueError("invalid persisted container binding")
+        expected = [(n["host_id"], n["devices"]) for n in case["allocation"]]
+        if [(n["host_id"], n["devices"]) for n in captured] != expected:
+            raise ValueError("persisted binding/allocation mismatch")
+        for index, node in enumerate(captured):
+            binding = ContainerBinding.from_node(node)
+            if (
+                node.get("position") != index
+                or node.get("container_binding") != binding.metadata()
+                or node.get("ssh")
+                != node.get("host_ssh", "") + "/" + binding.container_id
+            ):
+                raise ValueError("persisted container identity mismatch")
+        return captured
     pool = pools[case["pool"]]
     lookup = {node["host_id"]: node for node in pool["nodes"]}
     nodes = []
@@ -175,7 +199,7 @@ def allocations(case: dict, pools: dict) -> list[dict]:
     return nodes
 
 
-def stage(node: dict, base: str, archive: Path, sha: str) -> str:
+def stage(node: dict, base: str, archive: Path, sha: str, test_case=None) -> str:
     host = node["ssh"]
     dest = f"{base}/node{node['position']}"
     ssh(host, f"mkdir -p {q(base)} && mkdir {q(dest)} && mkdir {q(dest + '/repo')}")
@@ -196,12 +220,39 @@ def stage(node: dict, base: str, archive: Path, sha: str) -> str:
         + q(dest + "/source.tar.gz")
         + " | cut -d ' ' -f1)\"",
     )
+    from ci_core.vllm_ascend import BLUE_CASES, BLUE_PAYLOAD
+
+    blue = test_case in BLUE_CASES
+    required = (
+        BLUE_PAYLOAD
+        if blue
+        else (
+            ".github/scripts/lite_actions/a5_smoke.py"
+            if VLLM
+            else "tests/integration_tests/__init__.py"
+        )
+    )
     ssh(
         host,
         f"cd {q(dest)} && tar -xzf source.tar.gz -C repo && "
         f"printf '%s\\n' {q(sha)} > source_sha.txt && "
-        f"test -f repo/{'.github/scripts/lite_actions/a5_smoke.py' if VLLM else 'tests/integration_tests/__init__.py'}",
+        f"test -f repo/{required}",
     )
+    if blue:
+        runner = ROOT / "ci_core/runners/vllm_hccl.py"
+        with runner.open("rb") as source:
+            transport_run(
+                host, "cat > " + q(dest + "/trusted_hccl.py"), stdin=source, timeout=30
+            )
+        expected = hashlib.sha256(runner.read_bytes()).hexdigest()
+        ssh(
+            host,
+            "test "
+            + q(expected)
+            + ' = "$(sha256sum '
+            + q(dest + "/trusted_hccl.py")
+            + " | cut -d ' ' -f1)\"",
+        )
     print(f"STAGED: {node['host_id']} SHA={sha[:12]} dir={dest}", flush=True)
     return dest
 
@@ -217,7 +268,19 @@ def remote_command(
 ) -> str:
     """Remote job owns its own process group; its complete log stays remote."""
     # Generic, fixed model-owned entrypoint; never interpolate GitHub modules.
-    if VLLM:
+    from ci_core.vllm_ascend import BLUE_CASES
+
+    blue = test_case in BLUE_CASES
+    if blue or VLLM:
+        payload = (
+            q(dest + "/trusted_hccl.py")
+            + " --source-root="
+            + q(dest + "/repo")
+            + " --source-sha="
+            + q(runner["source_sha"])
+            if blue
+            else ".github/scripts/lite_actions/a5_smoke.py"
+        )
         entry = (
             "python3 -u -m torch.distributed.run"
             + f" --nnodes={len(nodes)} --nproc-per-node={len(node['devices'])}"
@@ -227,7 +290,8 @@ def remote_command(
             + " --master-port="
             + q(runner.get("LITE_CI_MASTER_PORT", 16000))
             + " --max-restarts=0"
-            + " .github/scripts/lite_actions/a5_smoke.py"
+            + " "
+            + payload
             + " --test-id="
             + q(test_case)
             + " --output-dir="
@@ -251,7 +315,7 @@ def remote_command(
     }
     if node.get("network_interface"):
         env["Network_Interface"] = node["network_interface"]
-        if VLLM:
+        if blue or VLLM:
             env["HCCL_SOCKET_IFNAME"] = "=" + node["network_interface"]
             env["GLOO_SOCKET_IFNAME"] = "=" + node["network_interface"]
             env["HCCL_IF_IP"] = node["node_ip"]
@@ -291,7 +355,7 @@ def remote_command(
     inner = (
         f"cd {q(dest + '/repo')} && {setup}"
         f"export {exports} && "
-        + pythonpath_export(node)
+        + ("export PYTHONPATH= && " if blue else pythonpath_export(node))
         + f"exec timeout --signal=TERM --kill-after=30s {int(timeout)}s {entry}"
     )
     # The previous `setsid ... & pid=$!` occasionally recorded a wrapper PID
@@ -417,6 +481,28 @@ for entry in Path('/proc').glob('[0-9]*'):
 def verify(
     nodes: list[dict], runner: dict, base: str, timeout: int, test_case: str
 ) -> int:
+    from ci_core.vllm_ascend import BLUE_CASES
+
+    if test_case in BLUE_CASES:
+        world = len(nodes) * len(nodes[0]["devices"])
+        evidence = base + "/node0/output/blue-smoke-evidence.json"
+        expected = {
+            "schema": 1,
+            "test_id": test_case,
+            "status": "PASS",
+            "source_sha": runner["source_sha"],
+            "world_size": world,
+            "all_reduce_sum": world * (world - 1) // 2,
+            "payload_path": base
+            + "/node0/repo/.github/scripts/lite_actions/blue_hccl_payload.py",
+        }
+        code = "import json,sys; d=json.load(open(sys.argv[1])); e=json.loads(sys.argv[2]); assert all(d.get(k)==v for k,v in e.items()), 'smoke evidence mismatch'"
+        return ssh(
+            nodes[0]["ssh"],
+            "python3 -c " + q(code) + " " + q(evidence) + " " + q(json.dumps(expected)),
+            timeout=30,
+            check=False,
+        ).returncode
     if VLLM:
         # rank 0 writes evidence only after all ranks completed collective.
         node = nodes[0]
@@ -494,6 +580,7 @@ def run(
         # These values are resolved from the pinned SHA's OverrideDefinitions.
         # The Lite Actions JSON has no testcase-owned environment fields.
         runner = {
+            "source_sha": sha,
             "mode": "single" if len(nodes) == 1 else "distributed",
             "env_vars": definition["env_vars"],
             "LITE_CI_MASTER_PORT": case.get("master_port", 16000),
@@ -508,7 +595,8 @@ def run(
         dirs = {}
         with ThreadPoolExecutor(max_workers=len(nodes)) as executor:
             futures = {
-                executor.submit(stage, node, base, archive, sha): node for node in nodes
+                executor.submit(stage, node, base, archive, sha, test_case): node
+                for node in nodes
             }
             errors = []
             for future in as_completed(futures):
@@ -519,6 +607,15 @@ def run(
                     errors.append((node["host_id"], type(exc).__name__))
             if errors:
                 raise RuntimeError(f"staging failed: {errors}")
+    if case.get("native_source"):
+        from ci_core.github import GitHubClient, authorization
+        from ci_core.vllm_source import check_current
+
+        check_current(
+            GitHubClient(authorization(), MODEL_REPO),
+            case["native_source"],
+            check_run=True,
+        )
     # Preserve a trusted log locator if cancellation interrupts the rank wait.
     # A normal multi-node failure replaces this with the failing node below.
     print(f"RESULT_HOST: {nodes[0]['ssh']}", flush=True)

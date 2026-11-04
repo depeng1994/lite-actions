@@ -82,7 +82,7 @@ def execution_node(node, environment):
     if not re.fullmatch(r"[a-f0-9]{64}", container):
         raise ValueError("container must be pinned by ID")
     script = (
-        'docker inspect --format \'{"Image":{{json .Image}},"State":{"Running":{{json .State.Running}}}}\' '
+        'docker inspect --format \'{"Name":{{json .Name}},"Id":{{json .Id}},"Image":{{json .Image}},"State":{"Running":{{json .State.Running}}}}\' '
         + container
     )
     data = json.loads(run(node["ssh"], script, timeout=30).stdout)
@@ -97,10 +97,21 @@ def execution_node(node, environment):
     ).stdout.strip()
     if actual != env["image_id"]:
         raise ValueError("IMAGE_TAG_CHANGED")
+    captured = {}
+    if environment == "vllm_hccl_smoke":
+        from ci_core.container_binding import ContainerBinding
+
+        binding = ContainerBinding.from_node(node)
+        binding.verify_inspection(data, resolved_image_id=actual)
+        captured = {"container_binding": binding.metadata(), "host_ssh": node["ssh"]}
     execution_ssh = node["ssh"] + "/" + container
     if run(execution_ssh, "id -u", timeout=30).stdout.strip() != "0":
         raise ValueError("EXECUTION_PID_VISIBILITY_REQUIRED")
-    return {**node, "ssh": execution_ssh}
+    selected = {**node, **captured, "ssh": execution_ssh}
+    if environment == "vllm_hccl_smoke":
+        # TorchTitan-specific dependency overlays must not contaminate vLLM.
+        selected.pop("pythonpath", None)
+    return selected
 
 
 def runtime_case(item, pools, worker):
