@@ -33,6 +33,7 @@ and branch configuration. Do not assume rollback preserves the pilot FIFO.
 | [GitCode zero-device probe](https://gitcode.com/depeng1994/torchtitan-npu/actions/runs/5928216a1f0847f48ba3ecbefbe4f811) | `440f77d58867fb55d806eeaf55f0c2abcc460e8b` | Checkout, Python setup, catalog upload, plan receipt, worker probe and result completed successfully. |
 | [GitCode Smoke 8P / 16P / 8P](https://gitcode.com/depeng1994/torchtitan-npu/actions/runs/a70e5d146e404ac1af01ae682c45f91c) | `62ede58c92bea40fbf7f228d78d3fc0e871ee35a` | All three cases reported PASS with verified cleanup. All-reduce sums were 28, 120 and 28. |
 | [GitHub cross-platform trial](https://github.com/cann-framework/torchtitan-npu/actions/runs/42674109423) | `6a54a59b6980917a9eb6496b6af688a241473c72` | All three hardware cases reported PASS and verified cleanup on the worker, but GitHub registered only one Matrix Job and its reusable-workflow result was `abandoned`. The overall workflow failed; this is **not** GitHub platform acceptance. |
+| [GitHub native workflow retest](https://github.com/cann-framework/torchtitan-npu/actions/runs/42676722392) | `46006c28f23d8f05b9aa15228f1a5b5df3c67ada` | Prepare, all three separate Matrix jobs and the final summary succeeded. The worker verified cleanup for all three cases and reported All-reduce sums 28, 120 and 28; the summary verified all three case completion artifacts against the plan. |
 
 At `2026-11-10 02:30:40` China time, [a worker state snapshot](native-smoke-fifo-snapshot-20261110.json) showed GitCode
 cases admitted as sequence 2, 3 and 4. GitHub's sequence 5 was staging on
@@ -41,6 +42,9 @@ GitCode sequence 3 still held `:153` devices `8–15` and `:154` devices `0–7`
 during cleanup, while `:154` devices `8–15` were free. Thus the later GitHub
 8P could fit in the free group but did not bypass the queued 16P. This is one
 real same-pool contention observation, not proof about different pool names.
+The later successful GitHub retest used GitHub's own flat workflow and did not
+start or wait on a GitCode workflow. The precise reason the earlier platform
+run returned `abandoned` has not been established.
 
 The historical entries in the workspace design document predate this pilot
 and must not be counted as results of the new implementation. Additional
