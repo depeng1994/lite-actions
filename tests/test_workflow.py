@@ -1,6 +1,7 @@
 """Artifact-to-result lifecycle scenarios; GitHub and model execution are external fixtures."""
 
 import json
+import queue
 import subprocess
 import sys
 import tempfile
@@ -10,11 +11,18 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from ci_core.contract import create_plan, normalize
 from ci_core.executor import ExternalNpuOccupancy
 from ci_core.logs import select_lines
 from ci_core.resources import ResourceBusy, reserve
 from ci_core.router import Router, task_key
-from tests.scenarios import Service, completed_execution, definition, write_workspace
+from tests.scenarios import (
+    DEFAULTS,
+    Service,
+    completed_execution,
+    definition,
+    write_workspace,
+)
 
 
 class WorkflowTests(unittest.TestCase):
@@ -141,6 +149,158 @@ class WorkflowTests(unittest.TestCase):
             {x["test_id"]: x["status"] for x in service.results()},
             {"distributed": "PASS", "single": "PASS"},
         )
+
+    def test_smoke_and_training_heads_wait_independently_with_shared_leases(self):
+        for blocked_kind in ("npu_smoke", "train"):
+            with self.subTest(blocked_kind=blocked_kind):
+                root = self.root / blocked_kind
+                root.mkdir()
+                write_workspace(root)
+                other_kind = "train" if blocked_kind == "npu_smoke" else "npu_smoke"
+                service = Service(
+                    [
+                        definition("blocked_head", kind=blocked_kind, nodes=2),
+                        definition("blocked_follower", kind=blocked_kind),
+                        definition("other_a", kind=other_kind),
+                        definition("other_b", kind=other_kind),
+                    ],
+                    root,
+                )
+                router = Router(root, "blue", service, "reporter")
+                self.routers.append(router)
+                entered = threading.Barrier(3)
+                release = threading.Event()
+                running = {}
+
+                def execute(case, run, **kwargs):
+                    name = run["_ci_test_id"]
+                    if name in {"other_a", "other_b"}:
+                        running[name] = case
+                        entered.wait(10)
+                        if not release.wait(10):
+                            raise RuntimeError("fixture wait timed out")
+                    return completed_execution(root, case, run)
+
+                busy = [dict(host_id="192.0.2.11:22", devices=[0, 1, 2, 3])]
+                try:
+                    with (
+                        service.connected(),
+                        patch("ci_core.router.execute", side_effect=execute),
+                        reserve(self.root / "leases/devices", busy),
+                    ):
+                        router.receive([service.runs[20]])
+                        router.pump()
+                        entered.wait(10)
+                        records = router.state.read()
+                        for item in service.plans[20]["cases"][:2]:
+                            self.assertEqual(
+                                records[task_key(service.runs[20], item)]["phase"],
+                                "QUEUED",
+                            )
+                        self.assertEqual(set(running), {"other_a", "other_b"})
+                        allocations = [
+                            {
+                                (n["host_id"], d)
+                                for n in case["allocation"]
+                                for d in n["devices"]
+                            }
+                            for case in running.values()
+                        ]
+                        self.assertTrue(allocations[0].isdisjoint(allocations[1]))
+                        ports = [case["master_port"] for case in running.values()]
+                        self.assertNotEqual(*ports)
+                        for case in running.values():
+                            with self.assertRaises(ResourceBusy):
+                                with reserve(
+                                    self.root / "leases/devices", case["allocation"]
+                                ):
+                                    pass
+                    release.set()
+                    with (
+                        service.connected(),
+                        patch("ci_core.router.execute", side_effect=execute),
+                    ):
+                        self.drain(router)
+                    self.assertEqual(
+                        {
+                            result["test_id"]: result["status"]
+                            for result in service.results()
+                        },
+                        {d.test_name: "PASS" for d in service.definitions},
+                    )
+                finally:
+                    release.set()
+                    entered.abort()
+
+    def test_mixed_queue_preserves_each_kind_order_without_fixed_priority(self):
+        definitions = [
+            definition("train_late"),
+            definition("smoke_first", kind="npu_smoke"),
+            definition("smoke_second", kind="npu_smoke"),
+            definition("train_early"),
+        ]
+        service = Service(definitions, self.root)
+        router = self.router(service)
+        release = {d.test_name: threading.Event() for d in definitions}
+        started = queue.Queue()
+
+        def execute(case, run, **kwargs):
+            name = run["_ci_test_id"]
+            started.put(name)
+            if not release[name].wait(10):
+                raise RuntimeError("fixture wait timed out")
+            return completed_execution(router.root, case, run)
+
+        busy = [
+            dict(host_id="192.0.2.10:22", devices=[2, 3]),
+            dict(host_id="192.0.2.11:22", devices=[0, 1, 2, 3]),
+        ]
+        try:
+            with (
+                service.connected(),
+                patch("ci_core.router.execute", side_effect=execute),
+                reserve(self.root / "leases/devices", busy),
+            ):
+                # Admission order deliberately differs from creation order.
+                for ident, day, definition_ in zip(
+                    (20, 21, 22, 23), (3, 4, 2, 1), definitions, strict=True
+                ):
+                    run, _ = service.add_run(ident)
+                    run["created_at"] = f"2026-01-{day:02d}T00:00:00Z"
+                    service.plans[ident] = create_plan(
+                        [normalize(definition_, DEFAULTS, 0)],
+                        run_id=ident,
+                        attempt=1,
+                        sha=run["head_sha"],
+                        workflow="nightly_fulltests.yml",
+                        defaults=DEFAULTS,
+                    )
+                    router.receive([run])
+                observed = []
+                for _ in definitions:
+                    router.pump()
+                    name = started.get(timeout=10)
+                    observed.append(name)
+                    release[name].set()
+                    for future, _, _ in list(router.active.values()):
+                        future.result(10)
+                self.drain(router)
+            self.assertEqual(observed[0], "train_early")
+            self.assertEqual(
+                [n for n in observed if n.startswith("train_")],
+                ["train_early", "train_late"],
+            )
+            self.assertEqual(
+                [n for n in observed if n.startswith("smoke_")],
+                ["smoke_first", "smoke_second"],
+            )
+            self.assertEqual(
+                {r["test_id"]: r["status"] for r in service.results()},
+                {d.test_name: "PASS" for d in definitions},
+            )
+        finally:
+            for event in release.values():
+                event.set()
 
     def test_unready_training_node_still_accepts_smoke_work(self):
         service = Service(

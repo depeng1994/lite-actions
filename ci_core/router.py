@@ -508,27 +508,40 @@ class Router:
         queued = sorted(
             ((k, r) for k, r in records.items() if r.get("phase") == "QUEUED"),
             key=lambda kv: (
-                kv[1].get("admission_seq", 0),
                 kv[1]["run"].get("created_at", ""),
                 str(kv[1]["run"]["id"]),
                 kv[1]["item"]["order"],
             ),
         )
+        # Keep the legacy ordering and its positions relative to Smoke while
+        # ordering only the Smoke positions by durable admission sequence.
+        smoke = iter(
+            sorted(
+                (pair for pair in queued if pair[1]["item"]["kind"] == "npu_smoke"),
+                key=lambda pair: pair[1].get("admission_seq", 0),
+            )
+        )
+        queued = [
+            next(smoke) if r["item"]["kind"] == "npu_smoke" else (key, r)
+            for key, r in queued
+        ]
         for key, r in queued:
             item = r["item"]
             pool = item["target_pool"]
+            is_smoke = item["kind"] == "npu_smoke"
+            queue = (pool, is_smoke)
             ident = (
                 r["run"].get("_ci_provider", "github"),
                 r["run"].get("_ci_repo", REPO),
                 r["run"]["id"],
             )
             if ident in self.unavailable_runs or r.get("receipt_pending"):
-                if pool:
-                    blocked_pools.add(pool)
+                if pool and is_smoke:
+                    blocked_pools.add(queue)
                 continue
             if key in self.active:
                 continue
-            if pool in blocked_pools:
+            if queue in blocked_pools:
                 continue
             if time.time() - r["queued_at"] > 3600:
                 self.finish(
@@ -545,7 +558,7 @@ class Router:
             )
             if count >= (1 if light else 4):
                 if pool:
-                    blocked_pools.add(pool)
+                    blocked_pools.add(queue)
                 continue
             # submit() can enqueue work before raising; do not run it until the
             # scheduler has recorded ownership of the full lease.
@@ -559,7 +572,7 @@ class Router:
                     ]
                     claim = self.claim(case)
                     if claim is None:
-                        blocked_pools.add(pool)
+                        blocked_pools.add(queue)
                         continue
                     lease, case = claim
                 self.state.update(

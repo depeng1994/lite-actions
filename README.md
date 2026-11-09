@@ -34,7 +34,7 @@ Model repo: Nightly / Dispatcher Smoke (manual + PR)
   -> schema-3 immutable request Artifact + per-case Matrix Waiters
   -> blue / yellow independently Pull their own cases
   -> SAME schedule/execute implementation, one instance per worker:
-       pool FIFO -> complete device/host/port lease -> stage pinned source
+       per-kind pool queue -> complete device/host/port lease -> stage pinned source
        -> existing pinned container -> model entrypoint -> verify -> clean
   -> identity-bound Commit Comment -> matching Waiter -> case result
 ```
@@ -120,10 +120,13 @@ case directory on the approved mount.
 
 ## Scheduling, cancellation and recovery
 
-Within each pool, accepted cases follow run creation time, run ID and declaration
-order. Independent complete allocations run in parallel. The first release does
-not backfill past a blocked queue head. Four resource-execution slots and one local
-probe slot are independent. Distributed requests never retain partial leases.
+Within each pool on one worker, Smoke cases from GitCode and GitHub follow their
+durable admission sequence. Legacy training cases retain run creation time, run ID
+and declaration order. A resource-blocked queue head blocks only its own kind and
+pool; neither kind has fixed priority. Both share physical device, host and port
+leases and the four resource-execution slots. A separate local probe slot is
+available. Independent complete allocations run in parallel; distributed requests
+never retain partial leases.
 
 A busy external device group is temporarily avoided so another verified group can
 be tried. Unknown occupancy is never killed. This worker does not reclaim external tasks.

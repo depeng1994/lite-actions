@@ -23,6 +23,7 @@ from pathlib import Path
 
 from ci_core.contract import REPO as MODEL_REPO
 from ci_core.registry import SELECTOR, resolve_test
+from ci_core.scheduler import validate_allocation
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -569,6 +570,7 @@ def run(
     ):
         raise ValueError("unsafe run identifier / commit / execution directory")
     pools = json.loads((root / "config/pools.json").read_text())
+    validate_allocation(case, pools, case["allocation"])
     nodes = allocations(case, pools)
     base = f"{DEST_ROOT}/{remote_dir}"
     with tempfile.TemporaryDirectory(prefix="lite-ci-stage-") as tmp:
@@ -733,7 +735,6 @@ def main() -> int:
     if not case.get("enabled") or not SELECTOR.fullmatch(args.test_id):
         raise ValueError("disabled or invalid test")
     from ci_core.resources import port_profile
-    from ci_core.scheduler import validate_allocation
 
     validate_allocation(
         case, json.loads((ROOT / "config/pools.json").read_text()), case["allocation"]
