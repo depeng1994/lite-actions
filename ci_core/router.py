@@ -203,8 +203,8 @@ class Router:
             run.get("run_attempt", 1),
             run["head_sha"],
         )
-        plan = self.plans.get(identity)
-        if plan is None:
+        cached = self.plans.get(identity)
+        if cached is None:
             plan = self.client_for(run).ci_request(run)
             if plan is None:
                 return
@@ -214,10 +214,19 @@ class Router:
                 run["path"].rsplit("/", 1)[-1],
                 repo=run.get("_ci_repo", REPO),
             )
-            self.plans[identity] = plan
+            is_catalog = bool(run.get("_ci_catalog"))
+            self.plans[identity] = (plan, is_catalog)
+        else:
+            plan, is_catalog = cached
+            if is_catalog:
+                run = {**run, "_ci_catalog": True}
         owned = [c for c in plan["cases"] if c["worker"] == self.worker]
-        if owned and all(task_key(run, c) in self.state.read() for c in owned):
-            return
+        if is_catalog:
+            from ci_core.gitcode import plan_receipt
+
+            if len(owned) != len(plan["cases"]):
+                raise ValueError("catalog pilot requires a single owning worker")
+            plan_receipt(run, plan)
         if run.get("_ci_repo", REPO) == VLLM_REPO:
             from ci_core.vllm_source import is_blue_plan, read_source
 
@@ -230,22 +239,35 @@ class Router:
                     "_ci_source": source,
                     "_ci_execution_sha": source["source_sha"],
                 }
-        for item in plan["cases"]:
-            if item["worker"] != self.worker:
-                continue
+        repeated = {
+            item["test_id"]
+            for item in plan["cases"]
+            if sum(c["test_id"] == item["test_id"] for c in plan["cases"]) > 1
+        }
+        entries = []
+        for item in owned:
             key = task_key(run, item)
-            if key in self.state.read():
-                continue
-            self.state.update(
-                key,
-                phase="QUEUED",
-                repo=run.get("_ci_repo", REPO),
-                run=run,
-                item=item,
-                digest=plan["plan_digest"],
-                defaults=plan["defaults"],
-                queued_at=time.time(),
+            entries.append(
+                (
+                    key,
+                    dict(
+                        phase="QUEUED",
+                        repo=run.get("_ci_repo", REPO),
+                        run=run,
+                        item=item,
+                        digest=plan["plan_digest"],
+                        defaults=plan["defaults"],
+                        queued_at=time.time(),
+                        use_instance_id=item["test_id"] in repeated,
+                        **(
+                            {"plan_receipt": plan, "receipt_pending": True}
+                            if is_catalog
+                            else {}
+                        ),
+                    ),
+                )
             )
+        for key in self.state.admit(entries):
             self.transition(key, "QUEUED")
 
     def claim(self, case):
@@ -411,6 +433,8 @@ class Router:
                 "_ci_test_id": item["test_id"],
                 "_ci_cancel_event": cancel,
             }
+            if r.get("use_instance_id"):
+                subrun["_ci_case_id"] = item["case_id"]
 
             def on_phase(phase):
                 nonlocal launched
@@ -483,23 +507,26 @@ class Router:
         queued = sorted(
             ((k, r) for k, r in records.items() if r.get("phase") == "QUEUED"),
             key=lambda kv: (
+                kv[1].get("admission_seq", 0),
                 kv[1]["run"].get("created_at", ""),
                 str(kv[1]["run"]["id"]),
                 kv[1]["item"]["order"],
             ),
         )
         for key, r in queued:
+            item = r["item"]
+            pool = item["target_pool"]
             ident = (
                 r["run"].get("_ci_provider", "github"),
                 r["run"].get("_ci_repo", REPO),
                 r["run"]["id"],
             )
-            if ident in self.unavailable_runs:
+            if ident in self.unavailable_runs or r.get("receipt_pending"):
+                if pool:
+                    blocked_pools.add(pool)
                 continue
             if key in self.active:
                 continue
-            item = r["item"]
-            pool = item["target_pool"]
             if pool in blocked_pools:
                 continue
             if time.time() - r["queued_at"] > 3600:
@@ -547,6 +574,31 @@ class Router:
                 self.finish(key, "INFRA_ERROR", 125, [str(exc)[:180]])
 
     def flush(self):
+        pending_plans = {}
+        for key, record in self.state.read().items():
+            if record.get("receipt_pending") and record.get("phase") == "QUEUED":
+                run = record["run"]
+                identity = (
+                    run.get("_ci_provider"),
+                    run.get("_ci_repo"),
+                    run["id"],
+                    run.get("run_attempt", 1),
+                )
+                pending_plans.setdefault(identity, []).append((key, record))
+        for rows in pending_plans.values():
+            keys = [key for key, _ in rows]
+            record = rows[0][1]
+            try:
+                client = self.client_for(record["run"])
+                client.validate_current(record["run"])
+                client.publish_plan(
+                    record["run"],
+                    record["plan_receipt"],
+                    os.environ.get("LITE_ACTIONS_GITCODE_RESULT_AUTHOR", self.author),
+                )
+                self.state.update_many(keys, receipt_pending=False)
+            except Exception:
+                logging.warning("smoke plan receipt remains pending: %s", keys[0])
         for key, r in self.state.read().items():
             if r.get("phase") != "PENDING_REPORT":
                 continue

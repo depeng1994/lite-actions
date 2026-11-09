@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import collections
 import datetime as dt
+import hashlib
 import json
 import logging
 import os
@@ -48,6 +49,37 @@ def _local_run_time(run: dict) -> dt.datetime:
     return timestamp.astimezone(dt.timezone(dt.timedelta(hours=8)))
 
 
+def _case_instance_token(run: dict) -> str | None:
+    """Bounded identity for one instance, retaining legacy paths when absent."""
+    if "_ci_case_id" not in run:
+        return None
+    case_id = run["_ci_case_id"]
+    test_id = run.get("_ci_test_id")
+    if not isinstance(case_id, str) or not isinstance(test_id, str):
+        raise ValueError("invalid CI case identity")
+    match = re.fullmatch(r"case_([0-9]{3})_([a-z][a-z0-9_]{0,79})", case_id)
+    if not match or int(match.group(1)) > 255 or match.group(2) != test_id:
+        raise ValueError("invalid CI case identity")
+    provider = run.get("_ci_provider", "github")
+    repo = run.get("_ci_repo", TORCHTITAN_REPO)
+    if provider not in {"github", "gitcode"} or repo not in (
+        GITCODE_REPOS if provider == "gitcode" else SUPPORTED_REPOS
+    ):
+        raise ValueError("untrusted CI case source")
+    run_id = str(run["id"])
+    attempt = run.get("run_attempt", 1)
+    if (
+        not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", run_id)
+        or type(attempt) is not int
+        or attempt < 1
+    ):
+        raise ValueError("invalid CI run identity")
+    payload = json.dumps(
+        [provider, repo, run_id, attempt, case_id], separators=(",", ":")
+    ).encode()
+    return f"{match.group(1)}_{hashlib.sha256(payload).hexdigest()}"
+
+
 def task_dir(run: dict, root: Path) -> Path:
     """Keep globally unique run ID in dispatcher logs/state for correlation."""
     local = _local_run_time(run)
@@ -71,6 +103,11 @@ def task_dir(run: dict, root: Path) -> Path:
     run_id = str(run["id"])
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", run_id):
         raise ValueError("invalid run ID")
+    instance = _case_instance_token(run)
+    if instance is not None:
+        # SHA-256 includes the full run identity even when the display part is
+        # truncated, so maximum-length IDs remain safe as filesystem names.
+        return logs / f"{local:%Y-%m-%d_%H-%M-%S}_run-{run_id[:24]}_case-{instance}"
     return logs / (
         f"{local:%Y-%m-%d_%H-%M-%S}_run-{run_id}"
         f"_attempt-{int(run.get('run_attempt', 1))}{suffix}"
@@ -123,7 +160,13 @@ def remote_task_name(run: dict) -> str:
             r"[A-Za-z0-9_-]+", repo
         ):
             raise ValueError("invalid GitCode remote identity")
+        instance = _case_instance_token(run)
+        if instance is not None:
+            return f"{prefix}{repo[:32]}_{run_id[:24]}_case-{instance}"
         return f"{prefix}{repo}_{run_id}_attempt-{attempt}{suffix}"
+    instance = _case_instance_token(run)
+    if instance is not None:
+        return f"{prefix}{local:%Y-%m-%d_%H-%M-%S}_run_{name[:32]}_{str(number)[:20]}_case-{instance}"
     return f"{prefix}{local:%Y-%m-%d_%H-%M-%S}_run_{name}_{number}{suffix}"
 
 

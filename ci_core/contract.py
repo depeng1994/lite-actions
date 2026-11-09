@@ -224,17 +224,23 @@ def parse_plan(plan, run, workflow, *, repo=REPO):
     items = plan["cases"]
     if not isinstance(items, list) or not 1 <= len(items) <= 256:
         raise ValueError("invalid case count")
-    seen = set()
+    seen = {}
     for i, c in enumerate(items):
         if not isinstance(c, dict) or set(c) != CASE_KEYS:
             raise ValueError("invalid case structure")
-        if (
-            not isinstance(c["test_id"], str)
-            or not TEST.fullmatch(c["test_id"])
-            or c["test_id"] in seen
-        ):
+        if not isinstance(c["test_id"], str) or not TEST.fullmatch(c["test_id"]):
             raise ValueError("duplicate/invalid test")
-        seen.add(c["test_id"])
+        prior = seen.get(c["test_id"])
+        if prior is not None:
+            # Repeated smoke instances refer to the same pinned definition;
+            # only their position and corresponding case identity may differ.
+            if (
+                prior["kind"] != "npu_smoke"
+                or c["kind"] != "npu_smoke"
+                or any(prior[key] != c[key] for key in CASE_KEYS - {"case_id", "order"})
+            ):
+                raise ValueError("duplicate/invalid test")
+        seen[c["test_id"]] = c
         if repo == VLLM_REPO:
             from ci_core.vllm_ascend import validate_blue_case
 

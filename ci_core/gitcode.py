@@ -6,12 +6,156 @@ import json
 import logging
 import os
 import re
+import tarfile
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+from pathlib import Path
+from types import SimpleNamespace
 
-from ci_core.contract import REPO, parse_plan
+from ci_core.contract import REPO, TEST, WORKERS, digest, normalize, parse_plan
+
+
+def _unique_object(pairs):
+    obj = {}
+    for key, value in pairs:
+        if key in obj:
+            raise ValueError("duplicate catalog field")
+        obj[key] = value
+    return obj
+
+
+def catalog_plan(data, run, repo):
+    """Build a run-bound smoke plan from one verified declarative catalog."""
+    catalog = json.loads(data, object_pairs_hook=_unique_object)
+    if (
+        not isinstance(catalog, dict)
+        or set(catalog)
+        != {"version", "default_profile", "defaults", "cases", "profiles"}
+        or type(catalog["version"]) is not int
+        or catalog["version"] != 1
+    ):
+        raise ValueError("invalid smoke catalog")
+    defaults, definitions, profiles = (
+        catalog["defaults"],
+        catalog["cases"],
+        catalog["profiles"],
+    )
+    if (
+        not isinstance(defaults, dict)
+        or set(defaults) != {"worker", "target_pool", "docker"}
+        or any(not isinstance(value, str) or not value for value in defaults.values())
+        or defaults["worker"] not in WORKERS
+        or not isinstance(definitions, list)
+        or not 1 <= len(definitions) <= 256
+        or not isinstance(profiles, dict)
+        or not isinstance(catalog["default_profile"], str)
+    ):
+        raise ValueError("invalid smoke catalog fields")
+    by_name = {}
+    expected = {
+        "test_id",
+        "label",
+        "kind",
+        "worker",
+        "nodes",
+        "devices_per_node",
+        "timeout",
+        "env_vars",
+    }
+    for row in definitions:
+        if not isinstance(row, dict) or set(row) != expected:
+            raise ValueError("invalid smoke definition")
+        name = row["test_id"]
+        if (
+            not isinstance(name, str)
+            or not TEST.fullmatch(name)
+            or name in by_name
+            or row["kind"] not in ("worker_probe", "npu_smoke")
+            or row["worker"] not in ("blue", "yellow")
+        ):
+            raise ValueError("invalid smoke definition identity")
+        if (
+            not isinstance(row["label"], str)
+            or not row["label"].strip()
+            or len(row["label"]) > 115
+            or type(row["nodes"]) is not int
+            or type(row["devices_per_node"]) is not int
+            or type(row["timeout"]) is not int
+            or not 1 <= row["timeout"] <= 14400
+            or not isinstance(row["env_vars"], dict)
+            or any(
+                not isinstance(k, str) or not isinstance(v, str)
+                for k, v in row["env_vars"].items()
+            )
+        ):
+            raise ValueError("invalid smoke environment")
+        if row["kind"] == "worker_probe":
+            if row["nodes"] != 0 or row["devices_per_node"] != 0 or row["env_vars"]:
+                raise ValueError("invalid worker probe")
+        elif not 1 <= row["nodes"] <= 16 or not 1 <= row["devices_per_node"] <= 256:
+            raise ValueError("invalid smoke topology")
+        by_name[name] = row
+    for profile, items in profiles.items():
+        if (
+            not isinstance(profile, str)
+            or not TEST.fullmatch(profile)
+            or not isinstance(items, list)
+            or not 1 <= len(items) <= 256
+        ):
+            raise ValueError("invalid smoke profile")
+        seen = set()
+        for name in items:
+            if not isinstance(name, str) or name not in by_name:
+                raise ValueError("unknown smoke case")
+            if name in seen and by_name[name]["kind"] != "npu_smoke":
+                raise ValueError("duplicate non-smoke case")
+            seen.add(name)
+    choices = profiles.get(catalog["default_profile"])
+    if not isinstance(choices, list) or not 1 <= len(choices) <= 256:
+        raise ValueError("invalid default smoke profile")
+    cases = []
+    for name in choices:
+        if not isinstance(name, str) or name not in by_name:
+            raise ValueError("unknown smoke case")
+        row = by_name[name]
+        definition = SimpleNamespace(
+            test_name=name,
+            test_descr=row["label"],
+            ci_kind=row["kind"],
+            ci_overrides={"worker": row["worker"]},
+            nnodes=row["nodes"],
+            ngpu=row["devices_per_node"],
+            timeout=row["timeout"],
+        )
+        cases.append(normalize(definition, defaults, len(cases)))
+    plan = dict(
+        schema=3,
+        repo=repo,
+        workflow=run["path"].rsplit("/", 1)[-1],
+        run_id=run["id"],
+        attempt=run["run_attempt"],
+        sha=run["head_sha"],
+        defaults=defaults,
+        cases=cases,
+    )
+    plan["plan_digest"] = digest(plan)
+    parse_plan(plan, run, plan["workflow"], repo=repo)
+    return plan
+
+
+def plan_receipt(run, plan):
+    body = f"Lite-CI-PLAN {run['id']}:{run['run_attempt']}\n" + json.dumps(
+        plan, ensure_ascii=False, separators=(",", ":")
+    )
+    if (
+        len(body.encode()) > 6100
+        or len(json.dumps({"body": body}, separators=(",", ":")).encode()) > 7000
+    ):
+        raise ValueError("smoke plan exceeds result publication limit")
+    return body
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -175,7 +319,23 @@ class GitCodeClient:
 
     def ci_request(self, run):
         run_id, attempt = run["id"], run["run_attempt"]
-        name = f"lite-ci-request-{attempt}"
+        pilot_workflow = os.environ.get("LITE_ACTIONS_GITCODE_CATALOG_WORKFLOW", "")
+        pilot_branches = set(
+            filter(
+                None,
+                os.environ.get("LITE_ACTIONS_GITCODE_CATALOG_BRANCHES", "").split(","),
+            )
+        )
+        pilot = bool(
+            pilot_workflow
+            and run["path"].rsplit("/", 1)[-1] == pilot_workflow
+            and run.get("head_branch") in pilot_branches
+        )
+        name = (
+            f"lite-ci-smoke-catalog-{attempt}"
+            if pilot
+            else f"lite-ci-request-{attempt}"
+        )
         found = self.request(
             "GET", f"/actions/runs/{run_id}/artifacts?per_page=100", api=8
         )
@@ -216,20 +376,50 @@ class GitCodeClient:
             names = [n for n in archive.namelist() if not n.endswith("/")]
             if (
                 len(names) != 1
-                or names[0].split("/")[-1] != "ci-request.json"
+                or names[0].split("/")[-1]
+                != ("smoke_cases.json" if pilot else "ci-request.json")
                 or ".." in names[0].split("/")
             ):
                 raise ValueError("unexpected artifact contents")
             info = archive.getinfo(names[0])
             if info.file_size > 262144:
                 raise ValueError("request exceeds limit")
-            plan = json.loads(archive.read(info))
+            payload = archive.read(info)
+        if pilot:
+            from ci_core.ssh_runner import model_archive
+
+            with tempfile.TemporaryDirectory(prefix="lite-gitcode-catalog-") as tmp:
+                source = model_archive(
+                    run["head_sha"],
+                    Path(tmp),
+                    source_repo=self.repo,
+                    provider="gitcode",
+                )
+                with tarfile.open(source, "r:*") as archive:
+                    matches = [
+                        m
+                        for m in archive.getmembers()
+                        if m.name.removeprefix("./")
+                        == ".ci/lite_actions/smoke_cases.json"
+                    ]
+                    if (
+                        len(matches) != 1
+                        or not matches[0].isfile()
+                        or matches[0].size > 262144
+                    ):
+                        raise ValueError("missing or invalid pinned smoke catalog")
+                    pinned = archive.extractfile(matches[0])
+                    if pinned is None or pinned.read() != payload:
+                        raise ValueError("smoke catalog does not match pinned source")
+            plan = catalog_plan(payload, run, self.repo)
+            run["_ci_catalog"] = True
+        else:
+            plan = json.loads(payload)
         parse_plan(plan, run, run["path"].rsplit("/", 1)[-1], repo=self.repo)
-        if len(plan["cases"]) != 1:
+        if not pilot and len(plan["cases"]) != 1:
             raise ValueError("GitCode fixed environment requires exactly one case")
-        if (
-            os.environ.get("LITE_ACTIONS_GITCODE_PROBE_ONLY") == "1"
-            and plan["cases"][0]["kind"] != "worker_probe"
+        if os.environ.get("LITE_ACTIONS_GITCODE_PROBE_ONLY") == "1" and any(
+            case["kind"] != "worker_probe" for case in plan["cases"]
         ):
             raise ValueError("only zero-device probes are enabled")
         return plan
@@ -250,6 +440,21 @@ class GitCodeClient:
 
     def send_result(self, sha, body):
         return self.request("POST", f"/commits/{sha}/comments", {"body": body})
+
+    def publish_plan(self, run, plan, author):
+        body = plan_receipt(run, plan)
+        prefix = f"Lite-CI-PLAN {run['id']}:{run['run_attempt']}\n"
+        prior = [
+            row
+            for row in self.commit_comments(run["head_sha"])
+            if row.get("user", {}).get("login") == author
+            and row.get("body", "").startswith(prefix)
+        ]
+        if prior:
+            if any(row["body"] != body for row in prior):
+                raise ValueError("conflicting published smoke plan")
+            return
+        self.send_result(run["head_sha"], body)
 
 
 class MultiPlatformClient:
