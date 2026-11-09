@@ -451,7 +451,7 @@ class Router:
             valid = case_passed(execution.log, item["test_id"])
             status = (
                 "CANCELLED"
-                if execution.exit_code == 130
+                if cancel.is_set() or execution.exit_code == 130
                 else "TIMED_OUT"
                 if execution.exit_code == 124
                 else "INFRA_ERROR"
@@ -463,7 +463,7 @@ class Router:
             self.finish(
                 key,
                 status,
-                execution.exit_code,
+                130 if status == "CANCELLED" else execution.exit_code,
                 execution.tail,
                 execution.release_verified,
             )

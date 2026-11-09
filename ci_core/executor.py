@@ -474,8 +474,12 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
     if not case.get("enabled"):
         raise ValueError("disabled case")
     cancel = run.get("_ci_cancel_event")
+    log_dir = task_dir(run, root)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    logfile = log_dir / "pipeline.log"
     if cancel is not None and cancel.is_set():
-        raise InterruptedError("cancelled before launch")
+        logfile.write_text("Cancelled before launch\n", encoding="utf-8")
+        return Execution(130, ["Cancelled before launch"], logfile, True)
     environment = prepare_profile(case, run)
     setup = environment["ASCEND_SET_ENV_PATH"]
     case = {**case, "ascend_set_env_path": setup}
@@ -488,9 +492,6 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
 
         case = {**case, "bound_nodes": allocations(case, pools)}
     run.get("_ci_runtime_callback", lambda value: None)(case)
-    log_dir = task_dir(run, root)
-    log_dir.mkdir(parents=True, exist_ok=True)
-    logfile = log_dir / "pipeline.log"
     runtime_file = log_dir / "runtime-case.json"
     runtime_file.write_text(json.dumps(case) + "\n")
     command = [
@@ -513,16 +514,23 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
     release_verified = False
     announced = False
     reclaim_started = False
+    child_started = False
     with logfile.open("w", encoding="utf-8") as stream:
         rc = 125
         try:
+            if cancel is not None and cancel.is_set():
+                raise InterruptedError("cancelled before launch")
             check_a5_multinode_rootinfo(case, pools)
             reclaim_started = True
             remote_preflight(case, pools, ascend_env=setup, evidence=stream)
+            if cancel is not None and cancel.is_set():
+                raise InterruptedError("cancelled before launch")
             failures = broadcast_job(case, pools, run, "begin")
             if failures:
                 raise RuntimeError("CI begin wall failed on " + ",".join(failures))
             announced = True
+            if cancel is not None and cancel.is_set():
+                raise InterruptedError("cancelled before launch")
             callback("LAUNCHING")
             proc = subprocess.Popen(
                 command,
@@ -539,6 +547,7 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
                 },
                 start_new_session=True,
             )
+            child_started = True
             try:
                 deadline = time.monotonic() + 600
                 staged = False
@@ -570,16 +579,31 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
                     except subprocess.TimeoutExpired:
                         pass
             except (subprocess.TimeoutExpired, InterruptedError) as exc:
-                os.killpg(proc.pid, signal.SIGTERM)
+                try:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
                 try:
                     proc.wait(timeout=60)
                 except subprocess.TimeoutExpired:
-                    os.killpg(proc.pid, signal.SIGKILL)
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
                     proc.wait()
                 rc = 130 if isinstance(exc, InterruptedError) else 124
                 stream.write(
                     f"ERROR: case interrupted rc={rc}; verifying remote cleanup\n"
                 )
+        except ExternalNpuOccupancy as exc:
+            if not announced and not child_started:
+                reclaim_started = False
+                raise
+            stream.write(f"ERROR: {type(exc).__name__}: {str(exc)[:240]}\n")
+            rc = 125
+        except InterruptedError as exc:
+            stream.write(f"ERROR: {exc}\n")
+            rc = 130
         except Exception as exc:
             if "A5_MULTI_NODE_ROOTINFO_INVALID" in str(exc):
                 for line in str(exc).replace("; ", "\n").splitlines():
@@ -600,7 +624,7 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
                 for attempt in range(3):
                     try:
                         remote_preflight(case, pools, ascend_env=setup, evidence=stream)
-                        if announced:
+                        if child_started:
                             for node in allocations(case, pools):
                                 destination = f"{DEST_ROOT}/{remote_task_name(run)}/node{node['position']}"
                                 owned_processes_gone(node, destination, log_dir.name)
@@ -649,4 +673,6 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
         excerpt.append(f"Log collection failed: {type(exc).__name__}: {str(exc)[:120]}")
         if rc == 0:
             rc = 125
+    if cancel is not None and cancel.is_set() and rc == 0:
+        rc = 130
     return Execution(rc, excerpt[:20], logfile, release_verified)
