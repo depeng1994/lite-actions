@@ -213,3 +213,21 @@ The lint command runs Ruff lint/format checks and requires `device_ids`/`devices
 arrays in `config/pools.json` to remain on one line. Use `--fix` to format both.
 Pull requests run the same checks in GitHub Actions. See [test scope](docs/testing.md)
 before adding a scenario; configuration snapshots are not the test objective.
+
+For a trusted candidate that needs real-hardware verification, use a maintenance
+window: drain and stop the existing Worker, then start `unified_router.py` from a
+clean checkout of the reviewed Lite Actions SHA under the deployment supervisor.
+Keep the same single-instance lock, shared device locks, configuration and durable
+state, including quarantines. Confirm the live process and checkout actually match
+the candidate SHA before manually triggering the model repository's default
+8P/16P/8P Smoke at its reviewed SHA. Record the platform Run ID and verify the model
+SHA, all three case identities, results and successful cleanup against that Run.
+Missing or unknown results and unverified cleanup are failures. Record the resource
+and timing evidence needed to assess contention and FIFO; admission order alone
+does not prove the actual start order.
+
+Stop the candidate gracefully after the run. Check for unfinished or quarantined
+allocations and reconcile them as needed before restoring the previous Worker with
+the same state and locks. Preserve logs and the evidence linking both SHAs, the Run
+and the live Worker. The pull-request checks above run CPU contracts only; they do
+not certify 8P/16P hardware execution.

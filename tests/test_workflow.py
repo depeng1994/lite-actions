@@ -308,8 +308,8 @@ class WorkflowTests(unittest.TestCase):
 from pathlib import Path
 from ci_core.job_state import JobState
 class AdminState(JobState):
-    def read(self):
-        prior=super().read()
+    def _read_raw(self):
+        prior=super()._read_raw()
         Path(sys.argv[2]).touch()
         deadline=time.monotonic()+10
         while not Path(sys.argv[3]).exists():

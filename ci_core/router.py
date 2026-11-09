@@ -6,7 +6,8 @@ import subprocess
 import tempfile
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from collections import Counter
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import ExitStack
 from pathlib import Path
 
@@ -239,11 +240,7 @@ class Router:
                     "_ci_source": source,
                     "_ci_execution_sha": source["source_sha"],
                 }
-        repeated = {
-            item["test_id"]
-            for item in plan["cases"]
-            if sum(c["test_id"] == item["test_id"] for c in plan["cases"]) > 1
-        }
+        counts = Counter(item["test_id"] for item in plan["cases"])
         entries = []
         for item in owned:
             key = task_key(run, item)
@@ -258,7 +255,7 @@ class Router:
                         digest=plan["plan_digest"],
                         defaults=plan["defaults"],
                         queued_at=time.time(),
-                        use_instance_id=item["test_id"] in repeated,
+                        use_instance_id=counts[item["test_id"]] > 1,
                         **(
                             {"plan_receipt": plan, "receipt_pending": True}
                             if is_catalog
@@ -497,6 +494,10 @@ class Router:
             if lease:
                 lease.close()
 
+    def _run_after_handoff(self, handoff, *args):
+        if handoff.result():
+            self.work(*args)
+
     def pump(self):
         for key, (future, event, runid) in list(self.active.items()):
             if future.done():
@@ -546,9 +547,11 @@ class Router:
                 if pool:
                     blocked_pools.add(pool)
                 continue
+            # submit() can enqueue work before raising; do not run it until the
+            # scheduler has recorded ownership of the full lease.
+            lease, handoff = None, Future()
             try:
                 case = None
-                lease = None
                 if not light:
                     case = runtime_case(item, self.pools, self.worker)
                     case["_temporarily_unavailable"] = [
@@ -567,11 +570,24 @@ class Router:
                 )
                 event = threading.Event()
                 future = (self.light if light else self.training).submit(
-                    self.work, key, case, lease, event
+                    self._run_after_handoff, handoff, key, case, lease, event
                 )
                 self.active[key] = (future, event, r["run"]["id"])
-            except Exception as exc:
-                self.finish(key, "INFRA_ERROR", 125, [str(exc)[:180]])
+                handoff.set_result(True)
+            except BaseException as exc:
+                if handoff.done():
+                    raise
+                handoff.set_result(False)
+                clean = True
+                if lease:
+                    try:
+                        lease.close()
+                    except Exception:
+                        clean = False
+                        logging.exception("lease release failed after submission error")
+                if not isinstance(exc, Exception):
+                    raise
+                self.finish(key, "INFRA_ERROR", 125, [str(exc)[:180]], clean)
 
     def flush(self):
         pending_plans = {}

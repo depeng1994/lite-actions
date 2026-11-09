@@ -114,12 +114,10 @@ def catalog_plan(data, run, repo):
                 raise ValueError("duplicate non-smoke case")
             seen.add(name)
     choices = profiles.get(catalog["default_profile"])
-    if not isinstance(choices, list) or not 1 <= len(choices) <= 256:
+    if choices is None:
         raise ValueError("invalid default smoke profile")
     cases = []
     for name in choices:
-        if not isinstance(name, str) or name not in by_name:
-            raise ValueError("unknown smoke case")
         row = by_name[name]
         definition = SimpleNamespace(
             test_name=name,

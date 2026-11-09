@@ -13,9 +13,11 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
+from ci_core.contract import digest, parse_plan
 from ci_core.executor import Execution
 from ci_core.gitcode import GitCodeClient, MultiPlatformClient, catalog_plan
 from ci_core.job_state import JobState
+from ci_core.resources import reserve, reserve_host_budget, reserve_ports
 from ci_core.router import Router, task_key
 from tests.scenarios import DEFAULTS, Service, definition, write_workspace
 
@@ -40,7 +42,7 @@ def sample_run():
 
 def sample_catalog():
     rows = []
-    for name, nodes in (("smoke_8p", 1), ("smoke_16p", 2)):
+    for name, nodes in (("smoke_alpha", 1), ("smoke_beta", 2)):
         rows.append(
             {
                 "test_id": name,
@@ -58,20 +60,91 @@ def sample_catalog():
         "default_profile": "fifo_smoke",
         "defaults": DEFAULTS,
         "cases": rows,
-        "profiles": {"fifo_smoke": ["smoke_8p", "smoke_16p", "smoke_8p"]},
+        "profiles": {"fifo_smoke": ["smoke_alpha", "smoke_beta", "smoke_alpha"]},
     }
 
 
 class CatalogTests(unittest.TestCase):
+    def test_failed_submission_never_runs_and_releases_the_complete_lease(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            leases = root / "leases"
+            write_workspace(root)
+            github = Service([definition("case_alpha", kind="npu_smoke")], root)
+            environment = {
+                "LITE_ACTIONS_ALLOWED_ACTORS": "maintainer",
+                "LITE_ACTIONS_STATE_DIR": "",
+                "LITE_ACTIONS_RESOURCE_LOCK_ROOT": str(leases),
+            }
+            with patch.dict(os.environ, environment), github.connected():
+                router = Router(root, "blue", github, "reporter")
+                queued = []
+
+                def fail_after_enqueue(callback, *args):
+                    queued.append((callback, args))
+                    raise RuntimeError("failure after enqueue")
+
+                try:
+                    with (
+                        patch.object(
+                            router.training, "submit", side_effect=fail_after_enqueue
+                        ),
+                        patch.object(router, "work") as work,
+                    ):
+                        router.receive([github.runs[20]])
+                        router.pump()
+                        case = github.plans[20]["cases"][0]
+                        record = router.state.read()[task_key(github.runs[20], case)]
+                        self.assertEqual(record["report"]["status"], "INFRA_ERROR")
+                        self.assertFalse(record["quarantined"])
+                        allocation = record["allocation"]
+                        with (
+                            reserve(leases / "devices", allocation),
+                            reserve_host_budget(
+                                leases / "host-budget", allocation, max_jobs_per_host=2
+                            ) as slots,
+                            reserve_ports(leases / "ports", allocation) as ports,
+                        ):
+                            self.assertEqual(
+                                slots, record["runtime"]["host_budget_slots"]
+                            )
+                            self.assertEqual(
+                                ports["port_slot"], record["runtime"]["port_slot"]
+                            )
+                            callback, args = queued[0]
+                            delayed = threading.Thread(
+                                target=callback, args=args, daemon=True
+                            )
+                            delayed.start()
+                            delayed.join(2)
+                            self.assertFalse(delayed.is_alive())
+                            work.assert_not_called()
+                finally:
+                    router.close()
+
     def test_catalog_validation_rejects_ambiguity_and_invalid_unused_case(self):
         run = sample_run()
         catalog = sample_catalog()
         plan = catalog_plan(json.dumps(catalog), run, run["_ci_repo"])
         self.assertEqual(
             [case["test_id"] for case in plan["cases"]],
-            ["smoke_8p", "smoke_16p", "smoke_8p"],
+            ["smoke_alpha", "smoke_beta", "smoke_alpha"],
         )
         self.assertEqual(len({case["case_id"] for case in plan["cases"]}), 3)
+        for field, error in (
+            ("case_id", "case order/ID"),
+            ("topology", "duplicate/invalid test"),
+        ):
+            altered = copy.deepcopy(plan)
+            if field == "case_id":
+                altered["cases"][2]["case_id"] = altered["cases"][0]["case_id"]
+            else:
+                altered["cases"][2]["resources"]["nodes"] = 2
+            altered["plan_digest"] = digest(
+                {k: v for k, v in altered.items() if k != "plan_digest"}
+            )
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, error):
+                parse_plan(altered, run, altered["workflow"], repo=run["_ci_repo"])
         for field, bad in (("timeout", 0), ("nodes", True), ("env_vars", {"key": 3})):
             broken = copy.deepcopy(catalog)
             broken["cases"].append(
@@ -160,7 +233,8 @@ class CatalogTests(unittest.TestCase):
             tempfile.TemporaryDirectory() as tmp,
             patch.dict(os.environ, {"LITE_ACTIONS_STATE_DIR": ""}),
         ):
-            state = JobState(Path(tmp))
+            root = Path(tmp)
+            state = JobState(root)
             run = sample_run()
             plan = catalog_plan(json.dumps(sample_catalog()), run, run["_ci_repo"])
             entries = [
@@ -195,35 +269,15 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(state.read()["new"]["admission_seq"], 4)
             self.assertNotIn("__lite_actions_metadata__", state.read())
 
-    def test_plan_publication_is_idempotent_and_conflicts_fail_closed(self):
-        run = sample_run()
-        client = GitCodeClient("fixture", run["_ci_repo"])
-        plan = catalog_plan(json.dumps(sample_catalog()), run, run["_ci_repo"])
-        comments = []
-
-        def send(_, body):
-            comments.append({"body": body, "user": {"login": "reporter"}})
-
-        with (
-            patch.object(client, "commit_comments", return_value=comments),
-            patch.object(client, "send_result", side_effect=send),
-        ):
-            client.publish_plan(run, plan, "reporter")
-            client.publish_plan(run, plan, "reporter")
-            self.assertEqual(len(comments), 1)
-            comments[0]["body"] += "different"
-            with self.assertRaisesRegex(ValueError, "conflicting"):
-                client.publish_plan(run, plan, "reporter")
-
     def test_catalog_and_github_share_fifo_and_repeated_smokes_are_distinct(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_workspace(root)
             definitions = [
-                definition("smoke_8p", kind="npu_smoke"),
-                definition("smoke_16p", kind="npu_smoke", nodes=2),
+                definition("smoke_alpha", kind="npu_smoke"),
+                definition("smoke_beta", kind="npu_smoke", nodes=2),
             ]
-            github = Service([definitions[0]], root)
+            github = Service([definitions[0], definitions[0]], root)
             gitcode = GitCodeClient("fixture", "depeng1994/torchtitan-npu")
             run = sample_run()
             plan = catalog_plan(json.dumps(sample_catalog()), run, gitcode.repo)
@@ -242,12 +296,13 @@ class CatalogTests(unittest.TestCase):
 
             def execute(case, current, **_):
                 instance = current.get("_ci_case_id", current["_ci_test_id"])
-                started.append(instance)
-                if instance == "case_000_smoke_8p":
+                source = current.get("_ci_provider", "github")
+                started.append((source, instance))
+                if (source, instance) == ("gitcode", "case_000_smoke_alpha"):
                     first_entered.set()
                     if not release_first.wait(10):
                         raise RuntimeError("fixture wait timed out")
-                log = root / (instance + ".log")
+                log = root / (source + "_" + instance + ".log")
                 log.write_text(f"CASE_RESULT {current['_ci_test_id']} PASS 0\n")
                 return Execution(0, ["fixture completed"], log, True)
 
@@ -288,22 +343,48 @@ class CatalogTests(unittest.TestCase):
                 try:
                     router.receive([run])
                     router.receive([github.runs[20]])
-                    self.assertEqual(len(router.state.read()), 4)
+                    state = router.state.read()
+                    keys = [task_key(run, item) for item in plan["cases"]]
+                    keys.extend(
+                        task_key(github.runs[20], item)
+                        for item in github.plans[20]["cases"]
+                    )
+                    self.assertEqual(
+                        [state[key]["admission_seq"] for key in keys], [1, 2, 3, 4, 5]
+                    )
                     router.pump()
                     self.assertFalse(started)  # no launch before the plan receipt
                     router.flush()
+                    receipts = [
+                        c for c in comments if c["body"].startswith("Lite-CI-PLAN ")
+                    ]
+                    self.assertEqual(len(receipts), 1)
+                    gitcode.publish_plan(run, plan, "reporter")
+                    self.assertEqual(
+                        len(
+                            [
+                                c
+                                for c in comments
+                                if c["body"].startswith("Lite-CI-PLAN ")
+                            ]
+                        ),
+                        1,
+                    )
+                    original = receipts[0]["body"]
+                    receipts[0]["body"] += "different"
+                    with self.assertRaisesRegex(ValueError, "conflicting"):
+                        gitcode.publish_plan(run, plan, "reporter")
+                    receipts[0]["body"] = original
                     router.pump()
                     self.assertTrue(first_entered.wait(10))
                     state = router.state.read()
                     for item in plan["cases"][1:]:
                         self.assertEqual(state[task_key(run, item)]["phase"], "QUEUED")
-                    self.assertEqual(
-                        state[task_key(github.runs[20], github.plans[20]["cases"][0])][
-                            "phase"
-                        ],
-                        "QUEUED",
-                    )
-                    self.assertEqual(started, ["case_000_smoke_8p"])
+                    for item in github.plans[20]["cases"]:
+                        self.assertEqual(
+                            state[task_key(github.runs[20], item)]["phase"], "QUEUED"
+                        )
+                    self.assertEqual(started, [("gitcode", "case_000_smoke_alpha")])
                     release_first.set()
                     for _ in range(20):
                         for future, _, _ in list(router.active.values()):
@@ -327,9 +408,16 @@ class CatalogTests(unittest.TestCase):
                         {x["case_id"] for x in plan["cases"]},
                     )
                     self.assertTrue(all(x["status"] == "PASS" for x in gitcode_results))
-                    self.assertEqual(github.results()[0]["status"], "PASS")
+                    self.assertEqual(
+                        [r["status"] for r in github.results()], ["PASS", "PASS"]
+                    )
+                    self.assertEqual(
+                        {r["case_id"] for r in github.results()},
+                        {item["case_id"] for item in github.plans[20]["cases"]},
+                    )
                     self.assertLess(
-                        started.index("smoke_16p"), started.index("case_002_smoke_8p")
+                        started.index(("gitcode", "smoke_beta")),
+                        started.index(("gitcode", "case_002_smoke_alpha")),
                     )
                 finally:
                     release_first.set()

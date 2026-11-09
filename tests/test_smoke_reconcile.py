@@ -13,14 +13,14 @@ from tests.test_smoke_case_identity import run_identity
 class SmokeReconciliationTests(unittest.TestCase):
     def test_repeated_smoke_checks_each_instance_before_releasing_quarantine(self):
         root = Path(reconcile.__file__).resolve().parents[1]
-        for case_id in ("case_000_dispatch_smoke_8p", "case_002_dispatch_smoke_8p"):
+        for case_id in ("case_000_smoke_alpha", "case_002_smoke_alpha"):
             run = run_identity("gitcode")
             run.pop("_ci_test_id")
             record = {
                 "run": run,
                 "item": {
                     "worker": "blue",
-                    "test_id": "dispatch_smoke_8p",
+                    "test_id": "smoke_alpha",
                     "case_id": case_id,
                 },
                 "use_instance_id": True,
@@ -31,7 +31,7 @@ class SmokeReconciliationTests(unittest.TestCase):
             state = MagicMock()
             state.read.return_value = {"task": record}
             expected = task_dir(
-                {**run, "_ci_test_id": "dispatch_smoke_8p", "_ci_case_id": case_id},
+                {**run, "_ci_test_id": "smoke_alpha", "_ci_case_id": case_id},
                 root,
             ).name
             pools = {"pool_blue": {"nodes": [{"host_id": "192.0.2.10:22"}]}}

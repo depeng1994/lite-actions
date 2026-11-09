@@ -45,10 +45,7 @@ class JobState:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.path.with_suffix(".lock").open("a+b") as lock:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-                current = self.read()
-                metadata = self._read_raw().get(_META)
-                if metadata is not None:
-                    current[_META] = metadata
+                current = self._read_raw()
                 item = current.get(key, {})
                 item.update(fields)
                 current[key] = item
