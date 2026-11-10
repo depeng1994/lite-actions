@@ -306,11 +306,10 @@ class Router:
                 repo=run.get("_ci_repo", REPO),
             )
             if run.get("_ci_repo") == SELF_REPO:
-                from ci_core.gitcode import catalog_plan
+                from ci_core.self_smoke import expected_plan
 
-                catalog = self.root / ".ci/lite_actions/smoke_cases.json"
-                if plan != catalog_plan(catalog.read_bytes(), run, SELF_REPO):
-                    raise ValueError("self-smoke plan differs from its pinned catalog")
+                if plan != expected_plan(run):
+                    raise ValueError("self-smoke plan differs from its pinned profile")
             is_catalog = bool(run.get("_ci_catalog"))
             self.plans[identity] = (plan, is_catalog)
         else:

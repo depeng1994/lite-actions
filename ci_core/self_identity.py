@@ -22,12 +22,12 @@ def checkout_sha(root):
     paths = (
         "ci_core",
         "unified_router.py",
-        ".ci/lite_actions/smoke_cases.json",
         ".github/workflows/lite_actions_self_smoke.yml",
         "tests/__init__.py",
         "tests/integration_tests/__init__.py",
         "tests/integration_tests/tools/__init__.py",
         "tests/integration_tests/tools/lite_actions",
+        "tests/integration_tests/training_cases",
     )
     entries = git("ls-tree", "-rz", "--full-tree", "HEAD", "--", *paths)
     tracked = set()
@@ -52,13 +52,15 @@ def checkout_sha(root):
         tracked.add(name)
     required = {
         "unified_router.py",
-        ".ci/lite_actions/smoke_cases.json",
         ".github/workflows/lite_actions_self_smoke.yml",
         "tests/__init__.py",
         "tests/integration_tests/__init__.py",
         "tests/integration_tests/tools/__init__.py",
         "tests/integration_tests/tools/lite_actions/entrypoint.py",
         "tests/integration_tests/tools/lite_actions/dispatch_smoke_worker.py",
+        "tests/integration_tests/tools/lite_actions/runner.py",
+        "tests/integration_tests/training_cases/__init__.py",
+        "tests/integration_tests/training_cases/dispatch_smoke.py",
     }
     if not required.issubset(tracked) or not any(
         x.startswith("ci_core/") for x in tracked
@@ -67,6 +69,7 @@ def checkout_sha(root):
     directories = (
         root / "ci_core",
         root / "tests/integration_tests/tools/lite_actions",
+        root / "tests/integration_tests/training_cases",
     )
     if any(
         str(path.relative_to(root)) not in tracked

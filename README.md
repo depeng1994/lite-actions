@@ -247,17 +247,27 @@ arrays in `config/pools.json` to remain on one line. Use `--fix` to format both.
 Pull requests run the same checks in GitHub Actions. See [test scope](docs/testing.md)
 before adding a scenario; configuration snapshots are not the test objective.
 
-For a trusted candidate that needs real-hardware verification, use a maintenance
-window: drain and stop the existing Worker, then start `unified_router.py` from a
-clean checkout of the reviewed Lite Actions SHA under the deployment supervisor.
-Keep the same single-instance lock, shared device locks, configuration and durable
-state, including quarantines. Confirm the live process and checkout actually match
-the candidate SHA before manually triggering the model repository's default
-8P/16P/8P Smoke at its reviewed SHA. Record the platform Run ID and verify the model
-SHA, all three case identities, results and successful cleanup against that Run.
-Missing or unknown results and unverified cleanup are failures. Record the resource
-and timing evidence needed to assess contention and FIFO; admission order alone
-does not prove the actual start order.
+For trusted candidates, `.github/workflows/lite_actions_self_smoke.yml` can be
+started manually after the Worker is running from a clean checkout of that exact
+commit. It uses the repository's `tests/integration_tests/training_cases/dispatch_smoke.py`
+profile: a Blue OS probe followed by 8P, 16P and 8P HCCL Smoke. The Yellow OS
+probe is disabled in the default profile. PRs continue to run CPU checks only.
+
+To opt a Worker into the self-smoke route, include `depeng1994/lite-actions` in
+`LITE_ACTIONS_MODEL_REPOS`, set `LITE_ACTIONS_SELF_SMOKE_ENABLED=1`, and configure
+`LITE_ACTIONS_SELF_ACTORS` and `LITE_ACTIONS_SELF_BRANCHES` as comma-separated
+allowlists. Set the repository variable `LITE_CI_RESULT_ACTOR` to the Worker's
+result-author account. With the trusted branch deployed, start the workflow:
+
+```bash
+gh workflow run lite_actions_self_smoke.yml -R depeng1994/lite-actions --ref <trusted-branch>
+```
+
+The Worker rejects a run unless its SHA matches its own verified checkout. Keep
+the configured resource locks and cleanup policy, and record the Run ID, SHA,
+all four case results and cleanup evidence. Missing results or unverified cleanup
+are failures. Record resource and timing evidence when evaluating FIFO; admission
+order alone does not prove actual start order.
 
 Stop the candidate gracefully after the run. Check for unfinished or quarantined
 allocations and reconcile them as needed before restoring the previous Worker with

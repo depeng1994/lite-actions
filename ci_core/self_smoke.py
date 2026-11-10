@@ -6,11 +6,15 @@ import time
 from pathlib import Path
 
 from ci_core.contract import SELF_REPO, SELF_WORKFLOW, parse_plan
-from ci_core.gitcode import _unique_object, catalog_plan
+from ci_core.gitcode import _unique_object, source_plan
 from ci_core.github import GitHubClient
+from tests.integration_tests.tools.lite_actions.entrypoint import inspect_profile
 
-CATALOG = Path(".ci/lite_actions/smoke_cases.json")
 PLAN = Path(".ci-request/ci-request.json")
+
+
+def expected_plan(run):
+    return source_plan(inspect_profile(), run, SELF_REPO)
 
 
 def prepare(environ=os.environ):
@@ -22,7 +26,7 @@ def prepare(environ=os.environ):
         "head_sha": environ["GITHUB_SHA"],
         "path": ".github/workflows/" + SELF_WORKFLOW,
     }
-    plan = catalog_plan(CATALOG.read_bytes(), run, SELF_REPO)
+    plan = expected_plan(run)
     PLAN.parent.mkdir(parents=True, exist_ok=True)
     PLAN.write_text(json.dumps(plan, separators=(",", ":")) + "\n")
     return plan

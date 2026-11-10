@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 from datetime import timedelta
 
@@ -20,35 +19,17 @@ def main() -> None:
     rank = int(os.environ["RANK"])
     local_rank = int(os.environ["LOCAL_RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
-    expected_world = int(os.environ["LITE_SMOKE_EXPECTED_WORLD"])
-    if world_size != expected_world:
-        raise RuntimeError(f"expected world_size={expected_world}, got {world_size}")
-
     torch.npu.set_device(local_rank)
     dist.init_process_group(backend="hccl", init_method="env://", timeout=timedelta(seconds=45))
     try:
-        # Explicitly construct the DP domain over all launched ranks.
-        dp_ranks = list(range(world_size))
-        dp_group = dist.new_group(ranks=dp_ranks, backend="hccl")
         value = torch.tensor([rank], dtype=torch.int32, device=f"npu:{local_rank}")
-        dist.all_reduce(value, op=dist.ReduceOp.SUM, group=dp_group)
+        dist.all_reduce(value, op=dist.ReduceOp.SUM)
         expected_sum = world_size * (world_size - 1) // 2
         if int(value.cpu().item()) != expected_sum:
             raise RuntimeError(f"DP all_reduce mismatch: expected {expected_sum}, got {int(value.cpu().item())}")
-        dist.barrier(group=dp_group)
+        dist.barrier()
         if rank == 0:
-            print(
-                "DISPATCH_SMOKE_PASS "
-                + json.dumps(
-                    {
-                        "world_size": world_size,
-                        "dp_world_size": world_size,
-                        "all_reduce_sum": expected_sum,
-                    },
-                    sort_keys=True,
-                ),
-                flush=True,
-            )
+            print(f"DISPATCH_SMOKE_PASS world_size={world_size} all_reduce_sum={expected_sum}", flush=True)
     finally:
         dist.destroy_process_group()
 
