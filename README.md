@@ -131,17 +131,23 @@ never retain partial leases.
 A busy external device group is temporarily avoided so another verified group can
 be tried. Unknown occupancy is never killed. This worker does not reclaim external tasks.
 
-Cancellation terminates only the case's marked ranks. Release requires NPU checks;
-unknown remote state quarantines the allocation. State is atomically persisted and
-fsynced before execution. Restart never blindly reruns a case; pending reports retry
-without training. Unresolved allocations remain isolated until reconciliation:
+Cancellation terminates only the case's marked ranks and checks NPU occupancy.
+State is atomically persisted and fsynced before execution. Restart never blindly
+reruns a case; pending reports retry without training. With the default policy,
+unknown remote state quarantines the allocation until reconciliation:
 
 ```bash
 python3 scripts/reconcile.py --worker-id blue --task-key '<persisted-task-key>'
 ```
 
 The command checks owned processes and device occupancy before removing quarantine.
-It never kills processes. Do not delete quarantine records to bypass these checks.
+It never kills processes.
+
+For an explicitly selected trial worker, `LITE_ACTIONS_DISABLE_QUARANTINE_WORKERS=blue`
+disables automatic quarantine for that worker. On startup its prior quarantine
+flags are cleared while task and result records remain; other workers retain their
+default policy. Device, host and port locks, occupancy checks and cancellation are
+unchanged, and unverified cleanup is still reported as `cleanup_verified=false`.
 
 ## Result limits
 

@@ -47,6 +47,13 @@ class Router:
         )
         self.workers, self.pools = load(self.root, worker)
         self.state = JobState(self.root)
+        self.quarantine_enabled = worker not in {
+            name.strip()
+            for name in os.environ.get(
+                "LITE_ACTIONS_DISABLE_QUARANTINE_WORKERS", ""
+            ).split(",")
+            if name.strip()
+        }
         if any(
             r.get("protocol", 3) != 3 and r.get("phase") != "REPORTED"
             for r in self.state.read().values()
@@ -57,7 +64,35 @@ class Router:
         self.active = {}
         self.plans = {}
         self.unavailable_runs = set()
-        # Unknown children survive a dispatcher crash. Fail closed before admitting overlap.
+        if not self.quarantine_enabled:
+            owners = {
+                node["host_id"]: pool["owner"]
+                for pool in self.pools.values()
+                for node in pool["nodes"]
+            }
+            clear = []
+            for key, record in self.state.read().items():
+                item = record.get("item")
+                owner = item.get("worker") if isinstance(item, dict) else None
+                allocation = record.get("allocation") or []
+                belongs = (
+                    owner == worker
+                    and all(
+                        owners.get(node.get("host_id"), worker) == worker
+                        for node in allocation
+                    )
+                ) or (
+                    owner is None
+                    and all(
+                        owners.get(node.get("host_id")) == worker for node in allocation
+                    )
+                )
+                if record.get("quarantined") and belongs:
+                    clear.append(key)
+            if clear:
+                self.state.update_many(clear, quarantined=False)
+            logging.info("automatic quarantine disabled for worker %s", worker)
+        # Record interrupted work according to this worker's configured policy.
         for key, r in self.state.read().items():
             if r.get("phase") in {"RESERVED", "STAGING", "RUNNING", "CLEANING"}:
                 result = report(
@@ -66,13 +101,14 @@ class Router:
                     r["digest"],
                     "INFRA_ERROR",
                     125,
-                    ["Worker restarted; remote reconciliation required"],
+                    ["Worker restarted; remote cleanup unverified"],
                     False,
                 )
                 self.state.update(
                     key,
                     phase="PENDING_REPORT",
-                    quarantined=bool(r.get("allocation")),
+                    quarantined=bool(r.get("allocation"))
+                    and (self.quarantine_enabled or r["item"].get("worker") != worker),
                     report=result,
                 )
 
@@ -296,7 +332,7 @@ class Router:
                 raise ValueError("CONTAINER_BINDING_MISSING")
         blocked = set()
         for r in self.state.read().values():
-            if r.get("quarantined"):
+            if self.quarantine_enabled and r.get("quarantined"):
                 blocked.update(resource_keys(r.get("allocation", [])))
         for allocation in options:
             if any(
@@ -373,7 +409,9 @@ class Router:
         self.state.update(
             key,
             phase="PENDING_REPORT",
-            quarantined=bool(r.get("allocation")) and not clean,
+            quarantined=bool(r.get("allocation"))
+            and not clean
+            and (self.quarantine_enabled or r["item"].get("worker") != self.worker),
             report=report(r["run"], r["item"], r["digest"], status, rc, lines, clean),
         )
 
