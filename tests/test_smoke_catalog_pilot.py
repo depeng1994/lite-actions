@@ -21,7 +21,13 @@ from ci_core.gitcode import GitCodeClient, MultiPlatformClient, catalog_plan
 from ci_core.job_state import JobState
 from ci_core.resources import reserve, reserve_host_budget, reserve_ports
 from ci_core.router import Router, task_key
-from tests.scenarios import DEFAULTS, Service, definition, write_workspace
+from tests.scenarios import (
+    DEFAULTS,
+    Service,
+    completed_execution,
+    definition,
+    write_workspace,
+)
 
 
 def sample_run():
@@ -176,6 +182,114 @@ class CatalogTests(unittest.TestCase):
                             work.assert_not_called()
                 finally:
                     router.close()
+
+    def test_interrupted_registration_releases_lease_and_closes_cleanly(self):
+        for inserted, release_fails in ((False, False), (True, False), (True, True)):
+            with (
+                self.subTest(inserted=inserted, release_fails=release_fails),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                root = Path(tmp)
+                leases = root / "leases"
+                write_workspace(root)
+                github = Service([definition("smoke", kind="npu_smoke")], root)
+                environment = {
+                    "LITE_ACTIONS_ALLOWED_ACTORS": "maintainer",
+                    "LITE_ACTIONS_STATE_DIR": "",
+                    "LITE_ACTIONS_RESOURCE_LOCK_ROOT": str(leases),
+                    "LITE_ACTIONS_DISABLE_QUARANTINE_WORKERS": "",
+                }
+                with patch.dict(os.environ, environment), github.connected():
+                    router = Router(root, "blue", github, "reporter")
+
+                    class InterruptedRegistration(dict):
+                        def __setitem__(self, key, value):
+                            assert key in router.active
+                            if inserted:
+                                super().__setitem__(key, value)
+                            raise KeyboardInterrupt
+
+                    router.preflight = InterruptedRegistration()
+                    original_claim = router.claim
+
+                    def claim(case):
+                        lease, selected = original_claim(case)
+                        if release_fails:
+
+                            def fail_release():
+                                raise RuntimeError("fixture release unconfirmed")
+
+                            lease.callback(fail_release)
+                        return lease, selected
+
+                    try:
+                        with (
+                            patch.object(router, "work") as work,
+                            patch.object(router, "claim", side_effect=claim),
+                            patch("ci_core.router.logging.exception"),
+                        ):
+                            router.receive([github.runs[20]])
+                            with self.assertRaises(KeyboardInterrupt):
+                                router.pump()
+                            self.assertFalse(router.active)
+                            self.assertFalse(router.preflight)
+                            item = github.plans[20]["cases"][0]
+                            key = task_key(github.runs[20], item)
+                            record = router.state.read()[key]
+                            self.assertEqual(
+                                record["phase"],
+                                "RESERVED" if release_fails else "QUEUED",
+                            )
+                            if not release_fails:
+                                self.assertEqual(record["allocation"], [])
+                            allocation = record["runtime"]["allocation"]
+                            with (
+                                reserve(leases / "devices", allocation),
+                                reserve_host_budget(
+                                    leases / "host-budget",
+                                    allocation,
+                                    max_jobs_per_host=2,
+                                ) as slots,
+                                reserve_ports(leases / "ports", allocation) as ports,
+                            ):
+                                self.assertEqual(
+                                    slots, record["runtime"]["host_budget_slots"]
+                                )
+                                self.assertEqual(
+                                    ports["port_slot"], record["runtime"]["port_slot"]
+                                )
+                                router.close()
+                                work.assert_not_called()
+                            resumed = Router(root, "blue", github, "reporter")
+                            try:
+                                if release_fails:
+                                    record = resumed.state.read()[key]
+                                    self.assertEqual(
+                                        record["report"]["status"], "INFRA_ERROR"
+                                    )
+                                    self.assertFalse(
+                                        record["report"]["cleanup_verified"]
+                                    )
+                                    self.assertTrue(record["quarantined"])
+                                    continue
+                                with patch(
+                                    "ci_core.router.execute",
+                                    side_effect=lambda case, run, **_: (
+                                        completed_execution(root, case, run)
+                                    ),
+                                ):
+                                    resumed.pump()
+                                    resumed.active[key][0].result(10)
+                                    resumed.pump()
+                                    resumed.flush()
+                                self.assertEqual(
+                                    resumed.state.read()[key]["report"]["status"],
+                                    "PASS",
+                                )
+                            finally:
+                                resumed.close()
+                    finally:
+                        router.close()
 
     def test_catalog_validation_rejects_ambiguity_and_invalid_unused_case(self):
         run = sample_run()

@@ -164,12 +164,18 @@ class ExecutorSafetyTests(unittest.TestCase):
                 key = task_key(
                     self.service.runs[20], self.service.plans[20]["cases"][0]
                 )
-                record = router.state.read()[key]
-                self.assertEqual(record["phase"], "QUEUED")
-                self.assertFalse(record["quarantined"])
-                self.assertEqual(record["allocation"], [])
-                avoided = record["unavailable"][0]["allocation"]
-                mocks.launch.assert_not_called()
+                devices = [
+                    {"host_id": host, "devices": [0, 1, 2, 3]}
+                    for host in ("192.0.2.10:22", "192.0.2.11:22")
+                ]
+                with reserve(self.root / "leases/devices", devices):
+                    router.pump()
+                    record = router.state.read()[key]
+                    self.assertEqual(record["phase"], "QUEUED")
+                    self.assertFalse(record["quarantined"])
+                    self.assertEqual(record["allocation"], [])
+                    avoided = record["unavailable"][0]["allocation"]
+                    mocks.launch.assert_not_called()
 
                 busy = False
                 router.pump()

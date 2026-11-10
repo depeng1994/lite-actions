@@ -224,9 +224,12 @@ class GitCodeWorkflowTests(unittest.TestCase):
                 [],
                 [],
             )
+            first_ready = threading.Event()
 
             def execute(selected, current, **kwargs):
                 allocations.append(selected)
+                current["_ci_phase_callback"]("LAUNCHING")
+                first_ready.set()
                 entered.wait(10)
                 release.wait(10)
                 return completed_execution(root, selected, current)
@@ -278,6 +281,8 @@ class GitCodeWorkflowTests(unittest.TestCase):
                 ]
                 try:
                     router.tick()
+                    self.assertTrue(first_ready.wait(10))
+                    router.pump()
                     entered.wait(10)
                     left, right = allocations
                     self.assertNotEqual(left["master_port"], right["master_port"])

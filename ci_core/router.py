@@ -62,6 +62,7 @@ class Router:
         self.training = ThreadPoolExecutor(max_workers=4)
         self.light = ThreadPoolExecutor(max_workers=1)
         self.active = {}
+        self.preflight = {}
         self.plans = {}
         self.unavailable_runs = set()
         if not self.quarantine_enabled:
@@ -384,7 +385,7 @@ class Router:
             report=report(r["run"], r["item"], r["digest"], status, rc, lines, clean),
         )
 
-    def work(self, key, case, lease, cancel):
+    def work(self, key, case, lease, cancel, preflight):
         r = self.state.read()[key]
         item = r["item"]
         run = r["run"]
@@ -435,6 +436,7 @@ class Router:
                 nonlocal launched
                 if phase == "LAUNCHING":
                     launched = True
+                    preflight.set()
                 else:
                     self.transition(key, phase)
 
@@ -466,15 +468,11 @@ class Router:
                 execution.release_verified,
             )
         except ExternalNpuOccupancy:
-            # Read-only check: no rank has launched, no device is quarantined.
-            self.state.update(
-                key,
-                phase="QUEUED",
-                allocation=[],
-                quarantined=False,
-                unavailable=r.get("unavailable", [])
-                + [{"allocation": case["allocation"], "until": time.time() + 60}],
-            )
+            if launched:
+                self.finish(key, "INFRA_ERROR", 125, ["Occupancy after launch"], False)
+            else:
+                # The pump requeues only after the lease is released.
+                return {"allocation": case["allocation"], "until": time.time() + 60}
         except subprocess.TimeoutExpired:
             self.finish(
                 key, "TIMED_OUT", 124, ["Worker operation timed out"], not launched
@@ -494,15 +492,40 @@ class Router:
 
     def _run_after_handoff(self, handoff, *args):
         if handoff.result():
-            self.work(*args)
+            return self.work(*args)
 
-    def pump(self):
+    def _complete_active(self):
         for key, (future, event, runid) in list(self.active.items()):
             if future.done():
-                future.result()
+                retry = future.result()
+                if retry:
+                    if event.is_set():
+                        self.finish(key, "CANCELLED", 130, ["Cancelled before launch"])
+                    else:
+                        current = self.state.read()[key]
+                        self.state.update(
+                            key,
+                            phase="QUEUED",
+                            allocation=[],
+                            quarantined=False,
+                            unavailable=current.get("unavailable", []) + [retry],
+                        )
                 del self.active[key]
+                self.preflight.pop(key, None)
+
+    def pump(self):
+        self._complete_active()
         records = self.state.read()
         blocked_pools = set()
+        # Before launch, a leased Smoke can still return to the head of its pool.
+        for key in self.active:
+            item = records[key]["item"]
+            if (
+                item["kind"] == "npu_smoke"
+                and item["target_pool"]
+                and not self.preflight[key].is_set()
+            ):
+                blocked_pools.add((item["target_pool"], True))
         queued = sorted(
             ((k, r) for k, r in records.items() if r.get("phase") == "QUEUED"),
             key=lambda kv: (
@@ -541,7 +564,8 @@ class Router:
                 continue
             if queue in blocked_pools:
                 continue
-            if time.time() - r["queued_at"] > 3600:
+            # Smoke waits for capacity while its originating run remains active.
+            if not is_smoke and time.time() - r["queued_at"] > 3600:
                 self.finish(
                     key,
                     "RESOURCE_TIMEOUT",
@@ -579,15 +603,20 @@ class Router:
                     allocation=case["allocation"] if case else [],
                     runtime=case,
                 )
-                event = threading.Event()
+                event, preflight = threading.Event(), threading.Event()
                 future = (self.light if light else self.training).submit(
-                    self._run_after_handoff, handoff, key, case, lease, event
+                    self._run_after_handoff, handoff, key, case, lease, event, preflight
                 )
                 self.active[key] = (future, event, r["run"]["id"])
+                self.preflight[key] = preflight
                 handoff.set_result(True)
+                if is_smoke:
+                    blocked_pools.add(queue)
             except BaseException as exc:
                 if handoff.done():
                     raise
+                self.active.pop(key, None)
+                self.preflight.pop(key, None)
                 handoff.set_result(False)
                 clean = True
                 if lease:
@@ -597,6 +626,10 @@ class Router:
                         clean = False
                         logging.exception("lease release failed after submission error")
                 if not isinstance(exc, Exception):
+                    if clean:
+                        self.state.update(
+                            key, phase="QUEUED", allocation=[], quarantined=False
+                        )
                     raise
                 self.finish(key, "INFRA_ERROR", 125, [str(exc)[:180]], clean)
 
@@ -690,8 +723,11 @@ class Router:
         self.flush()
 
     def close(self):
-        for _, event, _ in self.active.values():
-            event.set()
+        self._complete_active()
+        for future, event, _ in self.active.values():
+            if not future.done():
+                event.set()
         self.training.shutdown(wait=True)
         self.light.shutdown(wait=True)
+        self._complete_active()
         self.flush()
