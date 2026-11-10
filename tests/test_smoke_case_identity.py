@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from ci_core.contract import (
+    SELF_REPO,
     TORCHTITAN_REPO,
     VLLM_REPO,
     create_plan,
@@ -67,6 +68,18 @@ class SmokePlanIdentityTests(unittest.TestCase):
 
 
 class SmokeExecutionIdentityTests(unittest.TestCase):
+    def test_workflow_display_names_have_safe_distinct_directories(self):
+        run = {
+            **run_identity(),
+            "_ci_repo": SELF_REPO,
+            "name": "Lite Actions self smoke",
+        }
+        first = remote_task_name(run)
+        second = remote_task_name({**run, "name": "Lite/Actions self smoke"})
+        self.assertNotEqual(first, second)
+        self.assertTrue(STAMP.fullmatch(first))
+        self.assertTrue(STAMP.fullmatch(second))
+
     def test_long_pr_run_title_has_a_bounded_unique_directory(self):
         run = {
             **run_identity(),
@@ -81,7 +94,9 @@ class SmokeExecutionIdentityTests(unittest.TestCase):
         self.assertLessEqual(len(first.encode()), 255)
         unique_case = {key: value for key, value in run.items() if key != "_ci_case_id"}
         first = remote_task_name(unique_case)
-        second = remote_task_name({**unique_case, "name": unique_case["name"][:-1] + "c"})
+        second = remote_task_name(
+            {**unique_case, "name": unique_case["name"][:-1] + "c"}
+        )
         self.assertNotEqual(first, second)
         self.assertTrue(STAMP.fullmatch(first))
         self.assertLessEqual(len(first.encode()), 255)
