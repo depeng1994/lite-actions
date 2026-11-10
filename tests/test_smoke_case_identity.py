@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from ci_core.contract import (
     TORCHTITAN_REPO,
+    VLLM_REPO,
     create_plan,
     normalize,
 )
@@ -66,6 +67,19 @@ class SmokePlanIdentityTests(unittest.TestCase):
 
 
 class SmokeExecutionIdentityTests(unittest.TestCase):
+    def test_long_pr_run_title_has_a_bounded_unique_directory(self):
+        run = {
+            **run_identity(),
+            "_ci_repo": VLLM_REPO,
+            "name": "lite-vllm-recheck-23-" + "a" * 40 + "-" + "b" * 32,
+            "_ci_case_id": "case_000_smoke_alpha",
+        }
+        first = remote_task_name(run)
+        second = remote_task_name({**run, "_ci_case_id": "case_002_smoke_alpha"})
+        self.assertNotEqual(first, second)
+        self.assertTrue(STAMP.fullmatch(first))
+        self.assertLessEqual(len(first.encode()), 255)
+
     def test_legacy_paths_remain_unchanged_without_instance(self):
         github = run_identity()
         self.assertEqual(

@@ -128,8 +128,10 @@ def remote_task_name(run: dict) -> str:
     collision with the original execution's immutable training logs.
     """
     name = run.get("name")
+    instance = _case_instance_token(run)
+    max_length = 256 if instance is not None else 64
     if not isinstance(name, str) or not re.fullmatch(
-        r"[A-Za-z0-9][A-Za-z0-9-]{0,63}", name
+        rf"[A-Za-z0-9][A-Za-z0-9-]{{0,{max_length - 1}}}", name
     ):
         raise ValueError("invalid GitHub workflow name for execution directory")
     number = run.get("run_number")
@@ -159,11 +161,9 @@ def remote_task_name(run: dict) -> str:
             r"[A-Za-z0-9_-]+", repo
         ):
             raise ValueError("invalid GitCode remote identity")
-        instance = _case_instance_token(run)
         if instance is not None:
             return f"{prefix}{repo[:32]}_{run_id[:24]}_case-{instance}"
         return f"{prefix}{repo}_{run_id}_attempt-{attempt}{suffix}"
-    instance = _case_instance_token(run)
     if instance is not None:
         return f"{prefix}{local:%Y-%m-%d_%H-%M-%S}_run_{name[:32]}_{str(number)[:20]}_case-{instance}"
     return f"{prefix}{local:%Y-%m-%d_%H-%M-%S}_run_{name}_{number}{suffix}"
