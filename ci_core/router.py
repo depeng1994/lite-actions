@@ -294,11 +294,7 @@ class Router:
                 else run.get("head_branch") in branches
                 and run.get("actor", {}).get("login") in allowed
             )
-        return (
-            admitted
-            and filename in WORKFLOWS
-            and run.get("status") in {"queued", "in_progress"}
-        )
+        return admitted
 
     def transition(self, key, phase, **fields):
         self.state.update(key, phase=phase, **fields)

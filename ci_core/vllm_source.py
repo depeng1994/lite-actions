@@ -136,9 +136,12 @@ def check_current(client, source, *, check_run=False):
             or pr_base.get("ref") != source["base_ref"]
             or base != source["base_sha"]
             or pr.get("mergeable") is False
-            or pr.get("merge_commit_sha") != source["source_sha"]
         ):
             raise ValueError("STALE_NATIVE_SOURCE: Head/Base/authorization changed")
+        if pr.get("mergeable") is None or not pr.get("merge_commit_sha"):
+            raise RuntimeError("Native merge source is temporarily unavailable")
+        if pr["merge_commit_sha"] != source["source_sha"]:
+            raise ValueError("STALE_NATIVE_SOURCE: merge source changed")
     if check_run:
         run = client.workflow_status(source["run_id"])
         if (

@@ -217,7 +217,7 @@ class GitHubClient:
             return None
         return {**run, "head_sha": sha, "_ci_pr_number": number}
 
-    def normalize_target_pr_run(self, run: dict) -> dict | None:
+    def normalize_target_pr_run(self, run: dict, *, pr=None) -> dict | None:
         """Resolve a default-branch pull_request_target run to an exact PR head."""
         import re
 
@@ -232,7 +232,8 @@ class GitHubClient:
         ):
             return None
         pr_number, sha = int(match[1]), match[2]
-        pr = self.request("GET", f"/pulls/{pr_number}")
+        if pr is None:
+            pr = self.request("GET", f"/pulls/{pr_number}")
         target = pr.get("base", {}).get("ref", "")
         source_repo = pr.get("head", {}).get("repo") or {}
         if (
@@ -280,7 +281,8 @@ class GitHubClient:
                 **run,
                 "head_sha": pr.get("head", {}).get("sha", ""),
                 "display_title": f"lite-vllm-pr-{match[1]}-{pr.get('head', {}).get('sha', '')}-{match[2]}",
-            }
+            },
+            pr=pr,
         )
         return {**normalized, "display_title": title} if normalized else None
 

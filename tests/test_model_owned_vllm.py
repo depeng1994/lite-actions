@@ -4,6 +4,7 @@ import io
 import json
 import tarfile
 import tempfile
+import threading
 import unittest
 import zipfile
 from pathlib import Path
@@ -188,6 +189,17 @@ class ModelOwnedVllmTests(unittest.TestCase):
         self.pr["head"]["repo"] = None
         with self.assertRaises(ValueError):
             check_current(client, self.source)
+            self.pr["head"]["repo"] = {
+                "id": 87,
+                "full_name": "another-fork/vllm-ascend",
+            }
+            self.pr["mergeable"] = None
+            self.pr["merge_commit_sha"] = None
+            with self.assertRaises(RuntimeError):
+                check_current(client, self.source)
+            self.pr["mergeable"] = False
+            with self.assertRaises(ValueError):
+                check_current(client, self.source)
         with self.assertRaises(ValueError):
             validate_source(self.source, self.run, self.plan, {"f" * 40})
 
@@ -348,6 +360,49 @@ class ModelOwnedVllmTests(unittest.TestCase):
                 self.assertEqual(finish.call_args.args[0], "old")
             finally:
                 router.close()
+
+    def test_head_or_base_change_cancels_queued_and_running_cases(self):
+        for change in ("head", "base"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as tmp:
+                client = self.client()
+                client.running_workflows = lambda: []
+                run = {**self.run, "_ci_source": self.source}
+                if change == "head":
+                    self.pr["head"]["sha"] = "f" * 40
+                else:
+                    self.base = "f" * 40
+                with (
+                    patch(
+                        "ci_core.router.load",
+                        return_value=({"blue": {"enabled": True}}, {}),
+                    ),
+                    patch.object(Router, "flush"),
+                    patch.object(Router, "pump"),
+                    patch.object(Router, "receive"),
+                    patch.dict("os.environ", {"LITE_ACTIONS_STATE_DIR": ""}),
+                ):
+                    router = Router(Path(tmp), "blue", client, "reporter")
+                    cancel = threading.Event()
+                    try:
+                        record = {
+                            "run": run,
+                            "item": self.plan["cases"][1],
+                            "digest": self.plan["plan_digest"],
+                        }
+                        router.state.update("queued", phase="QUEUED", **record)
+                        router.state.update("running", phase="RUNNING", **record)
+                        router.active["running"] = (None, cancel, None)
+                        router.tick()
+                        self.assertEqual(
+                            router.state.read()["queued"]["report"]["status"],
+                            "CANCELLED",
+                        )
+                        self.assertTrue(cancel.is_set())
+                    finally:
+                        router.active.clear()
+                        router.close()
+                        self.pr["head"]["sha"] = self.head
+                        self.base = self.source["base_sha"]
 
 
 if __name__ == "__main__":
