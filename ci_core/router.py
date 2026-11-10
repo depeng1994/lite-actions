@@ -47,6 +47,16 @@ def task_key(run, item):
     return f"{prefix}{run.get('_ci_repo', REPO)}:{run['id']}:{run.get('run_attempt', 1)}{dispatch}:{item['case_id']}"
 
 
+def run_key(run):
+    return (
+        run.get("_ci_provider", "github"),
+        run.get("_ci_repo", REPO),
+        run["id"],
+        run.get("run_attempt", 1),
+        run.get("_ci_dispatch_id"),
+    )
+
+
 class Router:
     def __init__(self, root, worker, client, author):
         if not author:
@@ -691,12 +701,7 @@ class Router:
             pool = item["target_pool"]
             is_smoke = item["kind"] == "npu_smoke"
             queue = (pool, is_smoke)
-            ident = (
-                r["run"].get("_ci_provider", "github"),
-                r["run"].get("_ci_repo", REPO),
-                r["run"]["id"],
-                r["run"].get("_ci_dispatch_id"),
-            )
+            ident = run_key(r["run"])
             if ident in self.unavailable_runs or r.get("receipt_pending"):
                 if pool and is_smoke:
                     blocked_pools.add(queue)
@@ -832,12 +837,7 @@ class Router:
             }:
                 continue
             run = r["run"]
-            ident = (
-                run.get("_ci_provider", "github"),
-                run.get("_ci_repo", REPO),
-                run["id"],
-                run.get("_ci_dispatch_id"),
-            )
+            ident = run_key(run)
             if ident not in statuses:
                 try:
                     client = self.client_for(run)

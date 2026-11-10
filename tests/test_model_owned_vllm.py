@@ -17,6 +17,7 @@ from ci_core.router import Router
 from ci_core.vllm_source import (
     approved_controls,
     check_current,
+    prepare_ready,
     read_source,
     validate_source,
 )
@@ -31,6 +32,7 @@ class ModelOwnedVllmTests(unittest.TestCase):
             c * 40 for c in "abcde"
         )
         self.default_head = self.control
+        self.controller_is_ancestor = True
         self.run = {
             "id": 42,
             "run_attempt": 1,
@@ -93,6 +95,14 @@ class ModelOwnedVllmTests(unittest.TestCase):
                     return {"id": 1438625957, "default_branch": "main"}
                 if path == "/branches/main":
                     return {"commit": {"sha": outer.default_head}}
+                if path == f"/compare/{outer.control}...{outer.default_head}?per_page=1":
+                    return {
+                        "merge_base_commit": {
+                            "sha": outer.control
+                            if outer.controller_is_ancestor
+                            else "0" * 40
+                        }
+                    }
                 if path == "/branches/ci%2Fpilot":
                     return {"commit": {"sha": outer.control}}
                 if path == "/pulls/7":
@@ -172,6 +182,10 @@ class ModelOwnedVllmTests(unittest.TestCase):
             self.pr["head"]["sha"] = "f" * 40
             with self.assertRaises(ValueError):
                 check_current(client, self.source)
+            self.pr["head"]["sha"] = self.head
+            self.pr["head"]["repo"] = None
+            with self.assertRaises(ValueError):
+                check_current(client, self.source)
         with self.assertRaises(ValueError):
             validate_source(self.source, self.run, self.plan, {"f" * 40})
 
@@ -179,11 +193,38 @@ class ModelOwnedVllmTests(unittest.TestCase):
         client = self.client()
         self.assertEqual(read_source(client, self.run, self.plan), self.source)
         self.default_head = "f" * 40
+        self.assertEqual(read_source(client, self.run, self.plan), self.source)
+        self.controller_is_ancestor = False
         with self.assertRaises(ValueError):
             read_source(client, self.run, self.plan)
         self.source["control_sha"] = self.default_head
         self.run["_ci_control_sha"] = self.default_head
         self.assertEqual(read_source(client, self.run, self.plan), self.source)
+
+    def test_pr_recheck_accepts_previous_trusted_controller_after_main_moves(self):
+        run = {**self.run, "event": "workflow_dispatch", "head_branch": "main"}
+        self.default_head = "f" * 40
+        with patch.dict("os.environ", {"LITE_ACTIONS_VLLM_ALLOWED_BRANCHES": "main"}):
+            self.assertEqual(read_source(self.client(), run, self.plan), self.source)
+            self.controller_is_ancestor = False
+            with self.assertRaises(ValueError):
+                read_source(self.client(), run, self.plan)
+
+    def test_prepare_can_be_found_beyond_the_first_page(self):
+        class Client:
+            def request(self, method, path):
+                self_test = {
+                    "name": "prepare",
+                    "run_id": 42,
+                    "run_attempt": 1,
+                    "status": "completed",
+                    "conclusion": "success",
+                }
+                if path.endswith("page=1"):
+                    return {"total_count": 101, "jobs": [{"name": "case"}] * 100}
+                return {"total_count": 101, "jobs": [self_test]}
+
+        self.assertTrue(prepare_ready(Client(), self.run))
 
     def test_manual_source_is_the_exact_approved_branch_commit(self):
         run = {
@@ -265,6 +306,48 @@ class ModelOwnedVllmTests(unittest.TestCase):
                 self.assertTrue(
                     all(r["run"]["_ci_execution_sha"] == self.merge for r in records)
                 )
+            finally:
+                router.close()
+
+    def test_new_attempt_is_not_cancelled_by_stale_previous_attempt(self):
+        class Client:
+            repo = VLLM_REPO
+
+            def workflow_status(self, run_id):
+                return {"status": "in_progress", "run_attempt": 2}
+
+        old = {**self.run, "_ci_source": {**self.source, "attempt": 1}}
+        new = {
+            **self.run,
+            "run_attempt": 2,
+            "_ci_source": {**self.source, "attempt": 2},
+        }
+
+        def verify(_client, source):
+            if source["attempt"] == 1:
+                raise ValueError("old source")
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch(
+                "ci_core.router.load", return_value=({"blue": {"enabled": True}}, {})
+            ),
+            patch("ci_core.vllm_source.check_current", side_effect=verify),
+            patch.object(Router, "flush"),
+            patch.object(Router, "pump"),
+            patch.object(Router, "receive"),
+            patch.object(Router, "finish") as finish,
+            patch.dict("os.environ", {"LITE_ACTIONS_STATE_DIR": ""}),
+        ):
+            client = Client()
+            client.running_workflows = lambda: []
+            router = Router(Path(tmp), "blue", client, "reporter")
+            try:
+                router.state.update("old", phase="QUEUED", run=old)
+                router.state.update("new", phase="QUEUED", run=new)
+                router.tick()
+                self.assertEqual(finish.call_count, 1)
+                self.assertEqual(finish.call_args.args[0], "old")
             finally:
                 router.close()
 

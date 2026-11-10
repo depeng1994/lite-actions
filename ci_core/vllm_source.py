@@ -115,6 +115,10 @@ def check_current(client, source, *, check_run=False):
         raise ValueError("wrong native source repository client")
     if source["mode"] == "merge_result":
         pr = client.request("GET", f"/pulls/{source['pr_number']}")
+        pr_head = pr.get("head") or {}
+        pr_base = pr.get("base") or {}
+        head_repo = pr_head.get("repo") or {}
+        base_repo = pr_base.get("repo") or {}
         base = (
             client.request(
                 "GET", "/branches/" + urllib.parse.quote(source["base_ref"], safe="")
@@ -126,11 +130,11 @@ def check_current(client, source, *, check_run=False):
             pr.get("state") != "open"
             or pr.get("merged")
             or pr.get("number") != source["pr_number"]
-            or pr.get("head", {}).get("repo", {}).get("id") != source["head_repo_id"]
-            or pr["head"].get("sha") != source["head_sha"]
-            or pr.get("base", {}).get("repo", {}).get("id") != REPO_ID
-            or pr["base"]["repo"].get("full_name") != VLLM_REPO
-            or pr["base"].get("ref") != source["base_ref"]
+            or head_repo.get("id") != source["head_repo_id"]
+            or pr_head.get("sha") != source["head_sha"]
+            or base_repo.get("id") != REPO_ID
+            or base_repo.get("full_name") != VLLM_REPO
+            or pr_base.get("ref") != source["base_ref"]
             or base != source["base_sha"]
             or pr.get("mergeable") is False
             or pr.get("merge_commit_sha") != source["source_sha"]
@@ -146,12 +150,29 @@ def check_current(client, source, *, check_run=False):
 
 
 def prepare_ready(client, run):
-    data = client.request(
-        "GET",
-        f"/actions/runs/{run['id']}/attempts/{run.get('run_attempt', 1)}/jobs?per_page=100",
-    )
-    jobs = data.get("jobs", [])
-    if data.get("total_count") != len(jobs) or len(jobs) > 100:
+    jobs, total = [], None
+    for page in range(1, 11):
+        data = client.request(
+            "GET",
+            f"/actions/runs/{run['id']}/attempts/{run.get('run_attempt', 1)}/jobs?per_page=100&page={page}",
+        )
+        count, batch = data.get("total_count"), data.get("jobs")
+        if (
+            type(count) is not int
+            or not 0 <= count <= 1000
+            or not isinstance(batch, list)
+            or len(batch) > 100
+        ):
+            raise ValueError("invalid Prepare job listing")
+        if total is not None and count != total:
+            return False  # Jobs are still being added; poll a fresh listing.
+        total = count
+        jobs.extend(batch)
+        if len(jobs) == total:
+            break
+        if not batch or len(jobs) > total:
+            return False
+    else:
         raise ValueError("Prepare job visibility incomplete")
     prepare = [j for j in jobs if j.get("name") == "prepare"]
     return (
@@ -163,7 +184,7 @@ def prepare_ready(client, run):
     )
 
 
-def approved_controls(client, run):
+def approved_controls(client, run, candidate=None, *, merge_source=False):
     """Resolve the live trusted workflow branch without pinning every commit."""
     if run.get("event") == "pull_request_target":
         repo = client.request("GET", "")
@@ -194,6 +215,18 @@ def approved_controls(client, run):
     )
     if not isinstance(head, str) or not SHA.fullmatch(head):
         raise ValueError("invalid controller branch SHA")
+    is_pr_control = run.get("event") == "pull_request_target" or (
+        run.get("event") == "workflow_dispatch"
+        and merge_source
+        and type(run.get("_ci_pr_number")) is int
+    )
+    if is_pr_control and candidate != head:
+        if not isinstance(candidate, str) or not SHA.fullmatch(candidate):
+            raise ValueError("invalid controller SHA")
+        comparison = client.request("GET", f"/compare/{candidate}...{head}?per_page=1")
+        if comparison.get("merge_base_commit", {}).get("sha") != candidate:
+            raise ValueError("controller is not in trusted default branch history")
+        explicit.add(candidate)
     return explicit | {head}
 
 
@@ -222,7 +255,19 @@ def read_source(client, run, plan):
         ):
             raise ValueError("invalid native source archive")
         source = json.loads(zipped.read("source.json"))
-    validate_source(source, run, plan, approved_controls(client, run))
+    candidate = source.get("control_sha") if isinstance(source, dict) else None
+    validate_source(
+        source,
+        run,
+        plan,
+        approved_controls(
+            client,
+            run,
+            candidate,
+            merge_source=isinstance(source, dict)
+            and source.get("mode") == "merge_result",
+        ),
+    )
     commit = client.request("GET", "/git/commits/" + source["source_sha"])
     if (
         commit.get("sha") != source["source_sha"]
