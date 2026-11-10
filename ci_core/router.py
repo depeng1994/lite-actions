@@ -2,6 +2,7 @@
 
 import logging
 import os
+import re
 import subprocess
 import tempfile
 import threading
@@ -11,6 +12,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 from contextlib import ExitStack
 from pathlib import Path
+from urllib.parse import quote
 
 from ci_core.config import load, runtime_case
 from ci_core.contract import (
@@ -152,6 +154,49 @@ class Router:
             raise ValueError("run belongs to another GitHub repository")
         return self.client
 
+    def trusted_manual(self, run):
+        """Admit an authorized repository writer at its branch's current SHA."""
+        actor = (run.get("triggering_actor") or run.get("actor") or {}).get("login")
+        branch = run.get("head_branch")
+        sha = run.get("_ci_control_sha", run.get("head_sha"))
+        if (
+            not isinstance(actor, str)
+            or not isinstance(branch, str)
+            or not branch
+            or len(branch) > 255
+            or any(ord(c) < 32 for c in branch)
+            or not isinstance(sha, str)
+            or not re.fullmatch(r"[0-9a-f]{40}", sha)
+        ):
+            return False
+        try:
+            client = self.client_for(run)
+            if actor == "github-actions[bot]":
+                if (
+                    run.get("_ci_repo") != VLLM_REPO
+                    or type(run.get("_ci_pr_number")) is not int
+                    or client.request("GET", "").get("default_branch") != branch
+                ):
+                    return False
+                # Source admission verifies the recorded controller against
+                # trusted default-branch history, including a concurrent push.
+                return True
+            else:
+                if not re.fullmatch(
+                    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", actor
+                ):
+                    return False
+                result = client.request(
+                    "GET", f"/collaborators/{quote(actor, safe='')}/permission"
+                )
+                if result.get("permission") not in {"write", "maintain", "admin"}:
+                    return False
+            current = client.request("GET", "/branches/" + quote(branch, safe=""))
+            return current.get("commit", {}).get("sha") == sha
+        except Exception:
+            logging.warning("repository permission or branch verification unavailable")
+            return False
+
     def eligible(self, run):
         repo = run.get("_ci_repo", REPO)
         filename = (run.get("path") or "").rsplit("/", 1)[-1]
@@ -208,28 +253,17 @@ class Router:
                 and run.get("event") == "workflow_dispatch"
                 and filename == SELF_WORKFLOW
                 and run.get("status") in {"queued", "in_progress"}
-                and run.get("actor", {}).get("login")
-                in set(
-                    filter(
-                        None, os.environ.get("LITE_ACTIONS_SELF_ACTORS", "").split(",")
-                    )
-                )
-                and run.get("head_branch")
-                in set(
-                    filter(
-                        None,
-                        os.environ.get("LITE_ACTIONS_SELF_BRANCHES", "").split(","),
-                    )
-                )
                 and run.get("head_sha") == self.self_sha == checkout_sha(self.root)
+                and self.trusted_manual(run)
             )
+        if filename not in WORKFLOWS or run.get("status") not in {
+            "queued",
+            "in_progress",
+        }:
+            return False
         if repo == VLLM_REPO:
-            actors_value = os.environ.get(
-                "LITE_ACTIONS_VLLM_ALLOWED_ACTORS", "depeng1994"
-            )
-            branches_value = os.environ.get(
-                "LITE_ACTIONS_VLLM_ALLOWED_BRANCHES", "main"
-            )
+            allowed = set()
+            branches = set()
         elif repo == TORCHTITAN_REPO:
             actors_value = os.environ.get(
                 "LITE_ACTIONS_TORCHTITAN_ALLOWED_ACTORS",
@@ -239,10 +273,10 @@ class Router:
                 "LITE_ACTIONS_TORCHTITAN_ALLOWED_BRANCHES",
                 os.environ.get("LITE_ACTIONS_ALLOWED_BRANCHES", "master"),
             )
+            allowed = set(filter(None, actors_value.split(",")))
+            branches = set(filter(None, branches_value.split(",")))
         else:
             return False
-        allowed = set(filter(None, actors_value.split(",")))
-        branches = set(filter(None, branches_value.split(",")))
         event = run.get("event")
         if event in ("pull_request", "pull_request_target"):
             admitted = type(run.get("_ci_pr_number")) is int and (
@@ -254,17 +288,11 @@ class Router:
                 )
             )
         else:
-            admitted = (
-                event == "workflow_dispatch"
-                and run.get("head_branch") in branches
-                and (
-                    run.get("actor", {}).get("login") in allowed
-                    or (
-                        repo == VLLM_REPO
-                        and type(run.get("_ci_pr_number")) is int
-                        and run.get("actor", {}).get("login") == "github-actions[bot]"
-                    )
-                )
+            admitted = event == "workflow_dispatch" and (
+                self.trusted_manual(run)
+                if repo == VLLM_REPO
+                else run.get("head_branch") in branches
+                and run.get("actor", {}).get("login") in allowed
             )
         return (
             admitted
@@ -301,8 +329,6 @@ class Router:
                 )
 
     def _receive_one(self, run):
-        if not self.eligible(run):
-            return
         identity = (
             run.get("_ci_provider", "github"),
             run.get("_ci_repo", REPO),
@@ -312,6 +338,12 @@ class Router:
             run.get("_ci_dispatch_id"),
         )
         cached = self.plans.get(identity)
+        if cached is not None:
+            owned = [c for c in cached[0]["cases"] if c["worker"] == self.worker]
+            if not owned or all(task_key(run, c) in self.state.read() for c in owned):
+                return
+        if not self.eligible(run):
+            return
         if cached is None:
             plan = self.client_for(run).ci_request(run)
             if plan is None:

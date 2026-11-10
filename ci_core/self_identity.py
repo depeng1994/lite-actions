@@ -25,7 +25,6 @@ def checkout_sha(root):
         ".github/workflows/lite_actions_self_smoke.yml",
         "tests/__init__.py",
         "tests/integration_tests/__init__.py",
-        "tests/integration_tests/tools/__init__.py",
         "tests/integration_tests/tools/lite_actions",
         "tests/integration_tests/training_cases",
     )
@@ -55,11 +54,8 @@ def checkout_sha(root):
         ".github/workflows/lite_actions_self_smoke.yml",
         "tests/__init__.py",
         "tests/integration_tests/__init__.py",
-        "tests/integration_tests/tools/__init__.py",
         "tests/integration_tests/tools/lite_actions/entrypoint.py",
-        "tests/integration_tests/tools/lite_actions/dispatch_smoke_worker.py",
         "tests/integration_tests/tools/lite_actions/runner.py",
-        "tests/integration_tests/training_cases/__init__.py",
         "tests/integration_tests/training_cases/dispatch_smoke.py",
     }
     if not required.issubset(tracked) or not any(

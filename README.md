@@ -254,13 +254,13 @@ profile: a Blue OS probe followed by 8P, 16P and 8P HCCL Smoke. The Yellow OS
 probe is disabled in the default profile. PRs continue to run CPU checks only.
 
 To opt a Worker into the self-smoke route, include `depeng1994/lite-actions` in
-`LITE_ACTIONS_MODEL_REPOS`, set `LITE_ACTIONS_SELF_SMOKE_ENABLED=1`, and configure
-`LITE_ACTIONS_SELF_ACTORS` and `LITE_ACTIONS_SELF_BRANCHES` as comma-separated
-allowlists. Set the repository variable `LITE_CI_RESULT_ACTOR` to the Worker's
-result-author account. With the trusted branch deployed, start the workflow:
+`LITE_ACTIONS_MODEL_REPOS` and set `LITE_ACTIONS_SELF_SMOKE_ENABLED=1`. Set the
+repository variable `LITE_CI_RESULT_ACTOR` to the Worker's result-author account.
+A user with repository write, maintain or admin permission can start the workflow
+from a repository branch whose current commit is deployed on the Worker:
 
 ```bash
-gh workflow run lite_actions_self_smoke.yml -R depeng1994/lite-actions --ref <trusted-branch>
+gh workflow run lite_actions_self_smoke.yml -R depeng1994/lite-actions --ref <repository-branch>
 ```
 
 The Worker rejects a run unless its SHA matches its own verified checkout. Keep

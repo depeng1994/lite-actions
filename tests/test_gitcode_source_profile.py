@@ -67,8 +67,6 @@ def source_archive(root, rows):
         for name in (
             "tests/__init__.py",
             "tests/integration_tests/__init__.py",
-            "tests/integration_tests/tools/__init__.py",
-            "tests/integration_tests/tools/lite_actions/__init__.py",
             "tests/integration_tests/tools/lite_actions/entrypoint.py",
         ):
             data = entrypoint.encode() if name.endswith("entrypoint.py") else b""

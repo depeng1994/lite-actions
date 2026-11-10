@@ -101,8 +101,6 @@ class Service(GitHubClient):
             for name in [
                 "tests/__init__.py",
                 "tests/integration_tests/__init__.py",
-                "tests/integration_tests/tools/__init__.py",
-                "tests/integration_tests/tools/lite_actions/__init__.py",
                 "tests/integration_tests/tools/lite_actions/entrypoint.py",
             ]:
                 data = inspector.encode() if name.endswith("entrypoint.py") else b""
@@ -137,6 +135,10 @@ class Service(GitHubClient):
         return run, plan
 
     def request(self, method, path, payload=None):
+        if method == "GET" and path.startswith("/collaborators/"):
+            return {"permission": "write"}
+        if method == "GET" and path.startswith("/branches/"):
+            return {"commit": {"sha": next(iter(self.runs.values()))["head_sha"]}}
         if method == "GET" and path.startswith("/actions/runs?"):
             event = (
                 "pull_request" if "event=pull_request" in path else "workflow_dispatch"

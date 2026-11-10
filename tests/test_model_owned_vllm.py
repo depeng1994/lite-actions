@@ -95,7 +95,10 @@ class ModelOwnedVllmTests(unittest.TestCase):
                     return {"id": 1438625957, "default_branch": "main"}
                 if path == "/branches/main":
                     return {"commit": {"sha": outer.default_head}}
-                if path == f"/compare/{outer.control}...{outer.default_head}?per_page=1":
+                if (
+                    path
+                    == f"/compare/{outer.control}...{outer.default_head}?per_page=1"
+                ):
                     return {
                         "merge_base_commit": {
                             "sha": outer.control
@@ -155,37 +158,36 @@ class ModelOwnedVllmTests(unittest.TestCase):
 
     def test_source_identity_is_required_and_stale_fork_or_merge_is_rejected(self):
         client = self.client()
-        with patch.dict("os.environ", {"LITE_ACTIONS_VLLM_CONTROL_SHAS": self.control}):
-            self.assertEqual(read_source(client, self.run, self.plan), self.source)
-            self.assertEqual(
-                report(
-                    {**self.run, "_ci_source": self.source},
-                    self.plan["cases"][0],
-                    self.plan["plan_digest"],
-                    "PASS",
-                    0,
-                    [],
-                )["native_source"],
-                self.source,
-            )
-            for field, value in (
-                ("head_sha", "f" * 40),
-                ("head_repo_id", 88),
-                ("source_sha", "f" * 40),
-                ("plan_digest", "f" * 64),
-            ):
-                broken = {**self.source, field: value}
-                with self.subTest(field=field), self.assertRaises(ValueError):
-                    validate_source(
-                        broken, self.run, self.plan, {self.control}
-                    ) if field != "source_sha" else check_current(client, broken)
-            self.pr["head"]["sha"] = "f" * 40
-            with self.assertRaises(ValueError):
-                check_current(client, self.source)
-            self.pr["head"]["sha"] = self.head
-            self.pr["head"]["repo"] = None
-            with self.assertRaises(ValueError):
-                check_current(client, self.source)
+        self.assertEqual(read_source(client, self.run, self.plan), self.source)
+        self.assertEqual(
+            report(
+                {**self.run, "_ci_source": self.source},
+                self.plan["cases"][0],
+                self.plan["plan_digest"],
+                "PASS",
+                0,
+                [],
+            )["native_source"],
+            self.source,
+        )
+        for field, value in (
+            ("head_sha", "f" * 40),
+            ("head_repo_id", 88),
+            ("source_sha", "f" * 40),
+            ("plan_digest", "f" * 64),
+        ):
+            broken = {**self.source, field: value}
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                validate_source(
+                    broken, self.run, self.plan, {self.control}
+                ) if field != "source_sha" else check_current(client, broken)
+        self.pr["head"]["sha"] = "f" * 40
+        with self.assertRaises(ValueError):
+            check_current(client, self.source)
+        self.pr["head"]["sha"] = self.head
+        self.pr["head"]["repo"] = None
+        with self.assertRaises(ValueError):
+            check_current(client, self.source)
         with self.assertRaises(ValueError):
             validate_source(self.source, self.run, self.plan, {"f" * 40})
 
@@ -202,13 +204,17 @@ class ModelOwnedVllmTests(unittest.TestCase):
         self.assertEqual(read_source(client, self.run, self.plan), self.source)
 
     def test_pr_recheck_accepts_previous_trusted_controller_after_main_moves(self):
-        run = {**self.run, "event": "workflow_dispatch", "head_branch": "main"}
+        run = {
+            **self.run,
+            "event": "workflow_dispatch",
+            "head_branch": "main",
+            "actor": {"login": "github-actions[bot]"},
+        }
         self.default_head = "f" * 40
-        with patch.dict("os.environ", {"LITE_ACTIONS_VLLM_ALLOWED_BRANCHES": "main"}):
-            self.assertEqual(read_source(self.client(), run, self.plan), self.source)
-            self.controller_is_ancestor = False
-            with self.assertRaises(ValueError):
-                read_source(self.client(), run, self.plan)
+        self.assertEqual(read_source(self.client(), run, self.plan), self.source)
+        self.controller_is_ancestor = False
+        with self.assertRaises(ValueError):
+            read_source(self.client(), run, self.plan)
 
     def test_prepare_can_be_found_beyond_the_first_page(self):
         class Client:
@@ -248,12 +254,7 @@ class ModelOwnedVllmTests(unittest.TestCase):
         self.assertEqual(validate_source(source, run, plan, {self.control}), source)
         with self.assertRaises(ValueError):
             validate_source({**source, "base_ref": "main"}, run, plan, {self.control})
-        with patch.dict(
-            "os.environ", {"LITE_ACTIONS_VLLM_ALLOWED_BRANCHES": "ci/pilot"}
-        ):
-            self.assertIn(self.control, approved_controls(self.client(), run))
-            with self.assertRaises(ValueError):
-                approved_controls(self.client(), {**run, "head_branch": "unapproved"})
+        self.assertIn(self.control, approved_controls(self.client(), run))
 
     def test_model_owned_archive_matches_the_plan(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -262,10 +263,7 @@ class ModelOwnedVllmTests(unittest.TestCase):
                 for name in (
                     "tests/__init__.py",
                     "tests/integration_tests/__init__.py",
-                    "tests/integration_tests/training_cases/__init__.py",
                     "tests/integration_tests/training_cases/dispatch_smoke.py",
-                    "tests/integration_tests/tools/__init__.py",
-                    "tests/integration_tests/tools/lite_actions/__init__.py",
                     "tests/integration_tests/tools/lite_actions/entrypoint.py",
                 ):
                     tar.add(ROOT / name, arcname=name)

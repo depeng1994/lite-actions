@@ -272,18 +272,7 @@ class GitHubClient:
         match = re.fullmatch(
             r"lite-vllm-recheck-([1-9][0-9]*)-([0-9a-f]{40})-([0-9a-f]{32})", title
         )
-        branches = set(
-            os.environ.get("LITE_ACTIONS_VLLM_ALLOWED_BRANCHES", "main").split(",")
-        )
-        actors = set(
-            os.environ.get("LITE_ACTIONS_VLLM_ALLOWED_ACTORS", "depeng1994").split(",")
-        )
-        if (
-            not match
-            or run.get("head_sha") != match[2]
-            or run.get("head_branch") not in branches
-            or run.get("actor", {}).get("login") not in actors | {"github-actions[bot]"}
-        ):
+        if not match or run.get("head_sha") != match[2]:
             return None
         pr = self.request("GET", f"/pulls/{match[1]}")
         normalized = self.normalize_target_pr_run(

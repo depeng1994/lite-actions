@@ -174,7 +174,6 @@ class MultiRepoWorkerTests(unittest.TestCase):
                     os.environ,
                     {
                         "LITE_ACTIONS_TORCHTITAN_ALLOWED_ACTORS": "depeng1994",
-                        "LITE_ACTIONS_VLLM_ALLOWED_ACTORS": "depeng1994",
                     },
                 ),
             ):

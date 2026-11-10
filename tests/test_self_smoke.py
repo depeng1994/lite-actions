@@ -4,6 +4,7 @@ import copy
 import json
 import os
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -58,6 +59,24 @@ class SelfSmokeTests(unittest.TestCase):
         run = {"id": 42, "run_attempt": 1, "head_sha": "a" * 40}
         with self.assertRaises(ValueError):
             parse_plan(self.plan, run, SELF_WORKFLOW, repo=TORCHTITAN_REPO)
+
+    def test_smoke_discovery_needs_no_hardware_packages(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-S",
+                "-m",
+                "tests.integration_tests.tools.lite_actions.entrypoint",
+                "inspect",
+                "--suite",
+                "dispatch_smoke",
+            ],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(len(json.loads(result.stdout)), 4)
 
     def test_complete_identity_bound_results_and_fail_closed(self):
         run = {
@@ -132,12 +151,8 @@ class SelfSmokeTests(unittest.TestCase):
             for name in (
                 "tests/__init__.py",
                 "tests/integration_tests/__init__.py",
-                "tests/integration_tests/training_cases/__init__.py",
                 "tests/integration_tests/training_cases/dispatch_smoke.py",
-                "tests/integration_tests/tools/__init__.py",
-                "tests/integration_tests/tools/lite_actions/__init__.py",
                 "tests/integration_tests/tools/lite_actions/entrypoint.py",
-                "tests/integration_tests/tools/lite_actions/dispatch_smoke_worker.py",
                 "tests/integration_tests/tools/lite_actions/runner.py",
             ):
                 tar.add(ROOT / name, arcname=name)
@@ -192,20 +207,14 @@ class SelfSmokeTests(unittest.TestCase):
             for name in (
                 "tests/__init__.py",
                 "tests/integration_tests/__init__.py",
-                "tests/integration_tests/training_cases/__init__.py",
                 "tests/integration_tests/training_cases/dispatch_smoke.py",
-                "tests/integration_tests/tools/__init__.py",
-                "tests/integration_tests/tools/lite_actions/__init__.py",
                 "tests/integration_tests/tools/lite_actions/entrypoint.py",
-                "tests/integration_tests/tools/lite_actions/dispatch_smoke_worker.py",
                 "tests/integration_tests/tools/lite_actions/runner.py",
             ):
                 tar.add(ROOT / name, arcname=name)
         env = {
             "LITE_ACTIONS_MODEL_REPOS": SELF_REPO,
             "LITE_ACTIONS_SELF_SMOKE_ENABLED": "1",
-            "LITE_ACTIONS_SELF_ACTORS": "maintainer",
-            "LITE_ACTIONS_SELF_BRANCHES": "ci/test",
             "LITE_ACTIONS_RESOURCE_LOCK_ROOT": str(root / "leases"),
             "LITE_ACTIONS_STATE_DIR": "",
         }
@@ -243,11 +252,8 @@ class SelfSmokeTests(unittest.TestCase):
             ".github/workflows/lite_actions_self_smoke.yml",
             "tests/__init__.py",
             "tests/integration_tests/__init__.py",
-            "tests/integration_tests/training_cases/__init__.py",
             "tests/integration_tests/training_cases/dispatch_smoke.py",
-            "tests/integration_tests/tools/__init__.py",
             "tests/integration_tests/tools/lite_actions/entrypoint.py",
-            "tests/integration_tests/tools/lite_actions/dispatch_smoke_worker.py",
             "tests/integration_tests/tools/lite_actions/runner.py",
         ):
             path = root / name
@@ -281,18 +287,11 @@ class SelfSmokeTests(unittest.TestCase):
             "head_branch": "ci/test",
             "head_sha": sha,
         }
-        with patch.dict(
-            os.environ,
-            {
-                "LITE_ACTIONS_SELF_ACTORS": "maintainer",
-                "LITE_ACTIONS_SELF_BRANCHES": "ci/test",
-            },
-        ):
+        with patch.object(router, "trusted_manual", return_value=True):
             self.assertTrue(router.eligible(run))
             for field, value in (
                 ("event", "pull_request"),
                 ("head_sha", "b" * 40),
-                ("head_branch", "other"),
             ):
                 self.assertFalse(router.eligible({**run, field: value}))
             (root / "ci_core/core.py").write_text("VALUE = 2\n")

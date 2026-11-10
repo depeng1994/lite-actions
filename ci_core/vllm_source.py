@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import io
 import json
-import os
 import re
 import urllib.parse
 import zipfile
@@ -194,16 +193,13 @@ def approved_controls(client, run, candidate=None, *, merge_source=False):
         explicit = set()
     elif run.get("event") == "workflow_dispatch":
         branch = run.get("head_branch")
-        allowed = set(
-            os.environ.get("LITE_ACTIONS_VLLM_ALLOWED_BRANCHES", "main").split(",")
-        )
-        if branch not in allowed:
-            raise ValueError("unapproved controller branch")
-        explicit = set(
-            filter(
-                None, os.environ.get("LITE_ACTIONS_VLLM_CONTROL_SHAS", "").split(",")
-            )
-        )
+        explicit = set()
+        actor = (run.get("triggering_actor") or run.get("actor") or {}).get("login")
+        if (
+            actor == "github-actions[bot]"
+            and client.request("GET", "").get("default_branch") != branch
+        ):
+            raise ValueError("unapproved automatic controller branch")
     else:
         raise ValueError("unapproved controller event")
     if not isinstance(branch, str) or not branch or len(branch) > 255:
