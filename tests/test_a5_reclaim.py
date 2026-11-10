@@ -3,6 +3,7 @@
 import io
 import json
 import tempfile
+import threading
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
@@ -34,6 +35,7 @@ EMPTY = """| NPU ID | Process id | Process name | Process memory(MB) | Process i
 """
 A3 = """| NPU ID | Chip ID | Process id in container |
 | 3 1 | 46124 |
++===========================+
 """
 
 
@@ -196,6 +198,52 @@ class ReclaimTests(unittest.TestCase):
                 not call.args[1].startswith("kill") for call in transport.call_args_list
             )
         )
+
+    def test_node_wait_overrides_legacy_pool_reclaim(self):
+        self.node["occupancy_policy"] = "wait"
+        with (
+            patch(
+                "ci_core.config.execution_node",
+                return_value={"ssh": self.container_ssh},
+            ),
+            patch(
+                "ci_core.transport.run",
+                return_value=SimpleNamespace(returncode=0, stdout=EXTERNAL),
+            ) as transport,
+        ):
+            with self.assertRaises(ExternalNpuOccupancy):
+                remote_preflight(self.case, {"a5": self.pool})
+        self.assertFalse(
+            any(call.args[1].startswith("kill") for call in transport.call_args_list)
+        )
+
+    def test_cancel_stops_legacy_preemption_in_preflight_and_cleanup(self):
+        for cleanup in (False, True):
+            cancel, scans = threading.Event(), []
+            if cleanup:
+                cancel.set()
+
+            def transport(host, command, **kwargs):
+                scans.append(command)
+                if len(scans) == 2 and not cleanup:
+                    cancel.set()
+                return SimpleNamespace(returncode=0, stdout=EXTERNAL)
+
+            with (
+                self.subTest(cleanup=cleanup),
+                patch(
+                    "ci_core.config.execution_node",
+                    return_value={"ssh": self.container_ssh},
+                ),
+                patch("ci_core.transport.run", side_effect=transport),
+                self.assertRaises(
+                    ExternalNpuOccupancy if cleanup else InterruptedError
+                ),
+            ):
+                remote_preflight(
+                    self.case, {"a5": self.pool}, cleanup=cleanup, cancel=cancel
+                )
+            self.assertFalse(any(command.startswith("kill") for command in scans))
 
     def test_nonzero_host_kill_with_exited_pid_is_not_failure(self):
         # Process exits after confirm but before host kill: ESRCH (rc=1).

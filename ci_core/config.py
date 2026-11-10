@@ -15,6 +15,38 @@ def format_pools(pools):
     )
 
 
+def node_preempts(pool, node):
+    policy = node.get("occupancy_policy", "inherit")
+    if policy not in ("inherit", "wait", "preempt") or (
+        policy == "inherit" and "occupancy_policy" in node
+    ):
+        raise ValueError("invalid node occupancy policy")
+    reclaim = (
+        pool.get("force_reclaim", False) if policy == "inherit" else policy == "preempt"
+    )
+    expected = {"ascend-a3": "card-die", "ascend-a5": "card"}
+    kind = pool.get("type")
+    if reclaim and (
+        kind not in ("ascend-a3", "ascend-a5")
+        or expected[kind] != pool.get("process_indexing")
+    ):
+        raise ValueError("preemption requires a verified NPU process index")
+    if policy == "preempt":
+        devices = node.get("device_ids")
+        if (
+            not isinstance(node.get("machine_fingerprint"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", node["machine_fingerprint"])
+            or not isinstance(devices, list)
+            or not devices
+            or any(type(d) is not int or d < 0 for d in devices)
+            or len(set(devices)) != len(devices)
+        ):
+            raise ValueError(
+                "node preemption requires host fingerprint and device list"
+            )
+    return reclaim
+
+
 def load(root, worker):
     workers = json.loads((root / "config/workers.json").read_text())
     pools = json.loads((root / "config/pools.json").read_text())
@@ -31,6 +63,7 @@ def load(root, worker):
         ):
             raise ValueError("force_reclaim requires yellow ascend-a5 pool")
         for node in pool["nodes"]:
+            node_preempts(pool, node)
             pythonpath = node.get("pythonpath")
             if pythonpath is not None and (
                 not isinstance(pythonpath, str)

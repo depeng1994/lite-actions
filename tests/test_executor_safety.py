@@ -148,7 +148,15 @@ class ExecutorSafetyTests(unittest.TestCase):
             header = "| NPU ID | Chip ID | Process id in container |\n"
 
             def transport(*args, **kwargs):
-                output = header + ("| 0 0 | 2341399 |\n" if busy else "")
+                output = (
+                    header
+                    + (
+                        "| 0 0 | 2341399 |\n"
+                        if busy
+                        else "| No running processes found in NPU 0 |\n"
+                    )
+                    + "+===========================+\n"
+                )
                 return SimpleNamespace(returncode=0, stdout=output)
 
             def launch(*args, **kwargs):

@@ -128,8 +128,22 @@ leases and the four resource-execution slots. A separate local probe slot is
 available. Independent complete allocations run in parallel; distributed requests
 never retain partial leases.
 
-A busy external device group is temporarily avoided so another verified group can
-be tried. Unknown occupancy is never killed. This worker does not reclaim external tasks.
+Each node can set `occupancy_policy` to `wait` or `preempt`. Without an override,
+the pool's existing `force_reclaim` setting applies. A `wait` node never kills
+external processes; a busy group is temporarily avoided according to the queue
+policy. Both configured Blue nodes use `wait`.
+
+Explicit `preempt` uses confirmed host PIDs on the selected devices before launch;
+its cleanup is read-only. It requires complete per-node `device_ids`, a matching
+`machine_fingerprint` from `scripts/preflight.py`, and host support for pidfd.
+Each host scan verifies its hardware inventory and Phy-ID mapping before signalling.
+For a multi-node allocation, waiting nodes are checked before preemption.
+Nodes without an explicit policy retain the pool's legacy
+`force_reclaim` behavior, including A5 cleanup. Cancellation is checked before
+each preemption request; unconfirmed cleanup is reported as such.
+
+The runtime `force_reclaim` field is the pool default. `OCCUPANCY_POLICY` log
+lines show the effective policy for each selected node and execution phase.
 
 Cancellation terminates only the case's marked ranks and checks NPU occupancy.
 State is atomically persisted and fsynced before execution. Restart never blindly
