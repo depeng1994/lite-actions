@@ -52,7 +52,12 @@ def ssh(
 
 
 def model_archive(
-    sha: str, work: Path, *, source_repo: str = MODEL_REPO, provider: str = "github"
+    sha: str,
+    work: Path,
+    *,
+    source_repo: str = MODEL_REPO,
+    provider: str = "github",
+    fallback_repo: str | None = None,
 ) -> Path:
     """Return a SHA-verified source archive, cached to avoid double Git fetches."""
     from ci_core.contract import GITCODE_REPOS, SUPPORTED_REPOS
@@ -65,6 +70,14 @@ def model_archive(
         not in (GITCODE_REPOS if provider == "gitcode" else SUPPORTED_REPOS)
     ):
         raise ValueError("invalid commit SHA / model repository")
+    if fallback_repo and (
+        provider != "gitcode"
+        or not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}",
+            fallback_repo,
+        )
+    ):
+        raise ValueError("invalid GitCode PR source repository")
     cache_dir = ROOT / "cache" / "model-archives" / provider / source_repo
     cache_dir.mkdir(parents=True, exist_ok=True)
     cached = cache_dir / f"{sha}.tar.gz"
@@ -96,10 +109,13 @@ def model_archive(
                 capture_output=True,
             )
         except subprocess.CalledProcessError:
-            if provider != "github" or source_repo != "cann-framework/vllm-ascend":
+            if provider == "gitcode" and fallback_repo:
+                alternate = f"https://gitcode.com/{fallback_repo}.git"
+            elif provider == "github" and source_repo == "cann-framework/vllm-ascend":
+                alternate = "https://github.com/depeng1994/vllm-ascend.git"
+            else:
                 raise
-            # The PR source SHA might be unreachable via the base repository.
-            # This fallback is a fixed, trusted Fork checked by PR admission.
+            # The fallback is the source repository checked by PR admission.
             subprocess.run(
                 [
                     "git",
@@ -108,7 +124,7 @@ def model_archive(
                     "fetch",
                     "--depth=1",
                     "-q",
-                    "https://github.com/depeng1994/vllm-ascend.git",
+                    alternate,
                     sha,
                 ],
                 check=True,
@@ -119,7 +135,7 @@ def model_archive(
             ["git", "-C", str(repo), "rev-parse", "FETCH_HEAD"], text=True
         ).strip()
         if actual != sha:
-            raise RuntimeError("GitHub SHA mismatch")
+            raise RuntimeError("Source SHA mismatch")
 
         # PR export-ignore/export-subst attributes must not change the tested tree.
         (repo / ".git/info/attributes").write_text("* -export-ignore -export-subst\n")
@@ -501,7 +517,11 @@ def run(
         provider = os.environ.get("LITE_ACTIONS_SOURCE_PROVIDER", "github")
         source_repo = os.environ.get("LITE_ACTIONS_SOURCE_REPO", MODEL_REPO)
         archive = model_archive(
-            sha, Path(tmp), source_repo=source_repo, provider=provider
+            sha,
+            Path(tmp),
+            source_repo=source_repo,
+            provider=provider,
+            fallback_repo=os.environ.get("LITE_ACTIONS_SOURCE_FALLBACK_REPO") or None,
         )
         definition = resolve_test(
             archive,

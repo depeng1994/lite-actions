@@ -145,6 +145,16 @@ each preemption request; unconfirmed cleanup is reported as such.
 The runtime `force_reclaim` field is the pool default. `OCCUPANCY_POLICY` log
 lines show the effective policy for each selected node and execution phase.
 
+For the GitCode source-profile pilot, list its workflow filenames in both
+`LITE_ACTIONS_GITCODE_WORKFLOWS` and `LITE_ACTIONS_GITCODE_SOURCE_WORKFLOWS`.
+Each participating worker resolves `dispatch_smoke` from the run's fixed model
+commit, accepts only its own cases, and publishes results as the configured
+`LITE_ACTIONS_GITCODE_RESULT_AUTHOR` using that account's token. The waiter job must be uniquely named
+`Dispatcher Smoke`. GitCode PR runs accept Fork sources; discovery executes the
+source's Python directly on the worker, so this mode grants Fork code the worker's
+operating-system permissions. A new dispatch of the same run gets separate task,
+log and result identities.
+
 Cancellation terminates only the case's marked ranks and checks NPU occupancy.
 State is atomically persisted and fsynced before execution. Restart never blindly
 reruns a case; pending reports retry without training. With the default policy,

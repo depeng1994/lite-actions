@@ -18,6 +18,89 @@ from types import SimpleNamespace
 from ci_core.contract import REPO, TEST, WORKERS, digest, normalize, parse_plan
 
 
+class RunChanged(ValueError):
+    """A run or its PR no longer points to the admitted source."""
+
+
+def source_plan(rows, run, repo):
+    """Normalize the fixed-SHA model's ordered smoke profile for both workers."""
+    defaults = {"worker": "", "target_pool": "", "docker": ""}
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("empty source smoke profile")
+    cases = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("kind") not in {
+            "worker_probe",
+            "npu_smoke",
+        }:
+            raise ValueError("invalid source smoke definition")
+        if row["kind"] == "worker_probe" and (
+            row.get("nnodes") != 0 or row.get("ngpu") != 0
+        ):
+            raise ValueError("worker probes must not request devices")
+        cases.append(
+            normalize(
+                SimpleNamespace(
+                    test_name=row["test_id"],
+                    test_descr=row["label"],
+                    ci_kind=row["kind"],
+                    ci_overrides=row["ci_overrides"],
+                    nnodes=row["nnodes"],
+                    ngpu=row["ngpu"],
+                    timeout=row["timeout"],
+                ),
+                defaults,
+                len(cases),
+            )
+        )
+    plan = dict(
+        schema=3,
+        repo=repo,
+        workflow=run["path"].rsplit("/", 1)[-1],
+        run_id=run["id"],
+        attempt=run["run_attempt"],
+        sha=run["head_sha"],
+        defaults=defaults,
+        cases=cases,
+    )
+    plan["plan_digest"] = digest(plan)
+    parse_plan(plan, run, plan["workflow"], repo=repo)
+    return plan
+
+
+def source_workflows():
+    return set(
+        filter(
+            None, os.environ.get("LITE_ACTIONS_GITCODE_SOURCE_WORKFLOWS", "").split(",")
+        )
+    )
+
+
+def source_dispatch(details):
+    stages = details.get("stages")
+    if not isinstance(stages, list) or any(
+        not isinstance(stage, dict)
+        or not isinstance(stage.get("jobs"), list)
+        or any(not isinstance(job, dict) for job in stage["jobs"])
+        for stage in stages
+    ):
+        raise RunChanged("invalid smoke execution jobs")
+    jobs = [
+        job
+        for stage in stages
+        for job in stage.get("jobs", [])
+        if job.get("name") == "Dispatcher Smoke"
+    ]
+    if len(jobs) != 1 or jobs[0].get("status") != "RUNNING":
+        raise RunChanged("smoke execution job unavailable or ambiguous")
+    dispatch = jobs[0].get("last_dispatch_id")
+    if not isinstance(dispatch, str) or not re.fullmatch(
+        r"[A-Za-z0-9_-]{1,128}", dispatch
+    ):
+        raise RunChanged("missing smoke execution dispatch identity")
+    return dispatch
+
+
 def _unique_object(pairs):
     obj = {}
     for key, value in pairs:
@@ -219,17 +302,52 @@ class GitCodeClient:
             "run_attempt": result.get("attempt", 1),
         }
 
+    def pr_source(self, details):
+        number = str(details.get("pull_request_id") or "")
+        if not re.fullmatch(r"[1-9][0-9]{0,9}", number):
+            raise RunChanged("missing PR identity")
+        pr = self.request("GET", f"/pulls/{number}")
+        head, base = pr.get("head") or {}, pr.get("base") or {}
+        source = (head.get("repo") or {}).get("full_name")
+        if (
+            pr.get("state") != "open"
+            or str(pr.get("number")) != number
+            or (base.get("repo") or {}).get("full_name") != self.repo
+            or not isinstance(source, str)
+            or not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}",
+                source,
+            )
+            or head.get("sha") != details.get("head_sha")
+            or head.get("ref") != details.get("head_branch")
+        ):
+            raise RunChanged("PR source no longer matches run")
+        return int(number), source
+
     def running_workflows(self):
+        runs = []
+        events = ("Manual", "MR") if source_workflows() else ("Manual",)
+        for event in events:
+            runs.extend(self._running_event(event))
+        return runs
+
+    def _running_event(self, event):
         runs = []
         for page in range(1, 6):
             body = self.request(
                 "GET",
-                f"/actions/runs?event=Manual&status=RUNNING&per_page=100&page={page}",
+                f"/actions/runs?event={event}&status=RUNNING&per_page=100&page={page}",
                 api=8,
             )
             rows = body.get("workflow_runs", [])
             for row in rows:
-                if row.get("event") != "Manual" or row.get("status") != "RUNNING":
+                if row.get("event") != event or row.get("status") != "RUNNING":
+                    continue
+                if (
+                    event == "MR"
+                    and (row.get("file_path") or "").rsplit("/", 1)[-1]
+                    not in source_workflows()
+                ):
                     continue
                 run_id = row.get("workflow_run_id")
                 if not isinstance(run_id, str) or not re.fullmatch(
@@ -252,8 +370,8 @@ class GitCodeClient:
                         type(exc).__name__,
                     )
                     continue
-                # This platform's runner does not expose the current attempt.
-                # Accept only a fresh run until its identity is available there.
+                # GitCode currently reports attempt 1 even for reruns. Source-profile
+                # workflows distinguish reruns using the child job's dispatch ID.
                 if details.get("attempt") != 1:
                     continue
                 if any(
@@ -275,6 +393,32 @@ class GitCodeClient:
                     continue
                 if start > 10**11:
                     start /= 1000
+                dispatch_fields = {}
+                if (row.get("file_path") or "").rsplit("/", 1)[
+                    -1
+                ] in source_workflows():
+                    try:
+                        dispatch = source_dispatch(details)
+                    except RunChanged:
+                        continue
+                    dispatch_fields = {"_ci_dispatch_id": dispatch}
+                pr_fields = {}
+                if event == "MR":
+                    try:
+                        number, source = self.pr_source(details)
+                    except (
+                        urllib.error.URLError,
+                        TimeoutError,
+                        OSError,
+                        ValueError,
+                    ) as exc:
+                        logging.warning(
+                            "GitCode PR source unavailable for %s (%s)",
+                            run_id,
+                            type(exc).__name__,
+                        )
+                        continue
+                    pr_fields = {"_ci_pr_number": number, "_ci_source_repo": source}
                 runs.append(
                     {
                         "_ci_provider": "gitcode",
@@ -290,8 +434,12 @@ class GitCodeClient:
                         "created_at": dt.datetime.fromtimestamp(
                             start, dt.timezone.utc
                         ).isoformat(),
-                        "event": "workflow_dispatch",
+                        "event": "workflow_dispatch"
+                        if event == "Manual"
+                        else "pull_request",
                         "status": "in_progress",
+                        **pr_fields,
+                        **dispatch_fields,
                     }
                 )
             if len(rows) < 100:
@@ -300,22 +448,54 @@ class GitCodeClient:
 
     def validate_current(self, run):
         details = self.request("GET", f"/actions/runs/{run['id']}", api=8)
+        is_pr = run.get("event") == "pull_request"
         expected = {
             "workflow_run_id": run["id"],
             "attempt": run["run_attempt"],
             "head_sha": run["head_sha"],
             "head_branch": run["head_branch"],
             "file_path": run["path"],
-            "event": "Manual",
+            "event": "MR" if is_pr else "Manual",
             "status": "RUNNING",
         }
         if (
             any(details.get(k) != v for k, v in expected.items())
             or details.get("actor", {}).get("login") != run["actor"]["login"]
+            or (
+                "_ci_dispatch_id" in run
+                and source_dispatch(details) != run["_ci_dispatch_id"]
+            )
         ):
-            raise ValueError("GitCode run changed or ended")
+            raise RunChanged("GitCode run changed or ended")
+        if is_pr and self.pr_source(details) != (
+            run.get("_ci_pr_number"),
+            run.get("_ci_source_repo"),
+        ):
+            raise RunChanged("GitCode PR source changed")
 
     def ci_request(self, run):
+        if run["path"].rsplit("/", 1)[-1] in source_workflows():
+            from ci_core.registry import inspect_archive
+            from ci_core.ssh_runner import model_archive
+
+            self.validate_current(run)
+            with tempfile.TemporaryDirectory(prefix="lite-gitcode-source-") as tmp:
+                source = model_archive(
+                    run["head_sha"],
+                    Path(tmp),
+                    source_repo=self.repo,
+                    provider="gitcode",
+                    fallback_repo=run.get("_ci_source_repo"),
+                )
+                rows = inspect_archive(
+                    source, {"suite": "dispatch_smoke"}, repo=self.repo
+                )
+            plan = source_plan(rows, run, self.repo)
+            if os.environ.get("LITE_ACTIONS_GITCODE_PROBE_ONLY") == "1" and any(
+                case["kind"] != "worker_probe" for case in plan["cases"]
+            ):
+                raise ValueError("only zero-device probes are enabled")
+            return plan
         run_id, attempt = run["id"], run["run_attempt"]
         pilot_workflow = os.environ.get("LITE_ACTIONS_GITCODE_CATALOG_WORKFLOW", "")
         pilot_branches = set(

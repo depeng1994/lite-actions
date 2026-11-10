@@ -15,6 +15,7 @@ from pathlib import Path
 from ci_core.config import load, runtime_case
 from ci_core.contract import REPO, TORCHTITAN_REPO, VLLM_REPO, WORKFLOWS, parse_plan
 from ci_core.executor import ExternalNpuOccupancy, execute
+from ci_core.gitcode import RunChanged, source_workflows
 from ci_core.job_state import JobState
 from ci_core.plan import verify_definition
 from ci_core.reporting import post, progress, report
@@ -33,7 +34,8 @@ from ci_core.worker_probe import probe as probe_worker
 
 def task_key(run, item):
     prefix = "gitcode:" if run.get("_ci_provider") == "gitcode" else ""
-    return f"{prefix}{run.get('_ci_repo', REPO)}:{run['id']}:{run.get('run_attempt', 1)}:{item['case_id']}"
+    dispatch = f":{run['_ci_dispatch_id']}" if run.get("_ci_dispatch_id") else ""
+    return f"{prefix}{run.get('_ci_repo', REPO)}:{run['id']}:{run.get('run_attempt', 1)}{dispatch}:{item['case_id']}"
 
 
 class Router:
@@ -154,6 +156,16 @@ class Router:
                     ).split(","),
                 )
             )
+            if filename in source_workflows() and not run.get("_ci_dispatch_id"):
+                return False
+            if run.get("event") == "pull_request":
+                return (
+                    repo in GITCODE_REPOS
+                    and filename in workflows & source_workflows()
+                    and run.get("status") == "in_progress"
+                    and type(run.get("_ci_pr_number")) is int
+                    and isinstance(run.get("_ci_source_repo"), str)
+                )
             return (
                 repo in GITCODE_REPOS
                 and filename in workflows
@@ -241,6 +253,7 @@ class Router:
             run["id"],
             run.get("run_attempt", 1),
             run["head_sha"],
+            run.get("_ci_dispatch_id"),
         )
         cached = self.plans.get(identity)
         if cached is None:
@@ -365,7 +378,7 @@ class Router:
         if status == "PASS" and r["run"].get("_ci_provider") == "gitcode":
             try:
                 self.client_for(r["run"]).validate_current(r["run"])
-            except ValueError:
+            except RunChanged:
                 status, rc, lines = (
                     "CANCELLED",
                     130,
@@ -402,6 +415,7 @@ class Router:
                     Path(tmp),
                     source_repo=source_repo,
                     provider=run.get("_ci_provider", "github"),
+                    fallback_repo=run.get("_ci_source_repo"),
                 )
                 verify_definition(archive, item, r["defaults"], repo=source_repo)
             if run.get("_ci_provider") == "gitcode":
@@ -412,6 +426,11 @@ class Router:
             if item["kind"] == "worker_probe":
                 self.transition(key, "RUNNING")
                 p = probe_worker()
+                if cancel.is_set():
+                    self.finish(
+                        key, "CANCELLED", 130, ["Cancelled during worker probe"]
+                    )
+                    return
                 expected = self.workers[self.worker].get("expected_hostname")
                 if (
                     expected
@@ -430,7 +449,7 @@ class Router:
                 "_ci_test_id": item["test_id"],
                 "_ci_cancel_event": cancel,
             }
-            if r.get("use_instance_id"):
+            if r.get("use_instance_id") or run.get("_ci_dispatch_id"):
                 subrun["_ci_case_id"] = item["case_id"]
 
             def on_phase(phase):
@@ -477,6 +496,10 @@ class Router:
         except subprocess.TimeoutExpired:
             self.finish(
                 key, "TIMED_OUT", 124, ["Worker operation timed out"], not launched
+            )
+        except RunChanged:
+            self.finish(
+                key, "CANCELLED", 130, ["GitCode run or PR changed"], not launched
             )
         except Exception as exc:
             logging.exception("case failure %s", key)
@@ -569,6 +592,7 @@ class Router:
                 r["run"].get("_ci_provider", "github"),
                 r["run"].get("_ci_repo", REPO),
                 r["run"]["id"],
+                r["run"].get("_ci_dispatch_id"),
             )
             if ident in self.unavailable_runs or r.get("receipt_pending"):
                 if pool and is_smoke:
@@ -709,10 +733,22 @@ class Router:
                 run.get("_ci_provider", "github"),
                 run.get("_ci_repo", REPO),
                 run["id"],
+                run.get("_ci_dispatch_id"),
             )
             if ident not in statuses:
                 try:
-                    statuses[ident] = self.client_for(run).workflow_status(run["id"])
+                    client = self.client_for(run)
+                    if run.get("_ci_provider") == "gitcode" and (
+                        run.get("event") == "pull_request" or run.get("_ci_dispatch_id")
+                    ):
+                        try:
+                            client.validate_current(run)
+                        except RunChanged:
+                            statuses[ident] = {"status": "completed"}
+                        else:
+                            statuses[ident] = {"status": "in_progress"}
+                    else:
+                        statuses[ident] = client.workflow_status(run["id"])
                 except Exception as exc:
                     statuses[ident] = None
                     self.unavailable_runs.add(ident)
@@ -730,7 +766,10 @@ class Router:
                     self.active[key][1].set()
                 elif r["phase"] == "QUEUED":
                     self.finish(
-                        key, "CANCELLED", 130, ["GitHub Run completed before launch"]
+                        key,
+                        "CANCELLED",
+                        130,
+                        ["CI Run ended or source changed before launch"],
                     )
         self.receive(self.client.running_workflows())
         self.pump()

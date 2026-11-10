@@ -74,9 +74,15 @@ def _case_instance_token(run: dict) -> str | None:
         or attempt < 1
     ):
         raise ValueError("invalid CI run identity")
-    payload = json.dumps(
-        [provider, repo, run_id, attempt, case_id], separators=(",", ":")
-    ).encode()
+    identity = [provider, repo, run_id, attempt, case_id]
+    dispatch = run.get("_ci_dispatch_id")
+    if dispatch is not None:
+        if not isinstance(dispatch, str) or not re.fullmatch(
+            r"[A-Za-z0-9_-]{1,128}", dispatch
+        ):
+            raise ValueError("invalid GitCode dispatch identity")
+        identity.append(dispatch)
+    payload = json.dumps(identity, separators=(",", ":")).encode()
     return f"{match.group(1)}_{hashlib.sha256(payload).hexdigest()}"
 
 
@@ -805,6 +811,7 @@ def prepare_profile(case: dict, run: dict) -> dict:
             Path(tmp),
             source_repo=source_repo,
             provider=run.get("_ci_provider", "github"),
+            fallback_repo=run.get("_ci_source_repo"),
         )
         definition = resolve_test(
             archive,
@@ -888,6 +895,7 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
                     else run.get("_ci_repo", TORCHTITAN_REPO),
                     "LITE_ACTIONS_SOURCE_PROVIDER": run.get("_ci_provider", "github"),
                     "LITE_ACTIONS_SOURCE_REPO": run.get("_ci_repo", TORCHTITAN_REPO),
+                    "LITE_ACTIONS_SOURCE_FALLBACK_REPO": run.get("_ci_source_repo", ""),
                 },
                 start_new_session=True,
             )

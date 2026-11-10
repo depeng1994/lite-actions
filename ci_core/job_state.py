@@ -83,12 +83,21 @@ class JobState:
                 if existing_sequences and seq <= max(existing_sequences):
                     raise ValueError("inconsistent persisted admission sequence")
                 run = entries[0][1]["run"]
-                identity_fields = ("_ci_provider", "_ci_repo", "id", "run_attempt")
+                identity_fields = (
+                    "_ci_provider",
+                    "_ci_repo",
+                    "id",
+                    "run_attempt",
+                    "_ci_dispatch_id",
+                )
                 identity = tuple(run.get(k) for k in identity_fields)
                 if len({key for key, _ in entries}) != len(entries) or any(
                     tuple(fields["run"].get(k) for k in identity_fields) != identity
                     or fields["run"].get("head_sha") != run.get("head_sha")
                     or fields["run"].get("path") != run.get("path")
+                    or fields["run"].get("_ci_pr_number") != run.get("_ci_pr_number")
+                    or fields["run"].get("_ci_source_repo")
+                    != run.get("_ci_source_repo")
                     or fields.get("digest") != entries[0][1].get("digest")
                     for _, fields in entries
                 ):
@@ -102,6 +111,9 @@ class JobState:
                         if (
                             previous.get("head_sha") != run.get("head_sha")
                             or previous.get("path") != run.get("path")
+                            or previous.get("_ci_pr_number") != run.get("_ci_pr_number")
+                            or previous.get("_ci_source_repo")
+                            != run.get("_ci_source_repo")
                             or record.get("digest") != entries[0][1]["digest"]
                         ):
                             raise ValueError("conflicting previously admitted run")
@@ -136,8 +148,11 @@ class JobState:
                                 "_ci_repo",
                                 "id",
                                 "run_attempt",
+                                "_ci_dispatch_id",
                                 "head_sha",
                                 "path",
+                                "_ci_pr_number",
+                                "_ci_source_repo",
                             )
                         ):
                             raise ValueError("conflicting previously admitted case")
