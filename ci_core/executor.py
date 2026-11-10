@@ -129,9 +129,8 @@ def remote_task_name(run: dict) -> str:
     """
     name = run.get("name")
     instance = _case_instance_token(run)
-    max_length = 256 if instance is not None else 64
     if not isinstance(name, str) or not re.fullmatch(
-        rf"[A-Za-z0-9][A-Za-z0-9-]{{0,{max_length - 1}}}", name
+        r"[A-Za-z0-9][A-Za-z0-9-]{0,255}", name
     ):
         raise ValueError("invalid GitHub workflow name for execution directory")
     number = run.get("run_number")
@@ -166,6 +165,8 @@ def remote_task_name(run: dict) -> str:
         return f"{prefix}{repo}_{run_id}_attempt-{attempt}{suffix}"
     if instance is not None:
         return f"{prefix}{local:%Y-%m-%d_%H-%M-%S}_run_{name[:32]}_{str(number)[:20]}_case-{instance}"
+    if len(name) > 64:
+        name = f"{name[:48]}-{hashlib.sha256(name.encode()).hexdigest()[:12]}"
     return f"{prefix}{local:%Y-%m-%d_%H-%M-%S}_run_{name}_{number}{suffix}"
 
 

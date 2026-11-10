@@ -79,6 +79,12 @@ class SmokeExecutionIdentityTests(unittest.TestCase):
         self.assertNotEqual(first, second)
         self.assertTrue(STAMP.fullmatch(first))
         self.assertLessEqual(len(first.encode()), 255)
+        unique_case = {key: value for key, value in run.items() if key != "_ci_case_id"}
+        first = remote_task_name(unique_case)
+        second = remote_task_name({**unique_case, "name": unique_case["name"][:-1] + "c"})
+        self.assertNotEqual(first, second)
+        self.assertTrue(STAMP.fullmatch(first))
+        self.assertLessEqual(len(first.encode()), 255)
 
     def test_legacy_paths_remain_unchanged_without_instance(self):
         github = run_identity()
