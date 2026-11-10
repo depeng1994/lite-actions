@@ -5,9 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from ci_core.container_binding import ContainerBinding
 from ci_core.scheduler import candidates, validate_allocation
-from ci_core.ssh_runner import allocations, run
+from ci_core.ssh_runner import run
 
 
 class CommunicationTopologyTests(unittest.TestCase):
@@ -52,41 +51,6 @@ class CommunicationTopologyTests(unittest.TestCase):
         single_node = {**case, "resources": {"nodes": 1, "devices_per_node": 8}}
         self.assertEqual(len(candidates(single_node, pools)), 3)
         self.assertEqual(len(candidates({**case, "pool": "independent"}, pools)), 1)
-
-        container_id = "a" * 64
-        environment = {
-            "container_id": container_id,
-            "image_id": "sha256:" + "b" * 64,
-            "image_ref": "fixture:tag",
-        }
-        bound = []
-        for position, name in enumerate(("one-a", "one-c")):
-            host = next(
-                node for node in pools["one"]["nodes"] if node["host_id"] == name
-            )
-            captured = {
-                **host,
-                "position": position,
-                "devices": devices,
-                "host_ssh": name,
-                "ssh": f"{name}/{container_id}",
-                "environments": {"vllm_hccl_smoke": environment},
-            }
-            captured["container_binding"] = ContainerBinding.from_node(
-                captured
-            ).metadata()
-            bound.append(captured)
-        bound_case = {
-            **case,
-            "allocation": valid,
-            "docker": "vllm_hccl_smoke",
-            "bound_nodes": bound,
-        }
-        validate_allocation(bound_case, pools, valid)
-        self.assertIs(allocations(bound_case, pools), bound)
-        bound[1]["node_ip"] = shared_ip
-        with self.assertRaisesRegex(ValueError, "invalid bound node communication"):
-            validate_allocation(bound_case, pools, valid)
 
         # Re-read configuration immediately before binding, even if an earlier
         # scheduler check used a different snapshot.

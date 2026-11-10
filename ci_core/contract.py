@@ -16,7 +16,14 @@ TORCHTITAN_REPO = "cann-framework/torchtitan-npu"
 VLLM_REPO = "cann-framework/vllm-ascend"
 SUPPORTED_REPOS = frozenset({TORCHTITAN_REPO, VLLM_REPO})
 GITCODE_REPOS = frozenset({"depeng1994/torchtitan-npu", "cann/torchtitan-npu"})
-REPO = os.environ.get("LITE_ACTIONS_MODEL_REPO", TORCHTITAN_REPO)
+
+
+def canonical_repo(repo):
+    # Only configuration is migrated; plans still require the canonical repo.
+    return VLLM_REPO if repo == "torchtitan-npu/vllm-ascend" else repo
+
+
+REPO = canonical_repo(os.environ.get("LITE_ACTIONS_MODEL_REPO", TORCHTITAN_REPO))
 if REPO not in SUPPORTED_REPOS:
     raise ValueError("unsupported model repository")
 
@@ -25,11 +32,11 @@ def configured_repos():
     """Explicit dual mode, backwards compatible single-repo setting."""
     multi = os.environ.get("LITE_ACTIONS_MODEL_REPOS")
     if multi is None:
-        single = os.environ.get("LITE_ACTIONS_MODEL_REPO", REPO)
+        single = canonical_repo(os.environ.get("LITE_ACTIONS_MODEL_REPO", REPO))
         if single not in SUPPORTED_REPOS:
             raise ValueError("unsupported single repository")
         return (single,)
-    repos = tuple(x.strip() for x in multi.split(","))
+    repos = tuple(canonical_repo(x.strip()) for x in multi.split(","))
     if (
         not repos
         or any(x not in SUPPORTED_REPOS for x in repos)
@@ -241,10 +248,6 @@ def parse_plan(plan, run, workflow, *, repo=REPO):
             ):
                 raise ValueError("duplicate/invalid test")
         seen[c["test_id"]] = c
-        if repo == VLLM_REPO:
-            from ci_core.vllm_ascend import validate_blue_case
-
-            validate_blue_case(c)
         if (
             c["order"] != i
             or type(c["order"]) is not int

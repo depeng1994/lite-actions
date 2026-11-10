@@ -76,6 +76,3 @@ def validate_allocation(case: dict, pools: dict, allocation: list[dict]) -> None
         resource_keys(item) == expected for item in candidates(case, pools)
     ):
         raise ValueError("allocation outside verified topology or pool")
-    bound = case.get("bound_nodes")
-    if isinstance(bound, list) and len(bound) > 1 and not _distinct_node_ips(bound):
-        raise ValueError("invalid bound node communication addresses")

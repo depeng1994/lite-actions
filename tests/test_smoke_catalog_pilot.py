@@ -11,8 +11,10 @@ import unittest
 import urllib.error
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
+from ci_core import ssh_runner
 from ci_core.contract import digest, parse_plan
 from ci_core.executor import Execution
 from ci_core.gitcode import GitCodeClient, MultiPlatformClient, catalog_plan
@@ -65,6 +67,59 @@ def sample_catalog():
 
 
 class CatalogTests(unittest.TestCase):
+    def test_smoke_ids_use_model_owned_staging_launch_and_verification(self):
+        node = dict(
+            host_id="fixture",
+            ssh="fixture",
+            node_ip="192.0.2.1",
+            position=0,
+            devices=[0, 1],
+        )
+        nodes = [node, {**node, "node_ip": "192.0.2.2", "position": 1}]
+        runner = dict(
+            kind="npu_smoke",
+            mode="distributed",
+            env_vars={"ASCEND_SET_ENV_PATH": "/fixture/cann"},
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = Path(tmp) / "source.tar.gz"
+            archive.write_bytes(b"source")
+            with (
+                patch.object(ssh_runner, "VLLM", False),
+                patch("ci_core.transport.run"),
+                patch.object(
+                    ssh_runner, "ssh", return_value=SimpleNamespace(returncode=0)
+                ) as ssh,
+            ):
+                ssh_runner.stage(node, "/fixture", archive, "a" * 40)
+                self.assertIn(
+                    "repo/tests/integration_tests/__init__.py", ssh.call_args.args[1]
+                )
+                for test_id in (
+                    "dispatch_smoke_a3_8p",
+                    "dispatch_smoke_a3_16p",
+                    "new_smoke_case",
+                ):
+                    with self.subTest(test_id=test_id):
+                        command = ssh_runner.remote_command(
+                            node, nodes, runner, "/fixture/node0", "stamp", 60, test_id
+                        )
+                        self.assertIn(
+                            "tests.integration_tests.tools.lite_actions.entrypoint launch",
+                            command,
+                        )
+                        self.assertIn(test_id, command)
+                        self.assertNotIn("trusted_hccl.py", command)
+                        self.assertEqual(
+                            ssh_runner.verify(nodes, runner, "/fixture", 60, test_id),
+                            0,
+                        )
+                        self.assertIn(
+                            "tests.integration_tests.tools.lite_actions.entrypoint verify",
+                            ssh.call_args.args[1],
+                        )
+                        self.assertIn(test_id, ssh.call_args.args[1])
+
     def test_failed_submission_never_runs_and_releases_the_complete_lease(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

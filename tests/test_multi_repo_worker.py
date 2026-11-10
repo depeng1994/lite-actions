@@ -13,6 +13,7 @@ from ci_core.contract import (
     configured_repos,
     create_plan,
     normalize,
+    parse_plan,
 )
 from ci_core.executor import check_a5_multinode_rootinfo, task_dir
 from ci_core.github import GitHubClient, MultiRepoGitHubClient
@@ -66,11 +67,35 @@ class MultiRepoWorkerTests(unittest.TestCase):
             self.assertEqual(configured_repos(), (VLLM_REPO,))
         with patch.dict(
             os.environ,
+            {"LITE_ACTIONS_MODEL_REPO": "torchtitan-npu/vllm-ascend"},
+            clear=True,
+        ):
+            self.assertEqual(configured_repos(), (VLLM_REPO,))
+        with self.assertRaises(ValueError):
+            GitHubClient("fake", "torchtitan-npu/vllm-ascend")
+        with self.assertRaises(ValueError):
+            parse_plan({}, {}, "", repo="torchtitan-npu/vllm-ascend")
+        with patch.dict(
+            os.environ,
             {"LITE_ACTIONS_MODEL_REPOS": TORCHTITAN_REPO + "," + VLLM_REPO},
             clear=True,
         ):
             self.assertEqual(configured_repos(), (TORCHTITAN_REPO, VLLM_REPO))
-        for invalid in (TORCHTITAN_REPO + "," + TORCHTITAN_REPO, "unknown/x", ""):
+        with patch.dict(
+            os.environ,
+            {
+                "LITE_ACTIONS_MODEL_REPOS": TORCHTITAN_REPO
+                + ",torchtitan-npu/vllm-ascend"
+            },
+            clear=True,
+        ):
+            self.assertEqual(configured_repos(), (TORCHTITAN_REPO, VLLM_REPO))
+        for invalid in (
+            TORCHTITAN_REPO + "," + TORCHTITAN_REPO,
+            VLLM_REPO + ",torchtitan-npu/vllm-ascend",
+            "unknown/x",
+            "",
+        ):
             with patch.dict(
                 os.environ, {"LITE_ACTIONS_MODEL_REPOS": invalid}, clear=True
             ):

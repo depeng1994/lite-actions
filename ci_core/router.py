@@ -264,18 +264,6 @@ class Router:
             if len(owned) != len(plan["cases"]):
                 raise ValueError("catalog pilot requires a single owning worker")
             plan_receipt(run, plan)
-        if run.get("_ci_repo", REPO) == VLLM_REPO:
-            from ci_core.vllm_source import is_blue_plan, read_source
-
-            if is_blue_plan(plan):
-                source = read_source(self.client_for(run), run, plan)
-                if source is None:
-                    return
-                run = {
-                    **run,
-                    "_ci_source": source,
-                    "_ci_execution_sha": source["source_sha"],
-                }
         counts = Counter(item["test_id"] for item in plan["cases"])
         entries = []
         for item in owned:
@@ -372,25 +360,6 @@ class Router:
 
     def finish(self, key, status, rc, lines, clean=True):
         r = self.state.read()[key]
-        if status == "PASS" and r["run"].get("_ci_source"):
-            from ci_core.vllm_source import check_current
-
-            try:
-                check_current(
-                    self.client_for(r["run"]), r["run"]["_ci_source"], check_run=True
-                )
-            except ValueError:
-                status, rc, lines = (
-                    "CANCELLED",
-                    130,
-                    ["STALE: native source or run changed before publication"],
-                )
-            except Exception:
-                status, rc, lines = (
-                    "INFRA_ERROR",
-                    125,
-                    ["Native source authority unavailable before publication"],
-                )
         if status == "PASS" and r["run"].get("_ci_provider") == "gitcode":
             try:
                 self.client_for(r["run"]).validate_current(r["run"])
@@ -426,15 +395,11 @@ class Router:
             self.transition(key, "STAGING")
             with tempfile.TemporaryDirectory(prefix="lite-definition-") as tmp:
                 source_repo = run.get("_ci_repo", REPO)
-                archive = (
-                    Path(tmp) / "unused-probe-source"
-                    if source_repo == VLLM_REPO and item["kind"] == "worker_probe"
-                    else model_archive(
-                        run.get("_ci_execution_sha", run["head_sha"]),
-                        Path(tmp),
-                        source_repo=source_repo,
-                        provider=run.get("_ci_provider", "github"),
-                    )
+                archive = model_archive(
+                    run["head_sha"],
+                    Path(tmp),
+                    source_repo=source_repo,
+                    provider=run.get("_ci_provider", "github"),
                 )
                 verify_definition(archive, item, r["defaults"], repo=source_repo)
             if run.get("_ci_provider") == "gitcode":
@@ -458,11 +423,6 @@ class Router:
                     (p.stdout + p.stderr).splitlines(),
                 )
                 return
-            if run.get("_ci_source"):
-                from ci_core.vllm_source import check_current
-
-                check_current(self.client_for(run), run["_ci_source"], check_run=True)
-                case = {**case, "native_source": run["_ci_source"]}
             subrun = {
                 **run,
                 "_ci_test_id": item["test_id"],
@@ -713,22 +673,6 @@ class Router:
                         "run status unavailable: %s (%s)", run["id"], type(exc).__name__
                     )
             current = statuses[ident]
-            if current is not None and run.get("_ci_source"):
-                from ci_core.vllm_source import check_current
-
-                try:
-                    check_current(self.client_for(run), run["_ci_source"])
-                except ValueError:
-                    current = {
-                        **current,
-                        "status": "completed",
-                        "conclusion": "cancelled",
-                    }
-                    if key in self.active:
-                        self.active[key][1].set()
-                except Exception:
-                    self.unavailable_runs.add(ident)
-                    current = None
             if current is None:
                 continue
             superseded = current.get("run_attempt", r["run"].get("run_attempt", 1)) > r[

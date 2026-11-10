@@ -97,21 +97,10 @@ def execution_node(node, environment):
     ).stdout.strip()
     if actual != env["image_id"]:
         raise ValueError("IMAGE_TAG_CHANGED")
-    captured = {}
-    if environment == "vllm_hccl_smoke":
-        from ci_core.container_binding import ContainerBinding
-
-        binding = ContainerBinding.from_node(node)
-        binding.verify_inspection(data, resolved_image_id=actual)
-        captured = {"container_binding": binding.metadata(), "host_ssh": node["ssh"]}
     execution_ssh = node["ssh"] + "/" + container
     if run(execution_ssh, "id -u", timeout=30).stdout.strip() != "0":
         raise ValueError("EXECUTION_PID_VISIBILITY_REQUIRED")
-    selected = {**node, **captured, "ssh": execution_ssh}
-    if environment == "vllm_hccl_smoke":
-        # TorchTitan-specific dependency overlays must not contaminate vLLM.
-        selected.pop("pythonpath", None)
-    return selected
+    return {**node, "ssh": execution_ssh}
 
 
 def runtime_case(item, pools, worker):
