@@ -8,6 +8,7 @@ import threading
 import time
 from collections import Counter
 from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from contextlib import ExitStack
 from pathlib import Path
 
@@ -491,7 +492,15 @@ class Router:
                 lease.close()
 
     def _run_after_handoff(self, handoff, *args):
-        if handoff.result():
+        # SIGTERM can interrupt set_result after completion but before it wakes
+        # waiters. A bounded wait rechecks the completed handoff in that case.
+        while True:
+            try:
+                accepted = handoff.result(timeout=1)
+                break
+            except FutureTimeout:
+                continue
+        if accepted:
             return self.work(*args)
 
     def _complete_active(self):

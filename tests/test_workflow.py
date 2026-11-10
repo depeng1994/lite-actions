@@ -2,13 +2,16 @@
 
 import copy
 import json
+import os
 import queue
+import signal
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 import unittest
+from concurrent.futures import Future
 from pathlib import Path
 from unittest.mock import patch
 
@@ -606,6 +609,53 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(record["phase"], "REPORTED")
         self.assertEqual(record["report"]["status"], "PASS")
         self.assertNotEqual(*allocations)
+
+    def test_sigterm_during_handoff_does_not_hang_shutdown(self):
+        waiting = threading.Event()
+
+        class InterruptedHandoff(Future):
+            def result(self, timeout=None):
+                with self._condition:
+                    waiting.set()
+                    return super().result(timeout)
+
+            def set_result(self, value):
+                assert waiting.wait(5)
+                with self._condition:
+                    assert self._condition._waiters
+                    with patch.object(
+                        self._condition,
+                        "notify_all",
+                        side_effect=lambda: os.kill(os.getpid(), signal.SIGTERM),
+                    ):
+                        return super().set_result(value)
+
+        old_handler = signal.signal(signal.SIGTERM, signal.default_int_handler)
+        self.addCleanup(signal.signal, signal.SIGTERM, old_handler)
+        service = Service([definition("smoke", kind="npu_smoke")], self.root)
+        router = self.router(service)
+        handoff = InterruptedHandoff()
+        with service.connected(), patch("ci_core.router.Future", return_value=handoff):
+            router.receive([service.runs[20]])
+            with self.assertRaises(KeyboardInterrupt):
+                router.pump()
+            key = task_key(service.runs[20], service.plans[20]["cases"][0])
+            allocation = router.state.read()[key]["allocation"]
+            closer = threading.Thread(target=router.close, daemon=True)
+            closer.start()
+            try:
+                closer.join(3)
+                self.assertFalse(closer.is_alive(), "shutdown hung on handoff")
+                self.assertEqual(
+                    router.state.read()[key]["report"]["status"], "CANCELLED"
+                )
+                with reserve(self.root / "leases/devices", allocation):
+                    pass
+            finally:
+                if closer.is_alive():
+                    with handoff._condition:
+                        handoff._condition.notify_all()
+                    closer.join(5)
 
     def test_shutdown_cancels_smoke_still_in_occupancy_check(self):
         service = Service([definition("smoke", kind="npu_smoke")], self.root)
