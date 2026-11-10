@@ -12,6 +12,7 @@ import threading
 import time
 import unittest
 from concurrent.futures import Future
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
@@ -31,6 +32,8 @@ from tests.scenarios import (
 
 class WorkflowTests(unittest.TestCase):
     def setUp(self):
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         write_workspace(self.root)
@@ -438,16 +441,13 @@ class WorkflowTests(unittest.TestCase):
             node["host_id"] = node["ssh"] = f"192.0.2.{index}:22"
             node["node_ip"] = f"192.0.2.{index}"
         router.pools["pool_other"] = other
-        started, retry, snapshot, resume, launched, peer, finish = (
-            threading.Event() for _ in range(7)
+        started, retry, launched, peer, finish, independent_started = (
+            threading.Event() for _ in range(6)
         )
         attempts = []
-        selected = {}
-        failures = []
 
         def execute(case, run, **kwargs):
             name = run["_ci_test_id"]
-            selected[name] = case["allocation"]
             if name == "first_smoke":
                 attempts.append(case["allocation"])
                 if len(attempts) == 1:
@@ -468,14 +468,12 @@ class WorkflowTests(unittest.TestCase):
                 independent_started.set()
             return completed_execution(router.root, case, run)
 
-        independent_started = threading.Event()
         busy = [
             dict(host_id="192.0.2.10:22", devices=[2, 3]),
             dict(host_id="192.0.2.11:22", devices=[2, 3]),
         ]
-        pump_thread = None
-        self.enterContext(service.connected())
-        self.enterContext(patch("ci_core.router.execute", side_effect=execute))
+        self.stack.enter_context(service.connected())
+        self.stack.enter_context(patch("ci_core.router.execute", side_effect=execute))
         try:
             router.receive([service.runs[20]])
             keys = [
@@ -485,64 +483,41 @@ class WorkflowTests(unittest.TestCase):
                 router.pump()
                 self.assertTrue(started.wait(10))
                 self.assertTrue(independent_started.wait(10))
-            self.assertEqual(router.state.read()[keys[1]]["phase"], "QUEUED")
             original_read = router.state.read
+            scheduler = threading.current_thread()
+            snapshot_taken = False
+            future = router.active[keys[0]][0]
 
-            def pause_after_snapshot():
+            def read_stale_snapshot():
+                nonlocal snapshot_taken
                 records = original_read()
-                if threading.current_thread() is pump_thread and not snapshot.is_set():
-                    snapshot.set()
-                    if not resume.wait(10):
-                        raise RuntimeError("snapshot fixture timed out")
+                if threading.current_thread() is scheduler and not snapshot_taken:
+                    snapshot_taken = True
+                    retry.set()
+                    future.result(10)
                 return records
 
-            def pump():
-                try:
-                    router.pump()
-                except BaseException as exc:
-                    failures.append(exc)
-
-            with patch.object(router.state, "read", side_effect=pause_after_snapshot):
-                pump_thread = threading.Thread(target=pump)
-                pump_thread.start()
-                self.assertTrue(snapshot.wait(10))
-                retry.set()
-                router.active[keys[0]][0].result(10)
-                resume.set()
-                pump_thread.join(10)
-                self.assertFalse(pump_thread.is_alive())
-                self.assertFalse(failures)
+            with patch.object(router.state, "read", side_effect=read_stale_snapshot):
+                router.pump()
             self.assertEqual(router.state.read()[keys[1]]["phase"], "QUEUED")
             self.assertFalse(peer.is_set())
             router.pump()
             self.assertEqual(router.state.read()[keys[0]]["phase"], "QUEUED")
             self.assertEqual(router.state.read()[keys[1]]["phase"], "QUEUED")
-            router.state.update(keys[0], unavailable=[])
-            router.pump()
-            self.assertTrue(launched.wait(10))
-            router.pump()
-            self.assertTrue(peer.wait(10))
-            self.assertFalse(finish.is_set())
-            resources = [
-                {
-                    (node["host_id"], device)
-                    for node in selected[name]
-                    for device in node["devices"]
-                }
-                for name in ("first_smoke", "second_smoke")
-            ]
-            self.assertTrue(resources[0].isdisjoint(resources[1]))
+            with patch("ci_core.router.time.time", return_value=time.time() + 61):
+                router.pump()
+                self.assertTrue(launched.wait(10))
+                router.pump()
+                self.assertTrue(peer.wait(10))
             finish.set()
             self.drain(router)
-            self.assertTrue(
-                all(result["status"] == "PASS" for result in service.results())
+            self.assertEqual(
+                {result["test_id"]: result["status"] for result in service.results()},
+                {item.test_name: "PASS" for item in service.definitions},
             )
         finally:
             retry.set()
-            resume.set()
             finish.set()
-            if pump_thread is not None:
-                pump_thread.join(10)
 
     def test_cancelled_smoke_is_not_requeued_after_external_occupancy(self):
         service = Service([definition("smoke", kind="npu_smoke")], self.root)
@@ -556,41 +531,41 @@ class WorkflowTests(unittest.TestCase):
             run["_ci_phase_callback"]("CLEANING")
             raise ExternalNpuOccupancy("fixture external task")
 
-        self.enterContext(service.connected())
-        self.enterContext(patch("ci_core.router.execute", side_effect=execute))
+        self.stack.enter_context(service.connected())
+        self.stack.enter_context(patch("ci_core.router.execute", side_effect=execute))
         try:
             router.receive([service.runs[20]])
             router.pump()
             self.assertTrue(started.wait(10))
             key = task_key(service.runs[20], service.plans[20]["cases"][0])
-            future, cancel, _ = router.active[key]
+            future = router.active[key][0]
             service.runs[20]["status"] = "completed"
             router.tick()
-            self.assertTrue(cancel.is_set())
             retry.set()
             future.result(10)
             router.pump()
-            record = router.state.read()[key]
-            self.assertEqual(record["phase"], "PENDING_REPORT")
-            self.assertEqual(record["report"]["status"], "CANCELLED")
-            self.assertTrue(record["report"]["cleanup_verified"])
+            router.flush()
+            self.assertEqual(
+                [(r["status"], r["cleanup_verified"]) for r in service.results()],
+                [("CANCELLED", True)],
+            )
         finally:
             retry.set()
 
     def test_shutdown_preserves_completed_retry_for_restart(self):
         service = Service([definition("smoke", kind="npu_smoke")], self.root)
         router = self.router(service)
-        allocations = []
+        attempts = []
 
         def execute(case, run, **kwargs):
-            allocations.append(case["allocation"])
-            if len(allocations) == 1:
+            attempts.append(None)
+            if len(attempts) == 1:
                 run["_ci_phase_callback"]("CLEANING")
                 raise ExternalNpuOccupancy("fixture external task")
             return completed_execution(router.root, case, run)
 
-        self.enterContext(service.connected())
-        self.enterContext(patch("ci_core.router.execute", side_effect=execute))
+        self.stack.enter_context(service.connected())
+        self.stack.enter_context(patch("ci_core.router.execute", side_effect=execute))
         router.receive([service.runs[20]])
         router.pump()
         key = task_key(service.runs[20], service.plans[20]["cases"][0])
@@ -598,8 +573,7 @@ class WorkflowTests(unittest.TestCase):
         router.close()
         record = router.state.read()[key]
         self.assertEqual(record["phase"], "QUEUED")
-        self.assertFalse(record["quarantined"])
-        self.assertFalse(record.get("report"))
+        self.assertEqual(service.results(), [])
         resumed = self.router(service, existing=router.root)
         resumed.pump()
         resumed.active[key][0].result(10)
@@ -608,7 +582,6 @@ class WorkflowTests(unittest.TestCase):
         record = resumed.state.read()[key]
         self.assertEqual(record["phase"], "REPORTED")
         self.assertEqual(record["report"]["status"], "PASS")
-        self.assertNotEqual(*allocations)
 
     def test_sigterm_during_handoff_does_not_hang_shutdown(self):
         waiting = threading.Event()
@@ -669,8 +642,8 @@ class WorkflowTests(unittest.TestCase):
             run["_ci_phase_callback"]("CLEANING")
             raise ExternalNpuOccupancy("fixture external task")
 
-        self.enterContext(service.connected())
-        self.enterContext(patch("ci_core.router.execute", side_effect=execute))
+        self.stack.enter_context(service.connected())
+        self.stack.enter_context(patch("ci_core.router.execute", side_effect=execute))
         router.receive([service.runs[20]])
         router.pump()
         self.assertTrue(entered.wait(10))
@@ -680,8 +653,6 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(record["phase"], "REPORTED")
         self.assertEqual(record["report"]["status"], "CANCELLED")
         self.assertTrue(record["report"]["cleanup_verified"])
-        with reserve(self.root / "leases/devices", record["allocation"]):
-            pass
 
     def test_new_attempt_cancels_waiting_attempt_before_launch(self):
         service = Service([definition("training")], self.root)

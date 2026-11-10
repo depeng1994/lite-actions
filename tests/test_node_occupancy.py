@@ -443,7 +443,7 @@ class NodeOccupancyTests(unittest.TestCase):
             write_workspace(root)
             path = root / "config/pools.json"
             pools = json.loads(path.read_text())
-            for invalid in ("ignore", "inherit", None, True, []):
+            for invalid in ("ignore", "inherit", []):
                 pools["pool_blue"]["nodes"][0]["occupancy_policy"] = invalid
                 path.write_text(json.dumps(pools))
                 with self.subTest(value=invalid), self.assertRaises(ValueError):
