@@ -90,6 +90,7 @@ class SourceProfileTests(unittest.TestCase):
             "name": "Dispatcher Smoke",
             "status": "RUNNING",
             "last_dispatch_id": "dispatch_1",
+            "start_time": 1767225600000,
         }
         self.run = dict(
             workflow_run_id="run_1",
@@ -249,19 +250,27 @@ class SourceProfileTests(unittest.TestCase):
             first = self.client.running_workflows()[0]
             router = self.router("blue")
             router.receive([first])
-            self.job["last_dispatch_id"] = "dispatch_2"
+            self.job["start_time"] += 1000
             second = self.client.running_workflows()[0]
             with patch.object(router, "pump"):
                 router.tick()
             records = list(router.state.read().values())
-            old = [r for r in records if r["run"]["_ci_dispatch_id"] == "dispatch_1"]
-            new = [r for r in records if r["run"]["_ci_dispatch_id"] == "dispatch_2"]
+            old = [
+                r
+                for r in records
+                if r["run"]["_ci_dispatch_id"] == "dispatch_1_1767225600000"
+            ]
+            new = [
+                r
+                for r in records
+                if r["run"]["_ci_dispatch_id"] == "dispatch_1_1767225601000"
+            ]
             self.assertEqual((len(old), len(new)), (4, 4))
             self.assertTrue(all(r["report"]["status"] == "CANCELLED" for r in old))
             self.assertTrue(all(r["phase"] == "QUEUED" for r in new))
             self.assertTrue(
                 any(
-                    c["body"].startswith("Lite-CI-V3 run_1:1:dispatch_1:")
+                    c["body"].startswith("Lite-CI-V3 run_1:1:dispatch_1_1767225600000:")
                     for c in self.comments
                 )
             )

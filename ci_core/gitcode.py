@@ -94,11 +94,13 @@ def source_dispatch(details):
     if len(jobs) != 1 or jobs[0].get("status") != "RUNNING":
         raise RunChanged("smoke execution job unavailable or ambiguous")
     dispatch = jobs[0].get("last_dispatch_id")
-    if not isinstance(dispatch, str) or not re.fullmatch(
-        r"[A-Za-z0-9_-]{1,128}", dispatch
-    ):
+    started = jobs[0].get("start_time")
+    if not isinstance(dispatch, str) or type(started) is not int or started <= 0:
         raise RunChanged("missing smoke execution dispatch identity")
-    return dispatch
+    identity = f"{dispatch}_{started}"
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", identity):
+        raise RunChanged("invalid smoke execution dispatch identity")
+    return identity
 
 
 def _unique_object(pairs):
