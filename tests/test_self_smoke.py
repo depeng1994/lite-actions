@@ -276,6 +276,16 @@ class SelfSmokeTests(unittest.TestCase):
                 ["git", "-C", str(root), *args], check=True, capture_output=True
             )
         sha = checkout_sha(root)
+        for name in (
+            "tests/integration_tests/tools/__init__.py",
+            "tests/integration_tests/tools.py",
+            "tests/integration_tests/training_cases.py",
+        ):
+            untracked = root / name
+            untracked.write_text("raise RuntimeError('untracked source')\n")
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                checkout_sha(root)
+            untracked.unlink()
         router = Router.__new__(Router)
         router.root, router.self_sha = root, sha
         run = {

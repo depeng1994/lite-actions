@@ -64,8 +64,7 @@ def checkout_sha(root):
         raise ValueError("incomplete Worker source tree")
     directories = (
         root / "ci_core",
-        root / "tests/integration_tests/tools/lite_actions",
-        root / "tests/integration_tests/training_cases",
+        root / "tests/integration_tests",
     )
     if any(
         str(path.relative_to(root)) not in tracked
