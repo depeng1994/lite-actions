@@ -517,7 +517,12 @@ class Router:
                             phase="QUEUED",
                             allocation=[],
                             quarantined=False,
-                            unavailable=current.get("unavailable", []) + [retry],
+                            unavailable=[
+                                row
+                                for row in current.get("unavailable", [])
+                                if row["until"] > time.time()
+                            ]
+                            + [retry],
                         )
                 del self.active[key]
                 self.preflight.pop(key, None)
