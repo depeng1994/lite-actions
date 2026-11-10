@@ -1,6 +1,18 @@
 """Discover complete, verified resource allocations for the scheduler."""
 
+from ipaddress import ip_address
+
 from ci_core.resources import resource_keys
+
+
+def _distinct_node_ips(nodes):
+    try:
+        addresses = {
+            ip_address(n["node_ip"]) for n in nodes if isinstance(n.get("node_ip"), str)
+        }
+    except ValueError:
+        return False
+    return len(addresses) == len(nodes)
 
 
 def candidates(case: dict, pools: dict) -> list[list[dict]]:
@@ -33,6 +45,7 @@ def candidates(case: dict, pools: dict) -> list[list[dict]]:
     # verified distributed topology. Multi-node combinations are allowlisted.
     known = list(pool.get("verified_multinode_allocations", []))
     allowed_groups = {(g["host_id"], tuple(g["devices"])) for g in eligible}
+    hosts = {host["host_id"]: host for host in pool["nodes"]}
     result = []
     for bundle in known:
         if (
@@ -44,6 +57,10 @@ def candidates(case: dict, pools: dict) -> list[list[dict]]:
                 for g in bundle
             )
         ):
+            # Check only the hosts used together; independent pools and
+            # single-node allocations may legitimately reuse an address.
+            if not _distinct_node_ips([hosts[g["host_id"]] for g in bundle]):
+                continue
             result.append(
                 [
                     {"host_id": g["host_id"], "devices": list(g["devices"])}

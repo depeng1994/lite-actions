@@ -7,11 +7,12 @@ from ci_core.logs import clean
 
 
 def marker(run, item):
-    return f"Lite-CI-V3 {run['id']}:{run.get('run_attempt', 1)}:{item['case_id']}"
+    dispatch = f":{run['_ci_dispatch_id']}" if run.get("_ci_dispatch_id") else ""
+    return f"Lite-CI-V3 {run['id']}:{run.get('run_attempt', 1)}{dispatch}:{item['case_id']}"
 
 
 def report(run, item, plan_digest, status, rc, lines, cleanup_verified=True):
-    return dict(
+    result = dict(
         schema=3,
         repo=run.get("_ci_repo", REPO),
         workflow=run["path"].rsplit("/", 1)[-1],
@@ -30,6 +31,11 @@ def report(run, item, plan_digest, status, rc, lines, cleanup_verified=True):
         cleanup_verified=cleanup_verified,
         last_20_lines=[clean(x) for x in lines[:20]],
     )
+    if run.get("_ci_dispatch_id"):
+        result["dispatch_id"] = run["_ci_dispatch_id"]
+    if run.get("_ci_source"):
+        result["native_source"] = run["_ci_source"]
+    return result
 
 
 def body_for(run, item, result):
@@ -73,6 +79,11 @@ def progress(client, run, item, digest, phase, comment_id=None):
             worker=item["worker"],
             plan_digest=digest,
             phase=phase,
+            **(
+                {"dispatch_id": run["_ci_dispatch_id"]}
+                if run.get("_ci_dispatch_id")
+                else {}
+            ),
         ),
         separators=(",", ":"),
     )

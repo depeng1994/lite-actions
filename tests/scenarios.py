@@ -101,8 +101,6 @@ class Service(GitHubClient):
             for name in [
                 "tests/__init__.py",
                 "tests/integration_tests/__init__.py",
-                "tests/integration_tests/tools/__init__.py",
-                "tests/integration_tests/tools/lite_actions/__init__.py",
                 "tests/integration_tests/tools/lite_actions/entrypoint.py",
             ]:
                 data = inspector.encode() if name.endswith("entrypoint.py") else b""
@@ -137,6 +135,10 @@ class Service(GitHubClient):
         return run, plan
 
     def request(self, method, path, payload=None):
+        if method == "GET" and path.startswith("/collaborators/"):
+            return {"permission": "write"}
+        if method == "GET" and path.startswith("/branches/"):
+            return {"commit": {"sha": next(iter(self.runs.values()))["head_sha"]}}
         if method == "GET" and path.startswith("/actions/runs?"):
             event = (
                 "pull_request" if "event=pull_request" in path else "workflow_dispatch"
@@ -185,12 +187,14 @@ class Service(GitHubClient):
         raise AssertionError((method, path))
 
     def open(self, request, **kwargs):
+        if request.full_url.startswith("https://fixture.blob.core.windows.net/"):
+            return self.download(request, **kwargs)
         ident = request.full_url.split("/")[-2]
         raise HTTPError(
             request.full_url,
             302,
             "redirect",
-            {"Location": f"https://fixture.invalid/{ident}"},
+            {"Location": f"https://fixture.blob.core.windows.net/{ident}"},
             None,
         )
 
@@ -199,6 +203,7 @@ class Service(GitHubClient):
             raise AssertionError("GitHub token forwarded to signed URL")
         ident = int(request.full_url.rsplit("/", 1)[1])
         out = io.BytesIO()
+        out.headers = {}
         with zipfile.ZipFile(out, "w") as archive:
             archive.writestr("ci-request.json", json.dumps(self.plans[ident]))
         out.seek(0)

@@ -15,6 +15,47 @@ def format_pools(pools):
     )
 
 
+def legacy_reclaim(pool, node):
+    """Preserve the existing Yellow A5 reclaim path for unmodified nodes."""
+    return (
+        pool.get("owner") == "yellow"
+        and pool.get("type") == "ascend-a5"
+        and "occupancy_policy" not in node
+    )
+
+
+def node_preempts(pool, node):
+    policy = node.get("occupancy_policy", "inherit")
+    if policy not in ("inherit", "wait", "preempt") or (
+        policy == "inherit" and "occupancy_policy" in node
+    ):
+        raise ValueError("invalid node occupancy policy")
+    reclaim = (
+        pool.get("force_reclaim", False) if policy == "inherit" else policy == "preempt"
+    )
+    expected = {"ascend-a3": "card-die", "ascend-a5": "card"}
+    kind = pool.get("type")
+    if reclaim and (
+        kind not in ("ascend-a3", "ascend-a5")
+        or expected[kind] != pool.get("process_indexing")
+    ):
+        raise ValueError("preemption requires a verified NPU process index")
+    if reclaim and not legacy_reclaim(pool, node):
+        devices = node.get("device_ids")
+        if (
+            not isinstance(node.get("machine_fingerprint"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", node["machine_fingerprint"])
+            or not isinstance(devices, list)
+            or not devices
+            or any(type(d) is not int or d < 0 for d in devices)
+            or len(set(devices)) != len(devices)
+        ):
+            raise ValueError(
+                "node preemption requires host fingerprint and device list"
+            )
+    return reclaim
+
+
 def load(root, worker):
     workers = json.loads((root / "config/workers.json").read_text())
     pools = json.loads((root / "config/pools.json").read_text())
@@ -26,11 +67,10 @@ def load(root, worker):
         if pool.get("owner") not in workers:
             raise ValueError("unknown pool owner")
         reclaim = pool.get("force_reclaim", False)
-        if type(reclaim) is not bool or (
-            reclaim and (pool["owner"] != "yellow" or pool.get("type") != "ascend-a5")
-        ):
-            raise ValueError("force_reclaim requires yellow ascend-a5 pool")
+        if type(reclaim) is not bool:
+            raise ValueError("force_reclaim must be a boolean")
         for node in pool["nodes"]:
+            node_preempts(pool, node)
             pythonpath = node.get("pythonpath")
             if pythonpath is not None and (
                 not isinstance(pythonpath, str)
@@ -82,7 +122,7 @@ def execution_node(node, environment):
     if not re.fullmatch(r"[a-f0-9]{64}", container):
         raise ValueError("container must be pinned by ID")
     script = (
-        'docker inspect --format \'{"Image":{{json .Image}},"State":{"Running":{{json .State.Running}}}}\' '
+        'docker inspect --format \'{"Name":{{json .Name}},"Id":{{json .Id}},"Image":{{json .Image}},"State":{"Running":{{json .State.Running}}}}\' '
         + container
     )
     data = json.loads(run(node["ssh"], script, timeout=30).stdout)

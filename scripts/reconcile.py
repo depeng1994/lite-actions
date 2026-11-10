@@ -31,6 +31,8 @@ def main():
     if not runtime or not record.get("allocation"):
         raise ValueError("allocation missing; manual reconciliation required")
     subrun = {**record["run"], "_ci_test_id": record["item"]["test_id"]}
+    if record.get("use_instance_id"):
+        subrun["_ci_case_id"] = record["item"]["case_id"]
     stamp = task_dir(subrun, root).name
     script = """import os,pathlib,sys
 marker=('LITE_CI_JOB_ID='+sys.argv[1]).encode()

@@ -13,9 +13,19 @@ import re
 # A distinct worker process can serve vLLM, sharing physical resource locks
 # with the existing TorchTitan worker. The default remains backwards compatible.
 TORCHTITAN_REPO = "cann-framework/torchtitan-npu"
-VLLM_REPO = "torchtitan-npu/vllm-ascend"
-SUPPORTED_REPOS = frozenset({TORCHTITAN_REPO, VLLM_REPO})
-REPO = os.environ.get("LITE_ACTIONS_MODEL_REPO", TORCHTITAN_REPO)
+VLLM_REPO = "cann-framework/vllm-ascend"
+SELF_REPO = "depeng1994/lite-actions"
+SELF_WORKFLOW = "lite_actions_self_smoke.yml"
+SUPPORTED_REPOS = frozenset({TORCHTITAN_REPO, VLLM_REPO, SELF_REPO})
+GITCODE_REPOS = frozenset({"depeng1994/torchtitan-npu", "cann/torchtitan-npu"})
+
+
+def canonical_repo(repo):
+    # Only configuration is migrated; plans still require the canonical repo.
+    return VLLM_REPO if repo == "torchtitan-npu/vllm-ascend" else repo
+
+
+REPO = canonical_repo(os.environ.get("LITE_ACTIONS_MODEL_REPO", TORCHTITAN_REPO))
 if REPO not in SUPPORTED_REPOS:
     raise ValueError("unsupported model repository")
 
@@ -24,11 +34,11 @@ def configured_repos():
     """Explicit dual mode, backwards compatible single-repo setting."""
     multi = os.environ.get("LITE_ACTIONS_MODEL_REPOS")
     if multi is None:
-        single = os.environ.get("LITE_ACTIONS_MODEL_REPO", REPO)
+        single = canonical_repo(os.environ.get("LITE_ACTIONS_MODEL_REPO", REPO))
         if single not in SUPPORTED_REPOS:
             raise ValueError("unsupported single repository")
         return (single,)
-    repos = tuple(x.strip() for x in multi.split(","))
+    repos = tuple(canonical_repo(x.strip()) for x in multi.split(","))
     if (
         not repos
         or any(x not in SUPPORTED_REPOS for x in repos)
@@ -161,7 +171,8 @@ def create_plan(cases, *, run_id, attempt, sha, workflow, defaults, repo=REPO):
 
 
 def parse_plan(plan, run, workflow, *, repo=REPO):
-    if repo not in SUPPORTED_REPOS:
+    gitcode = run.get("_ci_provider") == "gitcode"
+    if repo not in (GITCODE_REPOS if gitcode else SUPPORTED_REPOS):
         raise ValueError("unsupported plan repository")
     if not isinstance(plan, dict) or set(plan) != {
         "schema",
@@ -175,13 +186,30 @@ def parse_plan(plan, run, workflow, *, repo=REPO):
         "plan_digest",
     }:
         raise ValueError("invalid plan structure")
+    run_id = plan["run_id"]
+    valid_run_id = (
+        isinstance(run_id, str) and bool(re.fullmatch(r"[A-Za-z0-9_-]{1,128}", run_id))
+        if gitcode
+        else type(run_id) is int and run_id > 0
+    )
     if (
         plan["schema"] != 3
         or plan["repo"] != repo
-        or workflow not in WORKFLOWS
+        or workflow
+        not in (
+            set(
+                filter(
+                    None,
+                    os.environ.get(
+                        "LITE_ACTIONS_GITCODE_WORKFLOWS", "lite-actions.yml"
+                    ).split(","),
+                )
+            )
+            if gitcode
+            else ({SELF_WORKFLOW} if repo == SELF_REPO else WORKFLOWS)
+        )
         or plan["workflow"] != workflow
-        or type(plan["run_id"]) is not int
-        or plan["run_id"] < 1
+        or not valid_run_id
         or type(plan["attempt"]) is not int
         or plan["attempt"] < 1
         or plan["run_id"] != run["id"]
@@ -205,17 +233,23 @@ def parse_plan(plan, run, workflow, *, repo=REPO):
     items = plan["cases"]
     if not isinstance(items, list) or not 1 <= len(items) <= 256:
         raise ValueError("invalid case count")
-    seen = set()
+    seen = {}
     for i, c in enumerate(items):
         if not isinstance(c, dict) or set(c) != CASE_KEYS:
             raise ValueError("invalid case structure")
-        if (
-            not isinstance(c["test_id"], str)
-            or not TEST.fullmatch(c["test_id"])
-            or c["test_id"] in seen
-        ):
+        if not isinstance(c["test_id"], str) or not TEST.fullmatch(c["test_id"]):
             raise ValueError("duplicate/invalid test")
-        seen.add(c["test_id"])
+        prior = seen.get(c["test_id"])
+        if prior is not None:
+            # Repeated smoke instances refer to the same pinned definition;
+            # only their position and corresponding case identity may differ.
+            if (
+                prior["kind"] != "npu_smoke"
+                or c["kind"] != "npu_smoke"
+                or any(prior[key] != c[key] for key in CASE_KEYS - {"case_id", "order"})
+            ):
+                raise ValueError("duplicate/invalid test")
+        seen[c["test_id"]] = c
         if (
             c["order"] != i
             or type(c["order"]) is not int

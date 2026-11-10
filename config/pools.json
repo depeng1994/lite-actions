@@ -4,6 +4,7 @@
     "nodes": [
       {
         "host_id": "113.46.17.205:153",
+        "occupancy_policy": "wait",
         "ssh": "113.46.17.205:153",
         "device_ids": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
         "broadcast_ssh": [
@@ -31,6 +32,7 @@
       },
       {
         "host_id": "113.46.17.205:154",
+        "occupancy_policy": "wait",
         "ssh": "113.46.17.205:154",
         "device_ids": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
         "broadcast_ssh": [
@@ -83,12 +85,14 @@
     ],
     "max_jobs_per_host": 2,
     "owner": "blue",
+    "force_reclaim": true,
     "enabled": true
   },
   "a3_shared_yellow": {
     "owner": "yellow",
     "enabled": false,
     "type": "ascend-a3",
+    "force_reclaim": true,
     "nodes": [],
     "process_indexing": "card-die"
   },

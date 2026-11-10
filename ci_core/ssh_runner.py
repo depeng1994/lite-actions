@@ -23,11 +23,12 @@ from pathlib import Path
 
 from ci_core.contract import REPO as MODEL_REPO
 from ci_core.registry import SELECTOR, resolve_test
+from ci_core.scheduler import validate_allocation
 
 ROOT = Path(__file__).resolve().parents[1]
 
 REPO = f"https://github.com/{MODEL_REPO}.git"
-VLLM = MODEL_REPO == "torchtitan-npu/vllm-ascend"
+VLLM = MODEL_REPO == "cann-framework/vllm-ascend"
 DEST_ROOT = "/mnt/share/ci_tests"
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 STAMP = re.compile(r"[0-9A-Za-z_-]+\Z")
@@ -50,19 +51,45 @@ def ssh(
     return run(host, command, timeout=timeout, check=check)
 
 
-def model_archive(sha: str, work: Path, *, source_repo: str = MODEL_REPO) -> Path:
+def model_archive(
+    sha: str,
+    work: Path,
+    *,
+    source_repo: str = MODEL_REPO,
+    provider: str = "github",
+    fallback_repo: str | None = None,
+    source_pr: int | None = None,
+) -> Path:
     """Return a SHA-verified source archive, cached to avoid double Git fetches."""
-    from ci_core.contract import SUPPORTED_REPOS
+    from ci_core.contract import GITCODE_REPOS, SUPPORTED_REPOS
+    from ci_core.source_cache import metadata_path, seal, verified
 
-    if not SHA.fullmatch(sha) or source_repo not in SUPPORTED_REPOS:
+    if (
+        not SHA.fullmatch(sha)
+        or provider not in {"github", "gitcode"}
+        or source_repo
+        not in (GITCODE_REPOS if provider == "gitcode" else SUPPORTED_REPOS)
+    ):
         raise ValueError("invalid commit SHA / model repository")
-    cache_dir = ROOT / "cache" / "model-archives" / source_repo
+    if fallback_repo and not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}",
+        fallback_repo,
+    ):
+        raise ValueError("invalid PR source repository")
+    if source_pr is not None and (
+        provider != "github"
+        or source_repo != "cann-framework/vllm-ascend"
+        or type(source_pr) is not int
+        or source_pr < 1
+    ):
+        raise ValueError("invalid GitHub merge reference")
+    cache_dir = ROOT / "cache" / "model-archives" / provider / source_repo
     cache_dir.mkdir(parents=True, exist_ok=True)
     cached = cache_dir / f"{sha}.tar.gz"
     lock_path = cache_dir / f"{sha}.lock"
     with lock_path.open("a+") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        if cached.is_file() and cached.stat().st_size > 0:
+        if verified(cached, source_repo, sha):
             return cached
 
         repo = work / "repo"
@@ -75,7 +102,7 @@ def model_archive(sha: str, work: Path, *, source_repo: str = MODEL_REPO) -> Pat
                 "remote",
                 "add",
                 "origin",
-                f"https://github.com/{source_repo}.git",
+                f"https://{'gitcode.com' if provider == 'gitcode' else 'github.com'}/{source_repo}.git",
             ],
             check=True,
         )
@@ -87,10 +114,16 @@ def model_archive(sha: str, work: Path, *, source_repo: str = MODEL_REPO) -> Pat
                 capture_output=True,
             )
         except subprocess.CalledProcessError:
-            if source_repo != "torchtitan-npu/vllm-ascend":
+            if source_pr is not None:
+                alternate, ref = "origin", f"refs/pull/{source_pr}/merge"
+            elif fallback_repo:
+                alternate, ref = (
+                    f"https://{'gitcode.com' if provider == 'gitcode' else 'github.com'}/{fallback_repo}.git",
+                    sha,
+                )
+            else:
                 raise
-            # The PR source SHA might be unreachable via the base repository.
-            # This fallback is a fixed, trusted Fork checked by PR admission.
+            # The fallback is the source repository checked by PR admission.
             subprocess.run(
                 [
                     "git",
@@ -99,8 +132,8 @@ def model_archive(sha: str, work: Path, *, source_repo: str = MODEL_REPO) -> Pat
                     "fetch",
                     "--depth=1",
                     "-q",
-                    "https://github.com/depeng1994/vllm-ascend.git",
-                    sha,
+                    alternate,
+                    ref,
                 ],
                 check=True,
                 timeout=180,
@@ -110,8 +143,10 @@ def model_archive(sha: str, work: Path, *, source_repo: str = MODEL_REPO) -> Pat
             ["git", "-C", str(repo), "rev-parse", "FETCH_HEAD"], text=True
         ).strip()
         if actual != sha:
-            raise RuntimeError("GitHub SHA mismatch")
+            raise RuntimeError("Source SHA mismatch")
 
+        # PR export-ignore/export-subst attributes must not change the tested tree.
+        (repo / ".git/info/attributes").write_text("* -export-ignore -export-subst\n")
         temp_archive = cache_dir / f".{sha}.{os.getpid()}.tmp"
         try:
             with temp_archive.open("wb") as output:
@@ -121,7 +156,7 @@ def model_archive(sha: str, work: Path, *, source_repo: str = MODEL_REPO) -> Pat
                 )
                 assert pack.stdout is not None
                 with gzip.GzipFile(
-                    fileobj=output, mode="wb", compresslevel=1
+                    fileobj=output, mode="wb", compresslevel=1, mtime=0
                 ) as zipped:
                     shutil.copyfileobj(pack.stdout, zipped)
                 pack.stdout.close()
@@ -130,6 +165,7 @@ def model_archive(sha: str, work: Path, *, source_repo: str = MODEL_REPO) -> Pat
             if temp_archive.stat().st_size == 0:
                 raise RuntimeError("empty source archive")
             os.replace(temp_archive, cached)
+            seal(cached, source_repo, sha)
         finally:
             temp_archive.unlink(missing_ok=True)
 
@@ -143,6 +179,7 @@ def model_archive(sha: str, work: Path, *, source_repo: str = MODEL_REPO) -> Pat
         for stale in archives[20:]:
             if stale != cached:
                 stale.unlink(missing_ok=True)
+                metadata_path(stale).unlink(missing_ok=True)
         return cached
 
 
@@ -168,7 +205,17 @@ def allocations(case: dict, pools: dict) -> list[dict]:
     return nodes
 
 
-def stage(node: dict, base: str, archive: Path, sha: str) -> str:
+def legacy_vllm_case(test_case: str | None) -> bool:
+    if not VLLM:
+        return False
+    from ci_core.vllm_ascend import CASES
+
+    return test_case in CASES
+
+
+def stage(
+    node: dict, base: str, archive: Path, sha: str, test_case: str | None = None
+) -> str:
     host = node["ssh"]
     dest = f"{base}/node{node['position']}"
     ssh(host, f"mkdir -p {q(base)} && mkdir {q(dest)} && mkdir {q(dest + '/repo')}")
@@ -189,11 +236,16 @@ def stage(node: dict, base: str, archive: Path, sha: str) -> str:
         + q(dest + "/source.tar.gz")
         + " | cut -d ' ' -f1)\"",
     )
+    required = (
+        ".github/scripts/lite_actions/a5_smoke.py"
+        if legacy_vllm_case(test_case)
+        else "tests/integration_tests/__init__.py"
+    )
     ssh(
         host,
         f"cd {q(dest)} && tar -xzf source.tar.gz -C repo && "
         f"printf '%s\\n' {q(sha)} > source_sha.txt && "
-        f"test -f repo/{'.github/scripts/lite_actions/a5_smoke.py' if VLLM else 'tests/integration_tests/__init__.py'}",
+        f"test -f repo/{required}",
     )
     print(f"STAGED: {node['host_id']} SHA={sha[:12]} dir={dest}", flush=True)
     return dest
@@ -210,7 +262,7 @@ def remote_command(
 ) -> str:
     """Remote job owns its own process group; its complete log stays remote."""
     # Generic, fixed model-owned entrypoint; never interpolate GitHub modules.
-    if VLLM:
+    if legacy_vllm_case(test_case):
         entry = (
             "python3 -u -m torch.distributed.run"
             + f" --nnodes={len(nodes)} --nproc-per-node={len(node['devices'])}"
@@ -242,6 +294,13 @@ def remote_command(
         "LITE_CI_JOB_ID": stamp,
         **runner["env_vars"],
     }
+    if runner.get("kind") == "npu_smoke":
+        position = node.get("position")
+        if type(position) is not int or not 0 <= position < len(nodes):
+            raise ValueError("invalid allocated node rank")
+        # The verified allocation already determines each node's position.
+        # Do not depend on container hostname or interface discovery.
+        env["NODE_RANK"] = str(position)
     if node.get("network_interface"):
         env["Network_Interface"] = node["network_interface"]
         if VLLM:
@@ -410,7 +469,7 @@ for entry in Path('/proc').glob('[0-9]*'):
 def verify(
     nodes: list[dict], runner: dict, base: str, timeout: int, test_case: str
 ) -> int:
-    if VLLM:
+    if legacy_vllm_case(test_case):
         # rank 0 writes evidence only after all ranks completed collective.
         node = nodes[0]
         evidence = base + "/node0/output/a5-smoke-evidence.json"
@@ -469,16 +528,35 @@ def run(
     ):
         raise ValueError("unsafe run identifier / commit / execution directory")
     pools = json.loads((root / "config/pools.json").read_text())
+    validate_allocation(case, pools, case["allocation"])
     nodes = allocations(case, pools)
     base = f"{DEST_ROOT}/{remote_dir}"
     with tempfile.TemporaryDirectory(prefix="lite-ci-stage-") as tmp:
-        archive = model_archive(sha, Path(tmp))
+        provider = os.environ.get("LITE_ACTIONS_SOURCE_PROVIDER", "github")
+        source_repo = os.environ.get("LITE_ACTIONS_SOURCE_REPO", MODEL_REPO)
+        archive = model_archive(
+            sha,
+            Path(tmp),
+            source_repo=source_repo,
+            provider=provider,
+            fallback_repo=os.environ.get("LITE_ACTIONS_SOURCE_FALLBACK_REPO") or None,
+            source_pr=(
+                case["native_source"]["pr_number"]
+                if case.get("native_source", {}).get("mode") == "merge_result"
+                else None
+            ),
+        )
         definition = resolve_test(
-            archive, test_case, nodes=len(nodes), ngpu=len(nodes[0]["devices"])
+            archive,
+            test_case,
+            nodes=len(nodes),
+            ngpu=len(nodes[0]["devices"]),
+            repo=source_repo,
         )
         # These values are resolved from the pinned SHA's OverrideDefinitions.
         # The Lite Actions JSON has no testcase-owned environment fields.
         runner = {
+            "kind": case.get("kind"),
             "mode": "single" if len(nodes) == 1 else "distributed",
             "env_vars": definition["env_vars"],
             "LITE_CI_MASTER_PORT": case.get("master_port", 16000),
@@ -493,7 +571,8 @@ def run(
         dirs = {}
         with ThreadPoolExecutor(max_workers=len(nodes)) as executor:
             futures = {
-                executor.submit(stage, node, base, archive, sha): node for node in nodes
+                executor.submit(stage, node, base, archive, sha, test_case): node
+                for node in nodes
             }
             errors = []
             for future in as_completed(futures):
@@ -504,6 +583,15 @@ def run(
                     errors.append((node["host_id"], type(exc).__name__))
             if errors:
                 raise RuntimeError(f"staging failed: {errors}")
+    if case.get("native_source"):
+        from ci_core.github import GitHubClient, authorization
+        from ci_core.vllm_source import check_current
+
+        check_current(
+            GitHubClient(authorization(), MODEL_REPO),
+            case["native_source"],
+            check_run=True,
+        )
     # Preserve a trusted log locator if cancellation interrupts the rank wait.
     # A normal multi-node failure replaces this with the failing node below.
     print(f"RESULT_HOST: {nodes[0]['ssh']}", flush=True)
@@ -613,7 +701,6 @@ def main() -> int:
     if not case.get("enabled") or not SELECTOR.fullmatch(args.test_id):
         raise ValueError("disabled or invalid test")
     from ci_core.resources import port_profile
-    from ci_core.scheduler import validate_allocation
 
     validate_allocation(
         case, json.loads((ROOT / "config/pools.json").read_text()), case["allocation"]

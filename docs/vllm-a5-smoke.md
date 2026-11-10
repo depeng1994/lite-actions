@@ -19,13 +19,12 @@ a second worker. No edits to `torchtitan-npu/vllm-ascend` main are required.
   `force_reclaim` policy, CANN paths, and credentials. The GitHub JSON template
   **does not contain** your live Yellow A5 node inventory.
 - `LITE_ACTIONS_ALLOWED_ACTORS` and `LITE_ACTIONS_ALLOWED_BRANCHES` retain
-  **TorchTitan** semantics when `LITE_ACTIONS_TORCHTITAN_ALLOWED_* ` is unset.
-  Optionally configure the new TorchTitan-specific keys to override them.
-  `LITE_ACTIONS_VLLM_ALLOWED_ACTORS=depeng1994` and
-  `LITE_ACTIONS_VLLM_ALLOWED_BRANCHES=main` apply **only** to vLLM.
-  vLLM pull_request_target additionally requires PR author/actor depeng1994,
-  source `depeng1994/vllm-ascend`, base `main`, exact `lite-a5-pr-N-SHA`
-  run title, and current PR HEAD SHA match.
+  **TorchTitan** semantics when `LITE_ACTIONS_TORCHTITAN_ALLOWED_*` is unset.
+  For vLLM, manual runs require the triggering user's current repository write,
+  maintain or admin permission and the selected branch's current commit. GitHub
+  API failures reject admission. PR runs accept Fork sources; the shared Smoke
+  route binds the actual PR, Head, target branch and verified merge commit. The
+  legacy A5 route continues to use its pinned PR Head.
 - `LITE_ACTIONS_VLLM_ASCEND_SET_ENV_PATH` must be set to the real CANN toolkit
   initialization script available **inside the pinned A5 container**.
 
@@ -36,8 +35,6 @@ entries (adjust the CANN path to the verified live container):
 
 ```diff
 +LITE_ACTIONS_MODEL_REPOS=cann-framework/torchtitan-npu,torchtitan-npu/vllm-ascend
-+LITE_ACTIONS_VLLM_ALLOWED_ACTORS=depeng1994
-+LITE_ACTIONS_VLLM_ALLOWED_BRANCHES=main
 +LITE_ACTIONS_VLLM_ASCEND_SET_ENV_PATH=/usr/local/Ascend/ascend-toolkit/set_env.sh
 ```
 

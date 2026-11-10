@@ -34,7 +34,7 @@ Model repo: Nightly / Dispatcher Smoke (manual + PR)
   -> schema-3 immutable request Artifact + per-case Matrix Waiters
   -> blue / yellow independently Pull their own cases
   -> SAME schedule/execute implementation, one instance per worker:
-       pool FIFO -> complete device/host/port lease -> stage pinned source
+       per-kind pool queue -> complete device/host/port lease -> stage pinned source
        -> existing pinned container -> model entrypoint -> verify -> clean
   -> identity-bound Commit Comment -> matching Waiter -> case result
 ```
@@ -120,25 +120,63 @@ case directory on the approved mount.
 
 ## Scheduling, cancellation and recovery
 
-Within each pool, accepted cases follow run creation time, run ID and declaration
-order. Independent complete allocations run in parallel. The first release does
-not backfill past a blocked queue head. Four resource-execution slots and one local
-probe slot are independent. Distributed requests never retain partial leases.
+Within each pool on one worker, Smoke cases from GitCode and GitHub follow their
+durable admission sequence. Legacy training cases retain run creation time, run ID
+and declaration order. A resource-blocked queue head blocks only its own kind and
+pool; neither kind has fixed priority. Both share physical device, host and port
+leases and the four resource-execution slots. A separate local probe slot is
+available. Independent complete allocations run in parallel; distributed requests
+never retain partial leases.
 
-A busy external device group is temporarily avoided so another verified group can
-be tried. Unknown occupancy is never killed. This worker does not reclaim external tasks.
+Each node can set `occupancy_policy` to `wait` or `preempt`. Without an override,
+the pool's existing `force_reclaim` setting applies. A `wait` node never kills
+external processes; a busy group is temporarily avoided according to the queue
+policy. Both configured Blue nodes use `wait` even though their pool defaults to
+`preempt`.
 
-Cancellation terminates only the case's marked ranks. Release requires NPU checks;
-unknown remote state quarantines the allocation. State is atomically persisted and
-fsynced before execution. Restart never blindly reruns a case; pending reports retry
-without training. Unresolved allocations remain isolated until reconciliation:
+New `preempt` policies use confirmed host PIDs on the selected devices before launch;
+its cleanup is read-only. It requires complete per-node `device_ids`, a matching
+`machine_fingerprint` from `scripts/preflight.py`, and host support for pidfd.
+Each host scan verifies its hardware inventory and Phy-ID mapping before signalling.
+To register a new node without a fingerprint, temporarily set its policy to `wait`,
+run `scripts/preflight.py --write-bindings`, then remove the override or set
+`preempt` after checking the generated binding. Until then, configuration loading
+rejects a node that inherits `preempt` without a fingerprint.
+For a multi-node allocation, waiting nodes are checked before preemption.
+Yellow A5 nodes without an explicit policy retain the pool's legacy
+`force_reclaim` behavior, including A5 cleanup. Cancellation is checked before
+each preemption request; unconfirmed cleanup is reported as such.
+
+The runtime `force_reclaim` field is the pool default. `OCCUPANCY_POLICY` log
+lines show the effective policy for each selected node and execution phase.
+
+For the GitCode source-profile pilot, list its workflow filenames in both
+`LITE_ACTIONS_GITCODE_WORKFLOWS` and `LITE_ACTIONS_GITCODE_SOURCE_WORKFLOWS`.
+Each participating worker resolves `dispatch_smoke` from the run's fixed model
+commit, accepts only its own cases, and publishes results as the configured
+`LITE_ACTIONS_GITCODE_RESULT_AUTHOR` using that account's token. The waiter job must be uniquely named
+`Dispatcher Smoke`. GitCode PR runs accept Fork sources; discovery executes the
+source's Python directly on the worker, so this mode grants Fork code the worker's
+operating-system permissions. A new dispatch of the same run gets separate task,
+log and result identities.
+
+Cancellation terminates only the case's marked ranks and checks NPU occupancy.
+State is atomically persisted and fsynced before execution. Restart never blindly
+reruns a case; pending reports retry without training. With the default policy,
+unknown remote state quarantines the allocation until reconciliation:
 
 ```bash
 python3 scripts/reconcile.py --worker-id blue --task-key '<persisted-task-key>'
 ```
 
 The command checks owned processes and device occupancy before removing quarantine.
-It never kills processes. Do not delete quarantine records to bypass these checks.
+It never kills processes.
+
+For an explicitly selected trial worker, `LITE_ACTIONS_DISABLE_QUARANTINE_WORKERS=blue`
+disables automatic quarantine for that worker. On startup its prior quarantine
+flags are cleared while task and result records remain; other workers retain their
+default policy. Device, host and port locks, occupancy checks and cancellation are
+unchanged, and unverified cleanup is still reported as `cleanup_verified=false`.
 
 ## Result limits
 
@@ -213,3 +251,31 @@ The lint command runs Ruff lint/format checks and requires `device_ids`/`devices
 arrays in `config/pools.json` to remain on one line. Use `--fix` to format both.
 Pull requests run the same checks in GitHub Actions. See [test scope](docs/testing.md)
 before adding a scenario; configuration snapshots are not the test objective.
+
+For trusted candidates, `.github/workflows/lite_actions_self_smoke.yml` can be
+started manually after the Worker is running from a clean checkout of that exact
+commit. It uses the repository's `tests/integration_tests/training_cases/dispatch_smoke.py`
+profile: a Blue OS probe followed by 8P, 16P and 8P HCCL Smoke. The Yellow OS
+probe is disabled in the default profile. PRs continue to run CPU checks only.
+
+To opt a Worker into the self-smoke route, include `depeng1994/lite-actions` in
+`LITE_ACTIONS_MODEL_REPOS` and set `LITE_ACTIONS_SELF_SMOKE_ENABLED=1`. Set the
+repository variable `LITE_CI_RESULT_ACTOR` to the Worker's result-author account.
+A user with repository write, maintain or admin permission can start the workflow
+from a repository branch whose current commit is deployed on the Worker:
+
+```bash
+gh workflow run lite_actions_self_smoke.yml -R depeng1994/lite-actions --ref <repository-branch>
+```
+
+The Worker rejects a run unless its SHA matches its own verified checkout. Keep
+the configured resource locks and cleanup policy, and record the Run ID, SHA,
+all four case results and cleanup evidence. Missing results or unverified cleanup
+are failures. Record resource and timing evidence when evaluating FIFO; admission
+order alone does not prove actual start order.
+
+Stop the candidate gracefully after the run. Check for unfinished or quarantined
+allocations and reconcile them as needed before restoring the previous Worker with
+the same state and locks. Preserve logs and the evidence linking both SHAs, the Run
+and the live Worker. The pull-request checks above run CPU contracts only; they do
+not certify 8P/16P hardware execution.

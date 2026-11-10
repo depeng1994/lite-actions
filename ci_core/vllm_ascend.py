@@ -16,7 +16,7 @@ def definition(test_id):
         "LITE_ACTIONS_VLLM_ASCEND_SET_ENV_PATH",
         "/usr/local/Ascend/ascend-toolkit/set_env.sh",
     )
-    if not toolkit.startswith("/") or "\n" in toolkit or "\x00" in toolkit:
+    if not toolkit.startswith("/") or any(c in toolkit for c in "\n\r\x00"):
         raise ValueError("invalid trusted Ascend toolkit path")
     return {
         "test_id": test_id,

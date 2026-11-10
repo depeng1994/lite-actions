@@ -1,0 +1,29 @@
+name: Lite Actions self smoke
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  smoke:
+    if: github.repository == 'depeng1994/lite-actions'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Prepare the pinned repository plan
+        run: python3 -m ci_core.self_smoke prepare
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lite-ci-request-${{ github.run_attempt }}
+          path: .ci-request/ci-request.json
+          if-no-files-found: error
+          retention-days: 1
+      - name: Wait for all cases and verified cleanup
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_RESULT_AUTHOR: ${{ vars.LITE_CI_RESULT_ACTOR }}
+        run: python3 -m ci_core.self_smoke wait

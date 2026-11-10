@@ -82,12 +82,13 @@ def inspect_archive(archive: Path, selection: dict, *, repo=None) -> list[dict]:
 
     repo = REPO if repo is None else repo
 
-    if repo == "torchtitan-npu/vllm-ascend":
-        from ci_core.vllm_ascend import definition
+    if repo == "cann-framework/vllm-ascend":
+        from ci_core.vllm_ascend import CASES, definition
 
-        if "test_id" in selection:
+        # Retain the previously deployed A5 adapter. New smoke definitions use
+        # the same model-owned entrypoint as the other repositories.
+        if selection.get("test_id") in CASES:
             return [definition(selection["test_id"])]
-        raise ValueError("vLLM only accepts fixed trusted smoke test IDs")
 
     import os
     import subprocess
@@ -109,7 +110,22 @@ def inspect_archive(archive: Path, selection: dict, *, repo=None) -> list[dict]:
             if "suite" in selection
             else ["--test-id", selection["test_id"]]
         )
-        env = {**os.environ, "PYTHONPATH": str(folder)}
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if not any(
+                s in k.upper()
+                for s in (
+                    "TOKEN",
+                    "SECRET",
+                    "PASSWORD",
+                    "CREDENTIAL",
+                    "PRIVATE_KEY",
+                    "CHECKS_KEY",
+                )
+            )
+        }
+        env["PYTHONPATH"] = str(folder)
         proc = subprocess.run(
             argv, cwd=folder, env=env, capture_output=True, text=True, timeout=45
         )
