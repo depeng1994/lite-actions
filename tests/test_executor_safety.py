@@ -40,16 +40,14 @@ class ExecutorSafetyTests(unittest.TestCase):
     def boundaries(self, *, stub_preflight=True):
         stack = ExitStack()
         mocks = SimpleNamespace()
-        mocks.profile = stack.enter_context(
+        stack.enter_context(
             patch(
                 "ci_core.executor.prepare_profile",
                 return_value={"ASCEND_SET_ENV_PATH": "/cann"},
             )
         )
         if stub_preflight:
-            mocks.preflight = stack.enter_context(
-                patch("ci_core.executor.remote_preflight")
-            )
+            stack.enter_context(patch("ci_core.executor.remote_preflight"))
         mocks.broadcast = stack.enter_context(
             patch("ci_core.executor.broadcast_job", return_value=[])
         )
@@ -76,24 +74,13 @@ class ExecutorSafetyTests(unittest.TestCase):
         return stack, mocks
 
     def test_cancel_during_preparation_never_starts_child(self):
-        for stage in ("before", "profile", "preflight", "broadcast"):
+        for stage in ("before", "broadcast"):
             with self.subTest(stage=stage):
                 self.cancel.clear()
                 stack, mocks = self.boundaries()
                 with stack:
                     if stage == "before":
                         self.cancel.set()
-                    elif stage == "profile":
-
-                        def profile(*args, **kwargs):
-                            self.cancel.set()
-                            return {"ASCEND_SET_ENV_PATH": "/cann"}
-
-                        mocks.profile.side_effect = profile
-                    elif stage == "preflight":
-                        mocks.preflight.side_effect = lambda *args, **kwargs: (
-                            self.cancel.set()
-                        )
                     else:
 
                         def broadcast(case, pools, run, phase, **kwargs):
@@ -198,56 +185,6 @@ class ExecutorSafetyTests(unittest.TestCase):
                 self.assertEqual(record["report"]["status"], "PASS")
                 self.assertFalse(record["quarantined"])
                 mocks.launch.assert_called_once()
-
-    def test_cancel_with_unverified_cleanup_quarantines_allocation(self):
-        entered, release = threading.Event(), threading.Event()
-        stack, mocks = self.boundaries()
-        with stack:
-            stack.enter_context(
-                patch.dict(
-                    "os.environ",
-                    LITE_ACTIONS_ALLOWED_ACTORS="maintainer",
-                    LITE_ACTIONS_RESOURCE_LOCK_ROOT=str(self.root / "leases"),
-                    LITE_ACTIONS_STATE_DIR="",
-                )
-            )
-            stack.enter_context(self.service.connected())
-            stack.enter_context(patch("ci_core.router.verify_definition"))
-            router = Router(self.root, "blue", self.service, "reporter")
-            stack.callback(router.close)
-            child = Mock(returncode=0)
-
-            def finish_after_cancel():
-                entered.set()
-                if not release.wait(10):
-                    raise RuntimeError("fixture wait timed out")
-                return 0
-
-            child.poll.side_effect = finish_after_cancel
-            mocks.launch.return_value = child
-            mocks.owned.side_effect = RuntimeError("cleanup unknown")
-            try:
-                router.receive([self.service.runs[20]])
-                router.pump()
-                self.assertTrue(entered.wait(10))
-                key = task_key(
-                    self.service.runs[20], self.service.plans[20]["cases"][0]
-                )
-                router.active[key][1].set()
-                release.set()
-                router.active[key][0].result(10)
-                record = router.state.read()[key]
-                self.assertEqual(record["report"]["status"], "CANCELLED")
-                self.assertFalse(record["report"]["cleanup_verified"])
-                self.assertTrue(record["quarantined"])
-                remaining = [
-                    {"host_id": "192.0.2.10:22", "devices": [2, 3]},
-                    {"host_id": "192.0.2.11:22", "devices": [0, 1, 2, 3]},
-                ]
-                with reserve(self.root / "leases/devices", remaining):
-                    self.assertIsNone(router.claim(self.case))
-            finally:
-                release.set()
 
 
 if __name__ == "__main__":

@@ -189,17 +189,17 @@ class ModelOwnedVllmTests(unittest.TestCase):
         self.pr["head"]["repo"] = None
         with self.assertRaises(ValueError):
             check_current(client, self.source)
-            self.pr["head"]["repo"] = {
-                "id": 87,
-                "full_name": "another-fork/vllm-ascend",
-            }
-            self.pr["mergeable"] = None
-            self.pr["merge_commit_sha"] = None
-            with self.assertRaises(RuntimeError):
-                check_current(client, self.source)
-            self.pr["mergeable"] = False
-            with self.assertRaises(ValueError):
-                check_current(client, self.source)
+        self.pr["head"]["repo"] = {
+            "id": 87,
+            "full_name": "another-fork/vllm-ascend",
+        }
+        self.pr["mergeable"] = None
+        self.pr["merge_commit_sha"] = None
+        with self.assertRaises(RuntimeError):
+            check_current(client, self.source)
+        self.pr["mergeable"] = False
+        with self.assertRaises(ValueError):
+            check_current(client, self.source)
         with self.assertRaises(ValueError):
             validate_source(self.source, self.run, self.plan, {"f" * 40})
 

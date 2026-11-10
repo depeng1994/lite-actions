@@ -85,12 +85,14 @@
     ],
     "max_jobs_per_host": 2,
     "owner": "blue",
+    "force_reclaim": true,
     "enabled": true
   },
   "a3_shared_yellow": {
     "owner": "yellow",
     "enabled": false,
     "type": "ascend-a3",
+    "force_reclaim": true,
     "nodes": [],
     "process_indexing": "card-die"
   },

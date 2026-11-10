@@ -1,40 +1,80 @@
 """Exercise a GitCode request through the shared router without real NPUs."""
 
+import io
 import json
 import os
 import subprocess
 import tempfile
 import unittest
 import urllib.error
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-from ci_core.broadcast import notification
 from ci_core.contract import digest, normalize
-from ci_core.gitcode import GitCodeClient, MultiPlatformClient
+from ci_core.gitcode import GitCodeClient, MultiPlatformClient, source_plan
 from ci_core.router import Router, task_key
 from tests.scenarios import Service, definition, write_workspace
 
 
 class GitCodeWorkflowTests(unittest.TestCase):
-    def test_gitcode_hardware_notification_uses_opaque_run_identity(self):
+    def test_existing_fixed_request_is_bound_to_its_run(self):
+        client = GitCodeClient("fixture", "depeng1994/torchtitan-npu")
         run = {
             "_ci_provider": "gitcode",
-            "_ci_repo": "depeng1994/torchtitan-npu",
-            "id": "abc123",
+            "id": "run_1",
+            "run_attempt": 1,
+            "head_sha": "b" * 40,
+            "path": ".gitcode/workflows/lite-actions.yml",
         }
-        message = notification(
+        plan = source_plan(
+            [
+                dict(
+                    test_id="probe",
+                    label="probe",
+                    kind="worker_probe",
+                    nnodes=0,
+                    ngpu=0,
+                    timeout=90,
+                    ci_overrides={"worker": "blue"},
+                )
+            ],
             run,
-            "begin",
-            node_rank=0,
-            node_ip="192.0.2.1",
-            devices=list(range(8)),
-            nnodes=1,
-            ngpus_per_node=8,
+            client.repo,
         )
-        self.assertIn(
-            "https://gitcode.com/depeng1994/torchtitan-npu/actions/runs/abc123", message
-        )
+
+        def download(request, **_):
+            self.assertNotIn("Private-token", request.headers)
+            data = io.BytesIO()
+            with zipfile.ZipFile(data, "w") as archive:
+                archive.writestr("ci-request.json", json.dumps(plan))
+            return io.BytesIO(data.getvalue())
+
+        class Redirect:
+            def open(self, request, timeout):
+                raise urllib.error.HTTPError(
+                    request.full_url,
+                    302,
+                    "redirect",
+                    {"Location": "https://fixture.invalid/asset"},
+                    None,
+                )
+
+        artifact = {
+            "name": "lite-ci-request-1",
+            "workflow_run_id": "run_1",
+            "id": "artifact",
+        }
+        with (
+            patch.dict(os.environ, {"LITE_ACTIONS_GITCODE_SOURCE_WORKFLOWS": ""}),
+            patch.object(client, "request", return_value={"artifacts": [artifact]}),
+            patch("urllib.request.build_opener", return_value=Redirect()),
+            patch("urllib.request.urlopen", side_effect=download),
+        ):
+            self.assertEqual(client.ci_request(run), plan)
+            plan["run_id"] = "other_run"
+            with self.assertRaises(ValueError):
+                client.ci_request(run)
 
     def test_gitcode_and_github_probes_report_to_their_own_repositories(self):
         with tempfile.TemporaryDirectory() as temporary:

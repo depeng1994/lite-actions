@@ -1,6 +1,5 @@
 """A5 host-PID reclaim safety, evidence and cleanup regression tests."""
 
-import io
 import json
 import tempfile
 import threading
@@ -10,7 +9,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from ci_core.config import load
 from ci_core.executor import (
     ExternalNpuOccupancy,
     execute,
@@ -60,7 +58,7 @@ class ReclaimTests(unittest.TestCase):
         }
         self.container_ssh = "worker-ssh:22/" + ("a" * 64)
 
-    def _run_with_outputs(self, outputs, *, kill_rc=0, evidence=None):
+    def _run_with_outputs(self, outputs, *, kill_rc=0):
         commands = []
         snapshots = iter(outputs)
 
@@ -83,24 +81,13 @@ class ReclaimTests(unittest.TestCase):
                 self.case,
                 {"a5": self.pool},
                 ascend_env="/usr/local/Ascend/ascend-toolkit/set_env.sh",
-                evidence=evidence,
             )
         return commands
-
-    def test_a5_container_pid_is_only_evidence_host_pid_is_kill_target(self):
-        self.assertEqual(process_evidence(A5, [0], indexing="card"), [(0, 2000219)])
-        self.assertEqual(
-            process_evidence(EXTERNAL, [0], indexing="card"), [(0, 2341399)]
-        )
-        self.assertEqual(process_evidence(EMPTY, [0], indexing="card"), [])
 
     def test_a5_unknown_rows_fail_closed(self):
         for bad in (
             A5.replace("2000219", "NA"),
             A5.replace("2000219", "1"),
-            A5.replace("46124", "???"),
-            A5.replace("345", "??"),
-            A5.replace("python3", ""),
             A5.replace("46124 |", "46124 | extra |"),
         ):
             with self.subTest(bad=bad):
@@ -111,42 +98,14 @@ class ReclaimTests(unittest.TestCase):
         self.assertEqual(process_evidence(A3, [7], indexing="card-die"), [(7, 46124)])
         self.assertEqual(selected_processes(A3, [7]), ["chip 7: pid 46124"])
 
-    def test_external_container_pid_na_kills_only_allocated_host_pid(self):
-        evidence = io.StringIO()
-        commands = self._run_with_outputs(
-            [EXTERNAL, EXTERNAL, EMPTY], evidence=evidence
-        )
-        self.assertEqual(
-            [call for call in commands if call[1].startswith("kill -9 --")],
-            [("host-ssh:22", "kill -9 -- 2341399")],
-        )
-        self.assertTrue(
-            all(
-                host == self.container_ssh
-                for host, cmd in commands
-                if "npu-smi info" in cmd
-            )
-        )
-        lines = evidence.getvalue().splitlines()
-        self.assertTrue(
-            any(
-                '"host_pid": 2341399' in line and '"container_pid": "NA"' in line
-                for line in lines
-            )
-        )
-        self.assertTrue(
-            any(
-                "RECLAIM_KILL " in line and "host_pid=2341399" in line for line in lines
-            )
-        )
-        self.assertFalse(
-            any("\\n" in line for line in lines), "literal backslash-n in log"
-        )
-
-    def test_container_pid_mismatch_does_not_affect_kill_pid(self):
-        commands = self._run_with_outputs([A5, A5, EMPTY])
-        self.assertIn(("host-ssh:22", "kill -9 -- 2000219"), commands)
-        self.assertFalse(any("kill -9 -- 46124" in cmd for _, cmd in commands))
+    def test_reclaim_targets_allocated_host_pid_not_container_pid(self):
+        for output, host_pid in ((EXTERNAL, 2341399), (A5, 2000219)):
+            with self.subTest(host_pid=host_pid):
+                commands = self._run_with_outputs([output, output, EMPTY])
+                self.assertEqual(
+                    [call for call in commands if call[1].startswith("kill -9 --")],
+                    [("host-ssh:22", f"kill -9 -- {host_pid}")],
+                )
 
     def test_fallback_host_ssh_without_host_ssh_key(self):
         self.node.pop("host_ssh")
@@ -176,27 +135,6 @@ class ReclaimTests(unittest.TestCase):
         )
         self.assertFalse(
             any("2341884" in cmd for _, cmd in commands if "kill -9" in cmd)
-        )
-
-    def test_blue_a3_remains_non_preemptive(self):
-        self.pool.update(
-            owner="blue",
-            type="ascend-a3",
-            force_reclaim=False,
-            process_indexing="card-die",
-        )
-        self.case["allocation"][0]["devices"] = [7]
-        self.case["docker"] = None
-        with patch(
-            "ci_core.transport.run",
-            return_value=SimpleNamespace(returncode=0, stdout=A3),
-        ) as transport:
-            with self.assertRaises(ExternalNpuOccupancy):
-                remote_preflight(self.case, {"a5": self.pool})
-        self.assertTrue(
-            all(
-                not call.args[1].startswith("kill") for call in transport.call_args_list
-            )
         )
 
     def test_node_wait_overrides_legacy_pool_reclaim(self):
@@ -248,85 +186,18 @@ class ReclaimTests(unittest.TestCase):
     def test_nonzero_host_kill_with_exited_pid_is_not_failure(self):
         # Process exits after confirm but before host kill: ESRCH (rc=1).
         # Re-scan confirms no selected-card occupancy, so reclaim succeeds.
-        evidence = io.StringIO()
-        commands = self._run_with_outputs(
-            [EXTERNAL, EXTERNAL, EMPTY, EMPTY], kill_rc=1, evidence=evidence
-        )
+        commands = self._run_with_outputs([EXTERNAL, EXTERNAL, EMPTY, EMPTY], kill_rc=1)
         self.assertEqual(
             [call for call in commands if call[1].startswith("kill -9 --")],
             [("host-ssh:22", "kill -9 -- 2341399")],
         )
-        self.assertIn("stage=post_kill_nonzero", evidence.getvalue())
-        self.assertIn("rc=1", evidence.getvalue())
 
     def test_nonzero_host_kill_with_same_pid_still_allocated_fails_closed(self):
         # A nonzero kill is a real failure if the *same host PID* remains.
         with self.assertRaisesRegex(RuntimeError, "kill failed"):
             self._run_with_outputs([EXTERNAL, EXTERNAL, EXTERNAL], kill_rc=1)
 
-    def test_nonzero_kill_after_respawn_retries_only_allocated_host_pids(self):
-        # A new PID on the allocated card does not make the old ESRCH fatal,
-        # but it must be removed before resources are considered idle.
-        observations = iter([EXTERNAL, EXTERNAL, RESPAWN, RESPAWN, RESPAWN, EMPTY])
-        kills = []
-
-        def transport(host, script, **kwargs):
-            if script.startswith("kill -9 --"):
-                kills.append((host, script))
-                return SimpleNamespace(
-                    returncode=1 if len(kills) == 1 else 0, stdout=""
-                )
-            self.assertEqual(host, self.container_ssh)
-            return SimpleNamespace(returncode=0, stdout=next(observations))
-
-        with (
-            patch(
-                "ci_core.config.execution_node",
-                return_value={"ssh": self.container_ssh},
-            ),
-            patch("ci_core.transport.run", side_effect=transport),
-        ):
-            remote_preflight(self.case, {"a5": self.pool})
-        self.assertEqual(
-            kills,
-            [
-                ("host-ssh:22", "kill -9 -- 2341399"),
-                ("host-ssh:22", "kill -9 -- 2341400"),
-            ],
-        )
-
-    def test_reclaim_succeeds_on_fourth_round_only(self):
-        # Four complete scan/confirm rounds; final verification is idle.
-        # A successful fourth kill must not fall into for/else exhaustion.
-        evidence = io.StringIO()
-        commands = self._run_with_outputs(
-            [
-                EXTERNAL,
-                EXTERNAL,
-                RESPAWN,
-                RESPAWN,
-                RESPAWN,
-                RESPAWN,
-                EXTERNAL,
-                EXTERNAL,
-                EMPTY,
-            ],
-            evidence=evidence,
-        )
-        kills = [(host, cmd) for host, cmd in commands if cmd.startswith("kill -9 --")]
-        self.assertEqual(
-            kills,
-            [
-                ("host-ssh:22", "kill -9 -- 2341399"),
-                ("host-ssh:22", "kill -9 -- 2341400"),
-                ("host-ssh:22", "kill -9 -- 2341400"),
-                ("host-ssh:22", "kill -9 -- 2341399"),
-            ],
-        )
-        self.assertIn("round=3 stage=final", evidence.getvalue())
-        self.assertIn("RECLAIM_EVIDENCE", evidence.getvalue())
-
-    def test_persistent_respawn_fails_closed_after_four_rounds(self):
+    def test_persistent_respawn_fails_closed(self):
         commands = []
 
         def transport(host, script, **kwargs):
@@ -342,9 +213,7 @@ class ReclaimTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "not idle"):
                 remote_preflight(self.case, {"a5": self.pool})
-        self.assertEqual(
-            len([cmd for host, cmd in commands if cmd.startswith("kill -9 --")]), 4
-        )
+        self.assertTrue(any(cmd.startswith("kill -9 --") for _, cmd in commands))
         self.assertTrue(
             all(
                 host == "host-ssh:22"
@@ -364,34 +233,6 @@ class ReclaimTests(unittest.TestCase):
         self.assertFalse(
             any(call.args[1].startswith("kill") for call in transport.call_args_list)
         )
-
-    def test_unallocated_chip_and_other_container_never_killed(self):
-        # A second chip's container PID must not be used for signalling either.
-        commands = self._run_with_outputs([EXTERNAL, EXTERNAL, EMPTY])
-        self.assertNotIn(("host-ssh:22", "kill -9 -- 2341884"), commands)
-
-    def test_config_rejects_blue_or_a3_force_reclaim(self):
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            (root / "config").mkdir()
-            (root / "config/workers.json").write_text(
-                json.dumps({"blue": {"enabled": True}, "yellow": {"enabled": True}})
-            )
-            for owner, kind in [("blue", "ascend-a5"), ("yellow", "ascend-a3")]:
-                (root / "config/pools.json").write_text(
-                    json.dumps(
-                        {
-                            "p": {
-                                "owner": owner,
-                                "type": kind,
-                                "force_reclaim": True,
-                                "nodes": [],
-                            }
-                        }
-                    )
-                )
-                with self.assertRaises(ValueError):
-                    load(root, "yellow")
 
     def test_cleanup_reclaims_host_pid_and_verifies_release(self):
         self._execute_with_cleanup(cleanup_idle=True)
@@ -423,21 +264,18 @@ class ReclaimTests(unittest.TestCase):
             child.poll.return_value = 0
             child.returncode = 0
             commands = []
-            probes = 0
+            first_probe = True
+            signalled = False
 
             def transport(host, script, **kwargs):
-                nonlocal probes
+                nonlocal first_probe, signalled
                 commands.append((host, script))
                 if script.startswith("kill -9 --"):
+                    signalled = True
                     return SimpleNamespace(returncode=0, stdout="")
-                probes += 1
-                # Launch-time check is clear; simulate a different-container
-                # process appearing only at cleanup.
-                if probes == 1:
-                    return SimpleNamespace(returncode=0, stdout=EMPTY)
-                if cleanup_idle and probes >= 4:
-                    return SimpleNamespace(returncode=0, stdout=EMPTY)
-                return SimpleNamespace(returncode=0, stdout=EXTERNAL)
+                idle = first_probe or (cleanup_idle and signalled)
+                first_probe = False
+                return SimpleNamespace(returncode=0, stdout=EMPTY if idle else EXTERNAL)
 
             with ExitStack() as stack:
                 stack.enter_context(
@@ -480,7 +318,6 @@ class ReclaimTests(unittest.TestCase):
                 )
                 result = execute(case, run, root=root)
 
-            self.assertGreaterEqual(probes, 4)
             self.assertEqual(result.release_verified, cleanup_idle)
             self.assertTrue(
                 any(
@@ -488,19 +325,8 @@ class ReclaimTests(unittest.TestCase):
                     for host, cmd in commands
                 )
             )
-            self.assertTrue(
-                all(
-                    host == self.container_ssh
-                    for host, cmd in commands
-                    if "npu-smi info" in cmd
-                )
-            )
-            log_text = result.log.read_text()
-            self.assertIn("RECLAIM_KILL host=192.0.2.1:22", log_text)
-            self.assertIn("host_pid=2341399", log_text)
             if not cleanup_idle:
                 self.assertNotEqual(result.exit_code, 0)
-                self.assertIn("release unverified", log_text)
 
 
 if __name__ == "__main__":

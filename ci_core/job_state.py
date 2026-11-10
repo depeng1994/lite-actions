@@ -90,33 +90,33 @@ class JobState:
                     "run_attempt",
                     "_ci_dispatch_id",
                 )
-                identity = tuple(run.get(k) for k in identity_fields)
+                run_fields = identity_fields + (
+                    "head_sha",
+                    "path",
+                    "_ci_pr_number",
+                    "_ci_source_repo",
+                )
+
+                def values(source, keys):
+                    return tuple(source.get(k) for k in keys)
+
+                def plan_identity(record):
+                    return values(record["run"], run_fields), record.get("digest")
+
+                identity = values(run, identity_fields)
+                plan = plan_identity(entries[0][1])
                 if len({key for key, _ in entries}) != len(entries) or any(
-                    tuple(fields["run"].get(k) for k in identity_fields) != identity
-                    or fields["run"].get("head_sha") != run.get("head_sha")
-                    or fields["run"].get("path") != run.get("path")
-                    or fields["run"].get("_ci_pr_number") != run.get("_ci_pr_number")
-                    or fields["run"].get("_ci_source_repo")
-                    != run.get("_ci_source_repo")
-                    or fields.get("digest") != entries[0][1].get("digest")
-                    for _, fields in entries
+                    plan_identity(fields) != plan for _, fields in entries
                 ):
                     raise ValueError("inconsistent admission batch")
                 for k, record in current.items():
                     previous = record.get("run", {})
                     if (
                         k != _META
-                        and tuple(previous.get(k) for k in identity_fields) == identity
+                        and values(previous, identity_fields) == identity
+                        and (values(previous, run_fields), record.get("digest")) != plan
                     ):
-                        if (
-                            previous.get("head_sha") != run.get("head_sha")
-                            or previous.get("path") != run.get("path")
-                            or previous.get("_ci_pr_number") != run.get("_ci_pr_number")
-                            or previous.get("_ci_source_repo")
-                            != run.get("_ci_source_repo")
-                            or record.get("digest") != entries[0][1]["digest"]
-                        ):
-                            raise ValueError("conflicting previously admitted run")
+                        raise ValueError("conflicting previously admitted run")
                 legacy = sorted(
                     (
                         (k, r)
@@ -138,23 +138,9 @@ class JobState:
                 for key, fields in entries:
                     existing = current.get(key)
                     if existing is not None:
-                        if any(
-                            existing.get(k) != fields.get(k)
-                            for k in ("digest", "item", "defaults")
-                        ) or any(
-                            existing.get("run", {}).get(k) != fields["run"].get(k)
-                            for k in (
-                                "_ci_provider",
-                                "_ci_repo",
-                                "id",
-                                "run_attempt",
-                                "_ci_dispatch_id",
-                                "head_sha",
-                                "path",
-                                "_ci_pr_number",
-                                "_ci_source_repo",
-                            )
-                        ):
+                        if plan_identity(existing) != plan_identity(fields) or values(
+                            existing, ("item", "defaults")
+                        ) != values(fields, ("item", "defaults")):
                             raise ValueError("conflicting previously admitted case")
                         continue
                     current[key] = {**fields, "admission_seq": seq}

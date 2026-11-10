@@ -131,14 +131,19 @@ never retain partial leases.
 Each node can set `occupancy_policy` to `wait` or `preempt`. Without an override,
 the pool's existing `force_reclaim` setting applies. A `wait` node never kills
 external processes; a busy group is temporarily avoided according to the queue
-policy. Both configured Blue nodes use `wait`.
+policy. Both configured Blue nodes use `wait` even though their pool defaults to
+`preempt`.
 
-Explicit `preempt` uses confirmed host PIDs on the selected devices before launch;
+New `preempt` policies use confirmed host PIDs on the selected devices before launch;
 its cleanup is read-only. It requires complete per-node `device_ids`, a matching
 `machine_fingerprint` from `scripts/preflight.py`, and host support for pidfd.
 Each host scan verifies its hardware inventory and Phy-ID mapping before signalling.
+To register a new node without a fingerprint, temporarily set its policy to `wait`,
+run `scripts/preflight.py --write-bindings`, then remove the override or set
+`preempt` after checking the generated binding. Until then, configuration loading
+rejects a node that inherits `preempt` without a fingerprint.
 For a multi-node allocation, waiting nodes are checked before preemption.
-Nodes without an explicit policy retain the pool's legacy
+Yellow A5 nodes without an explicit policy retain the pool's legacy
 `force_reclaim` behavior, including A5 cleanup. Cancellation is checked before
 each preemption request; unconfirmed cleanup is reported as such.
 

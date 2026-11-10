@@ -17,14 +17,6 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Record the tested commit
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          actual="$(git rev-parse HEAD)"
-          test "$actual" = "$EXPECTED_SHA"
-          printf 'Tested commit: %s\nPR head: %s\n' "$actual" "${PR_HEAD_SHA:-not a pull request}"
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'

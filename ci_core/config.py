@@ -15,6 +15,15 @@ def format_pools(pools):
     )
 
 
+def legacy_reclaim(pool, node):
+    """Preserve the existing Yellow A5 reclaim path for unmodified nodes."""
+    return (
+        pool.get("owner") == "yellow"
+        and pool.get("type") == "ascend-a5"
+        and "occupancy_policy" not in node
+    )
+
+
 def node_preempts(pool, node):
     policy = node.get("occupancy_policy", "inherit")
     if policy not in ("inherit", "wait", "preempt") or (
@@ -31,7 +40,7 @@ def node_preempts(pool, node):
         or expected[kind] != pool.get("process_indexing")
     ):
         raise ValueError("preemption requires a verified NPU process index")
-    if policy == "preempt":
+    if reclaim and not legacy_reclaim(pool, node):
         devices = node.get("device_ids")
         if (
             not isinstance(node.get("machine_fingerprint"), str)
@@ -58,10 +67,8 @@ def load(root, worker):
         if pool.get("owner") not in workers:
             raise ValueError("unknown pool owner")
         reclaim = pool.get("force_reclaim", False)
-        if type(reclaim) is not bool or (
-            reclaim and (pool["owner"] != "yellow" or pool.get("type") != "ascend-a5")
-        ):
-            raise ValueError("force_reclaim requires yellow ascend-a5 pool")
+        if type(reclaim) is not bool:
+            raise ValueError("force_reclaim must be a boolean")
         for node in pool["nodes"]:
             node_preempts(pool, node)
             pythonpath = node.get("pythonpath")

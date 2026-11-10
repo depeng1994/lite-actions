@@ -13,6 +13,15 @@ from tests.integration_tests.tools.lite_actions.entrypoint import inspect_profil
 PLAN = Path(".ci-request/ci-request.json")
 
 
+def case_passed(result):
+    return (
+        result.get("status") == "PASS"
+        and type(result.get("exit_code")) is int
+        and result["exit_code"] == 0
+        and result.get("cleanup_verified") is True
+    )
+
+
 def expected_plan(run):
     return source_plan(inspect_profile(), run, SELF_REPO)
 
@@ -70,20 +79,13 @@ def results(comments, plan, author):
                 )
             },
         }
-        if not isinstance(result, dict) or any(
-            json.dumps(result.get(key), sort_keys=True)
-            != json.dumps(value, sort_keys=True)
-            for key, value in expected.items()
-        ):
+        if not isinstance(result, dict) or json.dumps(
+            {key: result.get(key) for key in expected}, sort_keys=True
+        ) != json.dumps(expected, sort_keys=True):
             raise ValueError("self-smoke result identity mismatch")
-        if (
-            result.get("status") != "PASS"
-            or type(result.get("exit_code")) is not int
-            or result["exit_code"] != 0
-            or result.get("cleanup_verified") is not True
-        ):
-            raise ValueError("self-smoke case did not pass with verified cleanup")
-        if case_id in found and found[case_id] != result:
+        if case_id in found and json.dumps(
+            found[case_id], sort_keys=True
+        ) != json.dumps(result, sort_keys=True):
             raise ValueError("conflicting self-smoke results")
         found[case_id] = result
     return found
@@ -108,23 +110,40 @@ def wait(environ=os.environ):
     client = GitHubClient(environ["GH_TOKEN"], SELF_REPO)
     deadline = time.monotonic() + 10800
     shown = set()
+    found = {}
     while time.monotonic() < deadline:
         found = results(client.commit_comments(plan["sha"]), plan, author)
         for case_id in found.keys() - shown:
-            print(f"{case_id}: PASS", flush=True)
+            result = found[case_id]
+            outcome = (
+                "PASS"
+                if case_passed(result)
+                else f"status={result.get('status')!r}, exit_code={result.get('exit_code')!r}, "
+                f"cleanup_verified={result.get('cleanup_verified')!r}"
+            )
+            print(f"{case_id}: {outcome}", flush=True)
         shown.update(found)
+        failures = [
+            case_id for case_id, result in found.items() if not case_passed(result)
+        ]
+        if failures:
+            raise ValueError("self-smoke cases failed: " + ", ".join(failures))
         if len(found) == len(plan["cases"]):
             return
         time.sleep(20)
-    raise TimeoutError("self-smoke results incomplete")
+    missing = {item["case_id"] for item in plan["cases"]} - found.keys()
+    raise TimeoutError("self-smoke results incomplete: " + ", ".join(sorted(missing)))
 
 
 if __name__ == "__main__":
     import sys
 
-    if sys.argv[1:] == ["prepare"]:
-        prepare()
-    elif sys.argv[1:] == ["wait"]:
-        wait()
-    else:
-        raise SystemExit("expected prepare or wait")
+    try:
+        if sys.argv[1:] == ["prepare"]:
+            prepare()
+        elif sys.argv[1:] == ["wait"]:
+            wait()
+        else:
+            raise SystemExit("expected prepare or wait")
+    except (ValueError, TimeoutError) as exc:
+        raise SystemExit(str(exc)) from exc

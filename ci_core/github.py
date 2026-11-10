@@ -18,6 +18,11 @@ from ci_core.contract import REPO, SELF_REPO, SUPPORTED_REPOS, VLLM_REPO
 API = f"https://api.github.com/repos/{REPO}"
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def authorization() -> str:
     token = os.environ.get("LITE_ACTIONS_GITHUB_TOKEN")
     if token:
@@ -92,10 +97,6 @@ class GitHubClient:
         )
 
         # Repository aliases/redirects must not silently change trusted identity.
-        class NoRedirect(urllib.request.HTTPRedirectHandler):
-            def redirect_request(self, req, fp, code, msg, headers, newurl):
-                return None
-
         with urllib.request.build_opener(NoRedirect()).open(
             request, timeout=30
         ) as response:
@@ -113,10 +114,6 @@ class GitHubClient:
             or not 1 <= limit <= 262144
         ):
             raise ValueError("invalid artifact identifier or byte budget")
-
-        class NoRedirect(urllib.request.HTTPRedirectHandler):
-            def redirect_request(self, req, fp, code, msg, headers, newurl):
-                return None
 
         opener = urllib.request.build_opener(NoRedirect())
         request = urllib.request.Request(

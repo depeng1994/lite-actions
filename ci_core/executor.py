@@ -205,15 +205,12 @@ def _verified_inventory(output, indexing, expected_devices):
     )
     if end is None:
         raise ValueError("NPU process table missing")
-    section = [line.strip() for line in lines[header + 2 : end] if line.strip()]
-    if (
-        len(section) < 4
-        or not re.fullmatch(r"\+={3,}(?:\+={3,})*\+", section[-2])
-        or not re.fullmatch(r"\+-{3,}(?:\+-{3,})*\+", section[-1])
-    ):
-        raise ValueError("NPU hardware inventory boundary missing")
-    data = [line for line in section if not re.fullmatch(r"[+=-]+", line)]
-    if len(data) % 2:
+    data = [
+        line.strip()
+        for line in lines[header + 2 : end]
+        if line.strip() and not re.fullmatch(r"[+=-]+", line.strip())
+    ]
+    if not data or len(data) % 2:
         raise ValueError("incomplete NPU hardware mapping")
     mapping, buses = {}, set()
     for i in range(0, len(data), 2):
@@ -472,14 +469,9 @@ def _bound_host_signal(pid, devices, fingerprint, indexing, coverage_devices):
         poller = select.poll()
         poller.register(pidfd, select.POLLIN)
 
-        def start_time():
-            fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
-            return int(fields[19])
-
         if poller.poll(0):
             return False
         try:
-            before = start_time()
             probe = subprocess.run(
                 ["npu-smi", "info"], capture_output=True, text=True, timeout=40
             )
@@ -495,7 +487,9 @@ def _bound_host_signal(pid, devices, fingerprint, indexing, coverage_devices):
             )
             if not any(current == pid for _, current, _ in found):
                 return False
-            if start_time() != before or poller.poll(0):
+            # pidfd remains bound to the process opened above, even if the
+            # numeric PID is reused after the NPU probe.
+            if poller.poll(0):
                 return False
             signal.pidfd_send_signal(pidfd, signal.SIGKILL)
         except (FileNotFoundError, ProcessLookupError):
@@ -549,14 +543,12 @@ def remote_preflight(
     """Check all selected nodes before applying their occupancy policies."""
     if not case.get("allocation"):
         return
-    from ci_core.config import execution_node, node_preempts
+    from ci_core.config import execution_node, legacy_reclaim, node_preempts
     from ci_core.transport import run as transport_run
 
     pool = pools[case["pool"]]
     reclaim = pool.get("force_reclaim", False)
-    if type(reclaim) is not bool or (
-        reclaim and (pool.get("owner") != "yellow" or pool.get("type") != "ascend-a5")
-    ):
+    if type(reclaim) is not bool:
         raise ValueError("invalid force_reclaim pool")
     by_host = {x["host_id"]: x for x in pool["nodes"]}
     indexing = pool.get("process_indexing")
@@ -578,13 +570,11 @@ def remote_preflight(
     for request in case["allocation"]:
         check_cancel()
         node = by_host[request["host_id"]]
-        legacy_a5 = pool.get("type") == "ascend-a5" and "occupancy_policy" not in node
+        legacy_a5 = legacy_reclaim(pool, node)
         reclaim = node_preempts(pool, node)
-        if cleanup and (
-            "occupancy_policy" in node or (cancel is not None and cancel.is_set())
-        ):
+        if cleanup and (not legacy_a5 or (cancel is not None and cancel.is_set())):
             reclaim = False
-        host_pids = reclaim and node.get("occupancy_policy") == "preempt"
+        host_pids = reclaim and not legacy_a5
         if host_pids and not set(request["devices"]).issubset(node["device_ids"]):
             raise ValueError("allocation outside verified node devices")
         probe_host = node.get("ssh")

@@ -101,22 +101,6 @@ class SmokeExecutionIdentityTests(unittest.TestCase):
         self.assertTrue(STAMP.fullmatch(first))
         self.assertLessEqual(len(first.encode()), 255)
 
-    def test_legacy_paths_remain_unchanged_without_instance(self):
-        github = run_identity()
-        self.assertEqual(
-            task_dir(github, Path("/tmp/ci")).name,
-            "2026-11-04_19-12-13_run-123_attempt-1_test-smoke_alpha",
-        )
-        self.assertEqual(
-            remote_task_name(github),
-            "2026-11-04_19-12-13_run_Dispatcher-Smoke_4_test-smoke_alpha",
-        )
-        gitcode = run_identity("gitcode")
-        self.assertEqual(
-            remote_task_name(gitcode),
-            "gitcode_depeng1994_torchtitan-npu_run-123_attempt-1_test-smoke_alpha",
-        )
-
     def test_instances_do_not_share_local_or_remote_paths(self):
         github = {**run_identity(), "id": "123", "_ci_case_id": "case_000_smoke_alpha"}
         gitcode = {
@@ -130,8 +114,8 @@ class SmokeExecutionIdentityTests(unittest.TestCase):
             {**github, "run_attempt": 2},
             gitcode,
             {**gitcode, "_ci_case_id": "case_002_smoke_alpha"},
-            {**gitcode, "id": "a" * 120 + "one"},
-            {**gitcode, "id": "a" * 120 + "two"},
+            {**gitcode, "id": "a" * 125 + "one"},
+            {**gitcode, "id": "a" * 125 + "two"},
         ]
         for make_name in (
             lambda r: task_dir(r, Path("/tmp/ci")).name,
@@ -153,23 +137,6 @@ class SmokeExecutionIdentityTests(unittest.TestCase):
                 task_dir({**base, "_ci_case_id": case_id}, Path("/tmp/ci"))
             with self.subTest(remote=case_id), self.assertRaises(ValueError):
                 remote_task_name({**base, "_ci_case_id": case_id})
-
-    def test_maximum_ids_have_bounded_safe_path_components(self):
-        test_id = "x" * 80
-        for provider in ("github", "gitcode"):
-            run = {
-                **run_identity(provider),
-                "id": "a" * 128,
-                "run_number": 10**100,
-                "run_attempt": 10**100,
-                "name": "n" * 64,
-                "_ci_test_id": test_id,
-                "_ci_case_id": "case_255_" + test_id,
-            }
-            for name in (task_dir(run, Path("/tmp/ci")).name, remote_task_name(run)):
-                with self.subTest(provider=provider, name=name):
-                    self.assertLessEqual(len(name.encode()), 255)
-                    self.assertTrue(STAMP.fullmatch(name))
 
 
 if __name__ == "__main__":

@@ -90,6 +90,14 @@ class Router:
             for r in self.state.read().values()
         ):
             raise ValueError("legacy nonterminal state requires prior reconciliation")
+        if any(
+            r.get("run", {}).get("_ci_catalog")
+            and r.get("phase") not in {"REPORTED", "PENDING_REPORT"}
+            for r in self.state.read().values()
+        ):
+            raise ValueError(
+                "retired JSON pilot has unfinished tasks; drain before upgrade"
+            )
         self.training = ThreadPoolExecutor(max_workers=4)
         self.light = ThreadPoolExecutor(max_workers=1)
         self.active = {}
@@ -335,7 +343,7 @@ class Router:
         )
         cached = self.plans.get(identity)
         if cached is not None:
-            owned = [c for c in cached[0]["cases"] if c["worker"] == self.worker]
+            owned = [c for c in cached["cases"] if c["worker"] == self.worker]
             if not owned or all(task_key(run, c) in self.state.read() for c in owned):
                 return
         if not self.eligible(run):
@@ -355,12 +363,9 @@ class Router:
 
                 if plan != expected_plan(run):
                     raise ValueError("self-smoke plan differs from its pinned profile")
-            is_catalog = bool(run.get("_ci_catalog"))
-            self.plans[identity] = (plan, is_catalog)
+            self.plans[identity] = plan
         else:
-            plan, is_catalog = cached
-            if is_catalog:
-                run = {**run, "_ci_catalog": True}
+            plan = cached
         owned = [c for c in plan["cases"] if c["worker"] == self.worker]
         if not owned or all(task_key(run, c) in self.state.read() for c in owned):
             return
@@ -376,12 +381,6 @@ class Router:
                     "_ci_source": source,
                     "_ci_execution_sha": source["source_sha"],
                 }
-        if is_catalog:
-            from ci_core.gitcode import plan_receipt
-
-            if len(owned) != len(plan["cases"]):
-                raise ValueError("catalog pilot requires a single owning worker")
-            plan_receipt(run, plan)
         counts = Counter(item["test_id"] for item in plan["cases"])
         entries = []
         for item in owned:
@@ -398,11 +397,6 @@ class Router:
                         defaults=plan["defaults"],
                         queued_at=time.time(),
                         use_instance_id=counts[item["test_id"]] > 1,
-                        **(
-                            {"plan_receipt": plan, "receipt_pending": True}
-                            if is_catalog
-                            else {}
-                        ),
                     ),
                 )
             )
@@ -730,7 +724,7 @@ class Router:
             is_smoke = item["kind"] == "npu_smoke"
             queue = (pool, is_smoke)
             ident = run_key(r["run"])
-            if ident in self.unavailable_runs or r.get("receipt_pending"):
+            if ident in self.unavailable_runs:
                 if pool and is_smoke:
                     blocked_pools.add(queue)
                 continue
@@ -808,31 +802,6 @@ class Router:
                 self.finish(key, "INFRA_ERROR", 125, [str(exc)[:180]], clean)
 
     def flush(self):
-        pending_plans = {}
-        for key, record in self.state.read().items():
-            if record.get("receipt_pending") and record.get("phase") == "QUEUED":
-                run = record["run"]
-                identity = (
-                    run.get("_ci_provider"),
-                    run.get("_ci_repo"),
-                    run["id"],
-                    run.get("run_attempt", 1),
-                )
-                pending_plans.setdefault(identity, []).append((key, record))
-        for rows in pending_plans.values():
-            keys = [key for key, _ in rows]
-            record = rows[0][1]
-            try:
-                client = self.client_for(record["run"])
-                client.validate_current(record["run"])
-                client.publish_plan(
-                    record["run"],
-                    record["plan_receipt"],
-                    os.environ.get("LITE_ACTIONS_GITCODE_RESULT_AUTHOR", self.author),
-                )
-                self.state.update_many(keys, receipt_pending=False)
-            except Exception:
-                logging.warning("smoke plan receipt remains pending: %s", keys[0])
         for key, r in self.state.read().items():
             if r.get("phase") != "PENDING_REPORT":
                 continue

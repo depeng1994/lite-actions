@@ -1,6 +1,5 @@
 """Bind an opt-in self-smoke Worker to its clean, actual Git checkout."""
 
-import hashlib
 import re
 import subprocess
 from pathlib import Path
@@ -9,9 +8,12 @@ from pathlib import Path
 def checkout_sha(root):
     root = Path(root).resolve()
 
-    def git(*args):
+    def git(*args, input=None):
         return subprocess.check_output(
-            ["git", "-C", str(root), *args], stderr=subprocess.DEVNULL, timeout=15
+            ["git", "-C", str(root), *args],
+            input=input,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
         )
 
     if Path(git("rev-parse", "--show-toplevel").decode().strip()).resolve() != root:
@@ -24,52 +26,46 @@ def checkout_sha(root):
         "unified_router.py",
         ".github/workflows/lite_actions_self_smoke.yml",
         "tests/__init__.py",
-        "tests/integration_tests/__init__.py",
-        "tests/integration_tests/tools/lite_actions",
-        "tests/integration_tests/training_cases",
+        "tests/integration_tests",
     )
     entries = git("ls-tree", "-rz", "--full-tree", "HEAD", "--", *paths)
     tracked = set()
+    names, expected_blobs = [], []
     for entry in entries.split(b"\0"):
         if not entry:
             continue
         metadata, raw_path = entry.split(b"\t", 1)
         mode, kind, expected = metadata.split()
-        if mode not in (b"100644", b"100755") or kind != b"blob":
+        if mode not in (b"100644", b"100755") or kind != b"blob" or b"\n" in raw_path:
             raise ValueError("unsafe Worker source tree")
         name = raw_path.decode()
         path = root / name
-        if path.is_symlink() or not path.is_file():
+        if any(
+            (root / part).is_symlink() for part in (Path(name), *Path(name).parents)
+        ):
+            raise ValueError("linked Worker source path")
+        if not path.is_file():
             raise ValueError("missing Worker source file")
-        content = path.read_bytes()
-        blob = hashlib.sha1(
-            b"blob " + str(len(content)).encode() + b"\0" + content,
-            usedforsecurity=False,
-        ).hexdigest()
-        if blob.encode() != expected:
-            raise ValueError("Worker source differs from its commit")
+        names.append(raw_path)
+        expected_blobs.append(expected)
         tracked.add(name)
-    required = {
-        "unified_router.py",
-        ".github/workflows/lite_actions_self_smoke.yml",
-        "tests/__init__.py",
-        "tests/integration_tests/__init__.py",
-        "tests/integration_tests/tools/lite_actions/entrypoint.py",
-        "tests/integration_tests/tools/lite_actions/runner.py",
-        "tests/integration_tests/training_cases/dispatch_smoke.py",
-    }
-    if not required.issubset(tracked) or not any(
+    if "unified_router.py" not in tracked or not any(
         x.startswith("ci_core/") for x in tracked
     ):
         raise ValueError("incomplete Worker source tree")
+    actual = git(
+        "hash-object", "--no-filters", "--stdin-paths", input=b"\n".join(names) + b"\n"
+    )
+    if actual.splitlines() != expected_blobs:
+        raise ValueError("Worker source differs from its commit")
     directories = (
         root / "ci_core",
         root / "tests/integration_tests",
     )
-    if any(
-        str(path.relative_to(root)) not in tracked
-        for directory in directories
-        for path in directory.rglob("*.py")
-    ):
-        raise ValueError("untracked Worker Python source")
+    for directory in directories:
+        for path in directory.rglob("*"):
+            if path.is_symlink():
+                raise ValueError("linked Worker source path")
+            if path.suffix == ".py" and str(path.relative_to(root)) not in tracked:
+                raise ValueError("untracked Worker Python source")
     return sha

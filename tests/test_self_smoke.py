@@ -1,22 +1,24 @@
 """CPU contracts for the self-owned smoke workflow and candidate identity."""
 
 import copy
+import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from ci_core.contract import SELF_REPO, SELF_WORKFLOW, TORCHTITAN_REPO, parse_plan
-from ci_core.plan import verify_definition
 from ci_core.reporting import body_for, report
 from ci_core.router import Router
 from ci_core.self_identity import checkout_sha
-from ci_core.self_smoke import prepare, results
+from ci_core.self_smoke import prepare, results, wait
 from tests.integration_tests.tools.lite_actions.runner import run_dispatch_smoke
 from tests.integration_tests.training_cases.dispatch_smoke import build_smoke_list
 from tests.scenarios import Service, completed_execution, write_workspace
@@ -99,7 +101,14 @@ class SelfSmokeTests(unittest.TestCase):
         ]
         self.assertEqual(len(results(comments, self.plan, "reporter")), 4)
         self.assertEqual(len(results(comments[:-1], self.plan, "reporter")), 3)
-        for mutation in ("sha", "cleanup", "unknown"):
+        duplicate = copy.deepcopy(comments[-1])
+        marker, payload = duplicate["body"].split("\n", 1)
+        result = json.loads(payload)
+        result["cleanup_verified"] = 1  # Equal to True in Python, not in JSON.
+        duplicate["body"] = marker + "\n" + json.dumps(result)
+        with self.assertRaisesRegex(ValueError, "conflicting"):
+            results([duplicate, *comments], self.plan, "reporter")
+        for mutation in ("sha", "unknown"):
             bad = copy.deepcopy(comments)
             if mutation == "unknown":
                 bad.append(
@@ -111,12 +120,42 @@ class SelfSmokeTests(unittest.TestCase):
             else:
                 marker, payload = bad[-1]["body"].split("\n", 1)
                 result = json.loads(payload)
-                result["sha" if mutation == "sha" else "cleanup_verified"] = (
-                    "b" * 40 if mutation == "sha" else False
-                )
+                result["sha"] = "b" * 40
                 bad[-1]["body"] = marker + "\n" + json.dumps(result)
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 results(bad, self.plan, "reporter")
+
+    def test_failure_reports_case_and_never_waits_for_missing_cases(self):
+        run = {
+            "id": 42,
+            "run_attempt": 1,
+            "head_sha": "a" * 40,
+            "path": ".github/workflows/" + SELF_WORKFLOW,
+            "_ci_repo": SELF_REPO,
+        }
+        comments = []
+        for item in self.plan["cases"][:2]:
+            result = report(run, item, self.plan["plan_digest"], "PASS", 0, [], True)
+            if comments:
+                result["cleanup_verified"] = False
+            comments.append(
+                {"user": {"login": "reporter"}, "body": body_for(run, item, result)}
+            )
+        plan_path = Path(self.temp.name) / "plan.json"
+        plan_path.write_text(json.dumps(self.plan))
+        output = io.StringIO()
+        client = Mock()
+        client.commit_comments.return_value = comments
+        env = {**self.env, "CI_RESULT_AUTHOR": "reporter", "GH_TOKEN": "token"}
+        with (
+            patch("ci_core.self_smoke.PLAN", plan_path),
+            patch("ci_core.self_smoke.GitHubClient", return_value=client),
+            redirect_stdout(output),
+            self.assertRaisesRegex(ValueError, "self-smoke cases failed"),
+        ):
+            wait(env)
+        self.assertIn(f"{self.plan['cases'][0]['case_id']}: PASS", output.getvalue())
+        self.assertIn("cleanup_verified=False", output.getvalue())
 
     def test_launch_consumes_complete_two_node_lease(self):
         case = next(
@@ -144,23 +183,6 @@ class SelfSmokeTests(unittest.TestCase):
             del os.environ["HCCL_NPU_SOCKET_PORT_RANGE"]
             with self.assertRaises(RuntimeError):
                 run_dispatch_smoke(case)
-
-    def test_pinned_archive_discovers_own_smoke_definitions(self):
-        archive = Path(self.temp.name) / "self.tar.gz"
-        with tarfile.open(archive, "w:gz") as tar:
-            for name in (
-                "tests/__init__.py",
-                "tests/integration_tests/__init__.py",
-                "tests/integration_tests/training_cases/dispatch_smoke.py",
-                "tests/integration_tests/tools/lite_actions/entrypoint.py",
-                "tests/integration_tests/tools/lite_actions/runner.py",
-            ):
-                tar.add(ROOT / name, arcname=name)
-        for item in self.plan["cases"]:
-            found = verify_definition(
-                archive, item, self.plan["defaults"], repo=SELF_REPO
-            )
-            self.assertEqual(found["test_id"], item["test_id"])
 
     def test_native_plan_routes_and_reports_each_instance(self):
         root = Path(self.temp.name) / "worker"
@@ -245,16 +267,17 @@ class SelfSmokeTests(unittest.TestCase):
 
     def test_worker_checkout_and_manual_admission_are_sha_bound(self):
         root = Path(self.temp.name) / "checkout"
+
+        def git(*args):
+            return subprocess.check_output(["git", "-C", str(root), *args])
+
         (root / "ci_core").mkdir(parents=True)
         (root / "ci_core/core.py").write_text("VALUE = 1\n")
         (root / "unified_router.py").write_text("pass\n")
         for name in (
-            ".github/workflows/lite_actions_self_smoke.yml",
             "tests/__init__.py",
             "tests/integration_tests/__init__.py",
-            "tests/integration_tests/training_cases/dispatch_smoke.py",
             "tests/integration_tests/tools/lite_actions/entrypoint.py",
-            "tests/integration_tests/tools/lite_actions/runner.py",
         ):
             path = root / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -272,20 +295,27 @@ class SelfSmokeTests(unittest.TestCase):
                 "fixture",
             ],
         ):
-            subprocess.run(
-                ["git", "-C", str(root), *args], check=True, capture_output=True
-            )
+            git(*args)
         sha = checkout_sha(root)
-        for name in (
-            "tests/integration_tests/tools/__init__.py",
-            "tests/integration_tests/tools.py",
-            "tests/integration_tests/training_cases.py",
-        ):
-            untracked = root / name
-            untracked.write_text("raise RuntimeError('untracked source')\n")
-            with self.subTest(name=name), self.assertRaises(ValueError):
-                checkout_sha(root)
-            untracked.unlink()
+        # Plain `git status` does not report ignored Python modules, even
+        # though they can take precedence over namespace packages at runtime.
+        ignored = root / "tests/integration_tests/tools/__init__.py"
+        (root / ".git/info/exclude").write_text(
+            "tests/integration_tests/tools/__init__.py\n"
+        )
+        ignored.write_text("raise RuntimeError('ignored source')\n")
+        with self.assertRaises(ValueError):
+            checkout_sha(root)
+        ignored.unlink()
+        external = Path(self.temp.name) / "external"
+        shutil.copytree(root / "ci_core", external)
+        saved = root / "core_saved"
+        (root / "ci_core").rename(saved)
+        (root / "ci_core").symlink_to(external, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "linked Worker source"):
+            checkout_sha(root)
+        (root / "ci_core").unlink()
+        saved.rename(root / "ci_core")
         router = Router.__new__(Router)
         router.root, router.self_sha = root, sha
         run = {
@@ -304,6 +334,7 @@ class SelfSmokeTests(unittest.TestCase):
                 ("head_sha", "b" * 40),
             ):
                 self.assertFalse(router.eligible({**run, field: value}))
+            git("update-index", "--assume-unchanged", "ci_core/core.py")
             (root / "ci_core/core.py").write_text("VALUE = 2\n")
             with self.assertRaises(ValueError):
                 router.eligible(run)

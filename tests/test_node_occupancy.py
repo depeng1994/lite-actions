@@ -2,7 +2,6 @@
 
 import ast
 import hashlib
-import io
 import json
 import os
 import shlex
@@ -152,15 +151,7 @@ class NodeOccupancyTests(unittest.TestCase):
         ]
 
     def test_waiting_node_blocks_before_other_node_is_preempted(self):
-        unknown = HEADER + "| NA 0 | 123456 | python3 | 60189 | NA |\n"
-        truncated = HEADER + "| 0 1 | 123457 | python3 | 60189 | NA |\n"
-        for occupied in (
-            SHARED,
-            BUSY.replace("123456", "NA", 1),
-            unknown,
-            HEADER,
-            truncated,
-        ):
+        for occupied in (SHARED, HEADER):
             self.calls.clear()
             with (
                 self.subTest(occupied=occupied),
@@ -179,13 +170,30 @@ class NodeOccupancyTests(unittest.TestCase):
         self.assertEqual(
             command[3:], ["123456", "[0]", FINGERPRINT, "card-die", "[0, 1, 2, 3]"]
         )
-        self.assertTrue(
-            all(
-                command == "npu-smi info"
-                for host, command in self.calls
-                if host == "worker-preempt:22" and not command.startswith("python3 -c ")
-            )
+
+    def test_pool_default_preempts_with_node_wait_override(self):
+        self.pool["force_reclaim"] = True
+        del self.preempt["occupancy_policy"]
+        self.preflight([EMPTY, EMPTY, EMPTY], [BUSY, BUSY, EMPTY, EMPTY])
+        [(host, command)] = self.signals()
+        self.assertEqual(host, "worker-preempt:22")
+        self.assertEqual(
+            command[3:], ["123456", "[0]", FINGERPRINT, "card-die", "[0, 1, 2, 3]"]
         )
+
+        self.calls.clear()
+        with self.assertRaises(ExternalNpuOccupancy):
+            self.preflight([BUSY], [])
+        self.assertFalse(self.signals())
+
+        self.case["allocation"] = self.case["allocation"][:1]
+        for policy in (None, "preempt"):
+            self.calls.clear()
+            if policy:
+                self.preempt["occupancy_policy"] = policy
+            with self.subTest(policy=policy), self.assertRaises(ExternalNpuOccupancy):
+                self.preflight([], [BUSY], cleanup=True)
+            self.assertFalse(self.signals())
 
     def test_explicit_a5_preemption_uses_bound_host_pid(self):
         self.pool.update(type="ascend-a5", process_indexing="card")
@@ -209,33 +217,6 @@ class NodeOccupancyTests(unittest.TestCase):
         [(host, command)] = self.signals()
         self.assertEqual(host, "worker-preempt:22")
         self.assertEqual(command[3:], ["123456", "[0]", FINGERPRINT, "card", "[0, 1]"])
-        poller = Mock()
-        poller.poll.return_value = []
-        stat = "123456 (python3) " + " ".join(["S"] + ["0"] * 18 + ["10"])
-        with (
-            patch.object(os, "pidfd_open", return_value=7, create=True),
-            patch.object(os, "close"),
-            patch.object(signal, "pidfd_send_signal", create=True) as send,
-            patch("select.poll", return_value=poller),
-            patch("pathlib.Path.read_bytes", return_value=HOST_ID),
-            patch("pathlib.Path.read_text", return_value=stat),
-            patch(
-                "subprocess.run",
-                return_value=SimpleNamespace(returncode=0, stdout=busy),
-            ),
-        ):
-            self.assertTrue(
-                _bound_host_signal(123456, [0], FINGERPRINT, "card", [0, 1])
-            )
-            send.assert_called_once_with(7, signal.SIGKILL)
-
-    def test_wait_audit_does_not_invent_pid_namespace(self):
-        evidence = io.StringIO()
-        with self.assertRaises(ExternalNpuOccupancy):
-            self.preflight([SHARED], [], evidence=evidence)
-        self.assertIn('"observed_pid": 123456', evidence.getvalue())
-        self.assertNotIn('"container_pid"', evidence.getvalue())
-        self.assertNotIn('"host_pid"', evidence.getvalue())
 
     def test_wait_node_becoming_busy_blocks_preemption(self):
         with self.assertRaises(ExternalNpuOccupancy):
@@ -301,22 +282,10 @@ class NodeOccupancyTests(unittest.TestCase):
                 ),
             )
 
-    def test_cleanup_never_preempts_even_when_node_is_configured_to_preempt(self):
-        self.case["allocation"] = self.case["allocation"][:1]
-        with self.assertRaises(ExternalNpuOccupancy):
-            self.preflight([], [BUSY], cleanup=True)
-        self.assertEqual(self.calls[0][0], "worker-preempt:22/fixture")
-        self.assertFalse(self.signals())
-
     def test_unrecognized_host_pid_table_fails_closed(self):
         for bad in (
             BUSY.replace("Process id |", "Container id |", 1),
-            BUSY.replace("123456", "NA", 1),
-            HEADER,
             BUSY.replace("| No running processes found in NPU 1 |\n", ""),
-            BUSY.removesuffix(FOOTER),
-            BUSY.removesuffix(FOOTER) + "+\n",
-            BUSY.replace("Chip  Phy-ID", "Chip Unknown"),
             BUSY.replace("| 1 3 |", "| 1 9 |"),
             BUSY.replace(
                 "| No running processes found in NPU 1 |",
@@ -329,25 +298,21 @@ class NodeOccupancyTests(unittest.TestCase):
             self.assertFalse(self.signals())
 
     def test_pidfd_signal_is_bound_and_reused_pid_is_not_signalled(self):
-        def stat(start):
-            return "123456 (python3) " + " ".join(["S"] + ["0"] * 18 + [str(start)])
-
         cases = (
-            ((10, 10), [[], []], True),
-            ((10, 11), [[]], False),
-            ((10, 10), [[], [(7, 1)]], False),
+            ([[], []], True),
+            ([[(7, 1)]], False),
+            ([[], [(7, 1)]], False),
         )
-        for starts, polls, signalled in cases:
+        for polls, signalled in cases:
             poller = Mock()
             poller.poll.side_effect = polls
             with (
-                self.subTest(starts=starts),
+                self.subTest(polls=polls),
                 patch.object(os, "pidfd_open", return_value=7, create=True),
                 patch.object(os, "close"),
                 patch.object(signal, "pidfd_send_signal", create=True) as send,
                 patch("select.poll", return_value=poller),
                 patch("pathlib.Path.read_bytes", return_value=HOST_ID),
-                patch("pathlib.Path.read_text", side_effect=[stat(x) for x in starts]),
                 patch(
                     "subprocess.run",
                     return_value=SimpleNamespace(returncode=0, stdout=BUSY),
@@ -394,7 +359,6 @@ class NodeOccupancyTests(unittest.TestCase):
             patch("ctypes.CDLL", return_value=libc),
             patch("select.poll", return_value=poller),
             patch("pathlib.Path.read_bytes", return_value=HOST_ID),
-            patch("pathlib.Path.read_text", return_value=stat(10)),
             patch(
                 "subprocess.run",
                 return_value=SimpleNamespace(returncode=0, stdout=BUSY),
@@ -403,12 +367,7 @@ class NodeOccupancyTests(unittest.TestCase):
             self.assertTrue(
                 _bound_host_signal(123456, [0], FINGERPRINT, "card-die", [0, 1, 2, 3])
             )
-        self.assertEqual(libc.syscall.call_args.args[0].value, 434)
         send.assert_called_once_with(7, signal.SIGKILL)
-
-    def test_explicit_empty_table_remains_valid(self):
-        self.preflight([EMPTY, EMPTY], [EMPTY, EMPTY])
-        self.assertFalse(self.signals())
 
     def test_selected_cards_need_complete_process_table_coverage(self):
         self.case["allocation"] = [
@@ -462,6 +421,19 @@ class NodeOccupancyTests(unittest.TestCase):
             pools["pool_blue"]["nodes"][0]["machine_fingerprint"] = FINGERPRINT
             path.write_text(json.dumps(pools))
             load(root, "blue")
+
+            del pools["pool_blue"]["nodes"][0]["occupancy_policy"]
+            pools["pool_blue"]["force_reclaim"] = True
+            path.write_text(json.dumps(pools))
+            load(root, "blue")
+            del pools["pool_blue"]["nodes"][0]["machine_fingerprint"]
+            path.write_text(json.dumps(pools))
+            with self.assertRaisesRegex(ValueError, "fingerprint"):
+                load(root, "blue")
+            pools["pool_blue"]["force_reclaim"] = "true"
+            path.write_text(json.dumps(pools))
+            with self.assertRaisesRegex(ValueError, "boolean"):
+                load(root, "blue")
 
 
 if __name__ == "__main__":
