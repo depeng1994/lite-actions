@@ -13,7 +13,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 
-from ci_core.contract import REPO, SUPPORTED_REPOS, VLLM_REPO
+from ci_core.contract import REPO, SELF_REPO, SUPPORTED_REPOS, VLLM_REPO
 
 API = f"https://api.github.com/repos/{REPO}"
 
@@ -194,7 +194,9 @@ class GitHubClient:
     def running_workflows(self) -> list[dict]:
         runs = {}
         events = (
-            ("workflow_dispatch", "pull_request_target")
+            ("workflow_dispatch",)
+            if self.repo == SELF_REPO
+            else ("workflow_dispatch", "pull_request_target")
             if self.repo == VLLM_REPO
             else ("workflow_dispatch", "pull_request")
         )

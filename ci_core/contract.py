@@ -14,7 +14,9 @@ import re
 # with the existing TorchTitan worker. The default remains backwards compatible.
 TORCHTITAN_REPO = "cann-framework/torchtitan-npu"
 VLLM_REPO = "cann-framework/vllm-ascend"
-SUPPORTED_REPOS = frozenset({TORCHTITAN_REPO, VLLM_REPO})
+SELF_REPO = "depeng1994/lite-actions"
+SELF_WORKFLOW = "lite_actions_self_smoke.yml"
+SUPPORTED_REPOS = frozenset({TORCHTITAN_REPO, VLLM_REPO, SELF_REPO})
 GITCODE_REPOS = frozenset({"depeng1994/torchtitan-npu", "cann/torchtitan-npu"})
 
 
@@ -204,7 +206,7 @@ def parse_plan(plan, run, workflow, *, repo=REPO):
                 )
             )
             if gitcode
-            else WORKFLOWS
+            else ({SELF_WORKFLOW} if repo == SELF_REPO else WORKFLOWS)
         )
         or plan["workflow"] != workflow
         or not valid_run_id

@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "default_profile": "fifo_smoke",
+  "defaults": {
+    "worker": "blue",
+    "target_pool": "a3_shared_blue",
+    "docker": "cann_master_torchtitan_master_xyj"
+  },
+  "cases": [
+    {
+      "test_id": "worker_os_blue",
+      "label": "OS probe on blue",
+      "kind": "worker_probe",
+      "worker": "blue",
+      "nodes": 0,
+      "devices_per_node": 0,
+      "timeout": 90,
+      "env_vars": {}
+    },
+    {
+      "test_id": "worker_os_yellow",
+      "label": "OS probe on yellow",
+      "kind": "worker_probe",
+      "worker": "yellow",
+      "nodes": 0,
+      "devices_per_node": 0,
+      "timeout": 90,
+      "env_vars": {}
+    },
+    {
+      "test_id": "dispatch_smoke_8p",
+      "label": "Lite Actions dispatch smoke: 1 node(s), 8P HCCL/DP handshake",
+      "kind": "npu_smoke",
+      "worker": "blue",
+      "nodes": 1,
+      "devices_per_node": 8,
+      "timeout": 75,
+      "env_vars": {
+        "ASCEND_SET_ENV_PATH": "/usr/local/Ascend/ascend-toolkit/set_env.sh"
+      }
+    },
+    {
+      "test_id": "dispatch_smoke_16p",
+      "label": "Lite Actions dispatch smoke: 2 node(s), 16P HCCL/DP handshake",
+      "kind": "npu_smoke",
+      "worker": "blue",
+      "nodes": 2,
+      "devices_per_node": 8,
+      "timeout": 75,
+      "env_vars": {
+        "ASCEND_SET_ENV_PATH": "/usr/local/Ascend/ascend-toolkit/set_env.sh"
+      }
+    }
+  ],
+  "profiles": {
+    "fifo_smoke": [
+      "dispatch_smoke_8p",
+      "dispatch_smoke_16p",
+      "dispatch_smoke_8p"
+    ],
+    "github_smoke": [
+      "worker_os_blue",
+      "dispatch_smoke_8p",
+      "dispatch_smoke_16p"
+    ],
+    "a3_8p_smoke_tests": [
+      "dispatch_smoke_8p"
+    ],
+    "a3_16p_smoke_tests": [
+      "dispatch_smoke_16p"
+    ],
+    "worker_probe_tests": [
+      "worker_os_blue",
+      "worker_os_yellow"
+    ]
+  }
+}

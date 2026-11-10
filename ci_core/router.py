@@ -13,7 +13,16 @@ from contextlib import ExitStack
 from pathlib import Path
 
 from ci_core.config import load, runtime_case
-from ci_core.contract import REPO, TORCHTITAN_REPO, VLLM_REPO, WORKFLOWS, parse_plan
+from ci_core.contract import (
+    REPO,
+    SELF_REPO,
+    SELF_WORKFLOW,
+    TORCHTITAN_REPO,
+    VLLM_REPO,
+    WORKFLOWS,
+    configured_repos,
+    parse_plan,
+)
 from ci_core.executor import ExternalNpuOccupancy, execute
 from ci_core.gitcode import RunChanged, source_workflows
 from ci_core.job_state import JobState
@@ -49,6 +58,13 @@ class Router:
             author,
         )
         self.workers, self.pools = load(self.root, worker)
+        self.self_sha = None
+        if SELF_REPO in configured_repos():
+            if os.environ.get("LITE_ACTIONS_SELF_SMOKE_ENABLED") != "1":
+                raise ValueError("self-smoke requires explicit opt-in")
+            from ci_core.self_identity import checkout_sha
+
+            self.self_sha = checkout_sha(self.root)
         self.state = JobState(self.root)
         self.quarantine_enabled = worker not in {
             name.strip()
@@ -174,6 +190,29 @@ class Router:
                 and run.get("head_branch") in branches
                 and run.get("actor", {}).get("login") in actors
             )
+        if repo == SELF_REPO:
+            from ci_core.self_identity import checkout_sha
+
+            return (
+                self.self_sha is not None
+                and run.get("event") == "workflow_dispatch"
+                and filename == SELF_WORKFLOW
+                and run.get("status") in {"queued", "in_progress"}
+                and run.get("actor", {}).get("login")
+                in set(
+                    filter(
+                        None, os.environ.get("LITE_ACTIONS_SELF_ACTORS", "").split(",")
+                    )
+                )
+                and run.get("head_branch")
+                in set(
+                    filter(
+                        None,
+                        os.environ.get("LITE_ACTIONS_SELF_BRANCHES", "").split(","),
+                    )
+                )
+                and run.get("head_sha") == self.self_sha == checkout_sha(self.root)
+            )
         if repo == VLLM_REPO:
             actors_value = os.environ.get(
                 "LITE_ACTIONS_VLLM_ALLOWED_ACTORS", "depeng1994"
@@ -266,6 +305,12 @@ class Router:
                 run["path"].rsplit("/", 1)[-1],
                 repo=run.get("_ci_repo", REPO),
             )
+            if run.get("_ci_repo") == SELF_REPO:
+                from ci_core.gitcode import catalog_plan
+
+                catalog = self.root / ".ci/lite_actions/smoke_cases.json"
+                if plan != catalog_plan(catalog.read_bytes(), run, SELF_REPO):
+                    raise ValueError("self-smoke plan differs from its pinned catalog")
             is_catalog = bool(run.get("_ci_catalog"))
             self.plans[identity] = (plan, is_catalog)
         else:
@@ -405,6 +450,14 @@ class Router:
         run = r["run"]
         launched = False
         try:
+            if run.get("_ci_repo") == SELF_REPO:
+                from ci_core.self_identity import checkout_sha
+
+                if (
+                    self.self_sha != run["head_sha"]
+                    or checkout_sha(self.root) != self.self_sha
+                ):
+                    raise ValueError("self-smoke Worker SHA changed")
             if run.get("_ci_provider") == "gitcode":
                 self.client_for(run).validate_current(run)
             self.transition(key, "STAGING")
