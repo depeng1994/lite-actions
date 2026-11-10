@@ -33,6 +33,8 @@ def report(run, item, plan_digest, status, rc, lines, cleanup_verified=True):
     )
     if run.get("_ci_dispatch_id"):
         result["dispatch_id"] = run["_ci_dispatch_id"]
+    if run.get("_ci_source"):
+        result["native_source"] = run["_ci_source"]
     return result
 
 

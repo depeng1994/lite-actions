@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class VllmAdapterTests(unittest.TestCase):
     def test_vllm_profile_contract_and_target_pr(self):
         program = """
+import os
 from ci_core.contract import REPO, configured_repos, create_plan, normalize, parse_plan
 from ci_core.vllm_ascend import definition
 from ci_core.github import GitHubClient
@@ -34,18 +35,26 @@ class Fake(GitHubClient):
         assert method == 'GET' and path == '/pulls/7'
         return dict(state='open',draft=False,user=dict(login='depeng1994'),
             base=dict(ref='main',repo=dict(full_name=REPO)),
-            head=dict(sha=sha,repo=dict(full_name='depeng1994/vllm-ascend')))
+            head=dict(sha=sha,repo=dict(id=42,full_name='any-fork/vllm-ascend')))
 workflow_sha='b'*40
 for title in ('lite-a5-pr-7-'+sha, 'lite-vllm-pr-7-'+sha+'-'+workflow_sha):
     run=dict(display_title=title,
         path='.github/workflows/lite_actions_dispatcher_smoke.yml',
-        actor=dict(login='depeng1994'),head_sha=workflow_sha)
+        actor=dict(login='depeng1994'),head_sha=sha)
     result=Fake('fake').normalize_target_pr_run(run)
     assert result['head_sha']==sha and result['_ci_pr_number']==7
-    assert Fake('fake').normalize_target_pr_run({**run,'actor':dict(login='other')}) is None
+    assert Fake('fake').normalize_target_pr_run({**run,'actor':dict(login='other')})['_ci_source_repo_id'] == 42
     assert Fake('fake').normalize_target_pr_run({**run,'display_title':title.replace(sha,'c'*40)}) is None
     assert Fake('fake').normalize_target_pr_run({**run,'path':'wrong.yml'}) is None
 assert Fake('fake').normalize_target_pr_run({**run,'display_title':title+'bad'}) is None
+os.environ['LITE_ACTIONS_VLLM_ALLOWED_BRANCHES'] = 'main,ci/test'
+recheck = dict(display_title='lite-vllm-recheck-7-'+workflow_sha+'-'+'f'*32,
+    path='.github/workflows/lite_actions_dispatcher_smoke.yml', event='workflow_dispatch',
+    actor=dict(login='depeng1994'),head_sha=workflow_sha,head_branch='ci/test')
+normalized = Fake('fake').normalize_native_recheck(recheck)
+assert normalized['head_sha'] == sha and normalized['_ci_control_sha'] == workflow_sha
+assert normalized['_ci_source_repo_id'] == 42
+assert Fake('fake').normalize_native_recheck({**recheck,'head_branch':'unapproved'}) is None
 """
         for repo in ("cann-framework/vllm-ascend", "torchtitan-npu/vllm-ascend"):
             with self.subTest(repo=repo):

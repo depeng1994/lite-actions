@@ -185,12 +185,14 @@ class Service(GitHubClient):
         raise AssertionError((method, path))
 
     def open(self, request, **kwargs):
+        if request.full_url.startswith("https://fixture.blob.core.windows.net/"):
+            return self.download(request, **kwargs)
         ident = request.full_url.split("/")[-2]
         raise HTTPError(
             request.full_url,
             302,
             "redirect",
-            {"Location": f"https://fixture.invalid/{ident}"},
+            {"Location": f"https://fixture.blob.core.windows.net/{ident}"},
             None,
         )
 
@@ -199,6 +201,7 @@ class Service(GitHubClient):
             raise AssertionError("GitHub token forwarded to signed URL")
         ident = int(request.full_url.rsplit("/", 1)[1])
         out = io.BytesIO()
+        out.headers = {}
         with zipfile.ZipFile(out, "w") as archive:
             archive.writestr("ci-request.json", json.dumps(self.plans[ident]))
         out.seek(0)

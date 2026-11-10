@@ -83,11 +83,12 @@ def inspect_archive(archive: Path, selection: dict, *, repo=None) -> list[dict]:
     repo = REPO if repo is None else repo
 
     if repo == "cann-framework/vllm-ascend":
-        from ci_core.vllm_ascend import definition
+        from ci_core.vllm_ascend import CASES, definition
 
-        if "test_id" in selection:
+        # Retain the previously deployed A5 adapter. New smoke definitions use
+        # the same model-owned entrypoint as the other repositories.
+        if selection.get("test_id") in CASES:
             return [definition(selection["test_id"])]
-        raise ValueError("vLLM only accepts fixed trusted smoke test IDs")
 
     import os
     import subprocess

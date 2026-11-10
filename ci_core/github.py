@@ -104,6 +104,64 @@ class GitHubClient:
                 raise ValueError("GitHub response exceeds endpoint budget")
             return json.loads(data) if data else None
 
+    def download_artifact(self, artifact_id: int, *, limit: int) -> bytes:
+        """Download a bounded artifact without forwarding credentials to storage."""
+        if (
+            type(artifact_id) is not int
+            or artifact_id < 1
+            or type(limit) is not int
+            or not 1 <= limit <= 262144
+        ):
+            raise ValueError("invalid artifact identifier or byte budget")
+
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
+
+        opener = urllib.request.build_opener(NoRedirect())
+        request = urllib.request.Request(
+            self.api + f"/actions/artifacts/{artifact_id}/zip",
+            headers={
+                "Authorization": f"Bearer {self.token}",
+                "Accept": "application/vnd.github+json",
+            },
+        )
+        try:
+            with opener.open(request, timeout=20):
+                raise ValueError("artifact download did not redirect")
+        except urllib.error.HTTPError as exc:
+            code, location = exc.code, exc.headers.get("Location")
+            exc.close()
+            if code != 302:
+                raise RuntimeError(f"artifact API unavailable (HTTP {code})") from None
+        except (OSError, TimeoutError):
+            raise RuntimeError("artifact API unavailable") from None
+        parts = urllib.parse.urlsplit(location or "")
+        host = (parts.hostname or "").lower()
+        if (
+            parts.scheme != "https"
+            or parts.username
+            or parts.password
+            or parts.port not in (None, 443)
+            or parts.fragment
+            or not (
+                host.endswith(".blob.core.windows.net")
+                or host.endswith(".actions.githubusercontent.com")
+            )
+        ):
+            raise ValueError("untrusted artifact download destination")
+        try:
+            with opener.open(urllib.request.Request(location), timeout=60) as response:
+                length = response.headers.get("Content-Length")
+                if length is not None and int(length) > limit:
+                    raise ValueError("artifact download exceeds byte budget")
+                payload = response.read(limit + 1)
+        except (OSError, TimeoutError):
+            raise RuntimeError("artifact storage unavailable") from None
+        if len(payload) > limit:
+            raise ValueError("artifact download exceeds byte budget")
+        return payload
+
     def normalize_pr_run(self, run: dict) -> dict | None:
         """Bind a pull_request run to exactly one current upstream PR head.
 
@@ -174,22 +232,68 @@ class GitHubClient:
         ):
             return None
         pr_number, sha = int(match[1]), match[2]
-        if run.get("actor", {}).get("login") != "depeng1994":
-            return None
         pr = self.request("GET", f"/pulls/{pr_number}")
         target = pr.get("base", {}).get("ref", "")
+        source_repo = pr.get("head", {}).get("repo") or {}
         if (
             pr.get("state") != "open"
-            or pr.get("draft")
             or pr.get("base", {}).get("repo", {}).get("full_name") != self.repo
-            or target != "main"
-            or pr.get("head", {}).get("repo", {}).get("full_name")
-            != "depeng1994/vllm-ascend"
-            or pr.get("user", {}).get("login") != "depeng1994"
+            or not isinstance(target, str)
+            or not target
+            or len(target) > 255
+            or any(ord(c) < 32 for c in target)
+            or type(source_repo.get("id")) is not int
+            or source_repo["id"] < 1
+            or not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}",
+                source_repo.get("full_name", ""),
+            )
+            or run.get("head_sha") != sha
             or pr.get("head", {}).get("sha") != sha
         ):
             return None
-        return {**run, "head_sha": sha, "_ci_pr_number": pr_number}
+        return {
+            **run,
+            "head_sha": sha,
+            "_ci_pr_number": pr_number,
+            "_ci_source_repo": source_repo["full_name"],
+            "_ci_source_repo_id": source_repo["id"],
+            "_ci_base_ref": target,
+            **({"_ci_control_sha": match[3]} if match[3] else {}),
+        }
+
+    def normalize_native_recheck(self, run):
+        """Bind a reconciler dispatch to the current PR, without trusting its title alone."""
+        import re
+
+        title = run.get("display_title", "")
+        if not title.startswith("lite-vllm-recheck-"):
+            return run
+        match = re.fullmatch(
+            r"lite-vllm-recheck-([1-9][0-9]*)-([0-9a-f]{40})-([0-9a-f]{32})", title
+        )
+        branches = set(
+            os.environ.get("LITE_ACTIONS_VLLM_ALLOWED_BRANCHES", "main").split(",")
+        )
+        actors = set(
+            os.environ.get("LITE_ACTIONS_VLLM_ALLOWED_ACTORS", "depeng1994").split(",")
+        )
+        if (
+            not match
+            or run.get("head_sha") != match[2]
+            or run.get("head_branch") not in branches
+            or run.get("actor", {}).get("login") not in actors | {"github-actions[bot]"}
+        ):
+            return None
+        pr = self.request("GET", f"/pulls/{match[1]}")
+        normalized = self.normalize_target_pr_run(
+            {
+                **run,
+                "head_sha": pr.get("head", {}).get("sha", ""),
+                "display_title": f"lite-vllm-pr-{match[1]}-{pr.get('head', {}).get('sha', '')}-{match[2]}",
+            }
+        )
+        return {**normalized, "display_title": title} if normalized else None
 
     def running_workflows(self) -> list[dict]:
         runs = {}
@@ -210,6 +314,8 @@ class GitHubClient:
                         run = self.normalize_pr_run(run)
                     elif event == "pull_request_target":
                         run = self.normalize_target_pr_run(run)
+                    elif self.repo == VLLM_REPO:
+                        run = self.normalize_native_recheck(run)
                     if run is None or run.get("status") not in {
                         "queued",
                         "in_progress",
@@ -256,38 +362,7 @@ class GitHubClient:
             raise ValueError("CI request artifact oversized")
         if artifact.get("workflow_run", {}).get("id", run_id) != run_id:
             raise ValueError("CI artifact does not belong to the selected run")
-        artifact_id = artifact["id"]
-        url = self.api + f"/actions/artifacts/{artifact_id}/zip"
-        req = urllib.request.Request(
-            url,
-            headers={
-                "Accept": "application/vnd.github+json",
-                "Authorization": f"Bearer {self.token}",
-                "User-Agent": "lite-actions-request/1",
-            },
-        )
-
-        class NoRedirect(urllib.request.HTTPRedirectHandler):
-            def redirect_request(self, req, fp, code, msg, headers, newurl):
-                return None
-
-        try:
-            urllib.request.build_opener(NoRedirect).open(req, timeout=20)
-            raise ValueError("artifact download did not redirect")
-        except urllib.error.HTTPError as exc:
-            if exc.code != 302:
-                raise
-            signed_url = exc.headers.get("Location")
-        parts = urllib.parse.urlsplit(signed_url or "")
-        if parts.scheme != "https" or not parts.hostname:
-            raise ValueError("invalid signed artifact download URL")
-        # Signed URL is bearer access in itself. Never forward GitHub token.
-        with urllib.request.urlopen(
-            urllib.request.Request(signed_url), timeout=25
-        ) as response:
-            payload = response.read(262145)
-        if len(payload) > 262144:
-            raise ValueError("downloaded CI request oversized")
+        payload = self.download_artifact(artifact["id"], limit=262144)
         with zipfile.ZipFile(io.BytesIO(payload)) as archive:
             if archive.namelist() != ["ci-request.json"]:
                 raise ValueError("unexpected CI request archive contents")

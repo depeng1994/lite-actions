@@ -235,19 +235,26 @@ class Router:
         branches = set(filter(None, branches_value.split(",")))
         event = run.get("event")
         if event in ("pull_request", "pull_request_target"):
-            admitted = (
-                type(run.get("_ci_pr_number")) is int
-                and run.get("actor", {}).get("login") in allowed
-                and (
-                    (repo == VLLM_REPO and event == "pull_request_target")
-                    or (repo == TORCHTITAN_REPO and event == "pull_request")
+            admitted = type(run.get("_ci_pr_number")) is int and (
+                (repo == VLLM_REPO and event == "pull_request_target")
+                or (
+                    repo == TORCHTITAN_REPO
+                    and event == "pull_request"
+                    and run.get("actor", {}).get("login") in allowed
                 )
             )
         else:
             admitted = (
                 event == "workflow_dispatch"
                 and run.get("head_branch") in branches
-                and run.get("actor", {}).get("login") in allowed
+                and (
+                    run.get("actor", {}).get("login") in allowed
+                    or (
+                        repo == VLLM_REPO
+                        and type(run.get("_ci_pr_number")) is int
+                        and run.get("actor", {}).get("login") == "github-actions[bot]"
+                    )
+                )
             )
         return (
             admitted
@@ -317,6 +324,20 @@ class Router:
             if is_catalog:
                 run = {**run, "_ci_catalog": True}
         owned = [c for c in plan["cases"] if c["worker"] == self.worker]
+        if not owned or all(task_key(run, c) in self.state.read() for c in owned):
+            return
+        if run.get("_ci_repo") == VLLM_REPO:
+            from ci_core.vllm_source import read_source, requires_source
+
+            if requires_source(plan):
+                source = read_source(self.client_for(run), run, plan)
+                if source is None:
+                    return
+                run = {
+                    **run,
+                    "_ci_source": source,
+                    "_ci_execution_sha": source["source_sha"],
+                }
         if is_catalog:
             from ci_core.gitcode import plan_receipt
 
@@ -419,6 +440,25 @@ class Router:
 
     def finish(self, key, status, rc, lines, clean=True):
         r = self.state.read()[key]
+        if status == "PASS" and r["run"].get("_ci_source"):
+            from ci_core.vllm_source import check_current
+
+            try:
+                check_current(
+                    self.client_for(r["run"]), r["run"]["_ci_source"], check_run=True
+                )
+            except ValueError:
+                status, rc, lines = (
+                    "CANCELLED",
+                    130,
+                    ["PR source or run changed before publication"],
+                )
+            except Exception:
+                status, rc, lines = (
+                    "INFRA_ERROR",
+                    125,
+                    ["PR source authority unavailable before publication"],
+                )
         if status == "PASS" and r["run"].get("_ci_provider") == "gitcode":
             try:
                 self.client_for(r["run"]).validate_current(r["run"])
@@ -459,15 +499,24 @@ class Router:
                     raise ValueError("self-smoke Worker SHA changed")
             if run.get("_ci_provider") == "gitcode":
                 self.client_for(run).validate_current(run)
+            if run.get("_ci_source"):
+                from ci_core.vllm_source import check_current
+
+                check_current(self.client_for(run), run["_ci_source"], check_run=True)
             self.transition(key, "STAGING")
             with tempfile.TemporaryDirectory(prefix="lite-definition-") as tmp:
                 source_repo = run.get("_ci_repo", REPO)
                 archive = model_archive(
-                    run["head_sha"],
+                    run.get("_ci_execution_sha", run["head_sha"]),
                     Path(tmp),
                     source_repo=source_repo,
                     provider=run.get("_ci_provider", "github"),
                     fallback_repo=run.get("_ci_source_repo"),
+                    source_pr=(
+                        run["_ci_pr_number"]
+                        if run.get("_ci_source", {}).get("mode") == "merge_result"
+                        else None
+                    ),
                 )
                 verify_definition(archive, item, r["defaults"], repo=source_repo)
             if run.get("_ci_provider") == "gitcode":
@@ -496,6 +545,8 @@ class Router:
                     (p.stdout + p.stderr).splitlines(),
                 )
                 return
+            if run.get("_ci_source"):
+                case = {**case, "native_source": run["_ci_source"]}
             subrun = {
                 **run,
                 "_ci_test_id": item["test_id"],
@@ -801,6 +852,13 @@ class Router:
                             statuses[ident] = {"status": "in_progress"}
                     else:
                         statuses[ident] = client.workflow_status(run["id"])
+                        if run.get("_ci_source"):
+                            from ci_core.vllm_source import check_current
+
+                            try:
+                                check_current(client, run["_ci_source"])
+                            except ValueError:
+                                statuses[ident] = {"status": "completed"}
                 except Exception as exc:
                     statuses[ident] = None
                     self.unavailable_runs.add(ident)

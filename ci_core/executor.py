@@ -807,11 +807,16 @@ def prepare_profile(case: dict, run: dict) -> dict:
     with tempfile.TemporaryDirectory(prefix="lite-model-") as tmp:
         source_repo = run.get("_ci_repo", TORCHTITAN_REPO)
         archive = model_archive(
-            run["head_sha"],
+            run.get("_ci_execution_sha", run["head_sha"]),
             Path(tmp),
             source_repo=source_repo,
             provider=run.get("_ci_provider", "github"),
             fallback_repo=run.get("_ci_source_repo"),
+            source_pr=(
+                run["_ci_pr_number"]
+                if run.get("_ci_source", {}).get("mode") == "merge_result"
+                else None
+            ),
         )
         definition = resolve_test(
             archive,
@@ -853,7 +858,7 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
         "--test-id",
         run["_ci_test_id"],
         "--sha",
-        run["head_sha"],
+        run.get("_ci_execution_sha", run["head_sha"]),
         "--stamp",
         log_dir.name,
         "--remote-dir",
