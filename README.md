@@ -335,6 +335,8 @@ args=(--python "$py" --worker-unit lite-actions-yellow.service --install-root /o
 sudo "$py" scripts/auto_update_preflight.py "${args[@]}"
 ```
 
+如果工作树属于普通部署用户、安装器通过 `sudo` 运行，Preflight 和安装器检查 clean 状态时使用 `git --no-optional-locks status`。它禁止 Git 为可选的 index 刷新获取/写入锁，避免 root 检查时把普通用户工作树的 `.git/index` 改成 root 所有；不会改变 status 的脏文件判断。无需为了安装把整个源码工作树 `chown` 给 root。
+
 代理主机先创建专用文件：`sudo install -m 0600 /dev/null /etc/lite-actions/auto-update-proxy.source.env`，再用 `sudoedit` 填入代理/CA 配置。文件必须 root 所有、权限 `0600`、普通文件且非软链；仅接受 `http_proxy`、`https_proxy`、`HTTP_PROXY`、`HTTPS_PROXY`、`no_proxy`、`NO_PROXY`、`SSL_CERT_FILE`、`CURL_CA_BUNDLE`、`GIT_SSL_CAINFO` 九个 `KEY=VALUE`，不要传含 Token 的 `yellow.env`。无代理主机不用建文件。自检出现 `FAIL` 时按 `Next:` 提示处理；没有 `.git` 的快照须先迁移。
 
 ### 2. 安装并启用
