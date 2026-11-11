@@ -414,6 +414,57 @@ class PreflightTests(unittest.TestCase):
             "install-proxy", installer.split("# Proxy support is opt-in.", 1)[0]
         )
 
+    @unittest.skipUnless(os.geteuid() == 0 and shutil.which("chown"), "requires root/chown")
+    def test_no_optional_locks_preserves_user_owned_git_index(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "user-worktree"
+            root.mkdir()
+            def git(*args):
+                return subprocess.check_output(
+                    ["git", "-C", str(root), *args], text=True
+                ).strip()
+
+            git("init", "-q")
+            git("config", "user.name", "Fixture")
+            git("config", "user.email", "fixture@example.invalid")
+            tracked = root / "tracked.txt"
+            tracked.write_text("unchanged\n")
+            git("add", "tracked.txt")
+            git("commit", "-qm", "fixture")
+            subprocess.run(["chown", "-R", "65534:65534", str(root)], check=True)
+
+            config = Path(tmp) / "safe-git.config"
+            config.write_text(
+                "[safe]\n"
+                f'    directory = "{root}"\n'
+                f'    directory = "{root / ".git"}"\n'
+            )
+            config.chmod(0o600)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "GIT_CONFIG_GLOBAL": str(config),
+                    "GIT_CONFIG_NOSYSTEM": "1",
+                    "GIT_OPTIONAL_LOCKS": "1",
+                }
+            )
+            index = root / ".git" / "index"
+            before = index.stat()
+            os.utime(tracked, (before.st_mtime + 5, before.st_mtime + 5))
+
+            result = subprocess.run(
+                ["git", "-C", str(root), "--no-optional-locks", "status", "--porcelain"],
+                capture_output=True,
+                text=True,
+                env=env,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            after = index.stat()
+            self.assertEqual(after.st_uid, 65534)
+            self.assertEqual(after.st_ino, before.st_ino)
+            self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
+
     def test_yellow_gitcode_sources_are_documented_separately(self):
         readme = (ROOT / "README.md").read_text()
         yellow_doc = (ROOT / "docs" / "yellow-worker.md").read_text()
