@@ -183,6 +183,8 @@ class GitCodeClient:
             _safe_transport_error("GitCode API request failed", exc)
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             _safe_transport_error("GitCode API request failed", exc)
+        except Exception as exc:
+            _safe_transport_error("GitCode API request failed", exc)
         return json.loads(raw) if raw else None
 
     def workflow_status(self, run_id):
@@ -409,6 +411,8 @@ class GitCodeClient:
             url = exc.headers.get("Location", "")
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             _safe_transport_error("GitCode artifact API request failed", exc)
+        except Exception as exc:
+            _safe_transport_error("GitCode artifact API request failed", exc)
         parsed = urllib.parse.urlsplit(url)
         if parsed.scheme != "https" or not parsed.hostname:
             raise ValueError("invalid artifact redirect")
@@ -420,6 +424,8 @@ class GitCodeClient:
         except urllib.error.HTTPError as exc:
             _safe_transport_error("GitCode artifact download failed", exc)
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            _safe_transport_error("GitCode artifact download failed", exc)
+        except Exception as exc:
             _safe_transport_error("GitCode artifact download failed", exc)
         if len(payload) > 262144:
             raise ValueError("artifact exceeds limit")
