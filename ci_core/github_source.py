@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import re
+import urllib.error
 import urllib.parse
 import zipfile
 
@@ -85,7 +86,6 @@ def validate_source(source, run, plan, approved_controls, *, repository_id):
         if (
             source["pr_number"] != 0
             or source["head_repo_id"] != repository_id
-            or run.get("event") != "workflow_dispatch"
             or source["base_ref"] != run.get("head_branch")
             or any(
                 source[k] != run["head_sha"]
@@ -141,70 +141,36 @@ def check_current(client, source, *, check_run=False):
             raise ValueError("NATIVE_RUN_CANCELLED_OR_SUPERSEDED")
 
 
-def prepare_ready(client, run):
-    jobs, total = [], None
-    for page in range(1, 11):
-        data = client.request(
-            "GET",
-            f"/actions/runs/{run['id']}/attempts/{run.get('run_attempt', 1)}/jobs?per_page=100&page={page}",
-        )
-        count, batch = data.get("total_count"), data.get("jobs")
-        if (
-            type(count) is not int
-            or not 0 <= count <= 1000
-            or not isinstance(batch, list)
-            or len(batch) > 100
-        ):
-            raise ValueError("invalid Prepare job listing")
-        if total is not None and count != total:
-            return False  # Jobs are still being added; poll a fresh listing.
-        total = count
-        jobs.extend(batch)
-        if len(jobs) == total:
-            break
-        if not batch or len(jobs) > total:
-            return False
-    else:
-        raise ValueError("Prepare job visibility incomplete")
-    prepare = [j for j in jobs if j.get("name") == "prepare"]
-    return (
-        len(prepare) == 1
-        and prepare[0].get("run_id") == run["id"]
-        and prepare[0].get("run_attempt") == run.get("run_attempt", 1)
-        and prepare[0].get("status") == "completed"
-        and prepare[0].get("conclusion") == "success"
-    )
-
-
-def approved_controls(client, run, candidate=None, *, merge_source=False):
-    """Resolve the live trusted workflow branch without pinning every commit."""
-    if run.get("event") != "workflow_dispatch":
-        raise ValueError("unapproved controller event")
-    branch = run.get("head_branch")
-    explicit = set()
-    if not isinstance(branch, str) or not branch or len(branch) > 255:
-        raise ValueError("invalid controller branch")
-    head = (
-        client.request("GET", "/branches/" + urllib.parse.quote(branch, safe=""))
-        .get("commit", {})
-        .get("sha")
-    )
-    if not isinstance(head, str) or not SHA.fullmatch(head):
-        raise ValueError("invalid controller branch SHA")
-    is_pr_control = merge_source and type(run.get("_ci_pr_number")) is int
-    if is_pr_control and candidate != head:
-        if not isinstance(candidate, str) or not SHA.fullmatch(candidate):
-            raise ValueError("invalid controller SHA")
+def approved_controls(client, run, candidate, *, base_ref=None):
+    """Prove the controller belongs to a repository branch, independent of trigger."""
+    if not isinstance(candidate, str) or not SHA.fullmatch(candidate):
+        raise ValueError("invalid controller SHA")
+    for branch in dict.fromkeys((run.get("head_branch"), base_ref)):
+        if not isinstance(branch, str) or not branch or len(branch) > 255:
+            continue
+        try:
+            head = (
+                client.request(
+                    "GET", "/branches/" + urllib.parse.quote(branch, safe="")
+                )
+                .get("commit", {})
+                .get("sha")
+            )
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                continue
+            raise
+        if not isinstance(head, str) or not SHA.fullmatch(head):
+            raise ValueError("invalid controller branch SHA")
+        if head == candidate:
+            return {candidate}
         comparison = client.request("GET", f"/compare/{candidate}...{head}?per_page=1")
-        if comparison.get("merge_base_commit", {}).get("sha") != candidate:
-            raise ValueError("controller is not in trusted default branch history")
-        explicit.add(candidate)
-    return explicit | {head}
+        if comparison.get("merge_base_commit", {}).get("sha") == candidate:
+            return {candidate}
+    raise ValueError("controller is not in a trusted repository branch")
 
 
 def read_source_artifact(client, run):
-    if not prepare_ready(client, run):
-        return None
     name = f"lite-ci-source-{run.get('run_attempt', 1)}"
     listing = client.request(
         "GET", f"/actions/runs/{run['id']}/artifacts?name={name}&per_page=10"
@@ -214,6 +180,8 @@ def read_source_artifact(client, run):
         for a in listing.get("artifacts", [])
         if a.get("name") == name and not a.get("expired")
     ]
+    if not matches:
+        return None
     if len(matches) != 1 or matches[0].get("size_in_bytes", 0) > 131072:
         raise ValueError("missing/ambiguous/oversized native source artifact")
     artifact = matches[0]
@@ -231,12 +199,16 @@ def read_source_artifact(client, run):
 
 def bind_request_source(client, run, source):
     """Bind structured source identity to a run before validating its plan."""
-    if not isinstance(source, dict) or source.get("control_sha") != run.get("head_sha"):
-        raise ValueError("source controller differs from workflow run")
+    if not isinstance(source, dict) or run.get("head_sha") not in (
+        source.get("control_sha"),
+        source.get("head_sha"),
+        source.get("source_sha"),
+    ):
+        raise ValueError("source identity differs from workflow run")
     head = source.get("head_sha")
     if not isinstance(head, str) or not SHA.fullmatch(head):
         raise ValueError("invalid requested source SHA")
-    bound = {**run, "_ci_control_sha": run["head_sha"], "head_sha": head}
+    bound = {**run, "_ci_control_sha": source.get("control_sha"), "head_sha": head}
     if source.get("mode") == "merge_result":
         number = source.get("pr_number")
         if type(number) is not int or number < 1:
@@ -276,8 +248,7 @@ def read_source(client, run, plan, *, source=None):
             client,
             run,
             candidate,
-            merge_source=isinstance(source, dict)
-            and source.get("mode") == "merge_result",
+            base_ref=source.get("base_ref") if isinstance(source, dict) else None,
         ),
         repository_id=repository_id,
     )

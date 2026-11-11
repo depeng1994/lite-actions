@@ -161,21 +161,44 @@ class GitHubClient:
 
     def running_workflows(self) -> list[dict]:
         runs = {}
-        events = ("workflow_dispatch",)
-        for event in events:
-            for status in ("queued", "in_progress"):
+        workflow_names = {}
+        for status in ("queued", "in_progress"):
+            for page in range(1, 11):
                 data = self.request(
-                    "GET", f"/actions/runs?event={event}&status={status}&per_page=100"
+                    "GET", f"/actions/runs?status={status}&per_page=100&page={page}"
                 )
-                for run in data.get("workflow_runs", []):
+                rows = data.get("workflow_runs", [])
+                for run in rows:
                     if run is None or run.get("status") not in {
                         "queued",
                         "in_progress",
                     }:
                         continue
+                    name = run.get("name") or ""
+                    workflow_id = run.get("workflow_id")
+                    if (
+                        not str(name).startswith("lite-ci-")
+                        and type(workflow_id) is int
+                        and workflow_id > 0
+                    ):
+                        if workflow_id not in workflow_names:
+                            try:
+                                workflow_names[workflow_id] = self.request(
+                                    "GET", f"/actions/workflows/{workflow_id}"
+                                ).get("name", "")
+                            except (OSError, TimeoutError, ValueError):
+                                logging.warning(
+                                    "workflow metadata unavailable: %s", workflow_id
+                                )
+                                continue
+                        name = workflow_names[workflow_id]
+                    if not str(name).startswith("lite-ci-"):
+                        continue
                     identity = (run["id"], run.get("run_attempt", 1))
                     if identity not in runs or run["status"] == "in_progress":
-                        runs[identity] = {**run, "_ci_repo": self.repo}
+                        runs[identity] = {**run, "name": name, "_ci_repo": self.repo}
+                if len(rows) < 100:
+                    break
         return list(runs.values())
 
     def workflow_status(self, run_id: int) -> dict:

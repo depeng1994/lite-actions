@@ -113,10 +113,8 @@ class MultiRepoWorkerTests(unittest.TestCase):
                 "event": "workflow_dispatch",
                 "status": "in_progress",
             }
-            with patch.object(router, "trusted_manual", return_value=True):
-                self.assertTrue(router.eligible(run))
-            with patch.object(router, "trusted_manual", return_value=False):
-                self.assertFalse(router.eligible(run))
+            self.assertTrue(router.eligible(run))
+            self.assertFalse(router.eligible({**run, "name": "unrelated"}))
 
     def test_clients_use_repo_specific_api_and_queue_identity(self):
         first = GitHubClient("fake", TORCHTITAN_REPO)

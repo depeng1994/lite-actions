@@ -20,9 +20,9 @@ from pathlib import Path
 
 from ci_core.broadcast import broadcast_job
 from ci_core.contract import (
-    GITCODE_REPOS,
     TORCHTITAN_REPO,
     VLLM_REPO,
+    trusted_gitcode_repositories,
     trusted_repositories,
 )
 from ci_core.logs import metadata, select_remote
@@ -68,7 +68,9 @@ def _case_instance_token(run: dict) -> str | None:
     provider = run.get("_ci_provider", "github")
     repo = run.get("_ci_repo", TORCHTITAN_REPO)
     if provider not in {"github", "gitcode"} or repo not in (
-        GITCODE_REPOS if provider == "gitcode" else trusted_repositories()
+        trusted_gitcode_repositories()
+        if provider == "gitcode"
+        else trusted_repositories()
     ):
         raise ValueError("untrusted CI case source")
     run_id = str(run["id"])
@@ -105,7 +107,9 @@ def task_dir(run: dict, root: Path) -> Path:
     source_repo = run.get("_ci_repo", TORCHTITAN_REPO)
     provider = run.get("_ci_provider", "github")
     if source_repo not in (
-        GITCODE_REPOS if provider == "gitcode" else trusted_repositories()
+        trusted_gitcode_repositories()
+        if provider == "gitcode"
+        else trusted_repositories()
     ):
         raise ValueError("untrusted model repo")
     logs = root / "logs/runs"

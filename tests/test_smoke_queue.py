@@ -37,7 +37,7 @@ def sample_run():
         "head_branch": "master",
         "actor": {"login": "maintainer"},
         "created_at": "2026-01-01T00:00:00Z",
-        "name": "Dispatcher-Smoke",
+        "name": "lite-ci-dispatcher-smoke",
         "run_number": 1,
     }
 

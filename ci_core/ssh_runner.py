@@ -61,14 +61,18 @@ def model_archive(
     source_pr: int | None = None,
 ) -> Path:
     """Return a SHA-verified source archive, cached to avoid double Git fetches."""
-    from ci_core.contract import GITCODE_REPOS, trusted_repositories
+    from ci_core.contract import trusted_gitcode_repositories, trusted_repositories
     from ci_core.source_cache import metadata_path, seal, verified
 
     if (
         not SHA.fullmatch(sha)
         or provider not in {"github", "gitcode"}
         or source_repo
-        not in (GITCODE_REPOS if provider == "gitcode" else trusted_repositories())
+        not in (
+            trusted_gitcode_repositories()
+            if provider == "gitcode"
+            else trusted_repositories()
+        )
     ):
         raise ValueError("invalid commit SHA / model repository")
     if fallback_repo and not re.fullmatch(

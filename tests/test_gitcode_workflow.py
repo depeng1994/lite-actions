@@ -94,12 +94,12 @@ class GitCodeWorkflowTests(unittest.TestCase):
                 "run_attempt": 1,
                 "head_sha": "b" * 40,
                 "path": ".gitcode/workflows/lite-actions.yml",
-                "event": "workflow_dispatch",
+                "event": "Manual",
                 "status": "in_progress",
                 "head_branch": "master",
                 "actor": {"login": "maintainer"},
                 "created_at": "2026-01-01T00:00:00Z",
-                "name": "Dispatcher-Smoke",
+                "name": "lite-ci-dispatcher-smoke",
                 "run_number": 1,
             }
             plan = {
@@ -122,6 +122,7 @@ class GitCodeWorkflowTests(unittest.TestCase):
                 "workflow_run_id": run["id"],
                 "attempt": 1,
                 "event": "Manual",
+                "workflow_name": "lite-ci-dispatcher-smoke",
                 "status": "RUNNING",
                 "head_sha": run["head_sha"],
                 "head_branch": run["head_branch"],
@@ -239,12 +240,12 @@ class GitCodeWorkflowTests(unittest.TestCase):
                 "run_attempt": 1,
                 "head_sha": "b" * 40,
                 "path": ".gitcode/workflows/lite-actions.yml",
-                "event": "workflow_dispatch",
+                "event": "Manual",
                 "status": "in_progress",
                 "head_branch": "master",
                 "actor": {"login": "maintainer"},
                 "created_at": "2026-01-01T00:00:00Z",
-                "name": "Dispatcher-Smoke",
+                "name": "lite-ci-dispatcher-smoke",
                 "run_number": 1,
             }
             plan = {

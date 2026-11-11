@@ -16,7 +16,6 @@ from ci_core.github_source import (
     approved_controls,
     bind_request_source,
     check_current,
-    prepare_ready,
     read_source,
 )
 from ci_core.github_source import (
@@ -104,10 +103,7 @@ class ModelOwnedVllmTests(unittest.TestCase):
                     return {"id": 1438625957, "default_branch": "main"}
                 if path == "/branches/main":
                     return {"commit": {"sha": outer.default_head}}
-                if (
-                    path
-                    == f"/compare/{outer.control}...{outer.default_head}?per_page=1"
-                ):
+                if path.startswith(f"/compare/{outer.control}..."):
                     return {
                         "merge_base_commit": {
                             "sha": outer.control
@@ -278,7 +274,14 @@ class ModelOwnedVllmTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             bind_request_source(
-                self.client(), run, {**self.source, "control_sha": self.head}
+                self.client(),
+                run,
+                {
+                    **self.source,
+                    "control_sha": "f" * 40,
+                    "head_sha": "e" * 40,
+                    "source_sha": "d" * 40,
+                },
             )
         commit_source = {**self.source, "mode": "commit", "pr_number": 0}
         bound = bind_request_source(self.client(), run, commit_source)
@@ -286,21 +289,21 @@ class ModelOwnedVllmTests(unittest.TestCase):
             (bound["head_sha"], bound["_ci_control_sha"]), (self.head, self.control)
         )
 
-    def test_prepare_can_be_found_beyond_the_first_page(self):
-        class Client:
-            def request(self, method, path):
-                self_test = {
-                    "name": "prepare",
-                    "run_id": 42,
-                    "run_attempt": 1,
-                    "status": "completed",
-                    "conclusion": "success",
-                }
-                if path.endswith("page=1"):
-                    return {"total_count": 101, "jobs": [{"name": "case"}] * 100}
-                return {"total_count": 101, "jobs": [self_test]}
-
-        self.assertTrue(prepare_ready(Client(), self.run))
+    def test_pr_head_run_binds_same_source_for_any_trigger(self):
+        for event in (
+            "pull_request_target",
+            "pull_request",
+            "schedule",
+            "issue_comment",
+        ):
+            run = {**self.run, "event": event, "head_sha": self.head}
+            with self.subTest(event=event):
+                bound = bind_request_source(self.client(), run, self.source)
+                self.assertEqual(bound["_ci_control_sha"], self.control)
+                self.assertEqual(
+                    read_source(self.client(), bound, self.plan, source=self.source),
+                    self.source,
+                )
 
     def test_manual_source_is_the_exact_approved_branch_commit(self):
         run = {
@@ -324,7 +327,7 @@ class ModelOwnedVllmTests(unittest.TestCase):
         self.assertEqual(validate_source(source, run, plan, {self.control}), source)
         with self.assertRaises(ValueError):
             validate_source({**source, "base_ref": "main"}, run, plan, {self.control})
-        self.assertIn(self.control, approved_controls(self.client(), run))
+        self.assertIn(self.control, approved_controls(self.client(), run, self.control))
 
     def test_model_owned_archive_matches_the_plan(self):
         with tempfile.TemporaryDirectory() as tmp:

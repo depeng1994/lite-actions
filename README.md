@@ -52,8 +52,8 @@ assets are configured; DSV4 cases queue on the asset-ready `:153` node.
 ## GitHub workflow and model cases
 
 For each repository explicitly listed in `LITE_ACTIONS_MODEL_REPOS`, the Worker
-discovers manual GitHub workflows whose **display name** starts with `lite-ci-`.
-The operator must have write, maintain or admin permission on that repository.
+discovers GitHub workflows whose name starts with `lite-ci-`, regardless of the
+event that started them. The hosting platform controls who can trigger workflows.
 The workflow's trusted preparation job publishes run- and attempt-bound
 `lite-ci-request-<attempt>` and `lite-ci-source-<attempt>` artifacts. The latter
 binds the selected commit or verified PR merge source to the controller, plan and
@@ -152,9 +152,10 @@ each preemption request; unconfirmed cleanup is reported as such.
 The runtime `force_reclaim` field is the pool default. `OCCUPANCY_POLICY` log
 lines show the effective policy for each selected node and execution phase.
 
-For the GitCode source-profile pilot, list its workflow filenames in both
-`LITE_ACTIONS_GITCODE_WORKFLOWS` and `LITE_ACTIONS_GITCODE_SOURCE_WORKFLOWS`.
-Each participating worker resolves `dispatch_smoke` from the run's fixed model
+For GitCode repositories listed in `LITE_ACTIONS_GITCODE_REPOS`, the Worker also
+discovers running workflows whose name starts with `lite-ci-`, regardless of
+event. For the source-profile protocol, each participating worker resolves
+`dispatch_smoke` from the run's fixed model
 commit, accepts only its own cases, and publishes results as the configured
 `LITE_ACTIONS_GITCODE_RESULT_AUTHOR` using that account's token. The waiter job must be uniquely named
 `Dispatcher Smoke`. GitCode PR runs accept Fork sources; discovery executes the

@@ -58,6 +58,15 @@ def trusted_repositories():
     return SUPPORTED_REPOS | frozenset(configured_repos())
 
 
+def trusted_gitcode_repositories():
+    repos = tuple(
+        filter(None, os.environ.get("LITE_ACTIONS_GITCODE_REPOS", "").split(","))
+    )
+    if any(not REPOSITORY.fullmatch(repo) for repo in repos):
+        raise ValueError("invalid GitCode repository")
+    return GITCODE_REPOS | frozenset(repos)
+
+
 WORKERS = {"blue", "yellow"}
 TEST = re.compile(r"[a-z][a-z0-9_]{0,79}\Z")
 KINDS = {"train", "npu_smoke", "worker_probe"}
@@ -179,7 +188,9 @@ def create_plan(cases, *, run_id, attempt, sha, workflow, defaults, repo=REPO):
 
 def parse_plan(plan, run, workflow, *, repo=REPO):
     gitcode = run.get("_ci_provider") == "gitcode"
-    if repo not in (GITCODE_REPOS if gitcode else trusted_repositories()):
+    if repo not in (
+        trusted_gitcode_repositories() if gitcode else trusted_repositories()
+    ):
         raise ValueError("unsupported plan repository")
     if not isinstance(plan, dict) or set(plan) != {
         "schema",
@@ -202,28 +213,8 @@ def parse_plan(plan, run, workflow, *, repo=REPO):
     if (
         plan["schema"] != 3
         or plan["repo"] != repo
-        or workflow
-        not in (
-            set(
-                filter(
-                    None,
-                    os.environ.get(
-                        "LITE_ACTIONS_GITCODE_WORKFLOWS", "lite-actions.yml"
-                    ).split(","),
-                )
-            )
-            if gitcode
-            else (
-                {SELF_WORKFLOW}
-                if repo == SELF_REPO
-                else (
-                    {workflow}
-                    if str(run.get("name", "")).startswith("lite-ci-")
-                    or str(workflow).startswith("lite-ci-")
-                    else set()
-                )
-            )
-        )
+        or not isinstance(workflow, str)
+        or not workflow
         or plan["workflow"] != workflow
         or not valid_run_id
         or type(plan["attempt"]) is not int

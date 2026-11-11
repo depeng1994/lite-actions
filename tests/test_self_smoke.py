@@ -328,17 +328,16 @@ class SelfSmokeTests(unittest.TestCase):
             "head_branch": "ci/test",
             "head_sha": sha,
         }
-        with patch.object(router, "trusted_manual", return_value=True):
-            self.assertTrue(router.eligible(run))
-            for field, value in (
-                ("event", "pull_request"),
-                ("head_sha", "b" * 40),
-            ):
-                self.assertFalse(router.eligible({**run, field: value}))
-            git("update-index", "--assume-unchanged", "ci_core/core.py")
-            (root / "ci_core/core.py").write_text("VALUE = 2\n")
-            with self.assertRaises(ValueError):
-                router.eligible(run)
+        self.assertTrue(router.eligible(run))
+        for field, value in (
+            ("name", "unrelated"),
+            ("head_sha", "b" * 40),
+        ):
+            self.assertFalse(router.eligible({**run, field: value}))
+        git("update-index", "--assume-unchanged", "ci_core/core.py")
+        (root / "ci_core/core.py").write_text("VALUE = 2\n")
+        with self.assertRaises(ValueError):
+            router.eligible(run)
 
 
 if __name__ == "__main__":
