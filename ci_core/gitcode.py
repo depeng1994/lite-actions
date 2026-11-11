@@ -114,6 +114,31 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def _gitcode_opener():
+    """Build an API opener with an optional GitCode-only proxy and no redirects.
+
+    Without an explicit GitCode proxy, urllib retains its normal environment
+    proxy discovery. The dedicated setting never changes Git subprocesses.
+    """
+    proxy = os.environ.get("LITE_ACTIONS_GITCODE_PROXY", "").strip()
+    handlers = []
+    if proxy:
+        handlers.append(
+            urllib.request.ProxyHandler({"http": proxy, "https": proxy})
+        )
+    handlers.append(NoRedirect())
+    return urllib.request.build_opener(*handlers)
+
+
+def _safe_transport_error(message, exc):
+    """Return a transport error without leaking proxy URLs or credentials."""
+    if isinstance(exc, urllib.error.HTTPError):
+        detail = f"{message} (HTTP {exc.code})"
+    else:
+        detail = message
+    raise urllib.error.URLError(detail) from None
+
+
 class GitCodeClient:
     def __init__(self, token, repo):
         if repo not in trusted_gitcode_repositories():
@@ -153,10 +178,13 @@ class GitCodeClient:
             headers=headers,
             method=method,
         )
-        with urllib.request.build_opener(NoRedirect()).open(
-            req, timeout=30
-        ) as response:
-            raw = response.read(1024 * 1024)
+        try:
+            with _gitcode_opener().open(req, timeout=30) as response:
+                raw = response.read(1024 * 1024)
+        except urllib.error.HTTPError as exc:
+            _safe_transport_error("GitCode API request failed", exc)
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            _safe_transport_error("GitCode API request failed", exc)
         return json.loads(raw) if raw else None
 
     def workflow_status(self, run_id):
@@ -375,19 +403,26 @@ class GitCodeClient:
             headers={"PRIVATE-TOKEN": self.token},
         )
         try:
-            urllib.request.build_opener(NoRedirect).open(req, timeout=20)
+            _gitcode_opener().open(req, timeout=20)
             raise ValueError("artifact download did not redirect")
         except urllib.error.HTTPError as exc:
             if exc.code != 302:
-                raise
+                _safe_transport_error("GitCode artifact API request failed", exc)
             url = exc.headers.get("Location", "")
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            _safe_transport_error("GitCode artifact API request failed", exc)
         parsed = urllib.parse.urlsplit(url)
         if parsed.scheme != "https" or not parsed.hostname:
             raise ValueError("invalid artifact redirect")
-        with urllib.request.urlopen(
-            urllib.request.Request(url), timeout=30
-        ) as response:
-            payload = response.read(262145)
+        try:
+            with urllib.request.urlopen(
+                urllib.request.Request(url), timeout=30
+            ) as response:
+                payload = response.read(262145)
+        except urllib.error.HTTPError as exc:
+            _safe_transport_error("GitCode artifact download failed", exc)
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            _safe_transport_error("GitCode artifact download failed", exc)
         if len(payload) > 262144:
             raise ValueError("artifact exceeds limit")
         with zipfile.ZipFile(io.BytesIO(payload)) as archive:
