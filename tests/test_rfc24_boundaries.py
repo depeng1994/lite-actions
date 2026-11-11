@@ -141,7 +141,7 @@ class Rfc24Boundaries(unittest.TestCase):
         self.now -= 2000
         with self.assertRaises(Deferred):
             self.policy().reserve(True, 1)
-        self.now += 86401
+        self.now = 11 * 86400 + 1
         self.policy().reserve(True, 5)
 
     def test_virtual_hour_provider_discovery_and_unsigned_storage(self):
