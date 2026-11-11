@@ -327,7 +327,7 @@ def run_preflight(
 
     try:
         head = _run_git(source, ["rev-parse", "--verify", "HEAD^{commit}"])
-        dirty = _run_git(source, ["status", "--porcelain", "--untracked-files=all"])
+        dirty = _run_git(source, ["--no-optional-locks", "status", "--porcelain", "--untracked-files=all"])
         if dirty:
             raise RuntimeError("source worktree is dirty")
         checks.append(
