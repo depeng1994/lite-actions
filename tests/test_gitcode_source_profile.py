@@ -1,6 +1,7 @@
 """CPU contract tests for GitCode source profiles and PR lifecycle."""
 
 import io
+import json
 import os
 import subprocess
 import tarfile
@@ -10,8 +11,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from ci_core.contract import digest
 from ci_core.executor import remote_task_name, task_dir
-from ci_core.gitcode import GitCodeClient, source_plan
+from ci_core.gitcode import GitCodeClient, RunChanged, source_plan
+from ci_core.reporting import post, report
 from ci_core.router import Router
 from ci_core.ssh_runner import model_archive
 from tests.scenarios import write_workspace
@@ -115,6 +118,7 @@ class SourceProfileTests(unittest.TestCase):
             },
             base={"repo": {"full_name": "cann/torchtitan-npu"}},
         )
+        self.merge_ref = None
         self.comments = []
         env = {
             "LITE_ACTIONS_GITCODE_SOURCE_WORKFLOWS": "dispatcher_smoke.yml",
@@ -142,6 +146,11 @@ class SourceProfileTests(unittest.TestCase):
             return self.run
         if path == "/pulls/17":
             return self.pr
+        if (
+            path == "/commits/refs%2Fmerge-requests%2F17%2Fmerge"
+            and self.merge_ref is not None
+        ):
+            return self.merge_ref
         raise AssertionError((method, path))
 
     def send(self, sha, body):
@@ -200,24 +209,110 @@ class SourceProfileTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 source_plan(rows, run, self.client.repo)
 
-    def test_mr_merge_sha_uses_current_pr_head_for_source_and_result_identity(self):
-        merge_sha = "c" * 40
-        pr_head_sha = "d" * 40
-        self.run["head_sha"] = merge_sha
-        self.pr["head"]["sha"] = pr_head_sha
+    def dual_sha_fixture(self):
+        base, head, merge = (letter * 40 for letter in "bcd")
+        self.pr["base"]["sha"] = base
+        self.pr["head"]["sha"] = head
+        self.run["head_sha"] = merge
+        self.merge_ref = {"sha": merge, "parents": [{"sha": base}, {"sha": head}]}
+        return base, head, merge
+
+    def test_mr_merge_sha_admits_and_reports_on_the_verified_pr_head(self):
+        _, head, merge = self.dual_sha_fixture()
+        (run,) = self.client.running_workflows()
         with patch(
             "ci_core.ssh_runner.model_archive", return_value=self.archive
         ) as archive:
-            run = self.client.running_workflows()[0]
-            self.assertEqual(run["head_sha"], merge_sha)
-            self.assertEqual(run["_ci_execution_sha"], pr_head_sha)
             plan = self.client.ci_request(run)
-            self.assertEqual(archive.call_args.args[0], pr_head_sha)
-            self.assertEqual(plan["sha"], pr_head_sha)
-            self.client.validate_current(run)
+            self.assertEqual(archive.call_args.args[0], head)
+            self.assertEqual(plan["sha"], head)
+            for worker, count in (("blue", 4), ("yellow", 1)):
+                router = self.router(worker)
+                router._receive_one(run)
+                rows = list(router.state.read().values())
+                self.assertEqual(len(rows), count)
+                for row in rows:
+                    stored, item = row["run"], row["item"]
+                    self.assertEqual(
+                        (stored["head_sha"], stored["_ci_execution_sha"]), (merge, head)
+                    )
+                    self.assertEqual(row["digest"], plan["plan_digest"])
+                    self.assertEqual((row["phase"], item["worker"]), ("QUEUED", worker))
+                    result = report(stored, item, row["digest"], "PASS", 0, [], True)
+                    post(self.client, stored, item, result, "reporter")
+                    self.client.commit_comments.assert_called_with(head)
+                    dest, body = self.client.send_result.call_args.args
+                    self.assertEqual(
+                        (dest, json.loads(body.split("\n", 1)[1])["sha"]), (head, head)
+                    )
+
+    def test_dual_sha_rejects_unbound_or_stale_merge_before_discovery(self):
+        base, head, merge = self.dual_sha_fixture()
+        for proof in (
+            {},
+            {"sha": "e" * 40, "parents": [{"sha": base}, {"sha": head}]},
+            {"sha": merge, "parents": [{"sha": head}, {"sha": base}]},
+            {"sha": merge, "parents": [{"sha": base}]},
+            {"sha": merge, "parents": [{"sha": base}, {"sha": "e" * 40}]},
+            {
+                "sha": merge,
+                "parents": [{"sha": base}, {"sha": head}, {"sha": "e" * 40}],
+            },
+        ):
+            with self.subTest(proof=proof):
+                self.merge_ref = proof
+                self.assertEqual(self.client.running_workflows(), [])
+
+    def test_dual_sha_cannot_rebind_after_discovery_or_before_admission(self):
+        self.dual_sha_fixture()
+        (run,) = self.client.running_workflows()
+        router = self.router("yellow")
+        with patch("ci_core.ssh_runner.model_archive", return_value=self.archive):
+            plan = self.client.ci_request(run)
+        with patch.object(self.client, "ci_request", return_value=plan):
             self.pr["head"]["sha"] = "e" * 40
-            with self.assertRaises(ValueError):
-                self.client.validate_current(run)
+            with self.assertRaises(RunChanged):
+                router._receive_one(run)
+            self.assertEqual(router.state.read(), {})
+            self.assertEqual(self.client.running_workflows(), [])
+
+    def test_dual_sha_queued_case_is_cancelled_and_not_rebound(self):
+        _, old_head, _ = self.dual_sha_fixture()
+        (run,) = self.client.running_workflows()
+        router = self.router("yellow")
+        with patch("ci_core.ssh_runner.model_archive", return_value=self.archive):
+            router._receive_one(run)
+        self.pr["head"]["sha"] = "f" * 40
+        with patch.object(router, "pump"):
+            router.tick()
+        (row,) = router.state.read().values()
+        self.assertEqual(
+            (row["report"]["status"], row["report"]["sha"]), ("CANCELLED", old_head)
+        )
+
+    def test_dual_sha_never_substitutes_a_manual_run_or_an_unidentified_mr(self):
+        self.dual_sha_fixture()
+        self.run["event"] = "Manual"
+        self.assertEqual(self.client.running_workflows(), [])
+        self.run["event"] = "MR"
+        del self.run["pull_request_id"]
+        self.assertEqual(self.client.running_workflows(), [])
+
+    def test_dual_sha_refuses_a_rehashed_plan_for_the_run_sha(self):
+        _, _, merge = self.dual_sha_fixture()
+        (run,) = self.client.running_workflows()
+        with patch("ci_core.ssh_runner.model_archive", return_value=self.archive):
+            plan = self.client.ci_request(run)
+        plan["sha"] = merge
+        del plan["plan_digest"]
+        plan["plan_digest"] = digest(plan)
+        router = self.router("yellow")
+        with (
+            patch.object(self.client, "ci_request", return_value=plan),
+            self.assertRaisesRegex(ValueError, "plan identity mismatch"),
+        ):
+            router._receive_one(run)
+        self.assertEqual(router.state.read(), {})
 
     def test_prefix_discovery_ignores_trigger_type(self):
         for event in ("Manual", "MR", "Schedule", "Note", "Push"):

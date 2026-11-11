@@ -208,6 +208,7 @@ class Router:
             run["id"],
             run.get("run_attempt", 1),
             run["head_sha"],
+            run.get("_ci_execution_sha"),
             run.get("_ci_dispatch_id"),
         )
         cached = self.plans.get(identity)
@@ -283,6 +284,13 @@ class Router:
                     ),
                 )
             )
+        if (
+            run.get("_ci_provider") == "gitcode"
+            and run.get("_ci_pr_number")
+            and run.get("_ci_execution_sha") != run["head_sha"]
+        ):
+            # The PR may have moved during source inspection or since a cache hit.
+            self.client_for(run).validate_current(run)
         for key in self.state.admit(entries):
             self.transition(key, "QUEUED")
 
