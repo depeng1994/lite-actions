@@ -284,28 +284,28 @@ and the live Worker. The pull-request checks above run CPU contracts only; they 
 not certify 8P/16P hardware execution.
 
 
-## Automatic Updates
+## 安装自动更新
 
-Lite Actions Worker 可以通过 systemd 自动从可信 Git 源 Pull 新代码。检查间隔为**上一轮结束后约 3 分钟**。发现新 Commit 时会正常停止旧 Worker、切换版本并立即启动新 Worker，管理日志与 Actions 日志分开记录。
+### 1. 运行只读自检
 
-**首次安装**（在经过审核的 Lite Actions 代码工作树中执行，传入已有 Worker 服务名）：
+在经过审核的干净工作树中运行；需要 Python 3.11+、已有的 systemd Worker 服务，以及 `current → releases/<完整 SHA>` 的 Git checkout。以下以 Yellow 为例，显式指定解释器可避免 `sudo` 选中旧版 Python。
 
-~~~bash
-sudo bash scripts/install_auto_update.sh --worker-unit EXISTING_WORKER.service
-~~~
+```bash
+py=/usr/local/bin/python3.12
+args=(--python "$py" --worker-unit lite-actions-yellow.service --install-root /opt/lite-actions)
+# 仅代理主机：取消下一行注释，自检和安装将使用同一份文件。
+# args+=(--proxy-env-file /etc/lite-actions/auto-update-proxy.source.env)
+sudo "$py" scripts/auto_update_preflight.py "${args[@]}"
+```
 
-脚本自动配置和验证更新服务；默认**不启用**持续定时更新。安装或升级可能取消正在执行的 Actions；完整业务验收后再启用：
+代理主机先创建专用文件：`sudo install -m 0600 /dev/null /etc/lite-actions/auto-update-proxy.source.env`，再用 `sudoedit` 填入代理/CA 配置。文件必须 root 所有、权限 `0600`、普通文件且非软链；仅接受 `http_proxy`、`https_proxy`、`HTTP_PROXY`、`HTTPS_PROXY`、`no_proxy`、`NO_PROXY`、`SSL_CERT_FILE`、`CURL_CA_BUNDLE`、`GIT_SSL_CAINFO` 九个 `KEY=VALUE`，不要传含 Token 的 `yellow.env`。无代理主机不用建文件。自检出现 `FAIL` 时按 `Next:` 提示处理；没有 `.git` 的快照须先迁移。
 
-~~~bash
-sudo systemctl enable --now lite-actions-auto-update.timer
-~~~
+### 2. 安装并启用
 
-查看与暂停未来自动更新：
+自检通过后，在同一个 Bash 会话中执行安装。安装可能中断在途任务，默认不开启定时更新。
 
-~~~bash
-systemctl list-timers lite-actions-auto-update.timer
-journalctl -u lite-actions-auto-update.service -n 50 --no-pager
-sudo systemctl disable --now lite-actions-auto-update.timer
-~~~
+```bash
+sudo bash scripts/install_auto_update.sh "${args[@]}"
+```
 
-切换版本后立即请求启动新 Worker，设计验收目标为**5 秒内发出启动请求、30 秒内出现新 PID、120 秒内 Ready**。Git 下载和旧 Worker 清理时间另计，以上不是未实测的生产性能承诺。安装内部细节和恢复办法见 [自动更新运维文档](docs/auto-update.md)，设计与证据见 [RFC #19](https://github.com/depeng1994/lite-actions/issues/19)。
+业务验证通过后，执行 `sudo systemctl enable --now lite-actions-auto-update.timer`。日志与停用命令见[自动更新运维指南](docs/auto-update.md)。

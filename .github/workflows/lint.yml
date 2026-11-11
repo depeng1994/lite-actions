@@ -1,8 +1,8 @@
 name: Lint and CPU smoke checks
 on:
-  pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
@@ -10,9 +10,7 @@ jobs:
     name: Lint and CPU smoke / queue contracts
     runs-on: ubuntu-latest
     steps:
-      # For a PR, github.sha is GitHub's proposed merge commit; for a push it is
-      # the pushed commit. The checkout is therefore the code being validated.
-      - name: Check out the proposed commit
+      - name: Check out the exact revision
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
