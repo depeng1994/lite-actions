@@ -30,7 +30,7 @@ class Check:
 
 
 def _run_git(root: Path, args: list[str], extra_safe: tuple[Path, ...] = ()) -> str:
-    safe = (root,) + extra_safe
+    safe = (root, root / '.git') + extra_safe
     fd, name = tempfile.mkstemp(prefix="lite-actions-preflight-git-")
     config = Path(name)
     try:
