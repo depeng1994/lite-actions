@@ -14,7 +14,13 @@ import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
-from ci_core.contract import REPO, digest, normalize, parse_plan
+from ci_core.contract import (
+    REPO,
+    digest,
+    normalize,
+    parse_plan,
+    trusted_gitcode_repositories,
+)
 
 
 class RunChanged(ValueError):
@@ -67,14 +73,6 @@ def source_plan(rows, run, repo):
     return plan
 
 
-def source_workflows():
-    return set(
-        filter(
-            None, os.environ.get("LITE_ACTIONS_GITCODE_SOURCE_WORKFLOWS", "").split(",")
-        )
-    )
-
-
 def source_dispatch(details):
     stages = details.get("stages")
     if not isinstance(stages, list) or any(
@@ -118,7 +116,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 class GitCodeClient:
     def __init__(self, token, repo):
-        if repo not in {"depeng1994/torchtitan-npu", "cann/torchtitan-npu"}:
+        if repo not in trusted_gitcode_repositories():
             raise ValueError("untrusted GitCode repository")
         if not token:
             raise ValueError("GitCode token required")
@@ -198,28 +196,17 @@ class GitCodeClient:
 
     def running_workflows(self):
         runs = []
-        events = ("Manual", "MR") if source_workflows() else ("Manual",)
-        for event in events:
-            runs.extend(self._running_event(event))
-        return runs
-
-    def _running_event(self, event):
-        runs = []
         for page in range(1, 6):
             body = self.request(
                 "GET",
-                f"/actions/runs?event={event}&status=RUNNING&per_page=100&page={page}",
+                f"/actions/runs?status=RUNNING&per_page=100&page={page}",
                 api=8,
             )
             rows = body.get("workflow_runs", [])
             for row in rows:
-                if row.get("event") != event or row.get("status") != "RUNNING":
-                    continue
-                if (
-                    event == "MR"
-                    and (row.get("file_path") or "").rsplit("/", 1)[-1]
-                    not in source_workflows()
-                ):
+                if row.get("status") != "RUNNING" or not str(
+                    row.get("workflow_name", "")
+                ).startswith("lite-ci-"):
                     continue
                 run_id = row.get("workflow_run_id")
                 if not isinstance(run_id, str) or not re.fullmatch(
@@ -242,10 +229,6 @@ class GitCodeClient:
                         type(exc).__name__,
                     )
                     continue
-                # GitCode currently reports attempt 1 even for reruns. Source-profile
-                # workflows distinguish reruns using the child job's dispatch ID.
-                if details.get("attempt") != 1:
-                    continue
                 if any(
                     details.get(k) != row.get(k)
                     for k in (
@@ -255,9 +238,8 @@ class GitCodeClient:
                         "head_sha",
                         "head_branch",
                         "file_path",
+                        "workflow_name",
                     )
-                ) or details.get("actor", {}).get("login") != row.get("actor", {}).get(
-                    "login"
                 ):
                     continue
                 start = row.get("start_time")
@@ -266,16 +248,21 @@ class GitCodeClient:
                 if start > 10**11:
                     start /= 1000
                 dispatch_fields = {}
-                if (row.get("file_path") or "").rsplit("/", 1)[
-                    -1
-                ] in source_workflows():
+                jobs = [
+                    job
+                    for stage in (details.get("stages") or [])
+                    if isinstance(stage, dict)
+                    for job in (stage.get("jobs") or [])
+                    if isinstance(job, dict)
+                ]
+                if any(job.get("name") == "Dispatcher Smoke" for job in jobs):
                     try:
                         dispatch = source_dispatch(details)
                     except RunChanged:
                         continue
                     dispatch_fields = {"_ci_dispatch_id": dispatch}
                 pr_fields = {}
-                if event == "MR":
+                if details.get("pull_request_id"):
                     try:
                         number, source = self.pr_source(details)
                     except (
@@ -301,14 +288,12 @@ class GitCodeClient:
                         "head_branch": row.get("head_branch"),
                         "actor": row.get("actor") or {},
                         "path": row.get("file_path"),
-                        "name": "Dispatcher-Smoke",
+                        "name": row.get("workflow_name"),
                         "run_number": row.get("run_number"),
                         "created_at": dt.datetime.fromtimestamp(
                             start, dt.timezone.utc
                         ).isoformat(),
-                        "event": "workflow_dispatch"
-                        if event == "Manual"
-                        else "pull_request",
+                        "event": row.get("event"),
                         "status": "in_progress",
                         **pr_fields,
                         **dispatch_fields,
@@ -320,33 +305,32 @@ class GitCodeClient:
 
     def validate_current(self, run):
         details = self.request("GET", f"/actions/runs/{run['id']}", api=8)
-        is_pr = run.get("event") == "pull_request"
         expected = {
             "workflow_run_id": run["id"],
             "attempt": run["run_attempt"],
             "head_sha": run["head_sha"],
             "head_branch": run["head_branch"],
             "file_path": run["path"],
-            "event": "MR" if is_pr else "Manual",
+            "event": run["event"],
+            "workflow_name": run["name"],
             "status": "RUNNING",
         }
-        if (
-            any(details.get(k) != v for k, v in expected.items())
-            or details.get("actor", {}).get("login") != run["actor"]["login"]
-            or (
-                "_ci_dispatch_id" in run
-                and source_dispatch(details) != run["_ci_dispatch_id"]
-            )
+        if any(
+            details.get(k, 1 if k == "attempt" else None) != v
+            for k, v in expected.items()
+        ) or (
+            "_ci_dispatch_id" in run
+            and source_dispatch(details) != run["_ci_dispatch_id"]
         ):
             raise RunChanged("GitCode run changed or ended")
-        if is_pr and self.pr_source(details) != (
+        if "_ci_pr_number" in run and self.pr_source(details) != (
             run.get("_ci_pr_number"),
             run.get("_ci_source_repo"),
         ):
             raise RunChanged("GitCode PR source changed")
 
     def ci_request(self, run):
-        if run["path"].rsplit("/", 1)[-1] in source_workflows():
+        if "_ci_dispatch_id" in run:
             from ci_core.registry import inspect_archive
             from ci_core.ssh_runner import model_archive
 

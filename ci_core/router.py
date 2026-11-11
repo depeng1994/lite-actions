@@ -2,7 +2,6 @@
 
 import logging
 import os
-import re
 import subprocess
 import tempfile
 import threading
@@ -12,21 +11,17 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 from contextlib import ExitStack
 from pathlib import Path
-from urllib.parse import quote
 
 from ci_core.config import load, runtime_case
 from ci_core.contract import (
     REPO,
     SELF_REPO,
     SELF_WORKFLOW,
-    TORCHTITAN_REPO,
-    VLLM_REPO,
-    WORKFLOWS,
     configured_repos,
     parse_plan,
 )
 from ci_core.executor import ExternalNpuOccupancy, execute
-from ci_core.gitcode import RunChanged, source_workflows
+from ci_core.gitcode import RunChanged
 from ci_core.job_state import JobState
 from ci_core.plan import verify_definition
 from ci_core.reporting import post, progress, report
@@ -162,147 +157,21 @@ class Router:
             raise ValueError("run belongs to another GitHub repository")
         return self.client
 
-    def trusted_manual(self, run):
-        """Admit an authorized repository writer at its branch's current SHA."""
-        actor = (run.get("triggering_actor") or run.get("actor") or {}).get("login")
-        branch = run.get("head_branch")
-        sha = run.get("_ci_control_sha", run.get("head_sha"))
-        if (
-            not isinstance(actor, str)
-            or not isinstance(branch, str)
-            or not branch
-            or len(branch) > 255
-            or any(ord(c) < 32 for c in branch)
-            or not isinstance(sha, str)
-            or not re.fullmatch(r"[0-9a-f]{40}", sha)
-        ):
-            return False
-        try:
-            client = self.client_for(run)
-            if actor == "github-actions[bot]":
-                if (
-                    run.get("_ci_repo") != VLLM_REPO
-                    or type(run.get("_ci_pr_number")) is not int
-                    or client.request("GET", "").get("default_branch") != branch
-                ):
-                    return False
-                # Source admission verifies the recorded controller against
-                # trusted default-branch history, including a concurrent push.
-                return True
-            else:
-                if not re.fullmatch(
-                    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", actor
-                ):
-                    return False
-                result = client.request(
-                    "GET", f"/collaborators/{quote(actor, safe='')}/permission"
-                )
-                if result.get("permission") not in {"write", "maintain", "admin"}:
-                    return False
-            current = client.request("GET", "/branches/" + quote(branch, safe=""))
-            return current.get("commit", {}).get("sha") == sha
-        except Exception:
-            logging.warning("repository permission or branch verification unavailable")
-            return False
-
     def eligible(self, run):
-        repo = run.get("_ci_repo", REPO)
-        filename = (run.get("path") or "").rsplit("/", 1)[-1]
-        if run.get("_ci_provider") == "gitcode":
-            from ci_core.contract import GITCODE_REPOS
-
-            actors = set(
-                filter(
-                    None,
-                    os.environ.get("LITE_ACTIONS_GITCODE_ALLOWED_ACTORS", "").split(
-                        ","
-                    ),
-                )
-            )
-            branches = set(
-                filter(
-                    None,
-                    os.environ.get(
-                        "LITE_ACTIONS_GITCODE_ALLOWED_BRANCHES", "master"
-                    ).split(","),
-                )
-            )
-            workflows = set(
-                filter(
-                    None,
-                    os.environ.get(
-                        "LITE_ACTIONS_GITCODE_WORKFLOWS", "lite-actions.yml"
-                    ).split(","),
-                )
-            )
-            if filename in source_workflows() and not run.get("_ci_dispatch_id"):
-                return False
-            if run.get("event") == "pull_request":
-                return (
-                    repo in GITCODE_REPOS
-                    and filename in workflows & source_workflows()
-                    and run.get("status") == "in_progress"
-                    and type(run.get("_ci_pr_number")) is int
-                    and isinstance(run.get("_ci_source_repo"), str)
-                )
-            return (
-                repo in GITCODE_REPOS
-                and filename in workflows
-                and run.get("event") == "workflow_dispatch"
-                and run.get("status") == "in_progress"
-                and run.get("head_branch") in branches
-                and run.get("actor", {}).get("login") in actors
-            )
-        if repo == SELF_REPO:
+        if not str(run.get("name", "")).startswith("lite-ci-") or run.get(
+            "status"
+        ) not in {"queued", "in_progress"}:
+            return False
+        if (
+            run.get("_ci_repo", REPO) == SELF_REPO
+            and (run.get("path") or "").rsplit("/", 1)[-1] == SELF_WORKFLOW
+        ):
             from ci_core.self_identity import checkout_sha
 
-            return (
-                self.self_sha is not None
-                and run.get("event") == "workflow_dispatch"
-                and filename == SELF_WORKFLOW
-                and run.get("status") in {"queued", "in_progress"}
-                and run.get("head_sha") == self.self_sha == checkout_sha(self.root)
-                and self.trusted_manual(run)
-            )
-        if filename not in WORKFLOWS or run.get("status") not in {
-            "queued",
-            "in_progress",
-        }:
-            return False
-        if repo == VLLM_REPO:
-            allowed = set()
-            branches = set()
-        elif repo == TORCHTITAN_REPO:
-            actors_value = os.environ.get(
-                "LITE_ACTIONS_TORCHTITAN_ALLOWED_ACTORS",
-                os.environ.get("LITE_ACTIONS_ALLOWED_ACTORS", ""),
-            )
-            branches_value = os.environ.get(
-                "LITE_ACTIONS_TORCHTITAN_ALLOWED_BRANCHES",
-                os.environ.get("LITE_ACTIONS_ALLOWED_BRANCHES", "master"),
-            )
-            allowed = set(filter(None, actors_value.split(",")))
-            branches = set(filter(None, branches_value.split(",")))
-        else:
-            return False
-        event = run.get("event")
-        if event in ("pull_request", "pull_request_target"):
-            admitted = type(run.get("_ci_pr_number")) is int and (
-                (repo == VLLM_REPO and event == "pull_request_target")
-                or (
-                    repo == TORCHTITAN_REPO
-                    and event == "pull_request"
-                    and run.get("actor", {}).get("login") in allowed
-                )
-            )
-        else:
-            admitted = event == "workflow_dispatch" and (
-                self.trusted_manual(run)
-                if repo == VLLM_REPO
-                else run.get("head_branch") in branches
-                and run.get("actor", {}).get("login") in allowed
-            )
-        return admitted
+            return self.self_sha is not None and run.get(
+                "head_sha"
+            ) == self.self_sha == checkout_sha(self.root)
+        return True
 
     def transition(self, key, phase, **fields):
         self.state.update(key, phase=phase, **fields)
@@ -348,6 +217,18 @@ class Router:
                 return
         if not self.eligible(run):
             return
+        generic_source = None
+        if run.get("_ci_provider") != "gitcode" and not (
+            run.get("_ci_repo") == SELF_REPO
+            and run.get("path", "").rsplit("/", 1)[-1] == SELF_WORKFLOW
+        ):
+            from ci_core.github_source import bind_request_source, read_source_artifact
+
+            client = self.client_for(run)
+            generic_source = read_source_artifact(client, run)
+            if generic_source is None:
+                return
+            run = bind_request_source(client, run, generic_source)
         if cached is None:
             plan = self.client_for(run).ci_request(run)
             if plan is None:
@@ -358,7 +239,10 @@ class Router:
                 run["path"].rsplit("/", 1)[-1],
                 repo=run.get("_ci_repo", REPO),
             )
-            if run.get("_ci_repo") == SELF_REPO:
+            if (
+                run.get("_ci_repo") == SELF_REPO
+                and run.get("path", "").rsplit("/", 1)[-1] == SELF_WORKFLOW
+            ):
                 from ci_core.self_smoke import expected_plan
 
                 if plan != expected_plan(run):
@@ -369,18 +253,17 @@ class Router:
         owned = [c for c in plan["cases"] if c["worker"] == self.worker]
         if not owned or all(task_key(run, c) in self.state.read() for c in owned):
             return
-        if run.get("_ci_repo") == VLLM_REPO:
-            from ci_core.vllm_source import read_source, requires_source
+        if generic_source is not None:
+            from ci_core.github_source import read_source
 
-            if requires_source(plan):
-                source = read_source(self.client_for(run), run, plan)
-                if source is None:
-                    return
-                run = {
-                    **run,
-                    "_ci_source": source,
-                    "_ci_execution_sha": source["source_sha"],
-                }
+            source = read_source(self.client_for(run), run, plan, source=generic_source)
+            if source is None:
+                return
+            run = {
+                **run,
+                "_ci_source": source,
+                "_ci_execution_sha": source["source_sha"],
+            }
         counts = Counter(item["test_id"] for item in plan["cases"])
         entries = []
         for item in owned:
@@ -473,7 +356,7 @@ class Router:
     def finish(self, key, status, rc, lines, clean=True):
         r = self.state.read()[key]
         if status == "PASS" and r["run"].get("_ci_source"):
-            from ci_core.vllm_source import check_current
+            from ci_core.github_source import check_current
 
             try:
                 check_current(
@@ -521,7 +404,10 @@ class Router:
         run = r["run"]
         launched = False
         try:
-            if run.get("_ci_repo") == SELF_REPO:
+            if (
+                run.get("_ci_repo") == SELF_REPO
+                and run.get("path", "").rsplit("/", 1)[-1] == SELF_WORKFLOW
+            ):
                 from ci_core.self_identity import checkout_sha
 
                 if (
@@ -532,7 +418,7 @@ class Router:
             if run.get("_ci_provider") == "gitcode":
                 self.client_for(run).validate_current(run)
             if run.get("_ci_source"):
-                from ci_core.vllm_source import check_current
+                from ci_core.github_source import check_current
 
                 check_current(self.client_for(run), run["_ci_source"], check_run=True)
             self.transition(key, "STAGING")
@@ -839,7 +725,7 @@ class Router:
                 try:
                     client = self.client_for(run)
                     if run.get("_ci_provider") == "gitcode" and (
-                        run.get("event") == "pull_request" or run.get("_ci_dispatch_id")
+                        run.get("_ci_pr_number") or run.get("_ci_dispatch_id")
                     ):
                         try:
                             client.validate_current(run)
@@ -850,7 +736,7 @@ class Router:
                     else:
                         statuses[ident] = client.workflow_status(run["id"])
                         if run.get("_ci_source"):
-                            from ci_core.vllm_source import check_current
+                            from ci_core.github_source import check_current
 
                             try:
                                 check_current(client, run["_ci_source"])

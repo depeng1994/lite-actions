@@ -43,9 +43,7 @@ class MultiRepoWorkerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             GitHubClient("fake", "torchtitan-npu/torchtitan-npu")
         with patch.dict(
-            os.environ,
-            {"LITE_ACTIONS_MODEL_REPO": "torchtitan-npu/torchtitan-npu"},
-            clear=True,
+            os.environ, {"LITE_ACTIONS_MODEL_REPO": "bad/../repo"}, clear=True
         ):
             with self.assertRaises(ValueError):
                 configured_repos()
@@ -93,7 +91,7 @@ class MultiRepoWorkerTests(unittest.TestCase):
         for invalid in (
             TORCHTITAN_REPO + "," + TORCHTITAN_REPO,
             VLLM_REPO + ",torchtitan-npu/vllm-ascend",
-            "unknown/x",
+            "unknown/../x",
             "",
         ):
             with patch.dict(
@@ -101,6 +99,22 @@ class MultiRepoWorkerTests(unittest.TestCase):
             ):
                 with self.assertRaises(ValueError):
                     configured_repos()
+
+    def test_configured_repository_can_use_generic_workflow(self):
+        repo = "example-org/new-model"
+        with patch.dict(os.environ, {"LITE_ACTIONS_MODEL_REPOS": repo}, clear=True):
+            self.assertEqual(configured_repos(), (repo,))
+            self.assertEqual(GitHubClient("fake", repo).repo, repo)
+            router = Router.__new__(Router)
+            run = {
+                "_ci_repo": repo,
+                "name": "lite-ci-custom",
+                "path": ".github/workflows/custom.yml",
+                "event": "workflow_dispatch",
+                "status": "in_progress",
+            }
+            self.assertTrue(router.eligible(run))
+            self.assertFalse(router.eligible({**run, "name": "unrelated"}))
 
     def test_clients_use_repo_specific_api_and_queue_identity(self):
         first = GitHubClient("fake", TORCHTITAN_REPO)
@@ -144,18 +158,20 @@ class MultiRepoWorkerTests(unittest.TestCase):
                 "head_sha": sha,
                 "_ci_repo": repo,
                 "_ci_pr_number": 4,
-                "path": ".github/workflows/lite_actions_dispatcher_smoke.yml",
+                "path": ".github/workflows/lite-ci-dispatcher-smoke.yml",
                 "actor": {"login": "depeng1994"},
                 "event": event,
                 "status": "in_progress",
                 "created_at": "2026-10-31T00:00:00Z",
             }
+            if repo == VLLM_REPO:
+                run.update(name="lite-ci-smoke", event="workflow_dispatch")
             plan = create_plan(
                 [case],
                 run_id=33,
                 attempt=1,
                 sha=sha,
-                workflow="lite_actions_dispatcher_smoke.yml",
+                workflow="lite-ci-dispatcher-smoke.yml",
                 defaults=defaults,
                 repo=repo,
             )
@@ -175,6 +191,19 @@ class MultiRepoWorkerTests(unittest.TestCase):
                     {
                         "LITE_ACTIONS_TORCHTITAN_ALLOWED_ACTORS": "depeng1994",
                     },
+                ),
+                patch.object(Router, "eligible", return_value=True),
+                patch(
+                    "ci_core.github_source.read_source_artifact",
+                    return_value={"source_sha": sha},
+                ),
+                patch(
+                    "ci_core.github_source.bind_request_source",
+                    side_effect=lambda client, run, source: run,
+                ),
+                patch(
+                    "ci_core.github_source.read_source",
+                    return_value={"source_sha": sha},
                 ),
             ):
                 router = Router(Path(tmp), "yellow", Combined(clients), "depeng1994")

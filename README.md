@@ -49,28 +49,30 @@ node. All nodes in a multi-node allocation must support the case kind before any
 lease is taken. The current `:154` deployment is smoke-only until its training
 assets are configured; DSV4 cases queue on the asset-ready `:153` node.
 
-## Workflow defaults and Python overrides
+## GitHub workflow and model cases
 
-The model repository exposes only `nightly_fulltests.yml` and
-`lite_actions_dispatcher_smoke.yml` as Lite Actions business workflows. Both support
-`workflow_dispatch` and PRs against `master`; no scheduled run is added.
+For each repository explicitly listed in `LITE_ACTIONS_MODEL_REPOS`, the Worker
+discovers GitHub workflows whose name starts with `lite-ci-`, regardless of the
+event that started them. The hosting platform controls who can trigger workflows.
+The workflow's trusted preparation job publishes run- and attempt-bound
+`lite-ci-request-<attempt>` and `lite-ci-source-<attempt>` artifacts. The latter
+binds the selected commit or verified PR merge source to the controller, plan and
+repository identity; the Worker independently verifies these before admission.
+The workflow waits for all requested results. A prefix alone does not supply the
+plan, source proof, model entrypoint, verified topology or execution environment.
+The repository-owned self-smoke has its own pinned-Worker contract.
 
-```yaml
-default_worker: blue
-default_target_pool: a3_shared_blue
-default_docker: cann_master_torchtitan_master_xyj
-default_cases: '[{"suite":"a3_8p_tests"}]'
-```
+New repositories use the same model-owned entrypoint at
+`tests/integration_tests/tools/lite_actions/entrypoint.py` and define their own
+cases. Resource pools, allocation groups and container bindings are configured
+by the Worker operator. A two-device case, for example, needs a verified group
+of exactly two devices and a compatible bound container.
 
 Python `OverrideDefinitions` adds `ci_kind` (`train`, `npu_smoke`, `worker_probe`)
 and optional `ci_overrides` for `worker`, `target_pool`, `docker`. Explicit fields
 override Workflow defaults; omitted fields inherit. Empty/unknown fields fail.
 Worker probes inherit only worker identity and request no NPU/container resources.
 `nnodes * ngpu` supplies displayed device count; verified topology controls allocation.
-
-Nightly uses actual model definitions `dsv4_flash_a3_8p_example` and
-`dsv4_flash_a3_8p_adamw`, each 1x8 and five steps. Their existing `check_loss=False`
-means PASS does not imply a new numerical-accuracy certification.
 
 ## Start and validation
 
@@ -150,9 +152,10 @@ each preemption request; unconfirmed cleanup is reported as such.
 The runtime `force_reclaim` field is the pool default. `OCCUPANCY_POLICY` log
 lines show the effective policy for each selected node and execution phase.
 
-For the GitCode source-profile pilot, list its workflow filenames in both
-`LITE_ACTIONS_GITCODE_WORKFLOWS` and `LITE_ACTIONS_GITCODE_SOURCE_WORKFLOWS`.
-Each participating worker resolves `dispatch_smoke` from the run's fixed model
+For GitCode repositories listed in `LITE_ACTIONS_GITCODE_REPOS`, the Worker also
+discovers running workflows whose name starts with `lite-ci-`, regardless of
+event. For the source-profile protocol, each participating worker resolves
+`dispatch_smoke` from the run's fixed model
 commit, accepts only its own cases, and publishes results as the configured
 `LITE_ACTIONS_GITCODE_RESULT_AUTHOR` using that account's token. The waiter job must be uniquely named
 `Dispatcher Smoke`. GitCode PR runs accept Fork sources; discovery executes the
@@ -180,7 +183,7 @@ unchanged, and unverified cleanup is still reported as `cleanup_verified=false`.
 
 ## Result limits
 
-Schema 3 binds repo, workflow, run, attempt, SHA, plan digest, case, worker, pool and
+The request and result bind repo, workflow, run, attempt, SHA, plan digest, case, worker, pool and
 environment. Waiters also require the configured result author and reject PASS when
 cleanup is unverified. Metadata-only progress updates contain no training output.
 
@@ -195,9 +198,9 @@ cleanup is unverified. Metadata-only progress updates contain no training output
 ## Migration and hardware gates
 
 Drain/cancel old work, verify remote release, stop old dispatchers, archive state,
-install canonical aliases and deploy the same schema-3 release to both workers.
-Only then enable the two new workflows and update required status checks. Keep the
-model repository's upstream/mirror synchronization consistent with these workflows.
+install canonical aliases and deploy the same reviewed release to both workers.
+Enable each model workflow only after its matching Worker contract is deployed;
+remove retired routes and update required status checks during the cutover.
 
 Yellow training pools remain disabled until independent hardware, container mounts,
 CANN, asset paths, network, device numbering and real smoke/training/cleanup checks

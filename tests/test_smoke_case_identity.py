@@ -62,7 +62,7 @@ class SmokePlanIdentityTests(unittest.TestCase):
                     run_id=123,
                     attempt=1,
                     sha="a" * 40,
-                    workflow="lite_actions_dispatcher_smoke.yml",
+                    workflow="lite-ci-dispatcher-smoke.yml",
                     defaults=DEFAULTS,
                 )
 

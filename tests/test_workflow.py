@@ -307,7 +307,7 @@ class WorkflowTests(unittest.TestCase):
                         run_id=ident,
                         attempt=1,
                         sha=run["head_sha"],
-                        workflow="nightly_fulltests.yml",
+                        workflow="lite-ci-fixture.yml",
                         defaults=DEFAULTS,
                     )
                     router.receive([run])
@@ -383,7 +383,10 @@ class WorkflowTests(unittest.TestCase):
         service = Service([definition("training")], self.root)
         service.runs[20]["status"] = "queued"
         router = self.router(service)
-        with patch.object(service, "ci_request", side_effect=[None, service.plans[20]]):
+        with (
+            service.connected(),
+            patch.object(service, "ci_request", side_effect=[None, service.plans[20]]),
+        ):
             router.receive(service.running_workflows())
             self.assertFalse(router.state.read())
             router.receive(service.running_workflows())

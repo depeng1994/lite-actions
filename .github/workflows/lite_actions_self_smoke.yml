@@ -1,4 +1,4 @@
-name: Lite Actions self smoke
+name: lite-ci-self-smoke
 on:
   workflow_dispatch:
 permissions:
