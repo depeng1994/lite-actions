@@ -204,6 +204,41 @@ if [[ "$(systemctl is-active "$worker_unit")" != "active" ]]; then
   exit 1
 fi
 
+# Verify a current, identity-bound Ready rather than relying on is-active.
+# No changes to business state, allocation or secrets.
+if [[ -f "$install_root/current/ci_core/worker_ready.py" ]]; then
+  if ! (
+    cd "$install_root/current"
+    python3 - "$ready_file" "$(git -C "$install_root/current" rev-parse HEAD)" "$worker_unit" <<'PY'
+import subprocess
+import sys
+import time
+from pathlib import Path
+from ci_core.worker_ready import verify_ready
+
+ready = Path(sys.argv[1])
+sha, unit = sys.argv[2], sys.argv[3]
+deadline = time.monotonic() + 120
+while time.monotonic() < deadline:
+    result = subprocess.run(
+        ["systemctl", "show", "-p", "MainPID", "--value", unit],
+        capture_output=True, text=True, timeout=10, check=False
+    )
+    if result.returncode == 0 and result.stdout.strip().isdigit():
+        pid = int(result.stdout.strip())
+        if pid > 0 and verify_ready(
+            ready, expected_sha=sha, expected_pid=pid, not_before=0
+        ):
+            sys.exit(0)
+    time.sleep(0.5)
+sys.exit(1)
+PY
+  ); then
+    echo "Worker Ready identity did not verify" >&2
+    exit 1
+  fi
+fi
+
 printf 'INSTALL_OK: unit=%s sha=%s\n' "$worker_unit" \
   "$(git -C "$install_root/current" rev-parse HEAD)"
 echo "Management log: /var/log/lite-actions/management/updates.jsonl"

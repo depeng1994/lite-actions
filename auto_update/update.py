@@ -16,13 +16,17 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from auto_update.check_source import SourceError, check_source, stage_source, validate_source
+from auto_update.check_source import (
+    SourceError,
+    check_source,
+    stage_source,
+    validate_source,
+)
 from auto_update.update_log import record
 from auto_update.version_switch import (
     SwitchError,
     current_release,
     is_active,
-    main_pid,
     prepare_release,
     release_at,
     restore_old,

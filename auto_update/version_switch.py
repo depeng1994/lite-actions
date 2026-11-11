@@ -13,8 +13,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from auto_update.check_source import checkout_sha
 from ci_core.worker_ready import verify_ready
-from auto_update.check_source import SourceError, checkout_sha
 
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _UNIT = re.compile(r"[A-Za-z0-9_.@:-]+\.service\Z")

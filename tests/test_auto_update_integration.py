@@ -11,7 +11,6 @@ from auto_update.update import _run, exclusive
 from auto_update.update_log import record
 from tests.test_auto_update_version_switch import checkout, settings
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
