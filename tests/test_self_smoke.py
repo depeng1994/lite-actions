@@ -45,6 +45,7 @@ class SelfSmokeTests(unittest.TestCase):
             [item["test_id"] for item in self.plan["cases"]],
             [
                 "worker_os_blue",
+                "worker_os_yellow",
                 "dispatch_smoke_8p",
                 "dispatch_smoke_16p",
                 "dispatch_smoke_8p",
@@ -55,9 +56,12 @@ class SelfSmokeTests(unittest.TestCase):
                 item["resources"]["nodes"] * item["resources"]["devices_per_node"]
                 for item in self.plan["cases"]
             ],
-            [0, 8, 16, 8],
+            [0, 0, 8, 16, 8],
         )
-        self.assertEqual(len({item["case_id"] for item in self.plan["cases"]}), 4)
+        self.assertEqual(len({item["case_id"] for item in self.plan["cases"]}), 5)
+        yellow = self.plan["cases"][1]
+        self.assertEqual((yellow["kind"], yellow["worker"]), ("worker_probe", "yellow"))
+        self.assertEqual((yellow["target_pool"], yellow["docker"]), (None, None))
         run = {"id": 42, "run_attempt": 1, "head_sha": "a" * 40}
         with self.assertRaises(ValueError):
             parse_plan(self.plan, run, SELF_WORKFLOW, repo=TORCHTITAN_REPO)
@@ -78,7 +82,7 @@ class SelfSmokeTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
-        self.assertEqual(len(json.loads(result.stdout)), 4)
+        self.assertEqual(len(json.loads(result.stdout)), 5)
 
     def test_complete_identity_bound_results_and_fail_closed(self):
         run = {
@@ -99,8 +103,13 @@ class SelfSmokeTests(unittest.TestCase):
             }
             for item in self.plan["cases"]
         ]
-        self.assertEqual(len(results(comments, self.plan, "reporter")), 4)
-        self.assertEqual(len(results(comments[:-1], self.plan, "reporter")), 3)
+        self.assertEqual(len(results(comments, self.plan, "reporter")), 5)
+        # Four Blue results cannot satisfy the missing Yellow instance.
+        blue_only = comments[:1] + comments[2:]
+        self.assertNotIn(
+            self.plan["cases"][1]["case_id"], results(blue_only, self.plan, "reporter")
+        )
+        self.assertEqual(len(results(blue_only, self.plan, "reporter")), 4)
         duplicate = copy.deepcopy(comments[-1])
         marker, payload = duplicate["body"].split("\n", 1)
         result = json.loads(payload)
@@ -252,17 +261,20 @@ class SelfSmokeTests(unittest.TestCase):
             patch("ci_core.router.execute", side_effect=execute),
         ):
             router = Router(root, "blue", service, "reporter")
+            yellow = Router(root, "yellow", service, "reporter")
             try:
                 for _ in range(20):
-                    router.tick()
-                    for future, _, _ in list(router.active.values()):
-                        future.result(10)
-                    if len(service.results()) == 4:
+                    for worker in (router, yellow):
+                        worker.tick()
+                        for future, _, _ in list(worker.active.values()):
+                            future.result(10)
+                    if len(service.results()) == 5:
                         break
                 self.assertEqual(
-                    len(results(service.comments, self.plan, "reporter")), 4
+                    len(results(service.comments, self.plan, "reporter")), 5
                 )
             finally:
+                yellow.close()
                 router.close()
 
     def test_worker_checkout_and_manual_admission_are_sha_bound(self):

@@ -252,14 +252,16 @@ python3 -m unittest discover -s tests
 
 The lint command runs Ruff lint/format checks and requires `device_ids`/`devices`
 arrays in `config/pools.json` to remain on one line. Use `--fix` to format both.
-Pull requests run the same checks in GitHub Actions. See [test scope](docs/testing.md)
+A push to the protected main branch runs the same checks in GitHub Actions. See [test scope](docs/testing.md)
 before adding a scenario; configuration snapshots are not the test objective.
 
 For trusted candidates, `.github/workflows/lite_actions_self_smoke.yml` can be
 started manually after the Worker is running from a clean checkout of that exact
 commit. It uses the repository's `tests/integration_tests/training_cases/dispatch_smoke.py`
-profile: a Blue OS probe followed by 8P, 16P and 8P HCCL Smoke. The Yellow OS
-probe is disabled in the default profile. PRs continue to run CPU checks only.
+full profile, in plan order: Blue OS, Yellow OS, single-node 8P, two-node 16P,
+and a second single-node 8P. Both OS probes use zero NPUs. The independent
+`cpu-only` deployment profile still probes Blue alone. The full suite runs
+automatically after a PR lands on `main`, or manually on a deployed revision.
 
 To opt a Worker into the self-smoke route, include `depeng1994/lite-actions` in
 `LITE_ACTIONS_MODEL_REPOS` and set `LITE_ACTIONS_SELF_SMOKE_ENABLED=1`. Set the
@@ -273,15 +275,14 @@ gh workflow run lite_actions_self_smoke.yml -R depeng1994/lite-actions --ref <re
 
 The Worker rejects a run unless its SHA matches its own verified checkout. Keep
 the configured resource locks and cleanup policy, and record the Run ID, SHA,
-all four case results and cleanup evidence. Missing results or unverified cleanup
+all five case results and cleanup evidence. Missing results or unverified cleanup
 are failures. Record resource and timing evidence when evaluating FIFO; admission
 order alone does not prove actual start order.
 
 Stop the candidate gracefully after the run. Check for unfinished or quarantined
 allocations and reconcile them as needed before restoring the previous Worker with
 the same state and locks. Preserve logs and the evidence linking both SHAs, the Run
-and the live Worker. The pull-request checks above run CPU contracts only; they do
-not certify 8P/16P hardware execution.
+and both live Workers. The unit tests alone do not certify 8P/16P hardware execution.
 
 
 ## 安装自动更新
