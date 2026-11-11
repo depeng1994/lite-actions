@@ -99,7 +99,7 @@ def read_proxy_env_file(path: str | Path, *, expected_uid: int = 0) -> dict[str,
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(str(source), flags)
-        with os.fdopen(fd, "r", encoding="utf-8") as stream:
+        with os.fdopen(fd, "r", encoding="utf-8", newline="") as stream:
             opened = os.fstat(stream.fileno())
             if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
                 raise DeploySupportError("Proxy environment file changed while being opened")
@@ -260,7 +260,7 @@ def clone_seed(source_root: str | Path, seed: str | Path, sha: str) -> None:
     try:
         os.fchmod(fd, 0o600)
         safe_entries = []
-        for directory in (source, target):
+        for directory in (source, source / '.git', target, target / '.git'):
             escaped = str(directory).replace("\\", "\\\\").replace('"', '\\"')
             safe_entries.append('    directory = "' + escaped + '"')
         os.write(fd, ("[safe]\n" + "\n".join(safe_entries) + "\n").encode("utf-8"))
