@@ -94,6 +94,7 @@ class SourceProfileTests(unittest.TestCase):
             workflow_run_id="run_1",
             attempt=1,
             event="MR",
+            workflow_name="lite-ci-per-pr-alltest",
             status="RUNNING",
             head_sha="a" * 40,
             head_branch="branch",
@@ -136,8 +137,7 @@ class SourceProfileTests(unittest.TestCase):
 
     def api(self, method, path, **kwargs):
         if path.startswith("/actions/runs?"):
-            event = "MR" if "event=MR" in path else "Manual"
-            return {"workflow_runs": [self.run] if self.run["event"] == event else []}
+            return {"workflow_runs": [self.run]}
         if path == "/actions/runs/run_1":
             return self.run
         if path == "/pulls/17":
@@ -182,6 +182,7 @@ class SourceProfileTests(unittest.TestCase):
                 )
                 self.assertEqual([r["item"]["test_id"] for r in records], expected)
             self.run["event"] = "Manual"
+            self.run.pop("pull_request_id", None)
             manual = self.client.running_workflows()[0]
             self.assertEqual(
                 [c["test_id"] for c in self.client.ci_request(manual)["cases"]],
@@ -193,6 +194,17 @@ class SourceProfileTests(unittest.TestCase):
             rows[0][field] = value
             with self.assertRaises(ValueError):
                 source_plan(rows, run, self.client.repo)
+
+    def test_prefix_discovery_ignores_trigger_type(self):
+        for event in ("Manual", "MR", "Schedule", "Note", "Push"):
+            self.run["event"] = event
+            with self.subTest(event=event):
+                run = self.client.running_workflows()[0]
+                self.assertEqual(run["event"], event)
+                self.assertEqual(run["name"], "lite-ci-per-pr-alltest")
+                self.assertEqual(run["_ci_pr_number"], 17)
+        self.run["workflow_name"] = "ordinary-workflow"
+        self.assertEqual(self.client.running_workflows(), [])
 
     # 看护 Fork PR 的 Head 改变后，旧版本排队用例被取消。
     def test_changed_fork_head_cancels_queued_cases(self):

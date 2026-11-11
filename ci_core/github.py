@@ -13,7 +13,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 
-from ci_core.contract import REPO, SELF_REPO, SUPPORTED_REPOS, VLLM_REPO
+from ci_core.contract import REPO, trusted_repositories
 
 API = f"https://api.github.com/repos/{REPO}"
 
@@ -37,7 +37,7 @@ def authorization() -> str:
 
 class GitHubClient:
     def __init__(self, token: str, repo: str = REPO):
-        if repo not in SUPPORTED_REPOS:
+        if repo not in trusted_repositories():
             raise ValueError("untrusted GitHub repository")
         self.repo = repo
         self.api = f"https://api.github.com/repos/{repo}"
@@ -159,159 +159,46 @@ class GitHubClient:
             raise ValueError("artifact download exceeds byte budget")
         return payload
 
-    def normalize_pr_run(self, run: dict) -> dict | None:
-        """Bind a pull_request run to exactly one current upstream PR head.
-
-        GitHub may return pull_requests=[] for fork-originated runs. Resolve
-        using (head repo ID, head SHA), not a branch name or actor string.
-        Stale runs are not allowed to consume NPUs.
-        """
-        associated = run.get("pull_requests") or []
-        source = run.get("head_repository") or {}
-        source_id = source.get("id")
-        sha = run.get("head_sha")
-        if not isinstance(sha, str) or len(sha) != 40 or type(source_id) is not int:
-            return None
-        if len(associated) > 1:
-            return None
-        if associated:
-            candidates = associated
-        else:
-            candidates = []
-            for page in range(1, 6):
-                prs = self.request("GET", f"/pulls?state=open&per_page=100&page={page}")
-                if not isinstance(prs, list):
-                    raise ValueError("unexpected PR listing")
-                for pr in prs:
-                    if (
-                        pr.get("head", {}).get("sha") == sha
-                        and pr.get("head", {}).get("repo", {}).get("id") == source_id
-                        and pr.get("base", {}).get("ref") == "master"
-                        and pr.get("base", {}).get("repo", {}).get("full_name")
-                        == self.repo
-                    ):
-                        candidates.append(pr)
-                if len(prs) < 100:
-                    break
-            else:
-                # Cannot prove the scan covered all open PRs.
-                return None
-        if len(candidates) != 1:
-            return None
-        number = candidates[0].get("number")
-        if type(number) is not int or number < 1:
-            return None
-        pr = self.request("GET", f"/pulls/{number}")
-        if (
-            pr.get("state") != "open"
-            or pr.get("base", {}).get("repo", {}).get("full_name") != self.repo
-            or pr.get("base", {}).get("ref") != "master"
-            or pr.get("head", {}).get("repo", {}).get("id") != source_id
-            or pr.get("head", {}).get("sha") != sha
-        ):
-            return None
-        if associated and associated[0].get("head", {}).get("sha") != sha:
-            return None
-        return {**run, "head_sha": sha, "_ci_pr_number": number}
-
-    def normalize_target_pr_run(self, run: dict, *, pr=None) -> dict | None:
-        """Resolve a default-branch pull_request_target run to an exact PR head."""
-        import re
-
-        title = run.get("display_title") or ""
-        match = re.fullmatch(
-            r"lite-(?:a5|vllm)-pr-(\d+)-([0-9a-f]{40})(?:-([0-9a-f]{40}))?", title
-        )
-        if (
-            not match
-            or run.get("path", "").rsplit("/", 1)[-1]
-            != "lite_actions_dispatcher_smoke.yml"
-        ):
-            return None
-        pr_number, sha = int(match[1]), match[2]
-        if pr is None:
-            pr = self.request("GET", f"/pulls/{pr_number}")
-        target = pr.get("base", {}).get("ref", "")
-        source_repo = pr.get("head", {}).get("repo") or {}
-        if (
-            pr.get("state") != "open"
-            or pr.get("base", {}).get("repo", {}).get("full_name") != self.repo
-            or not isinstance(target, str)
-            or not target
-            or len(target) > 255
-            or any(ord(c) < 32 for c in target)
-            or type(source_repo.get("id")) is not int
-            or source_repo["id"] < 1
-            or not re.fullmatch(
-                r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}",
-                source_repo.get("full_name", ""),
-            )
-            or run.get("head_sha") != sha
-            or pr.get("head", {}).get("sha") != sha
-        ):
-            return None
-        return {
-            **run,
-            "head_sha": sha,
-            "_ci_pr_number": pr_number,
-            "_ci_source_repo": source_repo["full_name"],
-            "_ci_source_repo_id": source_repo["id"],
-            "_ci_base_ref": target,
-            **({"_ci_control_sha": match[3]} if match[3] else {}),
-        }
-
-    def normalize_native_recheck(self, run):
-        """Bind a reconciler dispatch to the current PR, without trusting its title alone."""
-        import re
-
-        title = run.get("display_title", "")
-        if not title.startswith("lite-vllm-recheck-"):
-            return run
-        match = re.fullmatch(
-            r"lite-vllm-recheck-([1-9][0-9]*)-([0-9a-f]{40})-([0-9a-f]{32})", title
-        )
-        if not match or run.get("head_sha") != match[2]:
-            return None
-        pr = self.request("GET", f"/pulls/{match[1]}")
-        normalized = self.normalize_target_pr_run(
-            {
-                **run,
-                "head_sha": pr.get("head", {}).get("sha", ""),
-                "display_title": f"lite-vllm-pr-{match[1]}-{pr.get('head', {}).get('sha', '')}-{match[2]}",
-            },
-            pr=pr,
-        )
-        return {**normalized, "display_title": title} if normalized else None
-
     def running_workflows(self) -> list[dict]:
         runs = {}
-        events = (
-            ("workflow_dispatch",)
-            if self.repo == SELF_REPO
-            else ("workflow_dispatch", "pull_request_target")
-            if self.repo == VLLM_REPO
-            else ("workflow_dispatch", "pull_request")
-        )
-        for event in events:
-            for status in ("queued", "in_progress"):
+        workflow_names = {}
+        for status in ("queued", "in_progress"):
+            for page in range(1, 11):
                 data = self.request(
-                    "GET", f"/actions/runs?event={event}&status={status}&per_page=100"
+                    "GET", f"/actions/runs?status={status}&per_page=100&page={page}"
                 )
-                for run in data.get("workflow_runs", []):
-                    if event == "pull_request":
-                        run = self.normalize_pr_run(run)
-                    elif event == "pull_request_target":
-                        run = self.normalize_target_pr_run(run)
-                    elif self.repo == VLLM_REPO:
-                        run = self.normalize_native_recheck(run)
+                rows = data.get("workflow_runs", [])
+                for run in rows:
                     if run is None or run.get("status") not in {
                         "queued",
                         "in_progress",
                     }:
                         continue
+                    name = run.get("name") or ""
+                    workflow_id = run.get("workflow_id")
+                    if (
+                        not str(name).startswith("lite-ci-")
+                        and type(workflow_id) is int
+                        and workflow_id > 0
+                    ):
+                        if workflow_id not in workflow_names:
+                            try:
+                                workflow_names[workflow_id] = self.request(
+                                    "GET", f"/actions/workflows/{workflow_id}"
+                                ).get("name", "")
+                            except (OSError, TimeoutError, ValueError):
+                                logging.warning(
+                                    "workflow metadata unavailable: %s", workflow_id
+                                )
+                                continue
+                        name = workflow_names[workflow_id]
+                    if not str(name).startswith("lite-ci-"):
+                        continue
                     identity = (run["id"], run.get("run_attempt", 1))
                     if identity not in runs or run["status"] == "in_progress":
-                        runs[identity] = {**run, "_ci_repo": self.repo}
+                        runs[identity] = {**run, "name": name, "_ci_repo": self.repo}
+                if len(rows) < 100:
+                    break
         return list(runs.values())
 
     def workflow_status(self, run_id: int) -> dict:

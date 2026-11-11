@@ -220,7 +220,7 @@ class SelfSmokeTests(unittest.TestCase):
                 "event": "workflow_dispatch",
                 "head_branch": "ci/test",
                 "actor": {"login": "maintainer"},
-                "name": "Self-Smoke",
+                "name": "lite-ci-self-smoke",
                 "run_number": 42,
             }
         }
@@ -320,6 +320,7 @@ class SelfSmokeTests(unittest.TestCase):
         router.root, router.self_sha = root, sha
         run = {
             "_ci_repo": SELF_REPO,
+            "name": "lite-ci-self-smoke",
             "event": "workflow_dispatch",
             "path": ".github/workflows/" + SELF_WORKFLOW,
             "status": "in_progress",
@@ -327,17 +328,16 @@ class SelfSmokeTests(unittest.TestCase):
             "head_branch": "ci/test",
             "head_sha": sha,
         }
-        with patch.object(router, "trusted_manual", return_value=True):
-            self.assertTrue(router.eligible(run))
-            for field, value in (
-                ("event", "pull_request"),
-                ("head_sha", "b" * 40),
-            ):
-                self.assertFalse(router.eligible({**run, field: value}))
-            git("update-index", "--assume-unchanged", "ci_core/core.py")
-            (root / "ci_core/core.py").write_text("VALUE = 2\n")
-            with self.assertRaises(ValueError):
-                router.eligible(run)
+        self.assertTrue(router.eligible(run))
+        for field, value in (
+            ("name", "unrelated"),
+            ("head_sha", "b" * 40),
+        ):
+            self.assertFalse(router.eligible({**run, field: value}))
+        git("update-index", "--assume-unchanged", "ci_core/core.py")
+        (root / "ci_core/core.py").write_text("VALUE = 2\n")
+        with self.assertRaises(ValueError):
+            router.eligible(run)
 
 
 if __name__ == "__main__":

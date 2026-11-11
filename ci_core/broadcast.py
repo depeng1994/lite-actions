@@ -13,7 +13,7 @@ import subprocess
 import time
 from ipaddress import ip_address
 
-from ci_core.contract import GITCODE_REPOS, REPO
+from ci_core.contract import REPO, trusted_gitcode_repositories
 
 BEIJING = dt.timezone(dt.timedelta(hours=8))
 BORDER = "*" * 80
@@ -44,7 +44,7 @@ def action_url(run: dict) -> str:
     if run.get("_ci_provider") == "gitcode":
         repo, ident = run.get("_ci_repo"), run.get("id")
         if (
-            repo not in GITCODE_REPOS
+            repo not in trusted_gitcode_repositories()
             or not isinstance(ident, str)
             or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", ident)
         ):
