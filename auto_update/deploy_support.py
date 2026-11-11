@@ -27,8 +27,7 @@ PROXY_ENV_ALLOWLIST = (
     "GIT_SSL_CAINFO",
 )
 _DROPIN_CONTENT = (
-    "[Service]\n"
-    "EnvironmentFile=-/etc/lite-actions/auto-update-proxy.env\n"
+    "[Service]\nEnvironmentFile=-/etc/lite-actions/auto-update-proxy.env\n"
 )
 
 
@@ -40,7 +39,9 @@ def validate_python_interpreter(path: str) -> str:
     """Require an absolute executable Python >=3.11 and return its version."""
     candidate = Path(path)
     if not candidate.is_absolute():
-        raise DeploySupportError("Python path must be absolute; pass --python /absolute/path")
+        raise DeploySupportError(
+            "Python path must be absolute; pass --python /absolute/path"
+        )
     if not candidate.is_file() or not os.access(str(candidate), os.X_OK):
         raise DeploySupportError(
             "Python executable not found or not executable: "
@@ -91,18 +92,24 @@ def read_proxy_env_file(path: str | Path, *, expected_uid: int = 0) -> dict[str,
             "Proxy environment file cannot be inspected; check its path and ownership"
         ) from exc
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
-        raise DeploySupportError("Proxy environment file must be a regular non-symlink file")
+        raise DeploySupportError(
+            "Proxy environment file must be a regular non-symlink file"
+        )
     if info.st_uid != expected_uid:
         raise DeploySupportError("Proxy environment file must be owned by root")
     if stat.S_IMODE(info.st_mode) != 0o600:
-        raise DeploySupportError("Proxy environment file must have mode 0600 (chmod 0600 FILE)")
+        raise DeploySupportError(
+            "Proxy environment file must have mode 0600 (chmod 0600 FILE)"
+        )
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(str(source), flags)
         with os.fdopen(fd, "r", encoding="utf-8", newline="") as stream:
             opened = os.fstat(stream.fileno())
             if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
-                raise DeploySupportError("Proxy environment file changed while being opened")
+                raise DeploySupportError(
+                    "Proxy environment file changed while being opened"
+                )
             values: dict[str, str] = {}
             for line_number, raw in enumerate(stream.read().split("\n"), 1):
                 if not raw:
@@ -127,12 +134,16 @@ def read_proxy_env_file(path: str | Path, *, expected_uid: int = 0) -> dict[str,
                     )
                 values[key] = value
             if not values:
-                raise DeploySupportError("Proxy environment file contains no allowed KEY=VALUE entries")
+                raise DeploySupportError(
+                    "Proxy environment file contains no allowed KEY=VALUE entries"
+                )
             return values
     except DeploySupportError:
         raise
     except (OSError, UnicodeError) as exc:
-        raise DeploySupportError("Proxy environment file cannot be read safely") from exc
+        raise DeploySupportError(
+            "Proxy environment file cannot be read safely"
+        ) from exc
 
 
 def render_systemd_environment(values: dict[str, str]) -> str:
@@ -143,28 +154,40 @@ def render_systemd_environment(values: dict[str, str]) -> str:
             continue
         value = values[key]
         if any(ord(char) < 32 or ord(char) == 127 for char in value):
-            raise DeploySupportError("Proxy environment values must be single-line printable values")
+            raise DeploySupportError(
+                "Proxy environment values must be single-line printable values"
+            )
         escaped = value.replace("\\", "\\\\").replace('"', '\\"')
         rows.append(key + '="' + escaped + '"')
     return "\n".join(rows) + "\n"
 
 
-def _check_existing_file(path: Path, expected: bytes, mode: int, owner_uid: int) -> bool:
+def _check_existing_file(
+    path: Path, expected: bytes, mode: int, owner_uid: int
+) -> bool:
     """Return True if exact content already exists; reject unsafe or changed files."""
     try:
         info = os.lstat(path)
     except FileNotFoundError:
         return False
     except OSError as exc:
-        raise DeploySupportError("Cannot inspect existing managed proxy configuration") from exc
+        raise DeploySupportError(
+            "Cannot inspect existing managed proxy configuration"
+        ) from exc
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
-        raise DeploySupportError("Existing managed proxy configuration must be a regular non-symlink file")
+        raise DeploySupportError(
+            "Existing managed proxy configuration must be a regular non-symlink file"
+        )
     if info.st_uid != owner_uid or stat.S_IMODE(info.st_mode) != mode:
-        raise DeploySupportError("Existing managed proxy configuration has unexpected owner or mode")
+        raise DeploySupportError(
+            "Existing managed proxy configuration has unexpected owner or mode"
+        )
     try:
         current = path.read_bytes()
     except OSError as exc:
-        raise DeploySupportError("Cannot read existing managed proxy configuration") from exc
+        raise DeploySupportError(
+            "Cannot read existing managed proxy configuration"
+        ) from exc
     if current != expected:
         raise DeploySupportError(
             "Existing managed proxy configuration differs; review it, back it up, "
@@ -255,12 +278,14 @@ def clone_seed(source_root: str | Path, seed: str | Path, sha: str) -> None:
     if not source.is_dir() or not (source / ".git").exists():
         raise DeploySupportError("Source must be a Git working tree with .git metadata")
     target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    fd, config_name = tempfile.mkstemp(prefix="lite-actions-safe-git-", suffix=".config")
+    fd, config_name = tempfile.mkstemp(
+        prefix="lite-actions-safe-git-", suffix=".config"
+    )
     config = Path(config_name)
     try:
         os.fchmod(fd, 0o600)
         safe_entries = []
-        for directory in (source, source / '.git', target, target / '.git'):
+        for directory in (source, source / ".git", target, target / ".git"):
             escaped = str(directory).replace("\\", "\\\\").replace('"', '\\"')
             safe_entries.append('    directory = "' + escaped + '"')
         os.write(fd, ("[safe]\n" + "\n".join(safe_entries) + "\n").encode("utf-8"))
@@ -276,7 +301,9 @@ def clone_seed(source_root: str | Path, seed: str | Path, sha: str) -> None:
             check=False,
         )
         if result.returncode != 0:
-            raise DeploySupportError("Seed clone failed; check source worktree ownership and Git")
+            raise DeploySupportError(
+                "Seed clone failed; check source worktree ownership and Git"
+            )
         result = subprocess.run(
             ["git", "-C", str(target), "checkout", "--quiet", "--detach", sha],
             capture_output=True,
@@ -286,7 +313,9 @@ def clone_seed(source_root: str | Path, seed: str | Path, sha: str) -> None:
             check=False,
         )
         if result.returncode != 0:
-            raise DeploySupportError("Seed checkout failed; verify the approved source SHA")
+            raise DeploySupportError(
+                "Seed checkout failed; verify the approved source SHA"
+            )
         result = subprocess.run(
             ["git", "-C", str(target), "rev-parse", "HEAD"],
             capture_output=True,
