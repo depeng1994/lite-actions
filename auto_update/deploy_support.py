@@ -104,7 +104,7 @@ def read_proxy_env_file(path: str | Path, *, expected_uid: int = 0) -> dict[str,
             if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
                 raise DeploySupportError("Proxy environment file changed while being opened")
             values: dict[str, str] = {}
-            for line_number, raw in enumerate(stream.read().splitlines(), 1):
+            for line_number, raw in enumerate(stream.read().split("\n"), 1):
                 if not raw:
                     continue
                 if "\r" in raw or "\x00" in raw:
