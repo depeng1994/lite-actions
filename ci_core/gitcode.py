@@ -114,6 +114,15 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def _gitcode_opener():
+    """Build the GitCode-only opener with the explicitly configured proxy."""
+    proxy = os.environ.get("LITE_ACTIONS_GITCODE_PROXY", "").strip()
+    handlers = [NoRedirect()]
+    if proxy:
+        handlers.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+    return urllib.request.build_opener(*handlers)
+
+
 class GitCodeClient:
     def __init__(self, token, repo):
         if repo not in trusted_gitcode_repositories():
@@ -153,9 +162,7 @@ class GitCodeClient:
             headers=headers,
             method=method,
         )
-        with urllib.request.build_opener(NoRedirect()).open(
-            req, timeout=30
-        ) as response:
+        with _gitcode_opener().open(req, timeout=30) as response:
             raw = response.read(1024 * 1024)
         return json.loads(raw) if raw else None
 
@@ -375,7 +382,7 @@ class GitCodeClient:
             headers={"PRIVATE-TOKEN": self.token},
         )
         try:
-            urllib.request.build_opener(NoRedirect).open(req, timeout=20)
+            _gitcode_opener().open(req, timeout=20)
             raise ValueError("artifact download did not redirect")
         except urllib.error.HTTPError as exc:
             if exc.code != 302:
