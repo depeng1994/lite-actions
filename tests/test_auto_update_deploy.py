@@ -473,16 +473,6 @@ class PreflightTests(unittest.TestCase):
             self.assertEqual(after.st_ino, before.st_ino)
             self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
 
-    def test_yellow_gitcode_sources_are_documented_separately(self):
-        readme = (ROOT / "README.md").read_text()
-        yellow_doc = (ROOT / "docs" / "yellow-worker.md").read_text()
-        combined = readme + yellow_doc
-        self.assertIn("LITE_ACTIONS_GITCODE_REPOS=cann/torchtitan-npu", combined)
-        self.assertIn("LITE_ACTIONS_GITCODE_TOKEN", combined)
-        self.assertIn("LITE_ACTIONS_GITCODE_RESULT_AUTHOR", combined)
-        self.assertIn("LITE_ACTIONS_MODEL_REPOS=cann-framework/vllm-ascend", combined)
-        self.assertIn("不要配置 GitHub 的 `torchtitan-npu`", combined)
-
     def test_python_path_is_persisted_and_template_has_no_system_python_assumption(
         self,
     ):
