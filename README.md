@@ -173,11 +173,13 @@ Yellow 的模型仓来源按平台分别配置，不能把同一个仓库同时�
 在 Yellow 已由 systemd `EnvironmentFile` 加载的 root-only 环境文件（例如 `/etc/lite-actions/yellow.env`）中维护以下配置。先确认现有文件，不要覆盖其中已有的 Worker、路径、Token 或其他环境设置：
 
 ```bash
-sudo install -o root -g root -m 0600 /dev/null /etc/lite-actions/yellow.env
+sudo stat -c '%U:%G %a %n' /etc/lite-actions/yellow.env
 sudoedit /etc/lite-actions/yellow.env
 sudo chown root:root /etc/lite-actions/yellow.env
 sudo chmod 0600 /etc/lite-actions/yellow.env
 ```
+
+如果文件不存在，先按现有 Worker 的 systemd `EnvironmentFile` 配置确认正确路径，再创建新文件；不要用 `install /dev/null` 覆盖已有环境文件。
 
 示例内容（占位符必须替换为已授权的账号和 Token；不要把真实凭据提交到仓库）：
 
