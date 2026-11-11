@@ -585,7 +585,7 @@ def run(
                 raise RuntimeError(f"staging failed: {errors}")
     if case.get("native_source"):
         from ci_core.github import GitHubClient, authorization
-        from ci_core.vllm_source import check_current
+        from ci_core.github_source import check_current
 
         check_current(
             GitHubClient(authorization(), MODEL_REPO),

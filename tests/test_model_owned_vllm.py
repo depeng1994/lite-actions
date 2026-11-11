@@ -12,16 +12,17 @@ from unittest.mock import patch
 
 from ci_core.contract import VLLM_REPO
 from ci_core.gitcode import source_plan
-from ci_core.plan import verify_definition
-from ci_core.reporting import report
-from ci_core.router import Router
-from ci_core.vllm_source import (
+from ci_core.github_source import (
     approved_controls,
+    bind_request_source,
     check_current,
     prepare_ready,
     read_source,
     validate_source,
 )
+from ci_core.plan import verify_definition
+from ci_core.reporting import report
+from ci_core.router import Router
 from tests.integration_tests.tools.lite_actions.entrypoint import inspect_profile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -239,11 +240,44 @@ class ModelOwnedVllmTests(unittest.TestCase):
             "base_sha": self.head,
             "source_sha": self.head,
         }
-        self.assertEqual(validate_source(source, run, self.plan, {self.control}), source)
+        self.assertEqual(
+            validate_source(source, run, self.plan, {self.control}), source
+        )
         with self.assertRaises(ValueError):
-            validate_source({**source, "source_sha": self.control}, run, self.plan, {self.control})
+            validate_source(
+                {**source, "source_sha": self.control}, run, self.plan, {self.control}
+            )
         with self.assertRaises(ValueError):
             validate_source(source, run, self.plan, {self.head})
+
+    def test_generic_request_binds_commit_and_pr_without_parsing_title(self):
+        run = {
+            **self.run,
+            "event": "workflow_dispatch",
+            "head_branch": "main",
+            "head_sha": self.control,
+            "name": "lite-ci-anything",
+            "display_title": "a readable title",
+        }
+        bound = bind_request_source(self.client(), run, self.source)
+        self.assertEqual(
+            (bound["head_sha"], bound["_ci_control_sha"], bound["_ci_pr_number"]),
+            (self.head, self.control, 7),
+        )
+        self.assertEqual(bound["_ci_source_repo"], "another-fork/vllm-ascend")
+        self.assertEqual(
+            read_source(self.client(), bound, self.plan, source=self.source),
+            self.source,
+        )
+        with self.assertRaises(ValueError):
+            bind_request_source(
+                self.client(), run, {**self.source, "control_sha": self.head}
+            )
+        commit_source = {**self.source, "mode": "commit", "pr_number": 0}
+        bound = bind_request_source(self.client(), run, commit_source)
+        self.assertEqual(
+            (bound["head_sha"], bound["_ci_control_sha"]), (self.head, self.control)
+        )
 
     def test_prepare_can_be_found_beyond_the_first_page(self):
         class Client:
@@ -321,7 +355,7 @@ class ModelOwnedVllmTests(unittest.TestCase):
             patch(
                 "ci_core.router.load", return_value=({"blue": {"enabled": True}}, {})
             ),
-            patch("ci_core.vllm_source.read_source", return_value=self.source),
+            patch("ci_core.github_source.read_source", return_value=self.source),
             patch.object(Router, "transition"),
             patch.dict("os.environ", {"LITE_ACTIONS_STATE_DIR": ""}),
         ):
@@ -332,6 +366,45 @@ class ModelOwnedVllmTests(unittest.TestCase):
                 self.assertEqual(len(records), len(self.plan["cases"]))
                 self.assertTrue(
                     all(r["run"]["_ci_execution_sha"] == self.merge for r in records)
+                )
+            finally:
+                router.close()
+
+    def test_generic_request_is_admitted_from_artifacts_not_run_title(self):
+        client = self.client()
+        run = {
+            **self.run,
+            "name": "lite-ci-generic",
+            "display_title": "ordinary readable title",
+            "path": ".github/workflows/lite-ci-generic.yml",
+            "event": "workflow_dispatch",
+            "head_branch": "main",
+            "head_sha": self.control,
+            "status": "in_progress",
+        }
+        plan_run = {**run, "head_sha": self.head}
+        plan = source_plan(inspect_profile(), plan_run, VLLM_REPO)
+        source = {**self.source, "plan_digest": plan["plan_digest"]}
+        client.ci_request = lambda bound: plan
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch(
+                "ci_core.router.load", return_value=({"blue": {"enabled": True}}, {})
+            ),
+            patch("ci_core.github_source.read_source_artifact", return_value=source),
+            patch.object(Router, "eligible", return_value=True),
+            patch.object(Router, "transition"),
+            patch.dict("os.environ", {"LITE_ACTIONS_STATE_DIR": ""}),
+        ):
+            router = Router(Path(tmp), "blue", client, "reporter")
+            try:
+                router._receive_one(run)
+                records = router.state.read().values()
+                self.assertEqual(len(records), len(plan["cases"]))
+                self.assertTrue(
+                    all(
+                        row["run"]["_ci_execution_sha"] == self.merge for row in records
+                    )
                 )
             finally:
                 router.close()
@@ -359,7 +432,7 @@ class ModelOwnedVllmTests(unittest.TestCase):
             patch(
                 "ci_core.router.load", return_value=({"blue": {"enabled": True}}, {})
             ),
-            patch("ci_core.vllm_source.check_current", side_effect=verify),
+            patch("ci_core.github_source.check_current", side_effect=verify),
             patch.object(Router, "flush"),
             patch.object(Router, "pump"),
             patch.object(Router, "receive"),

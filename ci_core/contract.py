@@ -206,7 +206,17 @@ def parse_plan(plan, run, workflow, *, repo=REPO):
                 )
             )
             if gitcode
-            else ({SELF_WORKFLOW} if repo == SELF_REPO else WORKFLOWS)
+            else (
+                {SELF_WORKFLOW}
+                if repo == SELF_REPO
+                else WORKFLOWS
+                | (
+                    {workflow}
+                    if str(run.get("name", "")).startswith("lite-ci-")
+                    or str(workflow).startswith("lite-ci-")
+                    else set()
+                )
+            )
         )
         or plan["workflow"] != workflow
         or not valid_run_id

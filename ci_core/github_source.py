@@ -1,4 +1,4 @@
-"""Verify the exact GitHub source used by a model-owned smoke plan."""
+"""Verify the exact GitHub source used by a model-owned CI plan."""
 
 from __future__ import annotations
 
@@ -43,14 +43,14 @@ def requires_source(plan):
     return bool(legacy) and not any(legacy)
 
 
-def validate_source(source, run, plan, approved_controls):
+def validate_source(source, run, plan, approved_controls, *, repository_id=REPO_ID):
     if not isinstance(source, dict) or set(source) != SOURCE_KEYS:
         raise ValueError("invalid native source structure")
     expected = {
         "schema": 1,
         "provider": "github",
-        "repository": VLLM_REPO,
-        "repository_id": REPO_ID,
+        "repository": run.get("_ci_repo", VLLM_REPO),
+        "repository_id": repository_id,
         "run_id": run["id"],
         "attempt": run.get("run_attempt", 1),
         "plan_digest": plan["plan_digest"],
@@ -97,10 +97,13 @@ def validate_source(source, run, plan, approved_controls):
     elif source["mode"] == "commit":
         if (
             source["pr_number"] != 0
-            or source["head_repo_id"] != REPO_ID
+            or source["head_repo_id"] != repository_id
             or run.get("event") != "workflow_dispatch"
             or source["base_ref"] != run.get("head_branch")
-            or any(source[k] != run["head_sha"] for k in ("head_sha", "base_sha", "source_sha"))
+            or any(
+                source[k] != run["head_sha"]
+                for k in ("head_sha", "base_sha", "source_sha")
+            )
         ):
             raise ValueError("native manual source binding mismatch")
     else:
@@ -110,7 +113,7 @@ def validate_source(source, run, plan, approved_controls):
 
 def check_current(client, source, *, check_run=False):
     """Fail closed at admission, post-staging launch and result publication."""
-    if client.repo != VLLM_REPO:
+    if client.repo != source["repository"]:
         raise ValueError("wrong native source repository client")
     if source["mode"] == "merge_result":
         pr = client.request("GET", f"/pulls/{source['pr_number']}")
@@ -131,8 +134,8 @@ def check_current(client, source, *, check_run=False):
             or pr.get("number") != source["pr_number"]
             or head_repo.get("id") != source["head_repo_id"]
             or pr_head.get("sha") != source["head_sha"]
-            or base_repo.get("id") != REPO_ID
-            or base_repo.get("full_name") != VLLM_REPO
+            or base_repo.get("id") != source["repository_id"]
+            or base_repo.get("full_name") != client.repo
             or pr_base.get("ref") != source["base_ref"]
             or base != source["base_sha"]
             or pr.get("mergeable") is False
@@ -229,7 +232,7 @@ def approved_controls(client, run, candidate=None, *, merge_source=False):
     return explicit | {head}
 
 
-def read_source(client, run, plan):
+def read_source_artifact(client, run):
     if not prepare_ready(client, run):
         return None
     name = f"lite-ci-source-{run.get('run_attempt', 1)}"
@@ -253,8 +256,48 @@ def read_source(client, run, plan):
             or zipped.getinfo("source.json").file_size > 16384
         ):
             raise ValueError("invalid native source archive")
-        source = json.loads(zipped.read("source.json"))
+        return json.loads(zipped.read("source.json"))
+
+
+def bind_request_source(client, run, source):
+    """Bind structured source identity to a run before validating its plan."""
+    if not isinstance(source, dict) or source.get("control_sha") != run.get("head_sha"):
+        raise ValueError("source controller differs from workflow run")
+    head = source.get("head_sha")
+    if not isinstance(head, str) or not SHA.fullmatch(head):
+        raise ValueError("invalid requested source SHA")
+    bound = {**run, "_ci_control_sha": run["head_sha"], "head_sha": head}
+    if source.get("mode") == "merge_result":
+        number = source.get("pr_number")
+        if type(number) is not int or number < 1:
+            raise ValueError("invalid requested PR")
+        pr = client.request("GET", f"/pulls/{number}")
+        repo = pr.get("head", {}).get("repo") or {}
+        name = repo.get("full_name")
+        if not isinstance(name, str) or not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", name
+        ):
+            raise ValueError("invalid PR source repository")
+        bound.update(
+            _ci_pr_number=number,
+            _ci_source_repo=name,
+            _ci_source_repo_id=repo.get("id"),
+            _ci_base_ref=(pr.get("base") or {}).get("ref"),
+        )
+    elif source.get("mode") != "commit":
+        raise ValueError("unsupported requested source")
+    return bound
+
+
+def read_source(client, run, plan, *, source=None):
+    if source is None:
+        source = read_source_artifact(client, run)
+    if source is None:
+        return None
     candidate = source.get("control_sha") if isinstance(source, dict) else None
+    repository_id = client.request("GET", "").get("id")
+    if type(repository_id) is not int or repository_id < 1:
+        raise ValueError("invalid GitHub repository identity")
     validate_source(
         source,
         run,
@@ -266,6 +309,7 @@ def read_source(client, run, plan):
             merge_source=isinstance(source, dict)
             and source.get("mode") == "merge_result",
         ),
+        repository_id=repository_id,
     )
     commit = client.request("GET", "/git/commits/" + source["source_sha"])
     if (

@@ -214,91 +214,12 @@ class GitHubClient:
             return None
         return {**run, "head_sha": sha, "_ci_pr_number": number}
 
-    def normalize_target_pr_run(self, run: dict, *, pr=None) -> dict | None:
-        """Resolve a default-branch pull_request_target run to an exact PR head."""
-        import re
-
-        title = run.get("display_title") or ""
-        match = re.fullmatch(
-            r"lite-(?:a5|vllm)-pr-(\d+)-([0-9a-f]{40})(?:-([0-9a-f]{40}))?", title
-        )
-        if (
-            not match
-            or run.get("path", "").rsplit("/", 1)[-1]
-            != "lite_actions_dispatcher_smoke.yml"
-        ):
-            return None
-        pr_number, sha = int(match[1]), match[2]
-        if pr is None:
-            pr = self.request("GET", f"/pulls/{pr_number}")
-        target = pr.get("base", {}).get("ref", "")
-        source_repo = pr.get("head", {}).get("repo") or {}
-        if (
-            pr.get("state") != "open"
-            or pr.get("base", {}).get("repo", {}).get("full_name") != self.repo
-            or not isinstance(target, str)
-            or not target
-            or len(target) > 255
-            or any(ord(c) < 32 for c in target)
-            or type(source_repo.get("id")) is not int
-            or source_repo["id"] < 1
-            or not re.fullmatch(
-                r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}",
-                source_repo.get("full_name", ""),
-            )
-            or run.get("head_sha") != sha
-            or pr.get("head", {}).get("sha") != sha
-        ):
-            return None
-        return {
-            **run,
-            "head_sha": sha,
-            "_ci_pr_number": pr_number,
-            "_ci_source_repo": source_repo["full_name"],
-            "_ci_source_repo_id": source_repo["id"],
-            "_ci_base_ref": target,
-            **({"_ci_control_sha": match[3]} if match[3] else {}),
-        }
-
-    def normalize_native_recheck(self, run):
-        """Bind a reconciler dispatch to the current PR, without trusting its title alone."""
-        import re
-
-        title = run.get("display_title", "")
-        commit = re.fullmatch(r"lite-vllm-commit-([0-9a-f]{40})-([0-9a-f]{40})", title)
-        if commit:
-            if (
-                run.get("head_sha") != commit[2]
-                or run.get("path", "").rsplit("/", 1)[-1] != "lite_actions_dispatcher_smoke.yml"
-            ):
-                return None
-            return {**run, "head_sha": commit[1], "_ci_control_sha": commit[2]}
-        if title.startswith("lite-vllm-commit-"):
-            return None
-        if not title.startswith("lite-vllm-recheck-"):
-            return run
-        match = re.fullmatch(
-            r"lite-vllm-recheck-([1-9][0-9]*)-([0-9a-f]{40})-([0-9a-f]{32})", title
-        )
-        if not match or run.get("head_sha") != match[2]:
-            return None
-        pr = self.request("GET", f"/pulls/{match[1]}")
-        normalized = self.normalize_target_pr_run(
-            {
-                **run,
-                "head_sha": pr.get("head", {}).get("sha", ""),
-                "display_title": f"lite-vllm-pr-{match[1]}-{pr.get('head', {}).get('sha', '')}-{match[2]}",
-            },
-            pr=pr,
-        )
-        return {**normalized, "display_title": title} if normalized else None
-
     def running_workflows(self) -> list[dict]:
         runs = {}
         events = (
             ("workflow_dispatch",)
             if self.repo == SELF_REPO
-            else ("workflow_dispatch", "pull_request_target")
+            else ("workflow_dispatch",)
             if self.repo == VLLM_REPO
             else ("workflow_dispatch", "pull_request")
         )
@@ -310,10 +231,6 @@ class GitHubClient:
                 for run in data.get("workflow_runs", []):
                     if event == "pull_request":
                         run = self.normalize_pr_run(run)
-                    elif event == "pull_request_target":
-                        run = self.normalize_target_pr_run(run)
-                    elif self.repo == VLLM_REPO:
-                        run = self.normalize_native_recheck(run)
                     if run is None or run.get("status") not in {
                         "queued",
                         "in_progress",

@@ -264,7 +264,10 @@ class Router:
                 and run.get("head_sha") == self.self_sha == checkout_sha(self.root)
                 and self.trusted_manual(run)
             )
-        if filename not in WORKFLOWS or run.get("status") not in {
+        if (
+            filename not in WORKFLOWS
+            and not str(run.get("name", "")).startswith("lite-ci-")
+        ) or run.get("status") not in {
             "queued",
             "in_progress",
         }:
@@ -348,6 +351,15 @@ class Router:
                 return
         if not self.eligible(run):
             return
+        generic_source = None
+        if str(run.get("name", "")).startswith("lite-ci-"):
+            from ci_core.github_source import bind_request_source, read_source_artifact
+
+            client = self.client_for(run)
+            generic_source = read_source_artifact(client, run)
+            if generic_source is None:
+                return
+            run = bind_request_source(client, run, generic_source)
         if cached is None:
             plan = self.client_for(run).ci_request(run)
             if plan is None:
@@ -369,11 +381,13 @@ class Router:
         owned = [c for c in plan["cases"] if c["worker"] == self.worker]
         if not owned or all(task_key(run, c) in self.state.read() for c in owned):
             return
-        if run.get("_ci_repo") == VLLM_REPO:
-            from ci_core.vllm_source import read_source, requires_source
+        if generic_source is not None or run.get("_ci_repo") == VLLM_REPO:
+            from ci_core.github_source import read_source, requires_source
 
-            if requires_source(plan):
-                source = read_source(self.client_for(run), run, plan)
+            if generic_source is not None or requires_source(plan):
+                source = read_source(
+                    self.client_for(run), run, plan, source=generic_source
+                )
                 if source is None:
                     return
                 run = {
@@ -473,7 +487,7 @@ class Router:
     def finish(self, key, status, rc, lines, clean=True):
         r = self.state.read()[key]
         if status == "PASS" and r["run"].get("_ci_source"):
-            from ci_core.vllm_source import check_current
+            from ci_core.github_source import check_current
 
             try:
                 check_current(
@@ -532,7 +546,7 @@ class Router:
             if run.get("_ci_provider") == "gitcode":
                 self.client_for(run).validate_current(run)
             if run.get("_ci_source"):
-                from ci_core.vllm_source import check_current
+                from ci_core.github_source import check_current
 
                 check_current(self.client_for(run), run["_ci_source"], check_run=True)
             self.transition(key, "STAGING")
@@ -850,7 +864,7 @@ class Router:
                     else:
                         statuses[ident] = client.workflow_status(run["id"])
                         if run.get("_ci_source"):
-                            from ci_core.vllm_source import check_current
+                            from ci_core.github_source import check_current
 
                             try:
                                 check_current(client, run["_ci_source"])
