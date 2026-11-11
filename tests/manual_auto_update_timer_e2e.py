@@ -20,9 +20,9 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
-from auto_update.check_source import SourceError, checkout_sha
-from auto_update.update import Settings, _recover, _run
-from auto_update.version_switch import SwitchError, current_release, switch_current
+from auto_update.check_source import checkout_sha
+from auto_update.update import Settings, _run
+from auto_update.version_switch import SwitchError, current_release
 
 PROJECT = Path(__file__).resolve().parents[1]
 
@@ -69,7 +69,8 @@ def git(*args: str, cwd: Path | None = None) -> str:
 def create_origin(tmp: Path) -> tuple[Path, str, str]:
     repo = tmp / "origin"
     repo.mkdir()
-    git("init", "-q", "-b", "main", cwd=repo)
+    git("init", "-q", cwd=repo)
+    git("checkout", "-qb", "main", cwd=repo)
     git("config", "user.name", "Auto Update Test", cwd=repo)
     git("config", "user.email", "test@example.com", cwd=repo)
     # Real production module files, but all fixtures are in an isolated temp tree.
