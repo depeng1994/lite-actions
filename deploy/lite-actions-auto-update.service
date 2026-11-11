@@ -1,0 +1,15 @@
+[Unit]
+Description=Lite Actions automatic updater
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=/etc/lite-actions/auto-update.env
+ExecStart=/opt/lite-actions/bootstrap/update.sh
+TimeoutStartSec=25min
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lite-actions-auto-update

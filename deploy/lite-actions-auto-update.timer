@@ -1,0 +1,11 @@
+[Unit]
+Description=Lite Actions automatic update timer
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=3min
+AccuracySec=10s
+Unit=lite-actions-auto-update.service
+
+[Install]
+WantedBy=timers.target
