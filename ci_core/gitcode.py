@@ -123,9 +123,7 @@ def _gitcode_opener():
     proxy = os.environ.get("LITE_ACTIONS_GITCODE_PROXY", "").strip()
     handlers = []
     if proxy:
-        handlers.append(
-            urllib.request.ProxyHandler({"http": proxy, "https": proxy})
-        )
+        handlers.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
     handlers.append(NoRedirect())
     return urllib.request.build_opener(*handlers)
 
