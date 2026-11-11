@@ -481,6 +481,26 @@ class SelfSmokeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             router.eligible(run)
 
+    def test_explicit_self_smoke_does_not_require_repo_subscription(self):
+        root = Path(self.temp.name) / "worker"
+        write_workspace(root)
+        service = Service([fixture_definition("dummy")], root)
+        env = {
+            "LITE_ACTIONS_MODEL_REPOS": TORCHTITAN_REPO,
+            "LITE_ACTIONS_SELF_SMOKE_ENABLED": "1",
+            "LITE_ACTIONS_RESOURCE_LOCK_ROOT": str(root / "leases"),
+            "LITE_ACTIONS_STATE_DIR": "",
+        }
+        with (
+            patch.dict(os.environ, env, clear=False),
+            patch("ci_core.self_identity.checkout_sha", return_value="a" * 40),
+        ):
+            router = Router(root, "yellow", service, "reporter")
+            try:
+                self.assertEqual(router.self_sha, "a" * 40)
+            finally:
+                router.close()
+
 
 if __name__ == "__main__":
     unittest.main()

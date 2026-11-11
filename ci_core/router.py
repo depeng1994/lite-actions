@@ -66,12 +66,17 @@ class Router:
         )
         self.workers, self.pools = load(self.root, worker)
         self.self_sha = None
-        if SELF_REPO in configured_repos():
-            if os.environ.get("LITE_ACTIONS_SELF_SMOKE_ENABLED") != "1":
-                raise ValueError("self-smoke requires explicit opt-in")
+        self_smoke_enabled = os.environ.get("LITE_ACTIONS_SELF_SMOKE_ENABLED") == "1"
+        if self_smoke_enabled:
+            # Self smoke is a worker capability, not a model-repository
+            # subscription. Yellow may be configured to serve only the model
+            # repositories while still accepting the explicitly enabled,
+            # SHA-bound Lite Actions self-smoke run.
             from ci_core.self_identity import checkout_sha
 
             self.self_sha = checkout_sha(self.root)
+        elif SELF_REPO in configured_repos():
+            raise ValueError("self-smoke requires explicit opt-in")
         self.state = JobState(self.root)
         self.quarantine_enabled = worker not in {
             name.strip()
