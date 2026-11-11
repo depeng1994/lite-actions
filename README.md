@@ -116,9 +116,9 @@ python3 scripts/preflight.py --worker-id blue --write-bindings
 ```
 
 Batch SSH explicitly disables PTY allocation. Source synchronization uses SSH stdin streaming, avoiding SCP's ambiguity for aliases
-containing a colon. The archive checksum is verified remotely. All nodes must stage
-successfully before any rank launches. Test outputs remain below a per-run/attempt/
-case directory on the approved mount.
+containing a colon. The archive checksum is verified remotely. All nodes in a multi-node allocation must support the case kind before any
+lease is taken. The current `:154` deployment is smoke-only until its training
+assets are configured; DSV4 cases queue on the asset-ready `:153` node.
 
 ## Scheduling, cancellation and recovery
 
@@ -284,132 +284,28 @@ and the live Worker. The pull-request checks above run CPU contracts only; they 
 not certify 8P/16P hardware execution.
 
 
-## 自动更新部署（首次安装）
+## 安装自动更新
 
-Lite Actions 的 Worker 通过 systemd Timer 主动检查可信 Git 源。默认在上一轮检查结束约 3 分钟后再次检查；发现新版本后正常停止旧 Worker、切换 Release，并立即启动新 Worker。更新管理日志与 Actions 业务日志分开保存。
+### 1. 运行只读自检
 
-### 1. 部署前检查
+在经过审核的干净工作树中运行；需要 Python 3.11+、已有的 systemd Worker 服务，以及 `current → releases/<完整 SHA>` 的 Git checkout。以下以 Yellow 为例：显式指定解释器可避免 `sudo` 改变 `PATH` 后选中旧版 Python。
 
-自动更新器要求 **Python 3.11 或更高版本**。Ubuntu 20.04 的 /usr/bin/python3 可能仍是 Python 3.8，不能用于本功能。安装器默认查找 python3，也可以显式传入解释器绝对路径。sudo 通常会重置 PATH，所以不要依赖用户 Shell 中的 Python 搜索路径。
+```bash
+py=/usr/local/bin/python3.12
+args=(--python "$py" --worker-unit lite-actions-yellow.service --install-root /opt/lite-actions)
+# 仅代理主机：取消下一行注释，自检和安装将使用同一份文件。
+# args+=(--proxy-env-file /etc/lite-actions/auto-update-proxy.source.env)
+sudo "$py" scripts/auto_update_preflight.py "${args[@]}"
+```
 
-先确认本机现有 Worker 的 systemd 服务名：
+代理文件须由 root 所有、权限为 `0600`，不能是软链；只填代理或 CA 的 `KEY=VALUE`，不要传含 Token 的 `yellow.env`。无代理主机不建文件。自检出现 `FAIL` 时按 `Next:` 提示处理；没有 `.git` 的快照须先迁移。
 
-~~~bash
-systemctl list-units --all --type=service | grep -E 'lite-actions.*\.service'
-systemctl status lite-actions-yellow.service --no-pager
-~~~
+### 2. 安装并启用
 
---worker-unit 传入目标机器上**实际管理 Worker 进程**的 .service 名称。例如 Yellow：
+自检通过后，在同一个 Bash 会话中执行安装。安装可能中断在途任务，默认不启动定时更新。
 
-~~~text
-lite-actions-yellow.service
-~~~
+```bash
+sudo bash scripts/install_auto_update.sh "${args[@]}"
+```
 
-不同机器可以使用相同服务名；更新器只操作本机配置的服务，不判断 Blue/Yellow。不要传 lite-actions-auto-update.service，它是更新器自己的服务。
-
-首次部署还要求现有目录为 Git Release 布局：
-
-- /opt/lite-actions/current 是软链接；
-- 目标目录为 /opt/lite-actions/releases/<完整40位SHA>；
-- Release 必须是可验证的 Git checkout，包含 .git 元数据；
-- config/、logs/、cache/ 必须存在且绑定有效。
-
-如果当前版本是 git archive、rsync 或其他无 .git 元数据的快照，安装器会拒绝部署。**先单独完成 Release 布局迁移，不要强行安装或覆盖业务目录。**
-
-### 2. 运行只读 Preflight
-
-使用经过审核、干净的 Lite Actions Git 工作树。以下示例使用 Python 3.12：
-
-~~~bash
-sudo /usr/local/bin/python3.12 scripts/auto_update_preflight.py \
-  --python /usr/local/bin/python3.12 \
-  --worker-unit lite-actions-yellow.service \
-  --install-root /opt/lite-actions \
-  --git-url https://github.com/depeng1994/lite-actions.git \
-  --git-ref refs/heads/main
-~~~
-
-Preflight 会逐项检查 Python、Git、systemd、Worker Unit、current/releases Git 布局、目录绑定、源工作树 clean/HEAD，以及 GitHub HTTPS 源可达性。失败项会显示下一步处理命令；Preflight 只读，不修改服务、文件或任务状态。
-
-代理主机在 Preflight 命令末尾追加 `--proxy-env-file /etc/lite-actions/auto-update-proxy.source.env`，让只读检查也使用同一代理与 CA 配置；无代理主机不传此参数。
-
-### 3. 首次安装
-
-无代理的主机不需要额外参数：
-
-~~~bash
-sudo bash scripts/install_auto_update.sh \
-  --worker-unit lite-actions-yellow.service \
-  --install-root /opt/lite-actions \
-  --python /usr/local/bin/python3.12
-~~~
-
-安装器会再次执行完整 Preflight，然后安装 Bootstrap、systemd Timer/Service 和解释器配置，执行首次检查与 Ready 验证。--dry-run 也会先执行完整 Preflight，但不会写入配置或重启 Worker：
-
-~~~bash
-sudo bash scripts/install_auto_update.sh \
-  --worker-unit lite-actions-yellow.service \
-  --install-root /opt/lite-actions \
-  --python /usr/local/bin/python3.12 \
-  --dry-run
-~~~
-
-### 4. 需要 HTTPS 代理的主机
-
-如果 Worker 必须通过内网 HTTPS 代理访问 GitHub，准备一个**专供 Auto Update 使用的代理文件**。该文件只能包含下列九种 KEY=VALUE，不能直接传入包含其他 Worker 配置或 Token 的完整 yellow.env：
-
-~~~bash
-sudo install -m 0600 /dev/null /etc/lite-actions/auto-update-proxy.source.env
-sudoedit /etc/lite-actions/auto-update-proxy.source.env
-~~~
-
-允许的键名：
-
-~~~text
-http_proxy
-https_proxy
-HTTP_PROXY
-HTTPS_PROXY
-no_proxy
-NO_PROXY
-SSL_CERT_FILE
-CURL_CA_BUNDLE
-GIT_SSL_CAINFO
-~~~
-
-文件必须是 root 所有的普通文件、不能是软链接，权限必须为 0600。代理地址、认证信息和 CA 路径只保存在主机文件中，不写入仓库或命令参数；不要在终端、Issue 或日志中输出这些值。
-
-安装时显式提供该文件：
-
-~~~bash
-sudo bash scripts/install_auto_update.sh \
-  --worker-unit lite-actions-yellow.service \
-  --install-root /opt/lite-actions \
-  --python /usr/local/bin/python3.12 \
-  --proxy-env-file /etc/lite-actions/auto-update-proxy.source.env
-~~~
-
-安装器会创建权限为 0600 的托管副本 /etc/lite-actions/auto-update-proxy.env，并添加 systemd drop-in。相同内容重复安装是幂等的；若源文件内容变化或现有托管文件不一致，安装器会拒绝覆盖，要求先备份、审查并显式处理。无代理主机**不要传 --proxy-env-file**，不会生成代理文件或代理 drop-in。
-
-### 5. 启用与日常管理
-
-首次安装默认不启用周期更新。完成目标环境的业务验收后，再启用：
-
-~~~bash
-sudo systemctl enable --now lite-actions-auto-update.timer
-~~~
-
-查看检查计划与更新日志：
-
-~~~bash
-systemctl list-timers lite-actions-auto-update.timer
-journalctl -u lite-actions-auto-update.service -n 50 --no-pager
-~~~
-
-暂停未来的定时检查：
-
-~~~bash
-sudo systemctl disable --now lite-actions-auto-update.timer
-~~~
-
-切换版本后会在同一次更新事务中立即请求启动新 Worker，不等待下一轮 3 分钟检查。性能验收目标为切换后 5 秒内发出启动请求、30 秒内观察到新 PID、120 秒内达到 Ready；Git 下载和旧 Worker 任务清理时间另计。升级可能取消正在执行的 Actions。详细恢复与排障说明见 [自动更新运维文档](docs/auto-update.md)，设计与验证记录见 [RFC #19](https://github.com/depeng1994/lite-actions/issues/19)。
+业务验证通过后，执行 `sudo systemctl enable --now lite-actions-auto-update.timer`。更新日志与停用命令见[自动更新运维指南](docs/auto-update.md)。
