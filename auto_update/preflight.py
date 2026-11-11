@@ -213,6 +213,27 @@ def run_preflight(
         release = None
 
     if release is not None:
+        try:
+            working_directory = _systemctl_show(worker_unit, "WorkingDirectory")
+            if working_directory and Path(working_directory).resolve() != release.resolve():
+                raise RuntimeError("Worker WorkingDirectory does not match current release")
+            checks.append(
+                Check(
+                    "Worker WorkingDirectory",
+                    True,
+                    "matches current release" if working_directory else "not explicitly set; ExecStart remains host-managed",
+                    "",
+                )
+            )
+        except (OSError, RuntimeError, subprocess.SubprocessError):
+            checks.append(
+                Check(
+                    "Worker WorkingDirectory",
+                    False,
+                    "Worker unit does not point to the current Git release",
+                    "Review systemctl cat " + worker_unit + " and set WorkingDirectory to " + str(release) + ".",
+                )
+            )
         for name in ("config", "logs", "cache"):
             binding = release / name
             if binding.is_dir():
