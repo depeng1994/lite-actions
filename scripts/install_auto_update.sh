@@ -94,6 +94,7 @@ fi
 safe_git_config="$(mktemp)"
 chmod 0600 "$safe_git_config"
 git config --file "$safe_git_config" --add safe.directory "$source_root"
+git config --file "$safe_git_config" --add safe.directory "$source_root/.git"
 trap 'rm -f "$safe_git_config"' EXIT
 git_in_source() {
   GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$safe_git_config" git -C "$source_root" "$@"
