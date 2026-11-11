@@ -3,6 +3,7 @@
 import json
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -51,7 +52,14 @@ class IntegrationTests(unittest.TestCase):
                 patch("auto_update.update.prepare_release", return_value=new),
                 patch("auto_update.update.stop_worker") as stop,
                 patch("auto_update.update.start_worker"),
-                patch("auto_update.update.wait_ready", return_value=(1001, 0.01, 0.02)),
+                patch(
+                    "auto_update.update.wait_ready",
+                    side_effect=lambda *args, **kwargs: (
+                        1001,
+                        time.monotonic() - kwargs["switch_time"],
+                        time.monotonic() - kwargs["switch_time"] + 0.01,
+                    ),
+                ),
             ):
                 self.assertEqual(_run(settings(root)), 0)
                 stop.assert_called_once_with("test-worker.service")
