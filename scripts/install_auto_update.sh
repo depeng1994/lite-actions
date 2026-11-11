@@ -97,7 +97,10 @@ git config --file "$safe_git_config" --add safe.directory "$source_root"
 git config --file "$safe_git_config" --add safe.directory "$source_root/.git"
 trap 'rm -f "$safe_git_config"' EXIT
 git_in_source() {
-  GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$safe_git_config" git -C "$source_root" "$@"
+  # The installer may run as root from a user-owned checkout. Disable
+  # optional status index refreshes so .git/index keeps its original owner.
+  GIT_OPTIONAL_LOCKS=0 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$safe_git_config" \
+    git -C "$source_root" "$@"
 }
 approved_sha="$(git_in_source rev-parse --verify 'HEAD^{commit}')"
 [[ "$approved_sha" =~ ^[0-9a-f]{40}$ ]] || fail "Source commit SHA invalid"
