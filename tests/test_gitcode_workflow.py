@@ -12,12 +12,41 @@ from pathlib import Path
 from unittest.mock import patch
 
 from ci_core.contract import digest, normalize
-from ci_core.gitcode import GitCodeClient, MultiPlatformClient, source_plan
+from ci_core.gitcode import (
+    GitCodeClient,
+    MultiPlatformClient,
+    _gitcode_opener,
+    source_plan,
+)
 from ci_core.router import Router, task_key
 from tests.scenarios import Service, definition, write_workspace
 
 
 class GitCodeWorkflowTests(unittest.TestCase):
+    def test_gitcode_opener_uses_only_the_explicit_gitcode_proxy(self):
+        captured = {}
+
+        def build(*handlers):
+            captured["handlers"] = handlers
+            return object()
+
+        with (
+            patch.dict(
+                os.environ, {"LITE_ACTIONS_GITCODE_PROXY": "http://proxy.example:8080"}
+            ),
+            patch("urllib.request.build_opener", side_effect=build),
+        ):
+            _gitcode_opener()
+
+        handlers = captured["handlers"]
+        self.assertEqual(len(handlers), 2)
+        self.assertEqual(handlers[0].__class__.__name__, "NoRedirect")
+        proxy = handlers[1]
+        self.assertEqual(
+            proxy.proxies,
+            {"http": "http://proxy.example:8080", "https": "http://proxy.example:8080"},
+        )
+
     def test_existing_fixed_request_is_bound_to_its_run(self):
         client = GitCodeClient("fixture", "depeng1994/torchtitan-npu")
         run = {
