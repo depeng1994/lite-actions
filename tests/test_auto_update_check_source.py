@@ -81,9 +81,10 @@ class SourceTests(unittest.TestCase):
                 ),
                 patch("auto_update.update.stop_worker") as stop,
             ):
-                with self.assertRaises(check_source.SourceError):
-                    _run(make_settings(root))
+                self.assertEqual(_run(make_settings(root)), 2)
                 stop.assert_not_called()
+                events = (root / "management.jsonl").read_text()
+                self.assertIn('"FAILED_CHECK"', events)
             for url in ("file:///etc/passwd", "https://user:secret@github.com/x/y.git"):
                 with self.subTest(url=url), self.assertRaises(check_source.SourceError):
                     check_source.validate_source(url, "refs/heads/main")

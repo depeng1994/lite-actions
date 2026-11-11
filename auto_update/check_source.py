@@ -57,6 +57,7 @@ def git(args: list[str], *, cwd: Path | None = None, timeout: int = 180) -> str:
                 "HOME": str(Path.home()),
                 "GIT_TERMINAL_PROMPT": "0",
                 "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_GLOBAL": os.devnull,
             },
         )
     except (OSError, subprocess.SubprocessError) as exc:

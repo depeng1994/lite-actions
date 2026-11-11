@@ -12,6 +12,7 @@ import stat
 import sys
 import tempfile
 import time
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -172,7 +173,15 @@ def _transition(settings: Settings, info: dict, phase: str) -> None:
 
 
 def _audit(settings: Settings, event: str, **fields: object) -> None:
-    record(settings.log_file, event, **fields)
+    record(
+        settings.log_file,
+        event,
+        source=settings.source,
+        ref=settings.ref,
+        worker_unit=settings.unit,
+        transaction_id=uuid.uuid4().hex,
+        **fields,
+    )
 
 
 def _validate_candidate(path: Path) -> None:
@@ -275,7 +284,16 @@ def _run(settings: Settings) -> int:
         return 0
     old_path, old_sha = current_release(settings.root)
     time_start = time.monotonic()
-    target_sha = check_source(settings.source, settings.ref)
+    try:
+        target_sha = check_source(settings.source, settings.ref)
+    except SourceError as exc:
+        _audit(
+            settings,
+            "FAILED_CHECK",
+            error_code=str(exc),
+            check_duration_ms=int((time.monotonic() - time_start) * 1000),
+        )
+        return 2
     check_duration = int((time.monotonic() - time_start) * 1000)
     if target_sha == old_sha:
         _audit(
