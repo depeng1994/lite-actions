@@ -67,12 +67,31 @@ def main():
             client,
             os.environ.get("LITE_ACTIONS_RESULT_AUTHOR"),
         )
+        ready_file = os.environ.get("LITE_ACTIONS_READY_FILE", "").strip()
+        ready_published = False
         try:
             while True:
+                tick_succeeded = False
                 try:
                     router.tick()
+                    tick_succeeded = True
                 except Exception:
                     logging.exception("worker poll failed")
+                # The optional marker is written only after a successful poll.
+                # A failed poll must never convince the updater to commit a release.
+                if tick_succeeded and ready_file and not ready_published:
+                    try:
+                        from ci_core.worker_ready import publish_ready
+
+                        published = publish_ready(ROOT, Path(ready_file))
+                        ready_published = True
+                        logging.info(
+                            "worker ready published sha=%s pid=%s",
+                            published["release_sha"],
+                            published["pid"],
+                        )
+                    except Exception:
+                        logging.exception("worker readiness publication failed")
                 if a.once:
                     break
                 time.sleep(int(os.environ.get("LITE_ACTIONS_POLL_SECONDS", "10")))

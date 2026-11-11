@@ -1,6 +1,14 @@
 name: lite-ci-self-smoke
+run-name: 'Lite Actions self smoke: ${{ inputs.profile }}'
 on:
   workflow_dispatch:
+    inputs:
+      profile:
+        description: 'Select cpu-only to verify a deployment without allocating NPUs'
+        type: choice
+        required: true
+        default: full
+        options: [full, cpu-only]
 permissions:
   contents: read
   actions: read
@@ -8,13 +16,15 @@ jobs:
   smoke:
     if: github.repository == 'depeng1994/lite-actions'
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: ${{ inputs.profile == 'cpu-only' && 10 || 180 }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Prepare the pinned repository plan
+        env:
+          SELF_SMOKE_PROFILE: ${{ inputs.profile }}
         run: python3 -m ci_core.self_smoke prepare
       - uses: actions/upload-artifact@v4
         with:
@@ -22,7 +32,7 @@ jobs:
           path: .ci-request/ci-request.json
           if-no-files-found: error
           retention-days: 1
-      - name: Wait for all cases and verified cleanup
+      - name: Wait for all selected cases and verified cleanup
         env:
           GH_TOKEN: ${{ github.token }}
           CI_RESULT_AUTHOR: ${{ vars.LITE_CI_RESULT_ACTOR }}

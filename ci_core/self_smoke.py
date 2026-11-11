@@ -11,6 +11,7 @@ from ci_core.github import GitHubClient
 from tests.integration_tests.tools.lite_actions.entrypoint import inspect_profile
 
 PLAN = Path(".ci-request/ci-request.json")
+CPU_TITLE = "Lite Actions self smoke: cpu-only"
 
 
 def case_passed(result):
@@ -23,17 +24,28 @@ def case_passed(result):
 
 
 def expected_plan(run):
-    return source_plan(inspect_profile(), run, SELF_REPO)
+    rows = inspect_profile()
+    # This title comes from GitHub's run, not from the submitted artifact.
+    if run.get("display_title") == CPU_TITLE:
+        rows = [row for row in rows if row["test_id"] == "worker_os_blue"]
+        if len(rows) != 1 or rows[0]["kind"] != "worker_probe":
+            raise ValueError("expected exactly one pinned OS probe")
+        # source_plan separately rejects a probe with nonzero nodes or devices.
+    return source_plan(rows, run, SELF_REPO)
 
 
 def prepare(environ=os.environ):
     if environ["GITHUB_REPOSITORY"] != SELF_REPO:
         raise ValueError("unexpected self-smoke repository")
+    profile = environ.get("SELF_SMOKE_PROFILE", "full")
+    if profile not in {"full", "cpu-only"}:
+        raise ValueError("unknown self-smoke profile")
     run = {
         "id": int(environ["GITHUB_RUN_ID"]),
         "run_attempt": int(environ["GITHUB_RUN_ATTEMPT"]),
         "head_sha": environ["GITHUB_SHA"],
         "path": ".github/workflows/" + SELF_WORKFLOW,
+        "display_title": CPU_TITLE if profile == "cpu-only" else "",
     }
     plan = expected_plan(run)
     PLAN.parent.mkdir(parents=True, exist_ok=True)
@@ -127,7 +139,7 @@ def wait(environ=os.environ):
             case_id for case_id, result in found.items() if not case_passed(result)
         ]
         if failures:
-            raise ValueError("self-smoke cases failed: " + ", ".join(failures))
+            raise ValueError("self-smoke cases failed: " + ", ".join(sorted(failures)))
         if len(found) == len(plan["cases"]):
             return
         time.sleep(20)

@@ -282,3 +282,30 @@ allocations and reconcile them as needed before restoring the previous Worker wi
 the same state and locks. Preserve logs and the evidence linking both SHAs, the Run
 and the live Worker. The pull-request checks above run CPU contracts only; they do
 not certify 8P/16P hardware execution.
+
+
+## Automatic Updates
+
+Lite Actions Worker 可以通过 systemd 自动从可信 Git 源 Pull 新代码。检查间隔为**上一轮结束后约 3 分钟**。发现新 Commit 时会正常停止旧 Worker、切换版本并立即启动新 Worker，管理日志与 Actions 日志分开记录。
+
+**首次安装**（在经过审核的 Lite Actions 代码工作树中执行，传入已有 Worker 服务名）：
+
+~~~bash
+sudo bash scripts/install_auto_update.sh --worker-unit EXISTING_WORKER.service
+~~~
+
+脚本自动配置和验证更新服务；默认**不启用**持续定时更新。安装或升级可能取消正在执行的 Actions；完整业务验收后再启用：
+
+~~~bash
+sudo systemctl enable --now lite-actions-auto-update.timer
+~~~
+
+查看与暂停未来自动更新：
+
+~~~bash
+systemctl list-timers lite-actions-auto-update.timer
+journalctl -u lite-actions-auto-update.service -n 50 --no-pager
+sudo systemctl disable --now lite-actions-auto-update.timer
+~~~
+
+切换版本后立即请求启动新 Worker，设计验收目标为**5 秒内发出启动请求、30 秒内出现新 PID、120 秒内 Ready**。Git 下载和旧 Worker 清理时间另计，以上不是未实测的生产性能承诺。安装内部细节和恢复办法见 [自动更新运维文档](docs/auto-update.md)，设计与证据见 [RFC #19](https://github.com/depeng1994/lite-actions/issues/19)。
