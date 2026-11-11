@@ -132,7 +132,7 @@ never retain partial leases.
 
 Each node can set `occupancy_policy` to `wait` or `preempt`. Without an override,
 the pool's existing `force_reclaim` setting applies. A `wait` node never kills
-external processes; a busy group head is temporarily avoided according to the queue
+external processes; a busy group is temporarily avoided according to the queue
 policy. Both configured Blue nodes use `wait` even though their pool defaults to
 `preempt`.
 
@@ -150,7 +150,7 @@ Yellow A5 nodes without an explicit policy retain the pool's legacy
 each preemption request; unconfirmed cleanup is reported as such.
 
 The runtime `force_reclaim` field is the pool default. `OCCUPANCY_POLICY` log
-lines show the effective policy for each node and execution phase.
+lines show the effective policy for each selected node and execution phase.
 
 For GitCode repositories listed in `LITE_ACTIONS_GITCODE_REPOS`, the Worker also
 discovers running workflows whose name starts with `lite-ci-`, regardless of
@@ -288,7 +288,7 @@ not certify 8P/16P hardware execution.
 
 ### 1. 运行只读自检
 
-在经过审核的干净工作树中运行；需要 Python 3.11+、已有的 systemd Worker 服务，以及 `current → releases/<完整 SHA>` 的 Git checkout。以下以 Yellow 为例：显式指定解释器可避免 `sudo` 改变 `PATH` 后选中旧版 Python。
+在经过审核的干净工作树中运行；需要 Python 3.11+、已有的 systemd Worker 服务，以及 `current → releases/<完整 SHA>` 的 Git checkout。以下以 Yellow 为例，显式指定解释器可避免 `sudo` 选中旧版 Python。
 
 ```bash
 py=/usr/local/bin/python3.12
@@ -298,21 +298,14 @@ args=(--python "$py" --worker-unit lite-actions-yellow.service --install-root /o
 sudo "$py" scripts/auto_update_preflight.py "${args[@]}"
 ```
 
-代理主机先准备一个**只含代理/CA 配置**的独立文件（不要直接传含 Token 和其他 Worker 配置的 yellow.env）：
-
-```bash
-sudo install -m 0600 /dev/null /etc/lite-actions/auto-update-proxy.source.env
-sudoedit /etc/lite-actions/auto-update-proxy.source.env
-```
-
-只接受以下九种 KEY=VALUE：`http_proxy`、`https_proxy`、`HTTP_PROXY`、`HTTPS_PROXY`、`no_proxy`、`NO_PROXY`、`SSL_CERT_FILE`、`CURL_CA_BUNDLE`、`GIT_SSL_CAINFO`。文件须 root 所有、权限为 `0600)、普通文件且不能是软链。然后取消上面 args 数组中 `--proxy-env-file` 那一行的注释。无代理主机不建文件、不传此参数。自检出现 `FAIL` 时按 `Next:` 提示处理；没有 `.git` 的快照须先迁移。
+代理文件必须是 root 所有、权限 `0600` 的普通文件（非软链），每行只填代理或 CA 的 `KEY=VALUE`，不要传含 Token 的 `yellow.env`；无代理主机不用建文件。自检出现 `FAIL` 时按 `Next:` 提示处理；没有 `.git` 的快照须先迁移。
 
 ### 2. 安装并启用
 
-自检通过后，在同一个 Bash 会话中执行安装。安装可能中断在途任务，默认不启动定时更新。
+自检通过后，在同一个 Bash 会话中执行安装。安装可能中断在途任务，默认不开启定时更新。
 
 ```bash
 sudo bash scripts/install_auto_update.sh "${args[@]}"
 ```
 
-业务验证通过后，执行 `sudo systemctl enable --now lite-actions-auto-update.timer`。更新日志与停用命令见[自动更新运维指南](docs/auto-update.md)。
+业务验证通过后，执行 `sudo systemctl enable --now lite-actions-auto-update.timer`。日志与停用命令见[自动更新运维指南](docs/auto-update.md)。
