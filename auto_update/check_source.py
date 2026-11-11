@@ -99,8 +99,15 @@ def stage_source(root: Path, url: str, ref: str, target: str, old: str) -> Path:
     try:
         git(
             [
-                "clone", "--quiet", "--no-checkout", "--single-branch",
-                "--branch", branch, "--", url, str(stage),
+                "clone",
+                "--quiet",
+                "--no-checkout",
+                "--single-branch",
+                "--branch",
+                branch,
+                "--",
+                url,
+                str(stage),
             ],
             timeout=240,
         )
@@ -114,10 +121,15 @@ def stage_source(root: Path, url: str, ref: str, target: str, old: str) -> Path:
             # source URL stays the explicitly configured trusted endpoint.
             git(["-C", str(stage), "fetch", "--quiet", "origin", old], timeout=120)
         try:
-            git(["-C", str(stage), "merge-base", "--is-ancestor", old, target], timeout=30)
+            git(
+                ["-C", str(stage), "merge-base", "--is-ancestor", old, target],
+                timeout=30,
+            )
         except SourceError as exc:
             raise SourceError("source_not_fast_forward") from exc
-        if git(["-C", str(stage), "rev-parse", "--show-toplevel"], timeout=10) != str(stage):
+        if git(["-C", str(stage), "rev-parse", "--show-toplevel"], timeout=10) != str(
+            stage
+        ):
             raise SourceError("unsafe_checkout")
         return stage
     except BaseException:

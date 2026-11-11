@@ -19,8 +19,12 @@ from ci_core.worker_ready import verify_ready
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _UNIT = re.compile(r"[A-Za-z0-9_.@:-]+\.service\Z")
 _BINDINGS = ("config", "state", "logs", "cache")
-_EXTERNAL = ("/etc/lite-actions/", "/var/lib/lite-actions/",
-             "/var/log/lite-actions/", "/var/cache/lite-actions/")
+_EXTERNAL = (
+    "/etc/lite-actions/",
+    "/var/lib/lite-actions/",
+    "/var/log/lite-actions/",
+    "/var/cache/lite-actions/",
+)
 
 
 class SwitchError(RuntimeError):
@@ -50,7 +54,10 @@ def current_release(root: Path) -> tuple[Path, str]:
         raise SwitchError("current_broken") from exc
     sha = target.name
     release_dir = root / "releases"
-    if target.parent != release_dir.resolve(strict=True) or release_at(root, sha).is_symlink():
+    if (
+        target.parent != release_dir.resolve(strict=True)
+        or release_at(root, sha).is_symlink()
+    ):
         raise SwitchError("current_outside_releases")
     if checkout_sha(target) != sha:
         raise SwitchError("current_sha_mismatch")
@@ -204,6 +211,10 @@ def restore_old(
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if is_active(unit) and main_pid(unit) > 0:
-            return "legacy_process_active" if not (old / "ci_core" / "worker_ready.py").exists() else "process_active"
+            return (
+                "legacy_process_active"
+                if not (old / "ci_core" / "worker_ready.py").exists()
+                else "process_active"
+            )
         time.sleep(0.25)
     raise SwitchError("rollback_worker_unavailable")

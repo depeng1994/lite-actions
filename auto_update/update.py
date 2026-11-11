@@ -38,9 +38,7 @@ from auto_update.version_switch import (
 )
 
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
-_TERMINAL = {
-    "COMMITTED", "ROLLED_BACK", "RECOVERY_REQUIRED", "FAILED_PREPARE"
-}
+_TERMINAL = {"COMMITTED", "ROLLED_BACK", "RECOVERY_REQUIRED", "FAILED_PREPARE"}
 
 
 class UpdateError(RuntimeError):
@@ -71,24 +69,38 @@ class Settings:
             ),
             ref=e.get("LITE_ACTIONS_UPDATE_GIT_REF", "refs/heads/main"),
             unit=e.get("LITE_ACTIONS_UPDATE_WORKER_UNIT", ""),
-            state_dir=Path(e.get(
-                "LITE_ACTIONS_UPDATE_STATE_DIR", "/var/lib/lite-actions/auto-update"
-            )),
-            ready_file=Path(e.get(
-                "LITE_ACTIONS_UPDATE_READY_FILE",
-                "/var/lib/lite-actions/worker-ready.json",
-            )),
-            log_file=Path(e.get(
-                "LITE_ACTIONS_UPDATE_LOG_FILE",
-                "/var/log/lite-actions/management/updates.jsonl",
-            )),
-            lock_file=Path(e.get(
-                "LITE_ACTIONS_UPDATE_LOCK_FILE",
-                "/run/lock/lite-actions-auto-update.lock",
-            )),
+            state_dir=Path(
+                e.get(
+                    "LITE_ACTIONS_UPDATE_STATE_DIR", "/var/lib/lite-actions/auto-update"
+                )
+            ),
+            ready_file=Path(
+                e.get(
+                    "LITE_ACTIONS_UPDATE_READY_FILE",
+                    "/var/lib/lite-actions/worker-ready.json",
+                )
+            ),
+            log_file=Path(
+                e.get(
+                    "LITE_ACTIONS_UPDATE_LOG_FILE",
+                    "/var/log/lite-actions/management/updates.jsonl",
+                )
+            ),
+            lock_file=Path(
+                e.get(
+                    "LITE_ACTIONS_UPDATE_LOCK_FILE",
+                    "/run/lock/lite-actions-auto-update.lock",
+                )
+            ),
             ready_timeout=int(e.get("LITE_ACTIONS_UPDATE_READY_TIMEOUT", "120")),
         )
-        for p in (data.root, data.state_dir, data.ready_file, data.log_file, data.lock_file):
+        for p in (
+            data.root,
+            data.state_dir,
+            data.ready_file,
+            data.log_file,
+            data.lock_file,
+        ):
             if not p.is_absolute() or ".." in p.parts:
                 raise UpdateError("invalid_absolute_path")
         if not data.root.is_dir() or data.root.is_symlink():
@@ -194,11 +206,14 @@ def _blocked(settings: Settings) -> str | None:
 
 
 def _block(settings: Settings, sha: str, reason: str) -> None:
-    _atomic_json(settings.state_dir / "blocked.json", {
-        "sha": sha,
-        "error_code": reason,
-        "timestamp": time.time(),
-    })
+    _atomic_json(
+        settings.state_dir / "blocked.json",
+        {
+            "sha": sha,
+            "error_code": reason,
+            "timestamp": time.time(),
+        },
+    )
 
 
 def _recover(settings: Settings) -> bool:
@@ -241,12 +256,17 @@ def _check(settings: Settings) -> int:
     old_path, old_sha = current_release(settings.root)
     target = check_source(settings.source, settings.ref)
     event = "NO_CHANGE" if target == old_sha else "UPDATE_AVAILABLE"
-    print(json.dumps({
-        "status": event,
-        "old_sha": old_sha,
-        "target_sha": target,
-        "current": str(old_path),
-    }, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "status": event,
+                "old_sha": old_sha,
+                "target_sha": target,
+                "current": str(old_path),
+            },
+            sort_keys=True,
+        )
+    )
     return 0
 
 
@@ -258,8 +278,13 @@ def _run(settings: Settings) -> int:
     target_sha = check_source(settings.source, settings.ref)
     check_duration = int((time.monotonic() - time_start) * 1000)
     if target_sha == old_sha:
-        _audit(settings, "NO_CHANGE", old_sha=old_sha,
-               target_sha=target_sha, check_duration_ms=check_duration)
+        _audit(
+            settings,
+            "NO_CHANGE",
+            old_sha=old_sha,
+            target_sha=target_sha,
+            check_duration_ms=check_duration,
+        )
         return 0
     if _blocked(settings) == target_sha:
         _audit(settings, "SKIPPED_FAILED_SHA", old_sha=old_sha, target_sha=target_sha)
@@ -278,7 +303,9 @@ def _run(settings: Settings) -> int:
     times = {"check_duration_ms": check_duration}
     try:
         _transition(settings, txn, "FETCHING")
-        stage = stage_source(settings.root, settings.source, settings.ref, target_sha, old_sha)
+        stage = stage_source(
+            settings.root, settings.source, settings.ref, target_sha, old_sha
+        )
         times["download_duration_ms"] = int((time.monotonic() - begin_download) * 1000)
         _transition(settings, txn, "PREPARING")
         _validate_candidate(stage)
@@ -317,19 +344,26 @@ def _run(settings: Settings) -> int:
             ready_timeout=settings.ready_timeout,
         )
         times["switch_to_pid_ms"] = int(switch_to_pid * 1000)
-        times["start_to_ready_ms"] = int((switch_to_ready - (start_mono - switch_time)) * 1000)
+        times["start_to_ready_ms"] = int(
+            (switch_to_ready - (start_mono - switch_time)) * 1000
+        )
         if times["start_to_ready_ms"] > settings.ready_timeout * 1000:
             raise UpdateError("worker_ready_slo_exceeded")
         _transition(settings, txn, "COMMITTED")
         _audit(
-            settings, "UPDATED", old_sha=old_sha, target_sha=target_sha,
-            worker_pid=pid, **times
+            settings,
+            "UPDATED",
+            old_sha=old_sha,
+            target_sha=target_sha,
+            worker_pid=pid,
+            **times,
         )
         return 0
     except (UpdateError, SourceError, SwitchError, OSError, ValueError) as exc:
         reason = type(exc).__name__
         if stage is not None and stage.is_dir():
             import shutil
+
             shutil.rmtree(stage, ignore_errors=True)
         if stop_started and not stop_completed:
             # A failed stop that left the old service alive must not stop it a
@@ -341,26 +375,55 @@ def _run(settings: Settings) -> int:
                 old_still_running = False
             if old_still_running:
                 _transition(settings, txn, "FAILED_PREPARE")
-                _audit(settings, "FAILED_STOP", old_sha=old_sha,
-                       target_sha=target_sha, error_code=reason)
+                _audit(
+                    settings,
+                    "FAILED_STOP",
+                    old_sha=old_sha,
+                    target_sha=target_sha,
+                    error_code=reason,
+                )
                 return 2
         if not stop_started:
             _transition(settings, txn, "FAILED_PREPARE")
-            _audit(settings, "FAILED_PREPARE", old_sha=old_sha,
-                   target_sha=target_sha, error_code=reason)
+            _audit(
+                settings,
+                "FAILED_PREPARE",
+                old_sha=old_sha,
+                target_sha=target_sha,
+                error_code=reason,
+            )
             return 2
         try:
             _transition(settings, txn, "ROLLING_BACK")
-            status = restore_old(settings.root, old_path, settings.unit, settings.ready_file)
+            status = restore_old(
+                settings.root, old_path, settings.unit, settings.ready_file
+            )
             _block(settings, target_sha, reason)
             _transition(settings, txn, "ROLLED_BACK")
-            _audit(settings, "ROLLED_BACK", old_sha=old_sha,
-                   target_sha=target_sha, recovery=status, error_code=reason)
+            _audit(
+                settings,
+                "ROLLED_BACK",
+                old_sha=old_sha,
+                target_sha=target_sha,
+                recovery=status,
+                error_code=reason,
+            )
             return 3
-        except (UpdateError, SourceError, SwitchError, OSError, ValueError) as rollback_exc:
+        except (
+            UpdateError,
+            SourceError,
+            SwitchError,
+            OSError,
+            ValueError,
+        ) as rollback_exc:
             _transition(settings, txn, "RECOVERY_REQUIRED")
-            _audit(settings, "RECOVERY_REQUIRED", old_sha=old_sha,
-                   target_sha=target_sha, error_code=type(rollback_exc).__name__)
+            _audit(
+                settings,
+                "RECOVERY_REQUIRED",
+                old_sha=old_sha,
+                target_sha=target_sha,
+                error_code=type(rollback_exc).__name__,
+            )
             return 4
 
 

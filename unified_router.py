@@ -87,7 +87,8 @@ def main():
                         ready_published = True
                         logging.info(
                             "worker ready published sha=%s pid=%s",
-                            published["release_sha"], published["pid"]
+                            published["release_sha"],
+                            published["pid"],
                         )
                     except Exception:
                         logging.exception("worker readiness publication failed")

@@ -44,8 +44,12 @@ class SourceTests(unittest.TestCase):
             root = Path(tmp)
             repo = root / "origin"
             repo.mkdir()
+
             def git(*args):
-                return subprocess.check_output(["git", "-C", str(repo), *args], text=True).strip()
+                return subprocess.check_output(
+                    ["git", "-C", str(repo), *args], text=True
+                ).strip()
+
             git("init", "-q")
             git("config", "user.email", "test@example.com")
             git("config", "user.name", "Test")
@@ -58,7 +62,9 @@ class SourceTests(unittest.TestCase):
             git("commit", "-qam", "B")
             b = git("rev-parse", "HEAD")
             with patch("auto_update.check_source.validate_source"):
-                stage = check_source.stage_source(root, str(repo), "refs/heads/main", b, a)
+                stage = check_source.stage_source(
+                    root, str(repo), "refs/heads/main", b, a
+                )
             self.assertEqual(check_source.checkout_sha(stage), b)
             self.assertEqual((stage / "version.txt").read_text(), "B\n")
             self.assertFalse((root / "current").exists())
@@ -69,7 +75,10 @@ class SourceTests(unittest.TestCase):
             a = "a" * 40
             with (
                 patch("auto_update.update.current_release", return_value=(root, a)),
-                patch("auto_update.update.check_source", side_effect=check_source.SourceError("source_unavailable")),
+                patch(
+                    "auto_update.update.check_source",
+                    side_effect=check_source.SourceError("source_unavailable"),
+                ),
                 patch("auto_update.update.stop_worker") as stop,
             ):
                 with self.assertRaises(check_source.SourceError):

@@ -60,8 +60,7 @@ while True:
 
 def git(*args: str, cwd: Path | None = None) -> str:
     p = subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, text=True,
-        check=True, timeout=30
+        ["git", *args], cwd=cwd, capture_output=True, text=True, check=True, timeout=30
     )
     return p.stdout.strip()
 
@@ -119,9 +118,10 @@ class CPUWorkerSupervisor:
             self.stop()
             return ""
         if action == "start":
-            if self.fail_candidate_start and checkout_sha(
-                (self.root / "current").resolve()
-            ) == self.new_sha:
+            if (
+                self.fail_candidate_start
+                and checkout_sha((self.root / "current").resolve()) == self.new_sha
+            ):
                 raise SwitchError("simulated_candidate_start_failure")
             self.start()
             return ""
@@ -137,10 +137,17 @@ class CPUWorkerSupervisor:
         env["PYTHONPATH"] = str(PROJECT)
         self.proc = subprocess.Popen(
             [
-                sys.executable, "-u", "-c", CHILD,
-                str(self.root / "current"), str(self.ready), str(self.report),
+                sys.executable,
+                "-u",
+                "-c",
+                CHILD,
+                str(self.root / "current"),
+                str(self.ready),
+                str(self.report),
             ],
-            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
 
@@ -168,10 +175,15 @@ def scenario_ok(tmp: Path) -> dict:
     (root / "current").symlink_to(old_release)
     ready, report = root / "worker-ready.json", root / "cpu-probe.jsonl"
     cfg = Settings(
-        root=root, source=str(repo), ref="refs/heads/main",
-        unit="fixture-worker.service", state_dir=root / "management",
-        ready_file=ready, log_file=root / "management" / "updates.jsonl",
-        lock_file=root / "management.lock", ready_timeout=10,
+        root=root,
+        source=str(repo),
+        ref="refs/heads/main",
+        unit="fixture-worker.service",
+        state_dir=root / "management",
+        ready_file=ready,
+        log_file=root / "management" / "updates.jsonl",
+        lock_file=root / "management.lock",
+        ready_timeout=10,
     )
     supervisor = CPUWorkerSupervisor(root, ready, report, new_sha)
     try:
@@ -190,8 +202,9 @@ def scenario_ok(tmp: Path) -> dict:
         with (
             patch("auto_update.check_source.validate_source"),
             patch("auto_update.update.check_source", side_effect=local_source),
-            patch("auto_update.version_switch.systemctl",
-                  side_effect=supervisor.command),
+            patch(
+                "auto_update.version_switch.systemctl", side_effect=supervisor.command
+            ),
         ):
             # Compressed timer triggers (0.2 s vs actual configured 3 min).
             # Never use this test as a timing proof of the real systemd timer.
@@ -208,20 +221,21 @@ def scenario_ok(tmp: Path) -> dict:
         updates = [e for e in entries if e["event"] == "UPDATED"]
         assert len(updates) == 1
         assert any(e["event"] == "NO_CHANGE" for e in entries)
-        assert (updates[0]["switch_to_start_ms"] <= 5000)
-        assert (updates[0]["switch_to_pid_ms"] <= 30000)
-        assert (updates[0]["start_to_ready_ms"] <= 120000)
+        assert updates[0]["switch_to_start_ms"] <= 5000
+        assert updates[0]["switch_to_pid_ms"] <= 30000
+        assert updates[0]["start_to_ready_ms"] <= 120000
         probes = [json.loads(s) for s in report.read_text().splitlines()]
         assert len(probes) >= 2
         assert probes[0]["sha"] == old_sha and probes[-1]["sha"] == new_sha
         assert all(p["probe_status"] == "CPU_PROBE_PASS" for p in probes)
         return {
             "status": "SIMULATED_TIMER_PASS",
-            "old_sha": old_sha, "new_sha": new_sha,
-            "old_pid": pid_a, "new_pid": pid_b,
+            "old_sha": old_sha,
+            "new_sha": new_sha,
+            "old_pid": pid_a,
+            "new_pid": pid_b,
             "probe_count": len(probes),
-            "timing_ms": {k: v for k, v in updates[0].items()
-                          if k.endswith("_ms")},
+            "timing_ms": {k: v for k, v in updates[0].items() if k.endswith("_ms")},
             "systemd": "NOT_TESTED",
             "github_actions_dispatch": "NOT_TESTED",
             "npu": "NOT_TESTED",
@@ -241,23 +255,30 @@ def scenario_failure(tmp: Path) -> dict:
     (root / "current").symlink_to(old_release)
     ready, report = root / "worker-ready.json", root / "cpu-probe.jsonl"
     cfg = Settings(
-        root=root, source=str(repo), ref="refs/heads/main",
-        unit="fixture-worker.service", state_dir=root / "management",
-        ready_file=ready, log_file=root / "management" / "updates.jsonl",
-        lock_file=root / "management.lock", ready_timeout=10,
+        root=root,
+        source=str(repo),
+        ref="refs/heads/main",
+        unit="fixture-worker.service",
+        state_dir=root / "management",
+        ready_file=ready,
+        log_file=root / "management" / "updates.jsonl",
+        lock_file=root / "management.lock",
+        ready_timeout=10,
     )
     supervisor = CPUWorkerSupervisor(root, ready, report, new_sha)
     supervisor.fail_candidate_start = True
     try:
         supervisor.start()
+
         def local_source(url, ref):
             return git("ls-remote", url, ref).split()[0]
 
         with (
             patch("auto_update.check_source.validate_source"),
             patch("auto_update.update.check_source", side_effect=local_source),
-            patch("auto_update.version_switch.systemctl",
-                  side_effect=supervisor.command),
+            patch(
+                "auto_update.version_switch.systemctl", side_effect=supervisor.command
+            ),
         ):
             assert _run(cfg) == 3, "candidate failure did not cause rollback"
             assert current_release(root)[1] == old_sha

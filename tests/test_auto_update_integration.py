@@ -27,7 +27,9 @@ class IntegrationTests(unittest.TestCase):
             root = Path(tmp)
             version, sha = checkout(root, "idempotent")
             with (
-                patch("auto_update.update.current_release", return_value=(version, sha)),
+                patch(
+                    "auto_update.update.current_release", return_value=(version, sha)
+                ),
                 patch("auto_update.update.check_source", return_value=sha),
                 patch("auto_update.update.stop_worker") as stopped,
             ):
@@ -67,8 +69,13 @@ class IntegrationTests(unittest.TestCase):
     def test_au14_install_logging_timer_and_genericity(self):
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / "management" / "updates.jsonl"
-            record(p, "UPDATED", old_sha="a" * 40, target_sha="b" * 40,
-                   switch_to_start_ms=12)
+            record(
+                p,
+                "UPDATED",
+                old_sha="a" * 40,
+                target_sha="b" * 40,
+                switch_to_start_ms=12,
+            )
             rows = p.read_text().splitlines()
             self.assertEqual(len(rows), 1)
             self.assertEqual(json.loads(rows[0])["switch_to_start_ms"], 12)
@@ -77,14 +84,23 @@ class IntegrationTests(unittest.TestCase):
             subprocess.run(["bash", "-n", str(ROOT / shell)], check=True)
         result = subprocess.run(
             ["bash", str(ROOT / "scripts/install_auto_update.sh"), "--help"],
-            capture_output=True, text=True, check=True
+            capture_output=True,
+            text=True,
+            check=True,
         )
         self.assertIn("--worker-unit", result.stdout)
         timer = (ROOT / "deploy/lite-actions-auto-update.timer").read_text()
         self.assertIn("OnUnitInactiveSec=3min", timer)
         self.assertIn("AccuracySec=10s", timer)
-        paths = [ROOT / "auto_update" / p for p in
-                 ("check_source.py", "update.py", "version_switch.py", "update_log.py")]
+        paths = [
+            ROOT / "auto_update" / p
+            for p in (
+                "check_source.py",
+                "update.py",
+                "version_switch.py",
+                "update_log.py",
+            )
+        ]
         for path in paths:
             text = path.read_text().lower()
             self.assertNotIn("blue", text)

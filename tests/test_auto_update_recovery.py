@@ -28,12 +28,15 @@ class RecoveryTests(unittest.TestCase):
             "target_sha": self.new_sha,
             "unit": "test-worker.service",
         }
-        (self.config.state_dir / "transaction.json").write_text(json.dumps(self.transaction))
+        (self.config.state_dir / "transaction.json").write_text(
+            json.dumps(self.transaction)
+        )
 
     def test_au08_interrupted_switch_recovers_previous_release(self):
         def restore(root, old, unit, ready_path):
             switch_current(root, old)
             return "process_active"
+
         with patch("auto_update.update.restore_old", side_effect=restore):
             self.assertTrue(_recover(self.config))
         self.assertEqual(current_release(self.root)[1], self.old_sha)
@@ -45,7 +48,9 @@ class RecoveryTests(unittest.TestCase):
         )
 
     def test_au09_failed_rollback_requires_manual_recovery(self):
-        with patch("auto_update.update.restore_old", side_effect=SwitchError("rollback_failed")):
+        with patch(
+            "auto_update.update.restore_old", side_effect=SwitchError("rollback_failed")
+        ):
             with self.assertRaises(UpdateError):
                 _recover(self.config)
         state = json.loads((self.config.state_dir / "transaction.json").read_text())

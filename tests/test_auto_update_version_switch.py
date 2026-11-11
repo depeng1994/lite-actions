@@ -14,8 +14,12 @@ from auto_update.version_switch import SwitchError, current_release, switch_curr
 def checkout(root: Path, message: str) -> tuple[Path, str]:
     folder = root / ("checkout-" + message)
     folder.mkdir()
+
     def git(*args):
-        return subprocess.check_output(["git", "-C", str(folder), *args], text=True).strip()
+        return subprocess.check_output(
+            ["git", "-C", str(folder), *args], text=True
+        ).strip()
+
     git("init", "-q")
     git("config", "user.email", "test@example.com")
     git("config", "user.name", "Test")
@@ -31,10 +35,15 @@ def checkout(root: Path, message: str) -> tuple[Path, str]:
 
 def settings(root: Path) -> Settings:
     return Settings(
-        root=root, source="https://github.com/depeng1994/lite-actions.git",
-        ref="refs/heads/main", unit="test-worker.service",
-        state_dir=root / "runtime", ready_file=root / "ready.json",
-        log_file=root / "updates.jsonl", lock_file=root / "lock", ready_timeout=120,
+        root=root,
+        source="https://github.com/depeng1994/lite-actions.git",
+        ref="refs/heads/main",
+        unit="test-worker.service",
+        state_dir=root / "runtime",
+        ready_file=root / "ready.json",
+        log_file=root / "updates.jsonl",
+        lock_file=root / "lock",
+        ready_timeout=120,
     )
 
 
@@ -60,7 +69,10 @@ class SwitchTests(unittest.TestCase):
         with (
             patch("auto_update.update.check_source", return_value=self.sha_b),
             patch("auto_update.update.stage_source", return_value=stage),
-            patch("auto_update.update._validate_candidate", side_effect=UpdateError("bad_candidate")),
+            patch(
+                "auto_update.update._validate_candidate",
+                side_effect=UpdateError("bad_candidate"),
+            ),
             patch("auto_update.update.stop_worker") as stop,
         ):
             self.assertEqual(_run(settings(self.root)), 2)
@@ -75,7 +87,10 @@ class SwitchTests(unittest.TestCase):
             patch("auto_update.update.stage_source", return_value=stage),
             patch("auto_update.update._validate_candidate"),
             patch("auto_update.update.prepare_release", return_value=self.b),
-            patch("auto_update.update.stop_worker", side_effect=SwitchError("worker_stop_failed")),
+            patch(
+                "auto_update.update.stop_worker",
+                side_effect=SwitchError("worker_stop_failed"),
+            ),
             patch("auto_update.update.is_active", return_value=True),
             patch("auto_update.update.restore_old") as rollback,
             patch("auto_update.update.switch_current") as switching,
@@ -88,16 +103,21 @@ class SwitchTests(unittest.TestCase):
     def test_au07_start_failure_rolls_back_old_code(self):
         stage = self.root / "staging" / "trial"
         stage.mkdir(parents=True)
+
         def rollback(root, old, unit, ready_file):
             switch_current(root, old)
             return "process_active"
+
         with (
             patch("auto_update.update.check_source", return_value=self.sha_b),
             patch("auto_update.update.stage_source", return_value=stage),
             patch("auto_update.update._validate_candidate"),
             patch("auto_update.update.prepare_release", return_value=self.b),
             patch("auto_update.update.stop_worker"),
-            patch("auto_update.update.start_worker", side_effect=SwitchError("start_failed")),
+            patch(
+                "auto_update.update.start_worker",
+                side_effect=SwitchError("start_failed"),
+            ),
             patch("auto_update.update.restore_old", side_effect=rollback),
         ):
             self.assertEqual(_run(settings(self.root)), 3)

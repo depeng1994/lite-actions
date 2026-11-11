@@ -23,25 +23,41 @@ class ReadyTests(unittest.TestCase):
                 (data["boot_id"], data["process_start_ticks"]),
                 process_identity(os.getpid()),
             )
-            self.assertTrue(verify_ready(
-                target, expected_sha=sha, expected_pid=os.getpid(),
-                not_before=data["ready_at"] - 1,
-            ))
-            self.assertFalse(verify_ready(
-                target, expected_sha="b" * 40, expected_pid=os.getpid(),
-                not_before=data["ready_at"] - 1,
-            ))
-            self.assertFalse(verify_ready(
-                target, expected_sha=sha, expected_pid=os.getpid(),
-                not_before=data["ready_at"] + 1,
-            ))
+            self.assertTrue(
+                verify_ready(
+                    target,
+                    expected_sha=sha,
+                    expected_pid=os.getpid(),
+                    not_before=data["ready_at"] - 1,
+                )
+            )
+            self.assertFalse(
+                verify_ready(
+                    target,
+                    expected_sha="b" * 40,
+                    expected_pid=os.getpid(),
+                    not_before=data["ready_at"] - 1,
+                )
+            )
+            self.assertFalse(
+                verify_ready(
+                    target,
+                    expected_sha=sha,
+                    expected_pid=os.getpid(),
+                    not_before=data["ready_at"] + 1,
+                )
+            )
             forged = json.loads(target.read_text())
             forged["process_start_ticks"] += 1
             target.write_text(json.dumps(forged))
-            self.assertFalse(verify_ready(
-                target, expected_sha=sha, expected_pid=os.getpid(),
-                not_before=time.time() - 20,
-            ))
+            self.assertFalse(
+                verify_ready(
+                    target,
+                    expected_sha=sha,
+                    expected_pid=os.getpid(),
+                    not_before=time.time() - 20,
+                )
+            )
 
 
 if __name__ == "__main__":

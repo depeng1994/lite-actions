@@ -24,7 +24,9 @@ def process_identity(pid: int) -> tuple[str, int]:
 def actual_sha(root: Path) -> str:
     value = subprocess.check_output(
         ["git", "-C", str(root.resolve()), "rev-parse", "HEAD"],
-        timeout=15, stderr=subprocess.DEVNULL, text=True
+        timeout=15,
+        stderr=subprocess.DEVNULL,
+        text=True,
     ).strip()
     if not _SHA.fullmatch(value):
         raise ValueError("Worker checkout SHA invalid")
@@ -65,7 +67,9 @@ def publish_ready(root: Path, destination: Path) -> dict:
     return value
 
 
-def verify_ready(path: Path, *, expected_sha: str, expected_pid: int, not_before: float) -> bool:
+def verify_ready(
+    path: Path, *, expected_sha: str, expected_pid: int, not_before: float
+) -> bool:
     path = Path(path)
     if path.is_symlink():
         return False
