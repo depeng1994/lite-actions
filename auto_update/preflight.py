@@ -13,12 +13,12 @@ from pathlib import Path
 
 from auto_update.check_source import SourceError, check_source
 from auto_update.deploy_support import (
+    _DROPIN_CONTENT,
     DeploySupportError,
     _check_existing_file,
     read_proxy_env_file,
     render_systemd_environment,
     validate_python_interpreter,
-    _DROPIN_CONTENT,
 )
 
 
@@ -31,7 +31,7 @@ class Check:
 
 
 def _run_git(root: Path, args: list[str], extra_safe: tuple[Path, ...] = ()) -> str:
-    safe = (root, root / '.git') + extra_safe
+    safe = (root, root / ".git") + extra_safe
     fd, name = tempfile.mkstemp(prefix="lite-actions-preflight-git-")
     config = Path(name)
     try:
@@ -51,15 +51,25 @@ def _run_git(root: Path, args: list[str], extra_safe: tuple[Path, ...] = ()) -> 
             "GIT_CONFIG_GLOBAL": str(config),
         }
         for key in (
-            "http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
-            "no_proxy", "NO_PROXY", "SSL_CERT_FILE", "CURL_CA_BUNDLE",
+            "http_proxy",
+            "https_proxy",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "no_proxy",
+            "NO_PROXY",
+            "SSL_CERT_FILE",
+            "CURL_CA_BUNDLE",
             "GIT_SSL_CAINFO",
         ):
             if key in os.environ:
                 env[key] = os.environ[key]
         result = subprocess.run(
             ["git", "-C", str(root), *args],
-            capture_output=True, text=True, timeout=30, check=False, env=env
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            env=env,
         )
         if result.returncode:
             raise RuntimeError("git_check_failed")
@@ -83,7 +93,10 @@ def systemd_available() -> bool:
 def _systemctl_show(unit: str, prop: str) -> str:
     result = subprocess.run(
         ["systemctl", "show", "--property=" + prop, "--value", unit],
-        capture_output=True, text=True, timeout=10, check=False
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
     )
     if result.returncode:
         raise RuntimeError("systemctl_query_failed")
@@ -108,7 +121,9 @@ def run_preflight(
         try:
             proxy_values = read_proxy_env_file(proxy_env_file)
             os.environ.update(proxy_values)
-            checks.append(Check("proxy file", True, "root-owned 0600 allowlist accepted", ""))
+            checks.append(
+                Check("proxy file", True, "root-owned 0600 allowlist accepted", "")
+            )
         except DeploySupportError as exc:
             checks.append(
                 Check(
@@ -136,20 +151,42 @@ def run_preflight(
     if git_path:
         try:
             version = subprocess.run(
-                [git_path, "--version"], capture_output=True, text=True, timeout=5, check=True
+                [git_path, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=True,
             ).stdout.strip()
             checks.append(Check("Git", True, version, ""))
         except (OSError, subprocess.SubprocessError):
-            checks.append(Check("Git", False, "Git version query failed", "Install Git and ensure it is in PATH."))
+            checks.append(
+                Check(
+                    "Git",
+                    False,
+                    "Git version query failed",
+                    "Install Git and ensure it is in PATH.",
+                )
+            )
     else:
-        checks.append(Check("Git", False, "git executable not found", "Install Git and ensure it is in PATH."))
+        checks.append(
+            Check(
+                "Git",
+                False,
+                "git executable not found",
+                "Install Git and ensure it is in PATH.",
+            )
+        )
 
     if systemd_available():
-        checks.append(Check("systemd", True, "systemd manager and systemd-analyze available", ""))
+        checks.append(
+            Check("systemd", True, "systemd manager and systemd-analyze available", "")
+        )
         try:
             load_state = _systemctl_show(worker_unit, "LoadState")
             if load_state == "loaded":
-                checks.append(Check("Worker unit", True, worker_unit + " is loaded", ""))
+                checks.append(
+                    Check("Worker unit", True, worker_unit + " is loaded", "")
+                )
             else:
                 checks.append(
                     Check(
@@ -165,7 +202,9 @@ def run_preflight(
                     "Worker unit",
                     False,
                     "systemctl could not inspect the configured Worker unit",
-                    "Run systemctl status " + worker_unit + " and verify the unit name.",
+                    "Run systemctl status "
+                    + worker_unit
+                    + " and verify the unit name.",
                 )
             )
     else:
@@ -201,7 +240,14 @@ def run_preflight(
         actual = _run_git(release, ["rev-parse", "--verify", "HEAD^{commit}"])
         if actual != sha:
             raise RuntimeError("release HEAD does not match its directory SHA")
-        checks.append(Check("current release", True, "current -> releases/<sha> Git checkout " + sha[:12], ""))
+        checks.append(
+            Check(
+                "current release",
+                True,
+                "current -> releases/<sha> Git checkout " + sha[:12],
+                "",
+            )
+        )
     except (OSError, RuntimeError, subprocess.SubprocessError):
         checks.append(
             Check(
@@ -216,13 +262,20 @@ def run_preflight(
     if release is not None:
         try:
             working_directory = _systemctl_show(worker_unit, "WorkingDirectory")
-            if working_directory and Path(working_directory).resolve() != release.resolve():
-                raise RuntimeError("Worker WorkingDirectory does not match current release")
+            if (
+                working_directory
+                and Path(working_directory).resolve() != release.resolve()
+            ):
+                raise RuntimeError(
+                    "Worker WorkingDirectory does not match current release"
+                )
             checks.append(
                 Check(
                     "Worker WorkingDirectory",
                     True,
-                    "matches current release" if working_directory else "not explicitly set; ExecStart remains host-managed",
+                    "matches current release"
+                    if working_directory
+                    else "not explicitly set; ExecStart remains host-managed",
                     "",
                 )
             )
@@ -232,20 +285,33 @@ def run_preflight(
                     "Worker WorkingDirectory",
                     False,
                     "Worker unit does not point to the current Git release",
-                    "Review systemctl cat " + worker_unit + " and set WorkingDirectory to " + str(release) + ".",
+                    "Review systemctl cat "
+                    + worker_unit
+                    + " and set WorkingDirectory to "
+                    + str(release)
+                    + ".",
                 )
             )
         for name in ("config", "logs", "cache"):
             binding = release / name
             if binding.is_dir():
-                checks.append(Check(name + " binding", True, "directory or resolved directory exists", ""))
+                checks.append(
+                    Check(
+                        name + " binding",
+                        True,
+                        "directory or resolved directory exists",
+                        "",
+                    )
+                )
             else:
                 checks.append(
                     Check(
                         name + " binding",
                         False,
                         "required directory/binding is missing or broken",
-                        "Restore the existing " + name + " directory/absolute symlink before installation; do not replace business state.",
+                        "Restore the existing "
+                        + name
+                        + " directory/absolute symlink before installation; do not replace business state.",
                     )
                 )
     else:
@@ -264,7 +330,9 @@ def run_preflight(
         dirty = _run_git(source, ["status", "--porcelain", "--untracked-files=all"])
         if dirty:
             raise RuntimeError("source worktree is dirty")
-        checks.append(Check("source worktree", True, "clean Git checkout " + head[:12], ""))
+        checks.append(
+            Check("source worktree", True, "clean Git checkout " + head[:12], "")
+        )
     except (OSError, RuntimeError, subprocess.SubprocessError):
         head = ""
         checks.append(
@@ -280,14 +348,25 @@ def run_preflight(
         remote_sha = check_source(git_url, git_ref)
         if head and remote_sha != head:
             raise SourceError("source checkout does not match configured remote ref")
-        checks.append(Check("GitHub HTTPS source", True, "configured ref is reachable and matches local HEAD", ""))
+        checks.append(
+            Check(
+                "GitHub HTTPS source",
+                True,
+                "configured ref is reachable and matches local HEAD",
+                "",
+            )
+        )
     except (SourceError, OSError, subprocess.SubprocessError):
         checks.append(
             Check(
                 "GitHub HTTPS source",
                 False,
                 "configured HTTPS ref could not be verified or does not match local HEAD",
-                "Verify outbound HTTPS/proxy/CA settings, then run git ls-remote " + git_url + " " + git_ref + ".",
+                "Verify outbound HTTPS/proxy/CA settings, then run git ls-remote "
+                + git_url
+                + " "
+                + git_ref
+                + ".",
             )
         )
 
@@ -304,7 +383,14 @@ def run_preflight(
                 0,
             )
             _check_existing_file(dropin, _DROPIN_CONTENT.encode(), 0o644, 0)
-            checks.append(Check("proxy integration", True, "managed file/drop-in are absent or identical", ""))
+            checks.append(
+                Check(
+                    "proxy integration",
+                    True,
+                    "managed file/drop-in are absent or identical",
+                    "",
+                )
+            )
         except DeploySupportError as exc:
             checks.append(
                 Check(
@@ -323,7 +409,9 @@ def main() -> int:
     parser.add_argument("--worker-unit", required=True)
     parser.add_argument("--install-root", default="/opt/lite-actions")
     parser.add_argument("--source-root", default=str(Path.cwd()))
-    parser.add_argument("--git-url", default="https://github.com/depeng1994/lite-actions.git")
+    parser.add_argument(
+        "--git-url", default="https://github.com/depeng1994/lite-actions.git"
+    )
     parser.add_argument("--git-ref", default="refs/heads/main")
     parser.add_argument("--proxy-env-file")
     args = parser.parse_args()
@@ -342,9 +430,11 @@ def main() -> int:
         if not check.ok:
             print("  Next: " + check.next_step)
     failures = [check for check in checks if not check.ok]
-    print("Preflight: {} ({} checks, {} failed)".format(
-        "FAIL" if failures else "PASS", len(checks), len(failures)
-    ))
+    print(
+        "Preflight: {} ({} checks, {} failed)".format(
+            "FAIL" if failures else "PASS", len(checks), len(failures)
+        )
+    )
     return 1 if failures else 0
 
 
