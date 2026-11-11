@@ -399,7 +399,10 @@ class PreflightTests(unittest.TestCase):
     ):
         installer = (ROOT / "scripts" / "install_auto_update.sh").read_text()
         self.assertIn('LITE_ACTIONS_UPDATE_PYTHON="$python_path"', installer)
-        self.assertIn('git config --file "$safe_git_config" --add safe.directory "$old_path/.git"', installer)
+        self.assertIn(
+            'git config --file "$safe_git_config" --add safe.directory "$old_path/.git"',
+            installer,
+        )
         self.assertIn('"$python_path" - "$ready_file"', installer)
         service = (ROOT / "deploy" / "lite-actions-blue.service").read_text()
         self.assertNotIn("/usr/bin/python3", service)
