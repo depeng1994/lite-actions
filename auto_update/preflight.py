@@ -49,6 +49,9 @@ def _run_git(root: Path, args: list[str], extra_safe: tuple[Path, ...] = ()) -> 
             "GIT_TERMINAL_PROMPT": "0",
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_CONFIG_GLOBAL": str(config),
+            # Running status as root against a user-owned checkout must not
+            # refresh .git/index and change its ownership.
+            "GIT_OPTIONAL_LOCKS": "0",
         }
         for key in (
             "http_proxy",
