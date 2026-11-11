@@ -23,5 +23,17 @@ jobs:
       - run: python -m pip install -r requirements-dev.txt
       - name: Lint
         run: python scripts/lint.py
+      - name: Check updater shell and systemd units
+        shell: bash
+        run: |
+          bash -n auto_update/bootstrap.sh scripts/install_auto_update.sh
+          if command -v systemd-analyze >/dev/null; then
+            d="$(mktemp -d)"
+            cp deploy/lite-actions-auto-update.service "$d/"
+            cp deploy/lite-actions-auto-update.timer "$d/"
+            sed -i 's|^ExecStart=.*|ExecStart=/bin/true|' "$d/lite-actions-auto-update.service"
+            sed -i '/^EnvironmentFile=/d' "$d/lite-actions-auto-update.service"
+            systemd-analyze verify "$d/lite-actions-auto-update.service" "$d/lite-actions-auto-update.timer"
+          fi
       - name: Full unit suite, including CPU smoke and queue contracts
         run: python -m unittest discover -s tests -v

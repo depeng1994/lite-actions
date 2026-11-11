@@ -31,3 +31,12 @@ python3 -m unittest discover -s tests
 `tests/test_process_lifecycle.py` 在 Linux/root 上使用真实 supervisor、CPU 子进程和 `/proc`：启动带任务标记的分离子进程，拒绝提前释放，取消后验证全部已退出，同时保留无关进程。它在 blue worker 执行；本地 macOS 和 yellow 非 root 环境跳过，不将跳过写为通过。
 
 真实验收使用模型仓现有入口：系统探测、8P/16P HCCL、DSV4 Muon/AdamW 五步完成性，以及并发、取消和资源复用。CPU 测试不能替代这些检查；实际状态见 [验证记录](validation.md)。
+
+
+## Auto Update（RFC #19）
+
+新 DT：tests/test_auto_update_check_source.py、test_auto_update_version_switch.py、test_auto_update_recovery.py、test_auto_update_integration.py、test_worker_ready.py；覆盖 14 项精简 AU 核心场景。自动更新器不根据部署区域选择行为。所有 Git fixture 均为临时本地仓库，systemctl 在 DT 中使用 mock；没有生产 NPU 操作。
+
+E1/E2：隔离 Linux 的真实 systemd Timer/Service A→B、NO_CHANGE、停止运行中任务、启动失败回滚和一次事务中断恢复。验证新 Worker 请求启动/进程出现/Ready 的 5/30/120 秒设计目标。
+
+E3/E4：选定真实 Worker 的首次一键安装、自动切换、CPU-only Worker OS Probe、结果回写及再次接单。当前阶段为避免启动昂贵资源，Dispatch 验证输入仅选择 CPU Probe，**8P 和 16P 保持 NOT_TESTED**；不得改变主线正式 Dispatch 默认用例集或将 CPU 结果冒充 NPU 验证。若目标 Remote 容器没有 systemd，真实部署 E2E 必须标记 BLOCKED，不得用 CPU DT 抵消。
