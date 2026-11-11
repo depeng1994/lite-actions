@@ -163,6 +163,47 @@ source's Python directly on the worker, so this mode grants Fork code the worker
 operating-system permissions. A new dispatch of the same run gets separate task,
 log and result identities.
 
+### Yellow: GitCode TorchTitan and GitHub vLLM sources
+
+Yellow discovers TorchTitan jobs from **GitCode** repository `cann/torchtitan-npu`.
+Keep vLLM-Ascend on **GitHub** repository `cann-framework/vllm-ascend`.
+Do not configure GitHub `cann-framework/torchtitan-npu` for Yellow, and do not
+change GitHub's canonical repository aliases or follow a GitHub 301 redirect to
+GitCode; configure the GitCode provider explicitly instead.
+
+Put the following settings in the existing protected Yellow Worker EnvironmentFile
+(for example `/etc/lite-actions/yellow.env`). The values below are placeholders,
+not usable credentials:
+
+```bash
+sudo install -m 0600 /dev/null /etc/lite-actions/yellow.env
+sudoedit /etc/lite-actions/yellow.env
+```
+
+Example file content:
+
+```ini
+LITE_ACTIONS_MODEL_REPOS=cann-framework/vllm-ascend
+LITE_ACTIONS_GITCODE_REPOS=cann/torchtitan-npu
+LITE_ACTIONS_GITCODE_TOKEN=<gitcode-personal-access-token>
+LITE_ACTIONS_GITCODE_RESULT_AUTHOR=depeng1994
+LITE_ACTIONS_GITCODE_PROXY=http://<legacy-api-proxy-host>:<port>
+```
+
+Keep the file root-owned and mode `0600`; never commit it or print its contents.
+`LITE_ACTIONS_GITCODE_PROXY` is an optional **GitCode API-only** proxy for
+`api.gitcode.com`. It overrides the generic environment proxy only for GitCode
+API requests, including the artifact API redirect lookup. Git fetch/model source
+checkout continues to use the ordinary Git proxy environment (`https_proxy`,
+`HTTPS_PROXY`, and the configured CA settings); this setting does not alter Git's
+proxy. Hosts that do not need a separate API route should omit
+`LITE_ACTIONS_GITCODE_PROXY`; urllib then retains its normal environment proxy
+behavior. TLS verification remains enabled.
+
+When the installer or Preflight runs under sudo from a normal user's checkout,
+Git status uses `GIT_OPTIONAL_LOCKS=0`. This prevents Git's optional index refresh
+from rewriting `.git/index` as root and changing the worktree owner's metadata.
+
 Cancellation terminates only the case's marked ranks and checks NPU occupancy.
 State is atomically persisted and fsynced before execution. Restart never blindly
 reruns a case; pending reports retry without training. With the default policy,
