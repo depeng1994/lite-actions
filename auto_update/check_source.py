@@ -10,8 +10,8 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
-SHA = re.compile(r"[0-9a-f]{40}\\Z")
-REF = re.compile(r"refs/heads/[A-Za-z0-9_./-]+\\Z")
+SHA = re.compile(r"[0-9a-f]{40}\Z")
+REF = re.compile(r"refs/heads/[A-Za-z0-9_./-]+\Z")
 
 # Only network routing and CA-bundle settings may cross the isolated Git
 # subprocess boundary. In particular, worker/API credentials are never copied.
@@ -42,7 +42,7 @@ def validate_source(url: str, ref: str) -> None:
         or parsed.port
         or parsed.query
         or parsed.fragment
-        or not re.fullmatch(r"/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\\.git)?", parsed.path)
+        or not re.fullmatch(r"/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?", parsed.path)
     ):
         raise SourceError("untrusted_git_url")
     if any(part in {".", ".."} for part in parsed.path.split("/")):
