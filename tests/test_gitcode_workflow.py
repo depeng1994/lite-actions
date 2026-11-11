@@ -7,12 +7,19 @@ import subprocess
 import tempfile
 import unittest
 import urllib.error
+import urllib.request
 import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
 from ci_core.contract import digest, normalize
-from ci_core.gitcode import GitCodeClient, MultiPlatformClient, source_plan
+from ci_core.gitcode import (
+    GitCodeClient,
+    MultiPlatformClient,
+    NoRedirect,
+    _gitcode_opener,
+    source_plan,
+)
 from ci_core.router import Router, task_key
 from tests.scenarios import Service, definition, write_workspace
 
@@ -68,10 +75,28 @@ class GitCodeWorkflowTests(unittest.TestCase):
         with (
             patch.dict(os.environ, {"LITE_ACTIONS_GITCODE_SOURCE_WORKFLOWS": ""}),
             patch.object(client, "request", return_value={"artifacts": [artifact]}),
-            patch("urllib.request.build_opener", return_value=Redirect()),
+            patch.dict(
+                os.environ,
+                {"LITE_ACTIONS_GITCODE_PROXY": "http://api-proxy.invalid:8123"},
+            ),
+            patch("urllib.request.build_opener", return_value=Redirect()) as build_opener,
             patch("urllib.request.urlopen", side_effect=download),
         ):
             self.assertEqual(client.ci_request(run), plan)
+            handlers = build_opener.call_args.args
+            proxy_handler = next(
+                handler
+                for handler in handlers
+                if isinstance(handler, urllib.request.ProxyHandler)
+            )
+            self.assertEqual(
+                proxy_handler.proxies,
+                {
+                    "http": "http://api-proxy.invalid:8123",
+                    "https": "http://api-proxy.invalid:8123",
+                },
+            )
+            self.assertTrue(any(isinstance(handler, NoRedirect) for handler in handlers))
             plan["run_id"] = "other_run"
             with self.assertRaises(ValueError):
                 client.ci_request(run)
@@ -356,3 +381,95 @@ class GitCodeWorkflowTests(unittest.TestCase):
                 finally:
                     release.set()
                     router.close()
+
+
+class GitCodeProxyTests(unittest.TestCase):
+    def test_gitcode_opener_uses_dedicated_proxy_and_no_redirect(self):
+        with patch.dict(
+            os.environ,
+            {
+                "LITE_ACTIONS_GITCODE_PROXY": "http://dedicated-proxy.invalid:8123",
+                "https_proxy": "http://generic-proxy.invalid:8080",
+            },
+        ):
+            opener = _gitcode_opener()
+        proxy = next(
+            handler
+            for handler in opener.handlers
+            if isinstance(handler, urllib.request.ProxyHandler)
+        )
+        self.assertEqual(
+            proxy.proxies["https"], "http://dedicated-proxy.invalid:8123"
+        )
+        self.assertTrue(any(isinstance(handler, NoRedirect) for handler in opener.handlers))
+
+    def test_gitcode_opener_without_dedicated_proxy_keeps_environment_proxy(self):
+        with patch.dict(
+            os.environ,
+            {
+                "LITE_ACTIONS_GITCODE_PROXY": "",
+                "https_proxy": "http://generic-proxy.invalid:8080",
+            },
+        ):
+            opener = _gitcode_opener()
+        proxy = next(
+            handler
+            for handler in opener.handlers
+            if isinstance(handler, urllib.request.ProxyHandler)
+        )
+        self.assertEqual(proxy.proxies["https"], "http://generic-proxy.invalid:8080")
+        self.assertTrue(any(isinstance(handler, NoRedirect) for handler in opener.handlers))
+
+    def test_client_request_uses_gitcode_opener_and_sanitizes_transport_errors(self):
+        proxy = "http://private-proxy.invalid:8123"
+        token = "fake-gitcode-token-do-not-leak"
+        client = GitCodeClient(token, "cann/torchtitan-npu")
+
+        class FailedOpener:
+            def open(self, request, timeout):
+                raise urllib.error.URLError(f"proxy={proxy} token={token}")
+
+        with (
+            patch.dict(os.environ, {"LITE_ACTIONS_GITCODE_PROXY": proxy}),
+            patch("ci_core.gitcode._gitcode_opener", return_value=FailedOpener()) as opener,
+            self.assertRaises(urllib.error.URLError) as caught,
+        ):
+            client.request("GET", "/actions/runs/run_1", api=8)
+        opener.assert_called_once_with()
+        message = str(caught.exception)
+        self.assertNotIn(proxy, message)
+        self.assertNotIn(token, message)
+        self.assertIn("GitCode API request failed", message)
+
+    def test_artifact_api_transport_error_is_sanitized(self):
+        proxy = "http://private-artifact-proxy.invalid:8123"
+        token = "fake-artifact-token-do-not-leak"
+        client = GitCodeClient(token, "cann/torchtitan-npu")
+        run = {
+            "_ci_provider": "gitcode",
+            "id": "run_1",
+            "run_attempt": 1,
+            "head_sha": "b" * 40,
+            "path": ".gitcode/workflows/lite-actions.yml",
+        }
+        artifact = {
+            "name": "lite-ci-request-1",
+            "workflow_run_id": "run_1",
+            "id": "artifact",
+        }
+
+        class FailedOpener:
+            def open(self, request, timeout):
+                raise urllib.error.URLError(f"proxy={proxy} token={token}")
+
+        with (
+            patch.dict(os.environ, {"LITE_ACTIONS_GITCODE_SOURCE_WORKFLOWS": ""}),
+            patch.object(client, "request", return_value={"artifacts": [artifact]}),
+            patch("ci_core.gitcode._gitcode_opener", return_value=FailedOpener()),
+            self.assertRaises(urllib.error.URLError) as caught,
+        ):
+            client.ci_request(run)
+        message = str(caught.exception)
+        self.assertNotIn(proxy, message)
+        self.assertNotIn(token, message)
+        self.assertIn("GitCode artifact API request failed", message)
