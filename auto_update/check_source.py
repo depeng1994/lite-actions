@@ -13,6 +13,20 @@ from urllib.parse import urlsplit
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 REF = re.compile(r"refs/heads/[A-Za-z0-9_./-]+\Z")
 
+# Only proxy routing and CA-bundle settings may cross the isolated Git
+# subprocess boundary. API credentials and unrelated host variables stay out.
+GIT_ENV_PASSTHROUGH = (
+    "http_proxy",
+    "https_proxy",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "no_proxy",
+    "NO_PROXY",
+    "SSL_CERT_FILE",
+    "CURL_CA_BUNDLE",
+    "GIT_SSL_CAINFO",
+)
+
 
 class SourceError(RuntimeError):
     """Do not include credentials or raw command stderr in this exception."""
@@ -59,6 +73,11 @@ def git(args: list[str], *, cwd: Path | None = None, timeout: int = 180) -> str:
                 "GIT_TERMINAL_PROMPT": "0",
                 "GIT_CONFIG_NOSYSTEM": "1",
                 "GIT_CONFIG_GLOBAL": os.devnull,
+                **{
+                    name: os.environ[name]
+                    for name in GIT_ENV_PASSTHROUGH
+                    if name in os.environ
+                },
             },
         )
     except (OSError, subprocess.SubprocessError) as exc:

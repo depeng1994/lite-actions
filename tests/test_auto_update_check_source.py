@@ -1,9 +1,11 @@
 """RFC #19 AU-01..03: fixed SHA, no-change and failure safety."""
 
+import os
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from auto_update import check_source
@@ -88,6 +90,83 @@ class SourceTests(unittest.TestCase):
             for url in ("file:///etc/passwd", "https://user:secret@github.com/x/y.git"):
                 with self.subTest(url=url), self.assertRaises(check_source.SourceError):
                     check_source.validate_source(url, "refs/heads/main")
+
+    def test_git_passes_only_proxy_and_ca_allowlist(self):
+        fake = {
+            "http_proxy": "http://proxy.invalid:8080",
+            "https_proxy": "http://proxy.invalid:8080",
+            "HTTP_PROXY": "http://upper-proxy.invalid:8080",
+            "HTTPS_PROXY": "http://upper-proxy.invalid:8080",
+            "no_proxy": "localhost,.internal",
+            "NO_PROXY": "localhost,.internal",
+            "SSL_CERT_FILE": "/etc/ssl/private/proxy-ca.pem",
+            "CURL_CA_BUNDLE": "/etc/ssl/private/proxy-ca.pem",
+            "GIT_SSL_CAINFO": "/etc/ssl/private/proxy-ca.pem",
+            "LITE_ACTIONS_GITHUB_TOKEN": "must-never-reach-git",
+            "LITE_ACTIONS_GITCODE_TOKEN": "must-also-never-reach-git",
+            "UNRELATED_SECRET": "must-not-reach-git",
+        }
+        with (
+            patch.dict(os.environ, fake, clear=True),
+            patch(
+                "auto_update.check_source.subprocess.run",
+                return_value=SimpleNamespace(stdout="ok\n"),
+            ) as run,
+        ):
+            self.assertEqual(
+                check_source.git(["ls-remote", "https://github.com/o/r.git"]),
+                "ok",
+            )
+
+        child_env = run.call_args.kwargs["env"]
+        for name in check_source.GIT_ENV_PASSTHROUGH:
+            self.assertEqual(child_env[name], fake[name])
+        self.assertEqual(child_env["GIT_TERMINAL_PROMPT"], "0")
+        self.assertEqual(child_env["GIT_CONFIG_NOSYSTEM"], "1")
+        self.assertEqual(child_env["GIT_CONFIG_GLOBAL"], os.devnull)
+        for name in (
+            "LITE_ACTIONS_GITHUB_TOKEN",
+            "LITE_ACTIONS_GITCODE_TOKEN",
+            "UNRELATED_SECRET",
+        ):
+            self.assertNotIn(name, child_env)
+        self.assertEqual(
+            set(child_env),
+            {
+                "PATH",
+                "HOME",
+                "GIT_TERMINAL_PROMPT",
+                "GIT_CONFIG_NOSYSTEM",
+                "GIT_CONFIG_GLOBAL",
+                *check_source.GIT_ENV_PASSTHROUGH,
+            },
+        )
+
+    def test_git_failure_does_not_expose_proxy_or_token_values(self):
+        proxy_secret = "proxy-user:proxy-password@proxy.invalid:8080"
+        token_secret = "ghp-never-log-this"
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "https_proxy": "http://" + proxy_secret,
+                    "GIT_SSL_CAINFO": "/private/path/proxy-ca.pem",
+                    "LITE_ACTIONS_GITHUB_TOKEN": token_secret,
+                },
+                clear=True,
+            ),
+            patch(
+                "auto_update.check_source.subprocess.run",
+                side_effect=subprocess.TimeoutExpired(["git", "ls-remote"], 35),
+            ),
+        ):
+            with self.assertRaises(check_source.SourceError) as raised:
+                check_source.git(["ls-remote", "https://github.com/o/r.git"])
+
+        self.assertEqual(str(raised.exception), "git_command_failed")
+        self.assertNotIn(proxy_secret, str(raised.exception))
+        self.assertNotIn(token_secret, str(raised.exception))
+        self.assertNotIn("proxy-ca.pem", str(raised.exception))
 
 
 if __name__ == "__main__":
