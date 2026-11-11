@@ -13,8 +13,8 @@ from urllib.parse import urlsplit
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 REF = re.compile(r"refs/heads/[A-Za-z0-9_./-]+\Z")
 
-# Only network routing and CA-bundle settings may cross the isolated Git
-# subprocess boundary. In particular, worker/API credentials are never copied.
+# Only proxy routing and CA-bundle settings may cross the isolated Git
+# subprocess boundary. API credentials and unrelated host variables stay out.
 GIT_ENV_PASSTHROUGH = (
     "http_proxy",
     "https_proxy",
@@ -59,20 +59,6 @@ def validate_source(url: str, ref: str) -> None:
 
 
 def git(args: list[str], *, cwd: Path | None = None, timeout: int = 180) -> str:
-    # Preserve the original isolated baseline and add only the explicit proxy /
-    # CA allowlist. Never inherit os.environ wholesale: it may contain PATs.
-    child_env = {
-        "PATH": "/usr/local/bin:/usr/bin:/bin",
-        "HOME": str(Path.home()),
-        "GIT_TERMINAL_PROMPT": "0",
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_CONFIG_GLOBAL": os.devnull,
-    }
-    child_env.update(
-        (name, os.environ[name])
-        for name in GIT_ENV_PASSTHROUGH
-        if name in os.environ
-    )
     try:
         result = subprocess.run(
             ["git", *args],
@@ -81,7 +67,18 @@ def git(args: list[str], *, cwd: Path | None = None, timeout: int = 180) -> str:
             capture_output=True,
             text=True,
             timeout=timeout,
-            env=child_env,
+            env={
+                "PATH": "/usr/local/bin:/usr/bin:/bin",
+                "HOME": str(Path.home()),
+                "GIT_TERMINAL_PROMPT": "0",
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                **{
+                    name: os.environ[name]
+                    for name in GIT_ENV_PASSTHROUGH
+                    if name in os.environ
+                },
+            },
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise SourceError("git_command_failed") from exc
@@ -151,7 +148,7 @@ def stage_source(root: Path, url: str, ref: str, target: str, old: str) -> Path:
             )
         except SourceError as exc:
             raise SourceError("source_not_fast_forward") from exc
-        if git([ "-C", str(stage), "rev-parse", "--show-toplevel"], timeout=10) != str(
+        if git(["-C", str(stage), "rev-parse", "--show-toplevel"], timeout=10) != str(
             stage
         ):
             raise SourceError("unsafe_checkout")
