@@ -38,6 +38,42 @@ sudo systemctl enable --now lite-actions-auto-update.timer
 
 高级选项：--git-url、--git-ref、--install-root、--dry-run 和 --enable-timer。不得使用未审核的 curl | bash。
 
+## Yellow GitCode 与 sudo 工作树注意事项
+
+Yellow 的 TorchTitan Workflow 来源是 GitCode `cann/torchtitan-npu`；GitHub
+只配置 `cann-framework/vllm-ascend`。不要在 Yellow 配置 GitHub
+`cann-framework/torchtitan-npu`，不要修改 GitHub canonical alias，也不要自动
+跟随 GitHub 301 到 GitCode。来源平台由 Worker 配置明确选择。
+
+将以下占位配置写入 Yellow 已有的受保护 Worker EnvironmentFile（例如
+`/etc/lite-actions/yellow.env`），而不是仓库文件：
+
+```bash
+sudo install -m 0600 /dev/null /etc/lite-actions/yellow.env
+sudoedit /etc/lite-actions/yellow.env
+```
+
+示例内容（全部是假值/占位符）：
+
+```ini
+LITE_ACTIONS_MODEL_REPOS=cann-framework/vllm-ascend
+LITE_ACTIONS_GITCODE_REPOS=cann/torchtitan-npu
+LITE_ACTIONS_GITCODE_TOKEN=<gitcode-personal-access-token>
+LITE_ACTIONS_GITCODE_RESULT_AUTHOR=depeng1994
+LITE_ACTIONS_GITCODE_PROXY=http://<legacy-api-proxy-host>:<port>
+```
+
+EnvironmentFile 必须保持 root 所有、权限 `0600`，不要输出或提交文件内容。
+`LITE_ACTIONS_GITCODE_PROXY` 只覆盖 `api.gitcode.com` 的 GitCode API opener；
+未设置时沿用 urllib 默认的环境代理。它不改变 Git subprocess 的代理：
+`git fetch` 仍使用通用 `https_proxy`/`HTTPS_PROXY` 和 CA 配置。无须独立
+API 代理的主机不要设置此变量。TLS 校验不关闭。
+
+从普通用户拥有的工作树以 sudo 执行安装器或 Preflight 时，Git `status`
+调用会设置 `GIT_OPTIONAL_LOCKS=0`，禁止 Git 的可选 index refresh 把
+`.git/index` 改写为 root 所有。该设置只关闭可选锁/刷新，不跳过工作树
+dirty 检查，也不改变 Git 源或安装事务。
+
 ## 启动时延指标
 
 | 指标 | 待实测验收目标 |
