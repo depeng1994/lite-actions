@@ -84,7 +84,11 @@ def github_call(client, run, rule):
         v
         for v in detail.get("referenced_workflows", [])
         if v.get("path")
-        in (TEMPLATE, TEMPLATE.removesuffix("@main") + "@refs/heads/main")
+        in (
+            TEMPLATE,
+            TEMPLATE.removesuffix("@main") + "@refs/heads/main",
+            TEMPLATE.removesuffix("@main") + "@" + str(v.get("sha")),
+        )
     ]
     if (
         len(refs) != 1

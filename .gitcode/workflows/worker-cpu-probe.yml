@@ -4,7 +4,7 @@ on:
 jobs:
   worker_os:
     name: Lite Actions worker-os-v1
-    runs-on: linux
+    runs-on: [ubuntu-latest, x64, small]
     steps:
       - name: Confirm cross-repo template expansion
         run: echo PROBE_TEMPLATE_OK

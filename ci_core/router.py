@@ -24,7 +24,7 @@ from ci_core.executor import ExternalNpuOccupancy, execute
 from ci_core.gitcode import RunChanged
 from ci_core.job_state import JobState
 from ci_core.plan import verify_definition
-from ci_core.reporting import post, progress, report
+from ci_core.reporting import body_for, post, progress, progress_body, report
 from ci_core.resources import (
     ResourceBusy,
     reserve,
@@ -167,6 +167,13 @@ class Router:
                     ["Worker restarted; remote cleanup unverified"],
                     False,
                 )
+                if self.deployment:
+                    path = self.case_folder(key) / "pipeline.log"
+                    with path.open("a", encoding="utf8") as f:
+                        f.write("INTERRUPTED_CLEANUP_UNVERIFIED\n")
+                    self.finalize_report(
+                        result, {"host": self.deployment["address"], "path": str(path)}
+                    )
                 self.state.update(
                     key,
                     phase="PENDING_REPORT",
@@ -204,9 +211,11 @@ class Router:
     def transition(self, key, phase, **fields):
         self.state.update(key, phase=phase, **fields)
         r = self.state.read()[key]
-        if (self.worker == "yellow" and phase != "QUEUED") or r.get(
-            "last_sent_phase"
-        ) == phase:
+        if self.worker == "yellow":
+            if phase == "QUEUED":
+                self.maybe_ack(key, r)
+            return
+        if r.get("last_sent_phase") == phase:
             return
         try:
             ident = progress(
@@ -220,6 +229,72 @@ class Router:
             self.state.update(key, progress_id=ident, last_sent_phase=phase)
         except Exception:
             logging.warning("progress pending for %s", key)
+
+    def maybe_ack(self, key, r):
+        """Persist intent before POST. A retry confirms uncertain delivery before writing."""
+        if (
+            r.get("progress_id")
+            or r.get("ack_blocked")
+            or r.get("ack_retry_at", 0) > time.time()
+        ):
+            return
+        n = r.get("ack_attempts", 0)
+        if n >= 8:
+            return
+        client = self.client_for(r["run"])
+        run = r["run"]
+        item = r["item"]
+        author = (
+            os.environ.get("LITE_ACTIONS_GITCODE_RESULT_AUTHOR", self.author)
+            if run.get("_ci_provider") == "gitcode"
+            else self.author
+        )
+        try:
+            self.state.update(
+                key, ack_attempts=n + 1, ack_retry_at=time.time() + min(900, 30 * 2**n)
+            )
+            if n:
+                target = progress_body(run, item, r["digest"], "QUEUED")
+                matches = [
+                    c
+                    for c in client.commit_comments(run["head_sha"])
+                    if c.get("user", {}).get("login") == author
+                    and c.get("body") == target
+                ]
+                if len(matches) > 1:
+                    raise ValueError("DUPLICATE_ACK")
+                if matches:
+                    self.state.update(
+                        key, progress_id=matches[0]["id"], last_sent_phase="QUEUED"
+                    )
+                    return
+            ident = progress(client, run, item, r["digest"], "QUEUED")
+            self.state.update(key, progress_id=ident, last_sent_phase="QUEUED")
+        except Exception as exc:
+            from email.utils import parsedate_to_datetime
+            from urllib.error import HTTPError
+
+            from ci_core.egress_policy import Deferred
+
+            if isinstance(exc, Deferred):
+                self.state.update(key, ack_attempts=n)
+            elif isinstance(exc, ValueError):
+                self.state.update(key, ack_blocked=True)
+            elif isinstance(exc, HTTPError) and exc.headers.get("Retry-After"):
+                header = exc.headers["Retry-After"]
+                try:
+                    until = (
+                        time.time() + int(header)
+                        if header.isdigit()
+                        else parsedate_to_datetime(header).timestamp()
+                    )
+                    self.state.update(
+                        key,
+                        ack_retry_at=max(self.state.read()[key]["ack_retry_at"], until),
+                    )
+                except (ValueError, TypeError, OverflowError):
+                    pass
+            logging.warning("ACK not confirmed for %s (%s)", key, type(exc).__name__)
 
     def receive(self, runs):
         for run in sorted(runs, key=lambda r: (r.get("created_at", ""), str(r["id"]))):
@@ -343,6 +418,19 @@ class Router:
         entries = []
         for item in owned:
             key = task_key(run, item)
+            if self.deployment is not None:
+                # Refuse permanently undeployable envelopes before allocating hardware.
+                minimal = report(
+                    run, item, plan["plan_digest"], "RESOURCE_TIMEOUT", 125, [], False
+                )
+                self.finalize_report(
+                    minimal,
+                    {
+                        "host": self.deployment["address"],
+                        "path": str(self.case_folder(key) / "pipeline.log"),
+                    },
+                )
+                body_for(run, item, minimal, local_worker=self.worker)
             entries.append(
                 (
                     key,
@@ -897,7 +985,7 @@ class Router:
         cache = {}
         for key, r in self.state.read().items():
             if (
-                r.get("phase") != "PENDING_REPORT"
+                r.get("phase") not in {"PENDING_REPORT", "VERIFY_REPORT"}
                 or r.get("next_retry_at", 0) > time.time()
             ):
                 continue
@@ -912,6 +1000,7 @@ class Router:
                     else self.author,
                     local_worker=self.worker,
                     cache=cache,
+                    verify_only=r.get("phase") == "VERIFY_REPORT",
                 )
                 self.state.update(key, phase="REPORTED", published_at=time.time())
             except Deferred:
@@ -935,7 +1024,9 @@ class Router:
                             pass
                 self.state.update(
                     key,
-                    phase="REPORT_BLOCKED" if permanent or n >= 8 else "PENDING_REPORT",
+                    phase="REPORT_BLOCKED"
+                    if permanent or r.get("phase") == "VERIFY_REPORT"
+                    else ("VERIFY_REPORT" if n >= 8 else "PENDING_REPORT"),
                     send_attempts=n,
                     next_retry_at=time.time() + delay,
                 )
@@ -1006,6 +1097,16 @@ class Router:
                         130,
                         ["CI Run ended or source changed before launch"],
                     )
+            elif (
+                self.worker == "yellow"
+                and not r.get("progress_id")
+                and (
+                    r["item"]["kind"] != "worker_probe"
+                    or self_request(run)
+                    or run.get("_ci_infra") is True
+                )
+            ):
+                self.maybe_ack(key, r)
         now = time.monotonic()
         if self.worker != "yellow" or now >= self.next_discovery:
             self.next_discovery = now + 60

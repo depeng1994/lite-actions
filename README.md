@@ -3,7 +3,7 @@
 GitHub Actions is the control console. Independent Pull workers run the same router,
 scheduler and executor to execute model-owned tests on leased NPU resources.
 Training nodes never receive GitHub credentials. Full logs stay inside the execution
-environment; each case publishes at most 20 diagnostic lines.
+environment; Yellow publishes at most ten diagnostic lines; Blue may publish up to 4 MiB of approved redacted diagnostics.
 
 Successful training returns LOSS lines (rank 0 preferred); failed execution returns
 the relevant error and traceback context. OS and communication smoke cases return
@@ -86,20 +86,19 @@ export LITE_ACTIONS_ALLOWED_ACTORS=<comma-separated-authorized-logins>
 export LITE_ACTIONS_ALLOWED_BRANCHES=master
 export LITE_ACTIONS_STATE_DIR=/var/lib/lite-actions/blue
 # Set LITE_ACTIONS_GITHUB_TOKEN securely, or authenticate gh on this worker.
-python3 unified_router.py --worker-id blue --validate
+python3 unified_router.py --validate
 python3 -m unittest discover -s tests
-./run-unified-router.sh --worker-id blue
+./run-unified-router.sh
 ```
 
-Use `--worker-id yellow` on hwy. Run in the deployment supervisor or redirect stdout
+Provision `/etc/lite-actions/deployment.json` first (see [RFC 24 candidate setup](docs/testing.md#rfc24)). The service checks an exact local IPv4; `--worker-id`, when supplied, is an assertion only. Run in the deployment supervisor or redirect stdout
 to a protected system log. The process uses a worker-host single-instance lock;
 resource leases are shared across checkouts of the same deployment user.
 
 Keep `LITE_ACTIONS_STATE_DIR` at one absolute, worker-specific location across
 releases. The worker and management commands must use the same value. State updates
 take a process lock before reading and writing, so reconciliation cannot overwrite
-another task's progress or pending result. Without this setting, state stays under
-the checkout's `state/` directory for local development.
+another task's progress or pending result. The production launcher derives its state directory from the protected deployment file.
 
 ## Existing-container onboarding
 
@@ -158,9 +157,7 @@ event. For the source-profile protocol, each participating worker resolves
 `dispatch_smoke` from the run's fixed model
 commit, accepts only its own cases, and publishes results as the configured
 `LITE_ACTIONS_GITCODE_RESULT_AUTHOR` using that account's token. The waiter job must be uniquely named
-`Dispatcher Smoke`. GitCode PR runs accept Fork sources; discovery executes the
-source's Python directly on the worker, so this mode grants Fork code the worker's
-operating-system permissions. A new dispatch of the same run gets separate task,
+`Dispatcher Smoke`. For NPU tasks the Worker reads the fixed commit's declarative `.ci/lite-actions.json`, never model Python. Missing catalogs stop admission; do not roll back to running the model entrypoint on the host. A new dispatch of the same run gets separate task,
 log and result identities.
 
 Cancellation terminates only the case's marked ranks and checks NPU occupancy.
@@ -187,11 +184,9 @@ The request and result bind repo, workflow, run, attempt, SHA, plan digest, case
 environment. Waiters also require the configured result author and reject PASS when
 cleanup is unverified. Metadata-only progress updates contain no training output.
 
-- At most **20 lines per case**, each at most **180 characters**.
-- Comment body at most **6100 UTF-8 bytes**; serialized API request at most **7000 bytes**.
-- Lines are removed if needed to satisfy both byte budgets after JSON serialization.
-- No full logs, TensorBoard, extra traceback or training artifacts are uploaded via
-  Summary, other comments or Artifacts. Summary contains metadata and status only.
+- Yellow: at most 10 diagnostic lines, 180 printable characters per line and 2,048 UTF-8 bytes total. The internal full-log locator is separate. Commit comment body ≤6,100 B; serialized request ≤7,000 B. Normally only the ACK and terminal result are written.
+- Blue: no business line-count limit. Up to 4,194,304 B per case, including retries; small diagnostics are inline and long logs use one native public Release asset only when explicitly configured. Never publish management logs, checkpoints or weights. No Yellow attachment path.
+- Results still bind the trusted author/SHA/attempt/dispatch, source proof and cleanup. Consumers must be migrated before deploying this version.
 - A partial Matrix rerun without its attempt's plan fails explicitly; rerun all jobs
   or start a new manual run with the desired test selectors.
 

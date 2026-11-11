@@ -67,7 +67,17 @@ def body_for(run, item, result, *, local_worker=None):
         result["last_20_lines"].pop()
 
 
-def post(client, run, item, result, author, *, local_worker=None, cache=None):
+def post(
+    client,
+    run,
+    item,
+    result,
+    author,
+    *,
+    local_worker=None,
+    cache=None,
+    verify_only=False,
+):
     body = body_for(run, item, result, local_worker=local_worker)
     prefix = marker(run, item) + "\n"
     cache = {} if cache is None else cache
@@ -84,11 +94,13 @@ def post(client, run, item, result, author, *, local_worker=None, cache=None):
         if any(c["body"] != body for c in prior):
             raise ValueError("conflicting existing result")
         return
+    if verify_only:
+        raise ValueError("UNCONFIRMED_MANUAL_RECOVERY")
     client.send_result(run["head_sha"], body)
 
 
-def progress(client, run, item, digest, phase, comment_id=None):
-    body = "Lite-CI-PROGRESS " + json.dumps(
+def progress_body(run, item, digest, phase):
+    return "Lite-CI-PROGRESS " + json.dumps(
         dict(
             run_id=run["id"],
             attempt=run.get("run_attempt", 1),
@@ -104,6 +116,10 @@ def progress(client, run, item, digest, phase, comment_id=None):
         ),
         separators=(",", ":"),
     )
+
+
+def progress(client, run, item, digest, phase, comment_id=None):
+    body = progress_body(run, item, digest, phase)
     if comment_id:
         client.request("PATCH", f"/comments/{comment_id}", {"body": body})
         return comment_id

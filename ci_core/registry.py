@@ -33,7 +33,9 @@ RESERVED_RUNTIME_ENV = frozenset(
 CASE_ENV_KEY = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 
 
-def validate_case_environment(env: object, *, kind: str = "train") -> dict[str, str]:
+def validate_case_environment(
+    env: object, *, kind: str = "train", execution: bool = True
+) -> dict[str, str]:
     """Validate trusted model-derived environment before SSH and preflight.
 
     An A5 case without configured assets remains discoverable with `inspect`,
@@ -56,6 +58,11 @@ def validate_case_environment(env: object, *, kind: str = "train") -> dict[str, 
             raise ValueError("invalid/forbidden test-owned environment variable")
     if kind not in {"train", "npu_smoke"}:
         raise ValueError("unsupported NPU execution kind")
+    if not execution:
+        # Discovery includes training recipes whose assets are not provisioned.
+        # Never let one dormant recipe disable every smoke case; enforce mandatory
+        # operator-approved paths when the selected case is actually admitted.
+        return env.copy()
     required = ASSET_ENV_KEYS if kind == "train" else ("ASCEND_SET_ENV_PATH",)
     for key in required:
         path = env.get(key)
@@ -138,7 +145,9 @@ def decode_catalog(data):
                 )
             ):
                 raise ValueError
-            validate_case_environment(row["env_vars"], kind=row["kind"])
+            validate_case_environment(
+                row["env_vars"], kind=row["kind"], execution=False
+            )
         for suite, ids in suites.items():
             if (
                 not SELECTOR.fullmatch(suite)

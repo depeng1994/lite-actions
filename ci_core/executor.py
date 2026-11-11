@@ -1038,14 +1038,12 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
             rc = 125
     diagnostic = None
     if run.get("_ci_zone") == "blue":
-        from ci_core.logs import BLUE_BYTES, blue_diagnostic, blue_remote
+        from ci_core.logs import blue_remote
 
         try:
             if locator:
                 diagnostic = blue_remote(location["host"], location["path"], approved)
-            else:
-                with logfile.open("rb") as stream:
-                    diagnostic = blue_diagnostic(stream.read(BLUE_BYTES + 1))
+            # The internal management/preflight transcript is never a public asset.
         except (ValueError, OSError, subprocess.SubprocessError):
             pass  # Diagnostic transport must not rewrite the actual test outcome.
     if cancel is not None and cancel.is_set() and rc == 0:

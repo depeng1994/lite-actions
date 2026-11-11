@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from ci_core.registry import CATALOG, SELECTOR, decode_catalog
+from ci_core.registry import CATALOG, ROW_KEYS, SELECTOR, decode_catalog
 
 
 def main():
@@ -48,6 +48,9 @@ def main():
         rows = json.loads(out)
         ids = []
         for row in rows:
+            # Model tooling may also export display-only fields (device, phases, etc.).
+            # Do not enlarge the Worker wire schema or execute those fields.
+            row = {k: row[k] for k in ROW_KEYS}
             if row["kind"] == "worker_probe":
                 continue  # Infra probes are never model-defined.
             key = row["test_id"]
