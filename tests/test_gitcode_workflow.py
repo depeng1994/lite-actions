@@ -449,6 +449,25 @@ class GitCodeProxyTests(unittest.TestCase):
         self.assertNotIn(token, message)
         self.assertIn("GitCode API request failed", message)
 
+    def test_unexpected_opener_errors_are_sanitized(self):
+        proxy = "http://malformed-proxy.invalid:8123"
+        token = "fake-unexpected-error-token"
+        client = GitCodeClient(token, "cann/torchtitan-npu")
+
+        class FailedOpener:
+            def open(self, request, timeout):
+                raise ValueError(f"bad proxy {proxy}; token={token}")
+
+        with (
+            patch("ci_core.gitcode._gitcode_opener", return_value=FailedOpener()),
+            self.assertRaises(urllib.error.URLError) as caught,
+        ):
+            client.request("GET", "/actions/runs/run_1", api=8)
+        message = str(caught.exception)
+        self.assertNotIn(proxy, message)
+        self.assertNotIn(token, message)
+        self.assertIn("GitCode API request failed", message)
+
     def test_artifact_api_transport_error_is_sanitized(self):
         proxy = "http://private-artifact-proxy.invalid:8123"
         token = "fake-artifact-token-do-not-leak"
