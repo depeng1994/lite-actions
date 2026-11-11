@@ -280,6 +280,7 @@ class PreflightTests(unittest.TestCase):
         systemd_ok=True,
         working_dir_ok=True,
         proxy_file=None,
+        git_calls=None,
     ):
         sha, release, source = self._layout(root)
         if not binding:
@@ -289,9 +290,11 @@ class PreflightTests(unittest.TestCase):
             (root / "current").write_text("not a link")
 
         def fake_git(path, args, extra_safe=()):
+            if git_calls is not None:
+                git_calls.append((path, list(args)))
             if args[0] == "rev-parse":
                 return sha
-            if args[0] == "status":
+            if "status" in args:
                 return dirty
             raise AssertionError(args)
 
@@ -339,6 +342,23 @@ class PreflightTests(unittest.TestCase):
                 proxy_env_file=proxy_file,
             )
         return checks
+
+    def test_git_status_disables_optional_index_writes(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as tmp:
+            self._run(Path(tmp), git_calls=calls)
+
+        status_calls = [args for _, args in calls if "status" in args]
+        self.assertEqual(
+            status_calls,
+            [["--no-optional-locks", "status", "--porcelain", "--untracked-files=all"]],
+        )
+
+        installer = (ROOT / "scripts" / "install_auto_update.sh").read_text()
+        self.assertIn(
+            'git_in_source --no-optional-locks status --porcelain --untracked-files=all',
+            installer,
+        )
 
     def test_preflight_all_core_checks_pass(self):
         with tempfile.TemporaryDirectory() as tmp:
