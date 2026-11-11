@@ -36,9 +36,10 @@ def authorization() -> str:
 
 
 class GitHubClient:
-    def __init__(self, token: str, repo: str = REPO):
+    def __init__(self, token: str, repo: str = REPO, *, policy=None):
         if repo not in trusted_repositories():
             raise ValueError("untrusted GitHub repository")
+        self.policy = policy
         self.repo = repo
         self.api = f"https://api.github.com/repos/{repo}"
         self.token = token
@@ -96,6 +97,8 @@ class GitHubClient:
             url, data=payload, method=method, headers=headers
         )
 
+        if self.policy:
+            self.policy.before(request, repo=self.repo, provider="github")
         # Repository aliases/redirects must not silently change trusted identity.
         with urllib.request.build_opener(NoRedirect()).open(
             request, timeout=30
@@ -123,6 +126,8 @@ class GitHubClient:
                 "Accept": "application/vnd.github+json",
             },
         )
+        if self.policy:
+            self.policy.before(request, repo=self.repo, provider="github")
         try:
             with opener.open(request, timeout=20):
                 raise ValueError("artifact download did not redirect")
@@ -147,8 +152,13 @@ class GitHubClient:
             )
         ):
             raise ValueError("untrusted artifact download destination")
+        download = urllib.request.Request(location)
+        if self.policy:
+            self.policy.before(
+                download, repo=self.repo, provider="github", storage=True
+            )
         try:
-            with opener.open(urllib.request.Request(location), timeout=60) as response:
+            with opener.open(download, timeout=60) as response:
                 length = response.headers.get("Content-Length")
                 if length is not None and int(length) > limit:
                     raise ValueError("artifact download exceeds byte budget")
@@ -275,8 +285,10 @@ class GitHubClient:
 class MultiRepoGitHubClient:
     """One poller returns runs from all configured repositories."""
 
-    def __init__(self, token: str, repos: tuple[str, ...]):
-        self.clients = {repo: GitHubClient(token, repo) for repo in repos}
+    def __init__(self, token: str, repos: tuple[str, ...], *, policy=None):
+        self.clients = {
+            repo: GitHubClient(token, repo, policy=policy) for repo in repos
+        }
 
     def for_repo(self, repo: str) -> GitHubClient:
         return self.clients[repo]

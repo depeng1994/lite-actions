@@ -716,8 +716,9 @@ class WorkflowTests(unittest.TestCase):
                 release = self.root / "replacement-checkout"
                 write_workspace(release)
                 recovered = self.router(service, existing=release)
-                recovered.tick()
-                recovered.tick()
+                with patch("ci_core.router.time.time", return_value=time.time() + 901):
+                    recovered.tick()
+                    recovered.tick()
             self.assertEqual(execution.call_count, 1)
             self.assertEqual(len(service.results()), 1)
 

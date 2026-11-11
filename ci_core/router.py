@@ -63,7 +63,9 @@ def run_key(run):
 
 
 class Router:
-    def __init__(self, root, worker, client, author):
+    def __init__(self, root, worker, client, author, *, deployment_config=None):
+        self.deployment = deployment_config
+        self.next_discovery = 0.0
         if not author:
             raise ValueError("LITE_ACTIONS_RESULT_AUTHOR is required")
         self.root, self.worker, self.client, self.author = (
@@ -73,6 +75,10 @@ class Router:
             author,
         )
         self.workers, self.pools = load(self.root, worker)
+        if deployment_config is not None:
+            self.workers[worker]["case_environments"] = deployment_config[
+                "case_environments"
+            ]
         self.self_sha = None
         if SELF_REPO in configured_repos():
             if os.environ.get("LITE_ACTIONS_SELF_SMOKE_ENABLED") != "1":
@@ -184,6 +190,10 @@ class Router:
     def transition(self, key, phase, **fields):
         self.state.update(key, phase=phase, **fields)
         r = self.state.read()[key]
+        if (self.worker == "yellow" and phase != "QUEUED") or r.get(
+            "last_sent_phase"
+        ) == phase:
+            return
         try:
             ident = progress(
                 self.client_for(r["run"]),
@@ -193,7 +203,7 @@ class Router:
                 phase,
                 r.get("progress_id"),
             )
-            self.state.update(key, progress_id=ident)
+            self.state.update(key, progress_id=ident, last_sent_phase=phase)
         except Exception:
             logging.warning("progress pending for %s", key)
 
@@ -360,7 +370,27 @@ class Router:
                 raise
         return None
 
-    def finish(self, key, status, rc, lines, clean=True):
+    def case_folder(self, key):
+        import hashlib
+
+        folder = (
+            Path(self.deployment["state_dir"])
+            / "logs"
+            / "runs"
+            / hashlib.sha256(key.encode()).hexdigest()
+        )
+        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        return folder
+
+    def finalize_report(self, result, locator):
+        from ci_core.contract import digest
+
+        result["log_locator"] = locator
+        result["finished_at"] = int(time.time())
+        if "native_source" in result:
+            result["source_digest"] = digest(result.pop("native_source"))
+
+    def finish(self, key, status, rc, lines, clean=True, *, locator=None):
         r = self.state.read()[key]
         if status == "PASS" and r["run"].get("_ci_source"):
             from ci_core.github_source import check_current
@@ -396,13 +426,21 @@ class Router:
                     125,
                     ["GitCode run identity could not be verified"],
                 )
+        result = report(r["run"], r["item"], r["digest"], status, rc, lines, clean)
+        if self.deployment is not None:
+            if locator is None:
+                path = self.case_folder(key) / "pipeline.log"
+                with path.open("a", encoding="utf-8") as f:
+                    f.write(f"{status} rc={rc}\n")
+                locator = {"host": self.deployment["address"], "path": str(path)}
+            self.finalize_report(result, locator)
         self.state.update(
             key,
             phase="PENDING_REPORT",
             quarantined=bool(r.get("allocation"))
             and not clean
             and (self.quarantine_enabled or r["item"].get("worker") != self.worker),
-            report=report(r["run"], r["item"], r["digest"], status, rc, lines, clean),
+            report=result,
         )
 
     def work(self, key, case, lease, cancel, preflight):
@@ -426,8 +464,6 @@ class Router:
 
                 check_current(self.client_for(run), run["_ci_source"], check_run=True)
             self.transition(key, "STAGING")
-            if run.get("_ci_provider") == "gitcode":
-                self.client_for(run).validate_current(run)
             if cancel.is_set():
                 self.finish(key, "CANCELLED", 130, ["Cancelled before launch"])
                 return
@@ -445,6 +481,11 @@ class Router:
                     raise ValueError("self-smoke probe identity mismatch")
                 self.transition(key, "RUNNING")
                 p = probe_worker()
+                locator = None
+                if self.deployment is not None:
+                    path = self.case_folder(key) / "probe.log"
+                    path.write_text(p.stdout + p.stderr, encoding="utf-8")
+                    locator = {"host": self.deployment["address"], "path": str(path)}
                 if cancel.is_set():
                     self.finish(
                         key, "CANCELLED", 130, ["Cancelled during worker probe"]
@@ -461,6 +502,7 @@ class Router:
                     "PASS" if p.returncode == 0 else "INFRA_ERROR",
                     p.returncode,
                     (p.stdout + p.stderr).splitlines(),
+                    locator=locator,
                 )
                 return
             with tempfile.TemporaryDirectory(prefix="lite-definition-") as tmp:
@@ -480,6 +522,8 @@ class Router:
                 definition = verify_definition(
                     archive, item, r["defaults"], repo=source_repo
                 )
+            if run.get("_ci_provider") == "gitcode":
+                self.client_for(run).validate_current(run)
             from ci_core.registry import validate_case_environment
 
             environment = validate_case_environment(
@@ -519,6 +563,9 @@ class Router:
             subrun["_ci_runtime_callback"] = lambda runtime: self.state.update(
                 key, runtime=runtime
             )
+            if self.deployment is not None:
+                subrun["_ci_pipeline_folder"] = self.case_folder(key)
+                subrun["_ci_worker_address"] = self.deployment["address"]
             execution = execute(case, subrun, root=self.root)
             self.transition(key, "CLEANING")
             from ci_core.reporting import case_passed
@@ -541,6 +588,7 @@ class Router:
                 130 if status == "CANCELLED" else execution.exit_code,
                 execution.tail,
                 execution.release_verified,
+                locator=execution.locator,
             )
         except ExternalNpuOccupancy:
             if launched:
@@ -562,7 +610,7 @@ class Router:
                 key,
                 "INFRA_ERROR",
                 125,
-                [f"Infrastructure error: {type(exc).__name__}: {str(exc)[:160]}"],
+                [f"Infrastructure error: {type(exc).__name__}"],
                 not launched,
             )
         finally:
@@ -719,11 +767,27 @@ class Router:
                             key, phase="QUEUED", allocation=[], quarantined=False
                         )
                     raise
-                self.finish(key, "INFRA_ERROR", 125, [str(exc)[:180]], clean)
+                self.finish(
+                    key,
+                    "INFRA_ERROR",
+                    125,
+                    [f"Capacity check failed: {type(exc).__name__}"],
+                    clean,
+                )
 
     def flush(self):
+        import random
+        from email.utils import parsedate_to_datetime
+        from urllib.error import HTTPError
+
+        from ci_core.egress_policy import Deferred
+
+        cache = {}
         for key, r in self.state.read().items():
-            if r.get("phase") != "PENDING_REPORT":
+            if (
+                r.get("phase") != "PENDING_REPORT"
+                or r.get("next_retry_at", 0) > time.time()
+            ):
                 continue
             try:
                 post(
@@ -734,9 +798,35 @@ class Router:
                     os.environ.get("LITE_ACTIONS_GITCODE_RESULT_AUTHOR", self.author)
                     if r["run"].get("_ci_provider") == "gitcode"
                     else self.author,
+                    local_worker=self.worker,
+                    cache=cache,
                 )
-                self.state.update(key, phase="REPORTED")
-            except Exception:
+                self.state.update(key, phase="REPORTED", published_at=time.time())
+            except Deferred:
+                self.state.update(key, next_retry_at=time.time() + 30)
+            except Exception as exc:
+                n = r.get("send_attempts", 0) + 1
+                permanent = isinstance(exc, ValueError)
+                delay = random.uniform(0.85, 1) * min(900, 30 * 2 ** min(n - 1, 5))
+                if isinstance(exc, HTTPError):
+                    header = exc.headers.get("Retry-After", "")
+                    permanent = exc.code in (400, 401, 404, 422)
+                    if header.isdigit():
+                        delay = max(delay, int(header))
+                    elif header:
+                        try:
+                            delay = max(
+                                delay,
+                                parsedate_to_datetime(header).timestamp() - time.time(),
+                            )
+                        except (ValueError, TypeError, OverflowError):
+                            pass
+                self.state.update(
+                    key,
+                    phase="REPORT_BLOCKED" if permanent or n >= 8 else "PENDING_REPORT",
+                    send_attempts=n,
+                    next_retry_at=time.time() + delay,
+                )
                 logging.warning("result remains pending: %s", key)
 
     def tick(self):
@@ -798,7 +888,10 @@ class Router:
                         130,
                         ["CI Run ended or source changed before launch"],
                     )
-        self.receive(self.client.running_workflows())
+        now = time.monotonic()
+        if self.worker != "yellow" or now >= self.next_discovery:
+            self.next_discovery = now + 60
+            self.receive(self.client.running_workflows())
         self.pump()
         self.flush()
 

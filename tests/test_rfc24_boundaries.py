@@ -1,0 +1,225 @@
+"""Hardware-free adverse boundaries; real release/worker/organization evidence is separate."""
+
+import io
+import json
+import socket
+import subprocess
+import sys
+import tarfile
+import tempfile
+import unittest
+import urllib.request
+from pathlib import Path
+from unittest.mock import patch
+
+from ci_core.config import identify_worker
+from ci_core.contract import normalize
+from ci_core.egress_policy import Deferred, Egress, Rejected, yellow_body
+from ci_core.logs import yellow_lines
+from ci_core.registry import CATALOG, inspect_archive
+from ci_core.reporting import body_for, report
+from tests.scenarios import DEFAULTS, definition
+
+
+class Rfc24Boundaries(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.now = 864000.0
+        self.cfg = {
+            "state_dir": self.tmp.name,
+            "daily_upload_bytes": 1000000,
+            "artifact_hosts": ["storage.invalid"],
+        }
+
+    def policy(self):
+        return Egress("yellow", self.cfg, clock=lambda: self.now)
+
+    def test_role_exact_and_no_override(self):
+        mapping = {"blue": "192.0.2.7", "yellow": "192.0.2.8"}
+        self.assertEqual(identify_worker(["192.0.2.8"], mapping), "yellow")
+        for addresses, asserted in [
+            ([], None),
+            (["192.0.2.9"], None),
+            (list(mapping.values()), None),
+            (["192.0.2.8"], "blue"),
+        ]:
+            with self.subTest(addresses=addresses), self.assertRaises(ValueError):
+                identify_worker(addresses, mapping, asserted)
+        with self.assertRaises(Rejected):
+            Egress("unknown", self.cfg)
+
+    def test_cli_refuses_before_authorization_and_http(self):
+        import unified_router
+
+        with (
+            patch.object(sys, "argv", ["unified_router.py", "--once"]),
+            patch.object(
+                unified_router,
+                "deployment",
+                side_effect=ValueError("WORKER_IDENTITY_MISMATCH"),
+            ),
+            patch.object(unified_router, "authorization") as auth,
+            patch.object(urllib.request, "build_opener") as http,
+            self.assertRaisesRegex(ValueError, "IDENTITY"),
+        ):
+            unified_router.main()
+        auth.assert_not_called()
+        http.assert_not_called()
+
+    def test_yellow_envelope_on_wire_and_bypass(self):
+        run = {"id": 123, "head_sha": "a" * 40, "path": ".github/workflows/smoke.yml"}
+        item = normalize(
+            definition("task", kind="npu_smoke", worker="yellow"), DEFAULTS, 0
+        )
+        lines = [
+            "Bearer example-canary",
+            "api_\x1b[0mkey=never-print",
+            "一" * 300 + "\u2028more",
+        ] + ["长" * 180] * 15
+        result = report(run, item, "b" * 64, "PASS", 0, lines)
+        body = body_for(run, item, result, local_worker="yellow")
+        payload = json.dumps(
+            {"body": body}, separators=(",", ":"), ensure_ascii=False
+        ).encode()
+        yellow_body(payload, "a" * 40)
+        inner = json.loads(body.split("\n", 1)[1])
+        out = inner["last_20_lines"]
+        self.assertLessEqual(len(out), 10)
+        self.assertLessEqual(len("\n".join(out).encode()), 2048)
+        self.assertLessEqual(len(payload), 7000)
+        self.assertNotIn("never-print", body)
+        self.assertNotIn("canary", body)
+        rk = "depeng1994/lite-actions"
+        base = "https://api.github.com/repos/" + rk
+        for dest, method, content in [
+            (base + "/check-runs", "POST", payload),
+            (base + "/actions/workflows/4/dispatches", "POST", payload),
+            (base + "/comments/2", "PATCH", payload),
+            (base + "/actions/runs?data=leak", "GET", None),
+            ("https://example.invalid/", "GET", None),
+        ]:
+            with self.subTest(dest=dest), self.assertRaises(Rejected):
+                self.policy().before(
+                    urllib.request.Request(dest, data=content, method=method),
+                    repo=rk,
+                    provider="github",
+                )
+        self.assertFalse(self.policy().path.exists())
+        for mutation in [
+            {"worker": "blue"},
+            {"hidden": "raw"},
+            {"resources": {"nodes": 1, "extra": "raw"}},
+            {"last_20_lines": ["x"] * 11},
+        ]:
+            data = json.dumps(
+                {"body": body.split("\n", 1)[0] + "\n" + json.dumps(inner | mutation)}
+            ).encode()
+            with self.assertRaises(Rejected):
+                yellow_body(data, "a" * 40)
+
+    def test_key_material_removed_as_a_block(self):
+        text = "-----BEGIN PRIVATE KEY-----\nprivate-fixture-value\n-----END PRIVATE KEY-----\nOK"
+        self.assertEqual(yellow_lines([text]), ["[REDACTED]"] * 3 + ["OK"])
+
+    def test_restart_and_clock_do_not_replenish_daily_or_burst_allowance(self):
+        self.cfg["daily_upload_bytes"] = 19
+        g = self.policy()
+        for _ in range(4):
+            g.reserve(False, 3, 1)
+        with self.assertRaises(Deferred):
+            self.policy().reserve(False, 1)
+        self.now += 1800
+        self.policy().reserve(False, 7, 2)
+        with self.assertRaises(Deferred):
+            self.policy().reserve(True, 1)
+        state = json.loads(g.path.read_bytes())
+        self.assertEqual(
+            (state["used"], state["write_attempts"], state["body_bytes"]), (19, 5, 6)
+        )
+        self.now -= 2000
+        with self.assertRaises(Deferred):
+            self.policy().reserve(True, 1)
+        self.now += 86401
+        self.policy().reserve(True, 5)
+
+    def test_virtual_hour_provider_discovery_and_unsigned_storage(self):
+        g = self.policy()
+        repo = "cann/torchtitan-npu"
+        ghrepo = "cann-framework/torchtitan-npu"
+        for minute in range(60):
+            self.now += 60
+            for status in ("queued", "in_progress"):
+                g.before(
+                    urllib.request.Request(
+                        f"https://api.github.com/repos/{ghrepo}/actions/runs?status={status}&per_page=100&page=1"
+                    ),
+                    repo=ghrepo,
+                    provider="github",
+                )
+            g.before(
+                urllib.request.Request(
+                    f"https://api.gitcode.com/api/v8/repos/{repo}/actions/runs?status=RUNNING&per_page=100&page=1"
+                ),
+                repo=repo,
+                provider="gitcode",
+            )
+        self.assertEqual(json.loads(g.path.read_bytes())["read_attempts"], 180)
+        for u, h in [
+            ("https://unknown.invalid/a", {}),
+            ("https://storage.invalid/a", {"Private-token": "secret"}),
+        ]:
+            with self.assertRaises(Rejected):
+                g.before(
+                    urllib.request.Request(u, headers=h),
+                    repo=repo,
+                    provider="gitcode",
+                    storage=True,
+                )
+
+    def test_poisoned_model_is_never_run_by_catalog_reader(self):
+        # Positive control uses exactly the same innocuous payload on a loopback listener.
+        marker = self.root / "sentinel"
+        archive = self.root / "model.tar.gz"
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            listener.settimeout(2)
+            code = f'import socket,pathlib; pathlib.Path({str(marker)!r}).write_text("hit");socket.create_connection({listener.getsockname()!r},timeout=1).close()'.encode()
+            subprocess.run([sys.executable, "-I", "-c", code], check=True, timeout=3)
+            listener.accept()[0].close()
+            self.assertEqual(marker.read_text(), "hit")
+            marker.unlink()
+            catalog = (Path(__file__).resolve().parents[1] / CATALOG).read_bytes()
+
+            def write(members):
+                with tarfile.open(archive, "w:gz") as tf:
+                    for name, data in members:
+                        info = tarfile.TarInfo(name)
+                        info.size = len(data)
+                        tf.addfile(info, io.BytesIO(data))
+
+            model = ("tests/integration_tests/tools/lite_actions/entrypoint.py", code)
+            write([model, (CATALOG, catalog)])
+            with patch(
+                "subprocess.Popen", side_effect=AssertionError("unexpected child")
+            ):
+                rows = inspect_archive(archive, {"suite": "dispatch_smoke"})
+                self.assertEqual(len(rows), 3)
+                for row in rows:
+                    self.assertEqual(
+                        inspect_archive(archive, {"test_id": row["test_id"]}), [row]
+                    )
+                for members in [
+                    [model],
+                    [(CATALOG, catalog), ("./" + CATALOG, catalog)],
+                    [(CATALOG, b'{"version":1,"version":1}')],
+                ]:
+                    write(members)
+                    with self.assertRaisesRegex(ValueError, "CATALOG_"):
+                        inspect_archive(archive, {"suite": "dispatch_smoke"})
+            self.assertFalse(marker.exists())
+            listener.settimeout(0.1)
+            with self.assertRaises(TimeoutError):
+                listener.accept()

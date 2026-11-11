@@ -42,6 +42,7 @@ class Execution:
     tail: list[str]
     log: Path
     release_verified: bool = True
+    locator: dict | None = None
 
 
 def _local_run_time(run: dict) -> dt.datetime:
@@ -811,7 +812,7 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
     if not case.get("enabled"):
         raise ValueError("disabled case")
     cancel = run.get("_ci_cancel_event")
-    log_dir = task_dir(run, root)
+    log_dir = run.get("_ci_pipeline_folder") or task_dir(run, root)
     log_dir.mkdir(parents=True, exist_ok=True)
     logfile = log_dir / "pipeline.log"
     if cancel is not None and cancel.is_set():
@@ -998,11 +999,29 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
 
         location = metadata(logfile)
         selected_hosts = {n["host_id"] for n in case["allocation"]}
-        approved = {
-            execution_node(n, case["docker"])["ssh"]
+        endpoints = {
+            execution_node(n, case["docker"])["ssh"]: n["host_id"]
             for n in pools[case["pool"]]["nodes"]
             if n["host_id"] in selected_hosts
         }
+        approved = set(endpoints)
+        locator = None
+        if "_ci_worker_address" in run:
+            from ci_core.ssh_runner import DEST_ROOT
+
+            managed = endpoints.get(location["host"])
+            rank = next(
+                (
+                    i
+                    for i, n in enumerate(case["allocation"])
+                    if n["host_id"] == managed
+                ),
+                None,
+            )
+            path = f"{DEST_ROOT}/{remote_task_name(run)}/node{rank}/run.log"
+            if rank is None or location["path"] != path:
+                raise ValueError("LOG_LOCATOR_MISMATCH")
+            locator = {"host": managed, "path": path}
         excerpt = select_remote(
             location["host"],
             location["path"],
@@ -1011,10 +1030,13 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
             require_loss=case["kind"] == "train",
         )
     except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:
+        locator = None
         excerpt = summarize(logfile, rc)[-18:]
-        excerpt.append(f"Log collection failed: {type(exc).__name__}: {str(exc)[:120]}")
+        excerpt.append(f"Log collection failed: {type(exc).__name__}")
         if rc == 0:
             rc = 125
     if cancel is not None and cancel.is_set() and rc == 0:
         rc = 130
-    return Execution(rc, excerpt[:20], logfile, release_verified)
+    if locator is None and "_ci_worker_address" in run:
+        locator = {"host": run["_ci_worker_address"], "path": str(logfile)}
+    return Execution(rc, excerpt[:20], logfile, release_verified, locator)

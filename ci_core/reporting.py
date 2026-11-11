@@ -1,9 +1,10 @@
 """Identity-bound, byte-budgeted result outbox and metadata-only progress."""
 
 import json
+from itertools import islice
 
 from ci_core.contract import REPO
-from ci_core.logs import clean
+from ci_core.logs import clean, sanitized_lines, yellow_lines
 
 
 def marker(run, item):
@@ -29,7 +30,7 @@ def report(run, item, plan_digest, status, rc, lines, cleanup_verified=True):
         status=status,
         exit_code=rc,
         cleanup_verified=cleanup_verified,
-        last_20_lines=[clean(x) for x in lines[:20]],
+        last_20_lines=[clean(x) for x in islice(sanitized_lines(lines), 20)],
     )
     if run.get("_ci_dispatch_id"):
         result["dispatch_id"] = run["_ci_dispatch_id"]
@@ -38,8 +39,16 @@ def report(run, item, plan_digest, status, rc, lines, cleanup_verified=True):
     return result
 
 
-def body_for(run, item, result):
+def body_for(run, item, result, *, local_worker=None):
     result = {**result, "last_20_lines": list(result["last_20_lines"])}
+    if local_worker is not None and result["worker"] != local_worker:
+        raise ValueError("STATE_OWNER_MISMATCH")
+    if local_worker == "yellow":
+        result["last_20_lines"] = yellow_lines(result["last_20_lines"])
+        if "native_source" in result:
+            from ci_core.contract import digest
+
+            result["source_digest"] = digest(result.pop("native_source"))
     while True:
         body = (
             marker(run, item)
@@ -54,12 +63,16 @@ def body_for(run, item, result):
         result["last_20_lines"].pop()
 
 
-def post(client, run, item, result, author):
-    body = body_for(run, item, result)
+def post(client, run, item, result, author, *, local_worker=None, cache=None):
+    body = body_for(run, item, result, local_worker=local_worker)
     prefix = marker(run, item) + "\n"
+    cache = {} if cache is None else cache
+    key = (id(client), run["head_sha"])
+    if key not in cache:
+        cache[key] = client.commit_comments(run["head_sha"])
     prior = [
         c
-        for c in client.commit_comments(run["head_sha"])
+        for c in cache[key]
         if c.get("user", {}).get("login") == author
         and c.get("body", "").startswith(prefix)
     ]

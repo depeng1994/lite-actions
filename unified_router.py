@@ -8,8 +8,9 @@ import signal
 import time
 from pathlib import Path
 
-from ci_core.config import load
+from ci_core.config import deployment, load
 from ci_core.contract import configured_repos
+from ci_core.egress_policy import Egress
 from ci_core.gitcode import GitCodeClient, MultiPlatformClient
 from ci_core.github import GitHubClient, MultiRepoGitHubClient, authorization
 from ci_core.resources import single_agent
@@ -19,11 +20,15 @@ ROOT = Path(__file__).resolve().parent
 
 
 def main():
+    os.umask(0o077)
     p = argparse.ArgumentParser()
-    p.add_argument("--worker-id", required=True, choices=["blue", "yellow"])
+    p.add_argument("--worker-id", choices=["blue", "yellow"])
     p.add_argument("--validate", action="store_true")
     p.add_argument("--once", action="store_true")
     a = p.parse_args()
+    a.worker_id, cfg = deployment(a.worker_id)
+    os.environ["LITE_ACTIONS_STATE_DIR"] = cfg["state_dir"]
+    policy = Egress(a.worker_id, cfg)
     load(ROOT, a.worker_id)
     repos = configured_repos()
     if a.validate:
@@ -42,9 +47,9 @@ def main():
         if os.environ.get("LITE_ACTIONS_GITHUB_ENABLED", "true").lower() == "true":
             token = authorization()
             client = (
-                MultiRepoGitHubClient(token, repos)
+                MultiRepoGitHubClient(token, repos, policy=policy)
                 if len(repos) > 1
-                else GitHubClient(token, repos[0])
+                else GitHubClient(token, repos[0], policy=policy)
             )
         gitcode_repos = tuple(
             filter(None, os.environ.get("LITE_ACTIONS_GITCODE_REPOS", "").split(","))
@@ -54,7 +59,9 @@ def main():
                 client,
                 {
                     repo: GitCodeClient(
-                        os.environ.get("LITE_ACTIONS_GITCODE_TOKEN"), repo
+                        os.environ.get("LITE_ACTIONS_GITCODE_TOKEN"),
+                        repo,
+                        policy=policy,
                     )
                     for repo in gitcode_repos
                 },
@@ -66,6 +73,7 @@ def main():
             a.worker_id,
             client,
             os.environ.get("LITE_ACTIONS_RESULT_AUTHOR"),
+            deployment_config=cfg,
         )
         ready_file = os.environ.get("LITE_ACTIONS_READY_FILE", "").strip()
         ready_published = False

@@ -527,11 +527,14 @@ def run(
             if errors:
                 raise RuntimeError(f"staging failed: {errors}")
     if case.get("native_source"):
+        from ci_core.config import deployment
+        from ci_core.egress_policy import Egress
         from ci_core.github import GitHubClient, authorization
         from ci_core.github_source import check_current
 
+        worker, cfg = deployment()
         check_current(
-            GitHubClient(authorization(), MODEL_REPO),
+            GitHubClient(authorization(), MODEL_REPO, policy=Egress(worker, cfg)),
             case["native_source"],
             check_run=True,
         )

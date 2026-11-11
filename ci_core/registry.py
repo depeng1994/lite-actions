@@ -45,6 +45,8 @@ def validate_case_environment(env: object, *, kind: str = "train") -> dict[str, 
         if (
             not isinstance(key, str)
             or not CASE_ENV_KEY.fullmatch(key)
+            or key.startswith(("LD_", "DYLD_", "PYTHON", "GIT_", "BASH_FUNC_"))
+            or key in {"BASH_ENV", "ENV", "SHELLOPTS", "PATH", "IFS"}
             or key in RESERVED_RUNTIME_ENV
             or not isinstance(value, str)
             or "\x00" in value
@@ -150,6 +152,26 @@ def decode_catalog(data):
     return doc
 
 
+class _BoundedInfo(tarfile.TarInfo):
+    # tarfile consumes PAX/long-name payloads before exposing the next member.
+    def _proc_member(self, tar):
+        if self.size < 0 or self.size > MAX_SCAN or self.type == tarfile.GNUTYPE_SPARSE:
+            raise ValueError("CATALOG_INVALID: tar metadata")
+        if (
+            self.type
+            in (
+                tarfile.XHDTYPE,
+                tarfile.XGLTYPE,
+                tarfile.GNUTYPE_LONGNAME,
+                tarfile.GNUTYPE_LONGLINK,
+                tarfile.SOLARIS_XHDTYPE,
+            )
+            and self.size > 65536
+        ):
+            raise ValueError("CATALOG_INVALID: extended header")
+        return super()._proc_member(tar)
+
+
 class _ScanReader:
     def __init__(self, source):
         self.source = source
@@ -169,7 +191,9 @@ def inspect_archive(archive: Path, selection: dict, *, repo=None) -> list[dict]:
     try:
         with (
             gzip.open(archive, "rb") as raw,
-            tarfile.open(fileobj=_ScanReader(raw), mode="r|") as tar,
+            tarfile.open(
+                fileobj=_ScanReader(raw), mode="r|", tarinfo=_BoundedInfo
+            ) as tar,
         ):
             for count, member in enumerate(tar, 1):
                 if count > MAX_MEMBERS or tar.offset > MAX_SCAN:

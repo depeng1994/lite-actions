@@ -118,3 +118,48 @@ def metadata(log: Path) -> dict[str, str]:
     if len(found) != 2:
         raise ValueError("missing remote log metadata")
     return found
+
+
+_SENSITIVE = re.compile(
+    r"(?i)(?:authorization\s*[:=]|\bbearer\s+|(?:password|passwd|token|secret|private[_-]?key|access[_-]?key|api[_-]?key)\s*[:=]|(?:gh[pousr]_|github_pat_|AKIA)[A-Za-z0-9_]+|-----BEGIN [A-Z ]*PRIVATE KEY-----|[?&](?:sig|signature|x-amz-signature)=)"
+)
+
+
+def sanitized_lines(lines):
+    """Remove credential-bearing records, including multiline PEMs, before slicing."""
+    in_key = False
+    for raw in lines:
+        if not isinstance(raw, str):
+            raise ValueError("invalid diagnostic type")
+        for text in raw.splitlines():
+            text = "".join(c if c.isprintable() else " " for c in ESCAPE.sub("", text))
+            if "-----BEGIN " in text and "PRIVATE KEY-----" in text:
+                in_key = True
+            if in_key:
+                if "-----END " in text and "PRIVATE KEY-----" in text:
+                    in_key = False
+                yield "[REDACTED]"
+            else:
+                yield "[REDACTED]" if _SENSITIVE.search(text) else text
+
+
+def yellow_lines(lines):
+    """Ten diagnostic lines and 2 KiB total, including separators."""
+    out = []
+    left = 2048
+    for text in sanitized_lines(lines):
+        if not text:
+            continue
+        remain = left - int(bool(out))
+        text = (
+            text[:180]
+            .encode("utf-8", errors="replace")[: max(remain, 0)]
+            .decode("utf-8", errors="ignore")
+        )
+        if not text:
+            break
+        out.append(text)
+        left = remain - len(text.encode())
+        if len(out) == 10 or left <= 1:
+            break
+    return out

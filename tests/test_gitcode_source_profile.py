@@ -330,12 +330,29 @@ class SourceProfileTests(unittest.TestCase):
         ).strip()
         work = self.root / "work"
         work.mkdir()
+        # Isolate rewriting from user configuration, including on Git <2.31.
+        home = self.root / "home"
+        home.mkdir()
+        for remote, repo in [
+            ("cann/torchtitan-npu", self.root / "missing"),
+            ("someone/torchtitan-npu", source),
+        ]:
+            subprocess.run(
+                [
+                    "git",
+                    "config",
+                    "--file",
+                    str(home / ".gitconfig"),
+                    f"url.file://{repo}.insteadOf",
+                    f"https://gitcode.com/{remote}.git",
+                ],
+                check=True,
+            )
         env = {
-            "GIT_CONFIG_COUNT": "2",
-            "GIT_CONFIG_KEY_0": f"url.file://{self.root}/missing.insteadOf",
-            "GIT_CONFIG_VALUE_0": "https://gitcode.com/cann/torchtitan-npu.git",
-            "GIT_CONFIG_KEY_1": f"url.file://{source}.insteadOf",
-            "GIT_CONFIG_VALUE_1": "https://gitcode.com/someone/torchtitan-npu.git",
+            "HOME": str(home),
+            "XDG_CONFIG_HOME": str(home),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_TERMINAL_PROMPT": "0",
         }
         with patch.dict(os.environ, env), patch("ci_core.ssh_runner.ROOT", self.root):
             archive = model_archive(

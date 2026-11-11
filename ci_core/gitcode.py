@@ -115,7 +115,8 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class GitCodeClient:
-    def __init__(self, token, repo):
+    def __init__(self, token, repo, *, policy=None):
+        self.policy = policy
         if repo not in trusted_gitcode_repositories():
             raise ValueError("untrusted GitCode repository")
         if not token:
@@ -153,6 +154,8 @@ class GitCodeClient:
             headers=headers,
             method=method,
         )
+        if self.policy:
+            self.policy.before(req, repo=self.repo, provider="gitcode")
         with urllib.request.build_opener(NoRedirect()).open(
             req, timeout=30
         ) as response:
@@ -374,6 +377,8 @@ class GitCodeClient:
             f"{self.v8}/actions/artifacts/{artifact_id}/zip",
             headers={"PRIVATE-TOKEN": self.token},
         )
+        if self.policy:
+            self.policy.before(req, repo=self.repo, provider="gitcode")
         try:
             urllib.request.build_opener(NoRedirect).open(req, timeout=20)
             raise ValueError("artifact download did not redirect")
@@ -384,9 +389,17 @@ class GitCodeClient:
         parsed = urllib.parse.urlsplit(url)
         if parsed.scheme != "https" or not parsed.hostname:
             raise ValueError("invalid artifact redirect")
-        with urllib.request.urlopen(
-            urllib.request.Request(url), timeout=30
-        ) as response:
+        download = urllib.request.Request(url)
+        if self.policy:
+            self.policy.before(
+                download, repo=self.repo, provider="gitcode", storage=True
+            )
+        open_storage = (
+            urllib.request.build_opener(NoRedirect).open
+            if self.policy
+            else urllib.request.urlopen
+        )
+        with open_storage(download, timeout=30) as response:
             payload = response.read(262145)
         if len(payload) > 262144:
             raise ValueError("artifact exceeds limit")
