@@ -273,7 +273,7 @@ class PreflightTests(unittest.TestCase):
             patch("auto_update.preflight.validate_python_interpreter", return_value="3.12.2"),
             patch("auto_update.preflight.systemd_available", return_value=True),
             patch("auto_update.preflight.shutil.which", return_value="/usr/bin/git"),
-            patch("auto_update.preflight._systemctl_show", return_value=unit),
+            patch("auto_update.preflight._systemctl_show", side_effect=lambda _unit, prop: unit if prop == "LoadState" else str(release)),
             patch("auto_update.preflight._run_git", side_effect=fake_git),
             patch(
                 "auto_update.preflight.check_source",
