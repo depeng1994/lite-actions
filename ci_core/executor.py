@@ -43,6 +43,7 @@ class Execution:
     log: Path
     release_verified: bool = True
     locator: dict | None = None
+    diagnostic: tuple[bytes, bool] | None = None
 
 
 def _local_run_time(run: dict) -> dt.datetime:
@@ -1035,8 +1036,20 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
         excerpt.append(f"Log collection failed: {type(exc).__name__}")
         if rc == 0:
             rc = 125
+    diagnostic = None
+    if run.get("_ci_zone") == "blue":
+        from ci_core.logs import BLUE_BYTES, blue_diagnostic, blue_remote
+
+        try:
+            if locator:
+                diagnostic = blue_remote(location["host"], location["path"], approved)
+            else:
+                with logfile.open("rb") as stream:
+                    diagnostic = blue_diagnostic(stream.read(BLUE_BYTES + 1))
+        except (ValueError, OSError, subprocess.SubprocessError):
+            pass  # Diagnostic transport must not rewrite the actual test outcome.
     if cancel is not None and cancel.is_set() and rc == 0:
         rc = 130
     if locator is None and "_ci_worker_address" in run:
         locator = {"host": run["_ci_worker_address"], "path": str(logfile)}
-    return Execution(rc, excerpt[:20], logfile, release_verified, locator)
+    return Execution(rc, excerpt[:20], logfile, release_verified, locator, diagnostic)

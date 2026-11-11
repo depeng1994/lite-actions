@@ -22,7 +22,7 @@ class Rejected(ValueError):
 
 # Only the API reads needed for source proof, discovery, status and result correlation.
 _READ = re.compile(
-    r"(?:|/actions/runs(?:/[A-Za-z0-9_-]{1,128}(?:/artifacts|/attempts/[1-9][0-9]*/jobs)?)?|/actions/workflows/[0-9]+|/actions/artifacts/[A-Za-z0-9_-]{1,128}/zip|/pulls/[0-9]+|/branches/[A-Za-z0-9._/%-]{1,300}|/compare/[a-f0-9]{40}\.\.\.[a-f0-9]{40}|/commits/[a-f0-9]{40}/comments|/git/commits/[a-f0-9]{40})\Z"
+    r"(?:|/actions/runs(?:/[A-Za-z0-9_-]{1,128}(?:/artifacts|/attempts/[1-9][0-9]*(?:/jobs)?)?)?|/actions/workflows/[0-9]+|/actions/artifacts/[A-Za-z0-9_-]{1,128}/zip|/pulls/[0-9]+|/branches/[A-Za-z0-9._/%-]{1,300}|/compare/[a-f0-9]{40}\.\.\.[a-f0-9]{40}|/commits/[a-f0-9]{40}/comments|/git/commits/[a-f0-9]{40})\Z"
 )
 _QUERY = {
     "status": r"queued|in_progress|RUNNING",

@@ -58,6 +58,10 @@ def body_for(run, item, result, *, local_worker=None):
         request = json.dumps({"body": body}, separators=(",", ":"))
         if len(body.encode()) <= 6100 and len(request.encode()) <= 7000:
             return body
+        if result.get("diagnostics"):
+            result["diagnostics"] = result["diagnostics"][:-1]
+            result["inline_truncated"] = True
+            continue
         if not result["last_20_lines"]:
             raise ValueError("metadata exceeds upload budget")
         result["last_20_lines"].pop()

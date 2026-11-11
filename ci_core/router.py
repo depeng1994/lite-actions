@@ -66,6 +66,20 @@ class Router:
     def __init__(self, root, worker, client, author, *, deployment_config=None):
         self.deployment = deployment_config
         self.next_discovery = 0.0
+        self.release_logs = None
+        self.next_expiry = 0.0
+        if (
+            worker == "blue"
+            and deployment_config
+            and deployment_config.get("public_release")
+        ):
+            from ci_core.github import ReleaseLogs
+
+            self.release_logs = ReleaseLogs(
+                worker,
+                deployment_config,
+                token=os.environ.get("LITE_ACTIONS_BLUE_RELEASE_TOKEN"),
+            )
         if not author:
             raise ValueError("LITE_ACTIONS_RESULT_AUTHOR is required")
         self.root, self.worker, self.client, self.author = (
@@ -219,7 +233,51 @@ class Router:
                     type(exc).__name__,
                 )
 
+    def probe_rule(self, run):
+        if not self.deployment or run.get("_ci_provider", "github") != "github":
+            return None
+        rules = [
+            r
+            for r in self.deployment.get("probe_callers", [])
+            if r.get("repo") == run.get("_ci_repo")
+            and r.get("workflow") == run.get("path")
+        ]
+        if len(rules) > 1:
+            raise ValueError("AMBIGUOUS_INFRA_CALLER")
+        return rules[0] if rules else None
+
+    def receive_probe(self, run, rule):
+        from ci_core.contract import digest
+        from ci_core.worker_probe import fixed_item, github_call
+
+        proof = github_call(self.client_for(run), run, rule)
+        run = {**run, "_ci_infra": True, "_ci_dispatch_id": f"os-{proof['job_id']}"}
+        item = fixed_item(self.worker)
+        key = task_key(run, item)
+        record = dict(
+            phase="QUEUED",
+            repo=proof["repo"],
+            run=run,
+            item=item,
+            digest=digest(proof),
+            defaults={},
+            queued_at=time.time(),
+            use_instance_id=True,
+        )
+        for admitted in self.state.admit([(key, record)]):
+            self.transition(admitted, "QUEUED")
+
     def _receive_one(self, run):
+        rule = self.probe_rule(run)
+        if rule is not None and self.eligible(run):
+            try:
+                self.receive_probe(run, rule)
+            except Exception as exc:
+                logging.warning(
+                    "fixed probe unavailable: %s (%s)", run["id"], type(exc).__name__
+                )
+            if rule.get("mode") == "cpu-only":
+                return
         identity = (
             run.get("_ci_provider", "github"),
             run.get("_ci_repo", REPO),
@@ -390,7 +448,9 @@ class Router:
         if "native_source" in result:
             result["source_digest"] = digest(result.pop("native_source"))
 
-    def finish(self, key, status, rc, lines, clean=True, *, locator=None):
+    def finish(
+        self, key, status, rc, lines, clean=True, *, locator=None, diagnostic=None
+    ):
         r = self.state.read()[key]
         if status == "PASS" and r["run"].get("_ci_source"):
             from ci_core.github_source import check_current
@@ -426,6 +486,24 @@ class Router:
                     125,
                     ["GitCode run identity could not be verified"],
                 )
+        if status == "PASS" and r["run"].get("_ci_infra") is True:
+            from ci_core.contract import digest
+            from ci_core.worker_probe import github_call
+
+            try:
+                if (
+                    digest(
+                        github_call(
+                            self.client_for(r["run"]),
+                            r["run"],
+                            self.probe_rule(r["run"]),
+                        )
+                    )
+                    != r["digest"]
+                ):
+                    raise ValueError
+            except Exception:
+                status, rc, lines = "INFRA_ERROR", 125, ["INFRA_PUBLICATION_UNVERIFIED"]
         result = report(r["run"], r["item"], r["digest"], status, rc, lines, clean)
         if self.deployment is not None:
             if locator is None:
@@ -434,6 +512,24 @@ class Router:
                     f.write(f"{status} rc={rc}\n")
                 locator = {"host": self.deployment["address"], "path": str(path)}
             self.finalize_report(result, locator)
+            if self.worker == "blue" and diagnostic is not None:
+                data, truncated = diagnostic
+                result["last_20_lines"] = []
+                if len(data) <= 2048 and not truncated:
+                    result["diagnostics"] = data.decode().splitlines()
+                else:
+                    result["attachment_status"] = "unavailable"
+                    if self.release_logs:
+                        try:
+                            result["attachment_ref"] = self.release_logs.deliver(
+                                key, data, truncated
+                            )
+                            result["attachment_status"] = "available"
+                        except Exception as exc:
+                            logging.warning(
+                                "Blue log delivery unavailable (%s)", type(exc).__name__
+                            )
+
         self.state.update(
             key,
             phase="PENDING_REPORT",
@@ -469,16 +565,30 @@ class Router:
                 return
             if item["kind"] == "worker_probe":
                 # Recheck persisted tasks: a pre-upgrade queue is not an authorization.
-                if not self_request(run):
-                    raise ValueError("MODEL_HOST_PROBE_FORBIDDEN")
-                from ci_core.self_smoke import expected_plan
+                if run.get("_ci_infra") is True:
+                    from ci_core.contract import digest
+                    from ci_core.worker_probe import fixed_item, github_call
 
-                approved = expected_plan(run)
-                if (
-                    r["digest"] != approved["plan_digest"]
-                    or item not in approved["cases"]
-                ):
-                    raise ValueError("self-smoke probe identity mismatch")
+                    rule = self.probe_rule(run)
+                    if rule is None or item != fixed_item(self.worker):
+                        raise ValueError("INFRA_CALLER_NOT_APPROVED")
+                    proof = github_call(self.client_for(run), run, rule)
+                    if (
+                        digest(proof) != r["digest"]
+                        or run.get("_ci_dispatch_id") != f"os-{proof['job_id']}"
+                    ):
+                        raise ValueError("INFRA_STALE_PROBE")
+                elif self_request(run):
+                    from ci_core.self_smoke import expected_plan
+
+                    approved = expected_plan(run)
+                    if (
+                        r["digest"] != approved["plan_digest"]
+                        or item not in approved["cases"]
+                    ):
+                        raise ValueError("self-smoke probe identity mismatch")
+                else:
+                    raise ValueError("MODEL_HOST_PROBE_FORBIDDEN")
                 self.transition(key, "RUNNING")
                 p = probe_worker()
                 locator = None
@@ -565,6 +675,7 @@ class Router:
             )
             if self.deployment is not None:
                 subrun["_ci_pipeline_folder"] = self.case_folder(key)
+                subrun["_ci_zone"] = self.worker
                 subrun["_ci_worker_address"] = self.deployment["address"]
             execution = execute(case, subrun, root=self.root)
             self.transition(key, "CLEANING")
@@ -589,6 +700,7 @@ class Router:
                 execution.tail,
                 execution.release_verified,
                 locator=execution.locator,
+                diagnostic=execution.diagnostic,
             )
         except ExternalNpuOccupancy:
             if launched:
@@ -830,6 +942,12 @@ class Router:
                 logging.warning("result remains pending: %s", key)
 
     def tick(self):
+        if self.release_logs and time.monotonic() >= self.next_expiry:
+            self.next_expiry = time.monotonic() + 3600
+            try:
+                self.release_logs.expire()
+            except Exception as exc:
+                logging.warning("Blue log retention deferred (%s)", type(exc).__name__)
         # Outbox survives completed GitHub Runs; never depend on an active-run listing.
         self.flush()
         statuses = {}

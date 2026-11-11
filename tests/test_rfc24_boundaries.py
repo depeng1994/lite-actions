@@ -223,3 +223,133 @@ class Rfc24Boundaries(unittest.TestCase):
             listener.settimeout(0.1)
             with self.assertRaises(TimeoutError):
                 listener.accept()
+
+    def test_release_bytes_recovery_and_tombstone(self):
+        import hashlib
+
+        from ci_core.github import ReleaseLogs
+        from ci_core.logs import BLUE_BYTES, blue_diagnostic
+
+        dest = {
+            "repository": "example/public-ci-logs",
+            "release_id": 13,
+            "tag": "ci-logs",
+            "publisher_login": "fixture-bot",
+            "public_diagnostics_approved": True,
+        }
+        cfg = self.cfg | {"public_release": dest}
+        repo = dest["repository"]
+        assets = {}
+        uploads = []
+
+        def api(method, path, *, data=None):
+            if method == "DELETE":
+                self.assertEqual(path, "/releases/assets/81")
+                assets.clear()
+                return None
+            if data is not None:
+                self.assertEqual(method, "POST")
+                name = path.split("name=")[1]
+                uploads.append(data)
+                assets[name] = {
+                    "id": 81,
+                    "name": name,
+                    "size": len(data),
+                    "state": "uploaded",
+                    "digest": "sha256:" + hashlib.sha256(data).hexdigest(),
+                    "browser_download_url": f"https://github.com/{repo}/releases/download/ci-logs/{name}",
+                    "uploader": {"login": "fixture-bot"},
+                }
+                raise TimeoutError("simulated loss AFTER upload commit")
+            if path == "":
+                return {"full_name": repo, "private": False}
+            if path == "/releases/13":
+                return {"id": 13, "draft": False, "tag_name": "ci-logs"}
+            return list(assets.values())
+
+        with self.assertRaises(ValueError):
+            ReleaseLogs("yellow", cfg, token="dummy")
+        value = b"abcdefgh" * (BLUE_BYTES // 8)
+        self.assertEqual(blue_diagnostic(value), (value, False))
+        self.assertEqual(blue_diagnostic(value + b"x"), (value, True))
+        self.assertEqual(blue_diagnostic(b"foo\n" * 500), (b"foo\n" * 500, False))
+        self.assertEqual(
+            blue_diagnostic(b"foo\nAuthorization: secret\n"),
+            (b"foo\n[REDACTED]\n", False),
+        )
+        prefix = ("a" * (BLUE_BYTES - 2) + "中").encode()
+        self.assertEqual(blue_diagnostic(prefix), (prefix[:-3], True))
+        with patch.object(ReleaseLogs, "api_call", side_effect=api):
+            writer = ReleaseLogs("blue", cfg, token="dummy", clock=lambda: self.now)
+            ref = writer.deliver("scope-key", value, False)
+            self.assertEqual(
+                (ref["bytes"], ref["sha256"]),
+                (BLUE_BYTES, hashlib.sha256(value).hexdigest()),
+            )
+            resumed = ReleaseLogs("blue", cfg, token="dummy", clock=lambda: self.now)
+            self.assertEqual(resumed.deliver("scope-key", value, False), ref)
+            self.assertEqual(len(uploads), 1)
+            self.now += 7 * 86400 + 1
+            resumed.expire()
+            self.assertFalse(assets)
+            with self.assertRaisesRegex(ValueError, "EXPIRED"):
+                resumed.deliver("scope-key", value, False)
+            self.assertEqual(len(uploads), 1)
+
+    def test_host_action_needs_attested_callee_and_active_attempt(self):
+        from types import SimpleNamespace
+
+        from ci_core.worker_probe import JOB_NAME, TEMPLATE, github_call
+
+        repo = "cann-framework/vllm-ascend"
+        head = "a" * 40
+        tpl = "b" * 40
+        path = ".github/workflows/dispatcher.yml"
+        run = {
+            "id": 3,
+            "run_attempt": 2,
+            "head_sha": head,
+            "event": "workflow_dispatch",
+            "path": path,
+            "_ci_repo": repo,
+        }
+        rule = {
+            "repo": repo,
+            "branch": "main",
+            "workflow": path,
+            "approved_caller_shas": [head],
+            "approved_template_shas": [tpl],
+        }
+        detail = {
+            **run,
+            "repository": {"full_name": repo},
+            "head_branch": "main",
+            "status": "in_progress",
+            "referenced_workflows": [{"path": TEMPLATE, "sha": tpl}],
+        }
+        job = {
+            "run_id": 3,
+            "head_sha": head,
+            "name": "caller / " + JOB_NAME,
+            "id": 10,
+            "status": "in_progress",
+        }
+
+        def check(d, j):
+            def request(method, path):
+                self.assertEqual(method, "GET")
+                self.assertTrue(path.startswith("/actions/runs/3/attempts/2"))
+                return {"jobs": j, "total_count": len(j)} if "/jobs?" in path else d
+
+            return github_call(SimpleNamespace(repo=repo, request=request), run, rule)
+
+        self.assertEqual(check(detail, [job])["job_id"], 10)
+        for d, j in [
+            (dict(detail, referenced_workflows=[]), [job]),
+            (dict(detail, run_attempt=1), [job]),
+            (detail, [job, job]),
+            (detail, [dict(job, status="completed")]),
+            (detail, [dict(job, head_sha="c" * 40)]),
+        ]:
+            with self.assertRaises(ValueError):
+                check(d, j)

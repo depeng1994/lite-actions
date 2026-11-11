@@ -163,3 +163,54 @@ def yellow_lines(lines):
         if len(out) == 10 or left <= 1:
             break
     return out
+
+
+BLUE_BYTES = 4 * 1024 * 1024
+
+
+def blue_diagnostic(raw: bytes, *, limit=BLUE_BYTES):
+    """Bound UTF-8 bytes, not logical lines. Never emit the interior of a PEM."""
+    import io
+
+    if not 0 < limit <= BLUE_BYTES:
+        raise ValueError("invalid Blue log budget")
+    text = raw[: limit + 1].decode("utf-8", "replace")
+    sink = bytearray()
+    in_key = False
+    truncated = len(raw) > limit
+    for record in io.StringIO(text, newline=None):
+        eol = record.endswith("\n")
+        line = ESCAPE.sub("", record.removesuffix("\n"))
+        if "-----BEGIN " in line and "PRIVATE KEY-----" in line:
+            in_key = True
+        hide = in_key or _SENSITIVE.search(line)
+        if "-----END " in line and "PRIVATE KEY-----" in line:
+            in_key = False
+        if hide:
+            line = "[REDACTED]"
+        elif not line.isprintable():
+            line = "".join(ch if ch.isprintable() else " " for ch in line)
+        chunk = (line + ("\n" if eol else "")).encode()
+        room = limit - len(sink)
+        if len(chunk) > room:
+            sink.extend(chunk[:room].decode("utf-8", "ignore").encode())
+            truncated = True
+            break
+        sink.extend(chunk)
+    return bytes(sink), truncated
+
+
+def blue_remote(host, path, approved, *, runner=subprocess.run):
+    if host not in approved or not SAFE_PATH.fullmatch(path):
+        raise ValueError("untrusted log location")
+    from ci_core.transport import command
+
+    r = runner(
+        command(host, f"head -c {BLUE_BYTES + 1} -- " + shlex.quote(path)),
+        capture_output=True,
+        timeout=60,
+        check=True,
+    )
+    if len(r.stdout) > BLUE_BYTES + 1:
+        raise ValueError("oversized internal log sample")
+    return blue_diagnostic(r.stdout)

@@ -1,0 +1,14 @@
+name: lite-ci-worker-cpu-probe
+on:
+  workflow_call:
+jobs:
+  worker_os:
+    name: Lite Actions worker-os-v1
+    runs-on: linux
+    steps:
+      - name: Confirm cross-repo template expansion
+        run: echo PROBE_TEMPLATE_OK
+      - name: Require native dispatch and callee evidence before enabling host execution
+        run: |
+          echo 'INFRA_TEMPLATE_AUTHORITY_UNVERIFIED: marker-only pilot; no host probe requested.'
+          exit 1
