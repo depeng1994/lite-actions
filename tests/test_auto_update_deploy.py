@@ -356,7 +356,7 @@ class PreflightTests(unittest.TestCase):
 
         installer = (ROOT / "scripts" / "install_auto_update.sh").read_text()
         self.assertIn(
-            'git_in_source --no-optional-locks status --porcelain --untracked-files=all',
+            "git_in_source --no-optional-locks status --porcelain --untracked-files=all",
             installer,
         )
 
@@ -413,7 +413,6 @@ class PreflightTests(unittest.TestCase):
         self.assertNotIn(
             "install-proxy", installer.split("# Proxy support is opt-in.", 1)[0]
         )
-
 
     def test_yellow_gitcode_sources_are_documented_separately(self):
         readme = (ROOT / "README.md").read_text()
