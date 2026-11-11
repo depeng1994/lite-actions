@@ -79,7 +79,9 @@ class GitCodeWorkflowTests(unittest.TestCase):
                 os.environ,
                 {"LITE_ACTIONS_GITCODE_PROXY": "http://api-proxy.invalid:8123"},
             ),
-            patch("urllib.request.build_opener", return_value=Redirect()) as build_opener,
+            patch(
+                "urllib.request.build_opener", return_value=Redirect()
+            ) as build_opener,
             patch("urllib.request.urlopen", side_effect=download),
         ):
             self.assertEqual(client.ci_request(run), plan)
@@ -96,7 +98,9 @@ class GitCodeWorkflowTests(unittest.TestCase):
                     "https": "http://api-proxy.invalid:8123",
                 },
             )
-            self.assertTrue(any(isinstance(handler, NoRedirect) for handler in handlers))
+            self.assertTrue(
+                any(isinstance(handler, NoRedirect) for handler in handlers)
+            )
             plan["run_id"] = "other_run"
             with self.assertRaises(ValueError):
                 client.ci_request(run)
@@ -398,10 +402,10 @@ class GitCodeProxyTests(unittest.TestCase):
             for handler in opener.handlers
             if isinstance(handler, urllib.request.ProxyHandler)
         )
-        self.assertEqual(
-            proxy.proxies["https"], "http://dedicated-proxy.invalid:8123"
+        self.assertEqual(proxy.proxies["https"], "http://dedicated-proxy.invalid:8123")
+        self.assertTrue(
+            any(isinstance(handler, NoRedirect) for handler in opener.handlers)
         )
-        self.assertTrue(any(isinstance(handler, NoRedirect) for handler in opener.handlers))
 
     def test_gitcode_opener_without_dedicated_proxy_keeps_environment_proxy(self):
         with patch.dict(
@@ -418,7 +422,9 @@ class GitCodeProxyTests(unittest.TestCase):
             if isinstance(handler, urllib.request.ProxyHandler)
         )
         self.assertEqual(proxy.proxies["https"], "http://generic-proxy.invalid:8080")
-        self.assertTrue(any(isinstance(handler, NoRedirect) for handler in opener.handlers))
+        self.assertTrue(
+            any(isinstance(handler, NoRedirect) for handler in opener.handlers)
+        )
 
     def test_client_request_uses_gitcode_opener_and_sanitizes_transport_errors(self):
         proxy = "http://private-proxy.invalid:8123"
@@ -431,7 +437,9 @@ class GitCodeProxyTests(unittest.TestCase):
 
         with (
             patch.dict(os.environ, {"LITE_ACTIONS_GITCODE_PROXY": proxy}),
-            patch("ci_core.gitcode._gitcode_opener", return_value=FailedOpener()) as opener,
+            patch(
+                "ci_core.gitcode._gitcode_opener", return_value=FailedOpener()
+            ) as opener,
             self.assertRaises(urllib.error.URLError) as caught,
         ):
             client.request("GET", "/actions/runs/run_1", api=8)
