@@ -331,6 +331,8 @@ sudo /usr/local/bin/python3.12 scripts/auto_update_preflight.py \
 
 Preflight 会逐项检查 Python、Git、systemd、Worker Unit、current/releases Git 布局、目录绑定、源工作树 clean/HEAD，以及 GitHub HTTPS 源可达性。失败项会显示下一步处理命令；Preflight 只读，不修改服务、文件或任务状态。
 
+代理主机在 Preflight 命令末尾追加 `--proxy-env-file /etc/lite-actions/auto-update-proxy.source.env`，让只读检查也使用同一代理与 CA 配置；无代理主机不传此参数。
+
 ### 3. 首次安装
 
 无代理的主机不需要额外参数：
