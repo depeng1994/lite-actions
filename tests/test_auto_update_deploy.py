@@ -414,11 +414,14 @@ class PreflightTests(unittest.TestCase):
             "install-proxy", installer.split("# Proxy support is opt-in.", 1)[0]
         )
 
-    @unittest.skipUnless(os.geteuid() == 0 and shutil.which("chown"), "requires root/chown")
+    @unittest.skipUnless(
+        os.geteuid() == 0 and shutil.which("chown"), "requires root/chown"
+    )
     def test_no_optional_locks_preserves_user_owned_git_index(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "user-worktree"
             root.mkdir()
+
             def git(*args):
                 return subprocess.check_output(
                     ["git", "-C", str(root), *args], text=True
@@ -435,9 +438,7 @@ class PreflightTests(unittest.TestCase):
 
             config = Path(tmp) / "safe-git.config"
             config.write_text(
-                "[safe]\n"
-                f'    directory = "{root}"\n'
-                f'    directory = "{root / ".git"}"\n'
+                f'[safe]\n    directory = "{root}"\n    directory = "{root / ".git"}"\n'
             )
             config.chmod(0o600)
             env = os.environ.copy()
@@ -453,7 +454,14 @@ class PreflightTests(unittest.TestCase):
             os.utime(tracked, (before.st_mtime + 5, before.st_mtime + 5))
 
             result = subprocess.run(
-                ["git", "-C", str(root), "--no-optional-locks", "status", "--porcelain"],
+                [
+                    "git",
+                    "-C",
+                    str(root),
+                    "--no-optional-locks",
+                    "status",
+                    "--porcelain",
+                ],
                 capture_output=True,
                 text=True,
                 env=env,
