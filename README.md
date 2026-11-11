@@ -298,7 +298,14 @@ args=(--python "$py" --worker-unit lite-actions-yellow.service --install-root /o
 sudo "$py" scripts/auto_update_preflight.py "${args[@]}"
 ```
 
-代理文件须由 root 所有、权限为 `0600`，不能是软链；只填代理或 CA 的 `KEY=VALUE`，不要传含 Token 的 `yellow.env`。无代理主机不建文件。自检出现 `FAIL` 时按 `Next:` 提示处理；没有 `.git` 的快照须先迁移。
+代理主机先准备一个**只含代理/CA 配置**的独立文件（不要直接传含 Token 和其他 Worker 配置的 yellow.env）：
+
+```bash
+sudo install -m 0600 /dev/null /etc/lite-actions/auto-update-proxy.source.env
+sudoedit /etc/lite-actions/auto-update-proxy.source.env
+```
+
+只接受以下九种 KEY=VALUE：`http_proxy`、`https_proxy`、`HTTP_PROXY`、`HTTPS_PROXY`、`no_proxy`、`NO_PROXY`、`SSL_CERT_FILE`、`CURL_CA_BUNDLE`、`GIT_SSL_CAINFO`。文件须 root 所有、权限为 `0600)、普通文件且不能是软链。然后取消上面 args 数组中 `--proxy-env-file` 那一行的注释。无代理主机不建文件、不传此参数。自检出现 `FAIL` 时按 `Next:` 提示处理；没有 `.git` 的快照须先迁移。
 
 ### 2. 安装并启用
 
