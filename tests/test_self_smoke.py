@@ -166,24 +166,20 @@ class SelfSmokeTests(unittest.TestCase):
         self.assertIn(f"{self.plan['cases'][0]['case_id']}: PASS", output.getvalue())
         self.assertIn("cleanup_verified=False", output.getvalue())
 
-    def test_full_rejects_missing_or_misrouted_yellow_probe(self):
-        from tests.integration_tests.tools.lite_actions.entrypoint import (
-            inspect_profile,
-        )
+    def test_full_follows_declared_profile_without_required_worker_names(self):
+        from tests.integration_tests.training_cases.dispatch_smoke import SMOKE_PROFILES
 
-        rows = inspect_profile()
-        missing = [r for r in rows if r["test_id"] != "worker_os_yellow"]
-        wrong = copy.deepcopy(rows)
-        next(r for r in wrong if r["test_id"] == "worker_os_yellow")["ci_overrides"][
-            "worker"
-        ] = "blue"
-        for definitions in (missing, wrong):
-            with (
-                self.subTest(definitions=definitions),
-                patch("ci_core.self_smoke.inspect_profile", return_value=definitions),
-                self.assertRaisesRegex(ValueError, "Yellow OS probe"),
-            ):
-                prepare(self.env)
+        # A differently sized profile, with no Yellow and repeated NPU instances.
+        names = ["dispatch_smoke_8p", "worker_os_blue", "dispatch_smoke_8p"]
+        with (
+            patch.dict(SMOKE_PROFILES, dispatch_smoke=names),
+            patch("ci_core.self_smoke.PLAN", Path(self.temp.name) / "plan.json"),
+        ):
+            plan = prepare(self.env)
+        self.assertEqual(
+            [c["case_id"] for c in plan["cases"]],
+            [f"case_{i:03d}_{name}" for i, name in enumerate(names)],
+        )
 
     def test_matrix_receipts_and_final_gate(self):
         run = {

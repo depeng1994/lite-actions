@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
-      cases: ${{ steps.plan.outputs.cases }}
+      matrix: ${{ steps.plan.outputs.matrix }}
     steps:
       - name: Verify the revision the Worker will see
         env:
@@ -45,7 +45,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m ci_core.self_smoke prepare
-          echo "cases=$(jq -ce '[.cases[].case_id] | select(length > 0)' .ci-request/ci-request.json)" >> "$GITHUB_OUTPUT"
+          echo "matrix=$(jq -ce '{include: [.cases[] | {case_id}]}' .ci-request/ci-request.json)" >> "$GITHUB_OUTPUT"
           jq -r '.cases[] | "\(.case_id): \(.kind), \(.resources.nodes) nodes × \(.resources.devices_per_node) NPUs"' .ci-request/ci-request.json | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
@@ -60,8 +60,7 @@ jobs:
     timeout-minutes: ${{ inputs.profile == 'cpu-only' && 10 || 180 }}
     strategy:
       fail-fast: false
-      matrix:
-        case_id: ${{ fromJSON(needs.prepare.outputs.cases) }}
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
         with:

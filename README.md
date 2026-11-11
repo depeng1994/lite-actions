@@ -262,6 +262,9 @@ full profile, in plan order: Blue OS, Yellow OS, single-node 8P, two-node 16P,
 and a second single-node 8P. Both OS probes use zero NPUs. The independent
 `cpu-only` deployment profile still probes Blue alone. The full suite runs
 automatically after a PR lands on `main`, or manually on a deployed revision.
+Edit `SMOKE_PROFILES` in the case definition above to change either suite.
+`prepare` generates the GitHub matrix from the resolved plan, preserving order and
+repeated instances; the workflow and Worker do not keep separate case lists.
 Each planned instance has its own GitHub job. In a full run, `case_001_worker_os_yellow`
 waits for the Yellow Worker, not the hosted runner: four passing Blue jobs cannot
 satisfy it. A waiting job means its authenticated result is missing, not that the

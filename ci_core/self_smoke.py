@@ -24,24 +24,12 @@ def case_passed(result):
 
 
 def expected_plan(run):
-    rows = inspect_profile()
-    # This title comes from GitHub's run, not from the submitted artifact.
-    if run.get("display_title") == CPU_TITLE:
-        rows = [row for row in rows if row["test_id"] == "worker_os_blue"]
-        if len(rows) != 1 or rows[0]["kind"] != "worker_probe":
-            raise ValueError("expected exactly one pinned OS probe")
-        # source_plan separately rejects a probe with nonzero nodes or devices.
-    plan = source_plan(rows, run, SELF_REPO)
-    if run.get("display_title") != CPU_TITLE:
-        yellow = [
-            case for case in plan["cases"] if case["test_id"] == "worker_os_yellow"
-        ]
-        if len(yellow) != 1 or (yellow[0]["worker"], yellow[0]["kind"]) != (
-            "yellow",
-            "worker_probe",
-        ):
-            raise ValueError("full self-smoke requires one zero-device Yellow OS probe")
-    return plan
+    # The Worker selects the suite from GitHub's run, not the submitted artifact.
+    cpu_only = run.get("display_title") == CPU_TITLE
+    rows = inspect_profile("cpu-only" if cpu_only else "dispatch_smoke")
+    if cpu_only and any(row["kind"] != "worker_probe" for row in rows):
+        raise ValueError("cpu-only cannot schedule device jobs")
+    return source_plan(rows, run, SELF_REPO)
 
 
 def prepare(environ=os.environ):
