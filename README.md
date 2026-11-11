@@ -269,7 +269,8 @@ Each planned instance has its own GitHub job. In a full run, `case_001_worker_os
 waits for the Yellow Worker, not the hosted runner: four passing Blue jobs cannot
 satisfy it. A waiting job means its authenticated result is missing, not that the
 Worker is necessarily offline. Compare the run SHA to Yellow’s `worker-ready.release_sha`
-and check the subscription below. The final `smoke` job verifies the entire receipt set.
+and check the subscription below. As in vLLM-Ascend Dispatcher Smoke, the final `Lite-Actions-Smoke` job requires
+`prepare` and every selected matrix case to succeed.
 For a fresh attempt, re-run **all** jobs so `prepare` publishes that attempt’s plan.
 
 In each OS probe's matrix job, expand the Worker receipt step to see the executing

@@ -49,6 +49,13 @@ def prepare(environ=os.environ):
     plan = expected_plan(run)
     PLAN.parent.mkdir(parents=True, exist_ok=True)
     PLAN.write_text(json.dumps(plan, separators=(",", ":")) + "\n")
+    if environ.get("GITHUB_OUTPUT"):
+        with open(environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+            output.write(
+                "matrix="
+                + json.dumps({"include": plan["cases"]}, separators=(",", ":"))
+                + "\n"
+            )
     return plan
 
 

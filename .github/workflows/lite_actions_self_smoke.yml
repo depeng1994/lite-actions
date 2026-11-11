@@ -45,7 +45,6 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m ci_core.self_smoke prepare
-          echo "matrix=$(jq -ce '{include: [.cases[] | {case_id}]}' .ci-request/ci-request.json)" >> "$GITHUB_OUTPUT"
           jq -r '.cases[] | "\(.case_id): \(.kind), \(.resources.nodes) nodes × \(.resources.devices_per_node) NPUs"' .ci-request/ci-request.json | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
@@ -53,10 +52,11 @@ jobs:
           path: .ci-request/ci-request.json
           if-no-files-found: error
           retention-days: 1
-  receipt:
-    name: ${{ matrix.case_id }}
+
+  smoke:
     needs: prepare
     runs-on: ubuntu-latest
+    name: ${{ matrix.case_id }}
     timeout-minutes: ${{ inputs.profile == 'cpu-only' && 10 || 180 }}
     strategy:
       fail-fast: false
@@ -70,34 +70,20 @@ jobs:
         with:
           name: lite-ci-request-${{ github.run_attempt }}
           path: .ci-request
-      - name: Wait for this Worker's authenticated receipt and verified cleanup
+      - name: Wait for assigned Lite Actions worker
         env:
           SELF_SMOKE_CASE_ID: ${{ matrix.case_id }}
           GH_TOKEN: ${{ github.token }}
           CI_RESULT_AUTHOR: ${{ vars.LITE_CI_RESULT_ACTOR }}
         run: python3 -m ci_core.self_smoke wait-case
 
-  smoke:
-    needs: [prepare, receipt]
-    if: ${{ always() && github.repository == 'depeng1994/lite-actions' }}
+  result:
+    if: always() && needs.prepare.result != 'skipped'
+    needs: [prepare, smoke]
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    name: Lite-Actions-Smoke
     steps:
-      - name: Require prepare and every selected case to succeed
-        env:
+      - env:
           PREPARE: ${{ needs.prepare.result }}
-          RECEIPTS: ${{ needs.receipt.result }}
-        run: test "$PREPARE" = success && test "$RECEIPTS" = success
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - uses: actions/download-artifact@v4
-        with:
-          name: lite-ci-request-${{ github.run_attempt }}
-          path: .ci-request
-      - name: Verify the complete receipt set for this run attempt
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CI_RESULT_AUTHOR: ${{ vars.LITE_CI_RESULT_ACTOR }}
-        run: python3 -m ci_core.self_smoke verify
+          SMOKE: ${{ needs.smoke.result }}
+        run: test "$PREPARE" = success && test "$SMOKE" = success

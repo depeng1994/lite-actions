@@ -181,6 +181,25 @@ class SelfSmokeTests(unittest.TestCase):
             [f"case_{i:03d}_{name}" for i, name in enumerate(names)],
         )
 
+    def test_matrix_output_is_the_selected_plan(self):
+        # Job IDs come from the selected plan, including repeated 8P instances.
+        for profile, size in (("full", 5), ("cpu-only", 1)):
+            with self.subTest(profile=profile):
+                output = Path(self.temp.name) / (profile + ".out")
+                env = {
+                    **self.env,
+                    "GITHUB_OUTPUT": str(output),
+                    "SELF_SMOKE_PROFILE": profile,
+                }
+                with patch(
+                    "ci_core.self_smoke.PLAN", Path(self.temp.name) / "plan.json"
+                ):
+                    plan = prepare(env)
+                key, value = output.read_text().strip().split("=", 1)
+                self.assertEqual(key, "matrix")
+                self.assertEqual(json.loads(value), {"include": plan["cases"]})
+                self.assertEqual(len({c["case_id"] for c in plan["cases"]}), size)
+
     def test_matrix_receipts_and_final_gate(self):
         run = {
             "id": 42,
