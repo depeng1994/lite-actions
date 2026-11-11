@@ -116,9 +116,9 @@ python3 scripts/preflight.py --worker-id blue --write-bindings
 ```
 
 Batch SSH explicitly disables PTY allocation. Source synchronization uses SSH stdin streaming, avoiding SCP's ambiguity for aliases
-containing a colon. The archive checksum is verified remotely. All nodes in a multi-node allocation must support the case kind before any
-lease is taken. The current `:154` deployment is smoke-only until its training
-assets are configured; DSV4 cases queue on the asset-ready `:153` node.
+containing a colon. The archive checksum is verified remotely. All nodes must stage
+successfully before any rank launches. Test outputs remain below a per-run/attempt/
+case directory on the approved mount.
 
 ## Scheduling, cancellation and recovery
 
@@ -132,7 +132,7 @@ never retain partial leases.
 
 Each node can set `occupancy_policy` to `wait` or `preempt`. Without an override,
 the pool's existing `force_reclaim` setting applies. A `wait` node never kills
-external processes; a busy group is temporarily avoided according to the queue
+external processes; a busy group head is temporarily avoided according to the queue
 policy. Both configured Blue nodes use `wait` even though their pool defaults to
 `preempt`.
 
@@ -150,7 +150,7 @@ Yellow A5 nodes without an explicit policy retain the pool's legacy
 each preemption request; unconfirmed cleanup is reported as such.
 
 The runtime `force_reclaim` field is the pool default. `OCCUPANCY_POLICY` log
-lines show the effective policy for each selected node and execution phase.
+lines show the effective policy for each node and execution phase.
 
 For GitCode repositories listed in `LITE_ACTIONS_GITCODE_REPOS`, the Worker also
 discovers running workflows whose name starts with `lite-ci-`, regardless of
