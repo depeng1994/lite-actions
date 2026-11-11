@@ -13,7 +13,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 
-from ci_core.contract import REPO, SELF_REPO, SUPPORTED_REPOS, VLLM_REPO
+from ci_core.contract import REPO, SELF_REPO, VLLM_REPO, trusted_repositories
 
 API = f"https://api.github.com/repos/{REPO}"
 
@@ -37,7 +37,7 @@ def authorization() -> str:
 
 class GitHubClient:
     def __init__(self, token: str, repo: str = REPO):
-        if repo not in SUPPORTED_REPOS:
+        if repo not in trusted_repositories():
             raise ValueError("untrusted GitHub repository")
         self.repo = repo
         self.api = f"https://api.github.com/repos/{repo}"

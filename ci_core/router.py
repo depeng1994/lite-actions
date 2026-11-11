@@ -272,6 +272,8 @@ class Router:
             "in_progress",
         }:
             return False
+        if str(run.get("name", "")).startswith("lite-ci-"):
+            return run.get("event") == "workflow_dispatch" and self.trusted_manual(run)
         if repo == VLLM_REPO:
             allowed = set()
             branches = set()

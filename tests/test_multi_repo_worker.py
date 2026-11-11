@@ -43,9 +43,7 @@ class MultiRepoWorkerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             GitHubClient("fake", "torchtitan-npu/torchtitan-npu")
         with patch.dict(
-            os.environ,
-            {"LITE_ACTIONS_MODEL_REPO": "torchtitan-npu/torchtitan-npu"},
-            clear=True,
+            os.environ, {"LITE_ACTIONS_MODEL_REPO": "bad/../repo"}, clear=True
         ):
             with self.assertRaises(ValueError):
                 configured_repos()
@@ -93,7 +91,7 @@ class MultiRepoWorkerTests(unittest.TestCase):
         for invalid in (
             TORCHTITAN_REPO + "," + TORCHTITAN_REPO,
             VLLM_REPO + ",torchtitan-npu/vllm-ascend",
-            "unknown/x",
+            "unknown/../x",
             "",
         ):
             with patch.dict(
@@ -101,6 +99,24 @@ class MultiRepoWorkerTests(unittest.TestCase):
             ):
                 with self.assertRaises(ValueError):
                     configured_repos()
+
+    def test_configured_repository_can_use_generic_workflow(self):
+        repo = "example-org/new-model"
+        with patch.dict(os.environ, {"LITE_ACTIONS_MODEL_REPOS": repo}, clear=True):
+            self.assertEqual(configured_repos(), (repo,))
+            self.assertEqual(GitHubClient("fake", repo).repo, repo)
+            router = Router.__new__(Router)
+            run = {
+                "_ci_repo": repo,
+                "name": "lite-ci-custom",
+                "path": ".github/workflows/custom.yml",
+                "event": "workflow_dispatch",
+                "status": "in_progress",
+            }
+            with patch.object(router, "trusted_manual", return_value=True):
+                self.assertTrue(router.eligible(run))
+            with patch.object(router, "trusted_manual", return_value=False):
+                self.assertFalse(router.eligible(run))
 
     def test_clients_use_repo_specific_api_and_queue_identity(self):
         first = GitHubClient("fake", TORCHTITAN_REPO)

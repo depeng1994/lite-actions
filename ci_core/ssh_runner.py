@@ -61,14 +61,14 @@ def model_archive(
     source_pr: int | None = None,
 ) -> Path:
     """Return a SHA-verified source archive, cached to avoid double Git fetches."""
-    from ci_core.contract import GITCODE_REPOS, SUPPORTED_REPOS
+    from ci_core.contract import GITCODE_REPOS, trusted_repositories
     from ci_core.source_cache import metadata_path, seal, verified
 
     if (
         not SHA.fullmatch(sha)
         or provider not in {"github", "gitcode"}
         or source_repo
-        not in (GITCODE_REPOS if provider == "gitcode" else SUPPORTED_REPOS)
+        not in (GITCODE_REPOS if provider == "gitcode" else trusted_repositories())
     ):
         raise ValueError("invalid commit SHA / model repository")
     if fallback_repo and not re.fullmatch(
@@ -77,10 +77,7 @@ def model_archive(
     ):
         raise ValueError("invalid PR source repository")
     if source_pr is not None and (
-        provider != "github"
-        or source_repo != "cann-framework/vllm-ascend"
-        or type(source_pr) is not int
-        or source_pr < 1
+        provider != "github" or type(source_pr) is not int or source_pr < 1
     ):
         raise ValueError("invalid GitHub merge reference")
     cache_dir = ROOT / "cache" / "model-archives" / provider / source_repo
