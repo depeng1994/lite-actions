@@ -104,7 +104,9 @@ approved_sha="$(git_in_source rev-parse --verify 'HEAD^{commit}')"
 [[ -z "$(git_in_source status --porcelain --untracked-files=all)" ]] || fail "Source worktree changed after preflight"
 
 old_path="$(readlink -e "$install_root/current")"
-old_sha="$(git -C "$old_path" rev-parse --verify 'HEAD^{commit}')"
+git config --file "$safe_git_config" --add safe.directory "$old_path"
+git config --file "$safe_git_config" --add safe.directory "$old_path/.git"
+old_sha="$(GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$safe_git_config" git -C "$old_path" rev-parse --verify 'HEAD^{commit}')"
 [[ "$old_path" == "$install_root/releases/$old_sha" ]] || fail "Current release layout changed after preflight"
 
 printf 'Worker unit: %s\nPython: %s (%s)\nOld version: %s\nApproved version: %s\n' \
