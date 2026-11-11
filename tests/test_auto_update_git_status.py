@@ -27,7 +27,9 @@ class GitStatusOwnershipTests(unittest.TestCase):
         installer = (ROOT / "scripts" / "install_auto_update.sh").read_text()
         wrapper = installer.split("git_in_source() {", 1)[1].split("\n}", 1)[0]
         self.assertIn("GIT_OPTIONAL_LOCKS=0", wrapper)
-        self.assertIn('git_in_source status --porcelain --untracked-files=all', installer)
+        self.assertIn(
+            "git_in_source status --porcelain --untracked-files=all", installer
+        )
 
     @unittest.skipUnless(
         os.geteuid() == 0 and shutil.which("chown"),
