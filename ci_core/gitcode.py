@@ -64,12 +64,15 @@ def source_plan(rows, run, repo):
         workflow=run["path"].rsplit("/", 1)[-1],
         run_id=run["id"],
         attempt=run["run_attempt"],
-        sha=run["head_sha"],
+        sha=run.get("_ci_execution_sha", run["head_sha"]),
         defaults=defaults,
         cases=cases,
     )
     plan["plan_digest"] = digest(plan)
-    parse_plan(plan, run, plan["workflow"], repo=repo)
+    validation_run = (
+        {**run, "head_sha": plan["sha"]} if run.get("_ci_execution_sha") else run
+    )
+    parse_plan(plan, validation_run, plan["workflow"], repo=repo)
     return plan
 
 
@@ -188,11 +191,12 @@ class GitCodeClient:
                 r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}",
                 source,
             )
-            or head.get("sha") != details.get("head_sha")
+            or not isinstance(head.get("sha"), str)
+            or not re.fullmatch(r"[0-9a-f]{40}", head["sha"])
             or head.get("ref") != details.get("head_branch")
         ):
             raise RunChanged("PR source no longer matches run")
-        return int(number), source
+        return int(number), source, head["sha"]
 
     def running_workflows(self):
         runs = []
@@ -264,7 +268,7 @@ class GitCodeClient:
                 pr_fields = {}
                 if details.get("pull_request_id"):
                     try:
-                        number, source = self.pr_source(details)
+                        number, source, execution_sha = self.pr_source(details)
                     except (
                         urllib.error.URLError,
                         TimeoutError,
@@ -277,7 +281,11 @@ class GitCodeClient:
                             type(exc).__name__,
                         )
                         continue
-                    pr_fields = {"_ci_pr_number": number, "_ci_source_repo": source}
+                    pr_fields = {
+                        "_ci_pr_number": number,
+                        "_ci_source_repo": source,
+                        "_ci_execution_sha": execution_sha,
+                    }
                 runs.append(
                     {
                         "_ci_provider": "gitcode",
@@ -326,6 +334,7 @@ class GitCodeClient:
         if "_ci_pr_number" in run and self.pr_source(details) != (
             run.get("_ci_pr_number"),
             run.get("_ci_source_repo"),
+            run.get("_ci_execution_sha"),
         ):
             raise RunChanged("GitCode PR source changed")
 
@@ -337,7 +346,7 @@ class GitCodeClient:
             self.validate_current(run)
             with tempfile.TemporaryDirectory(prefix="lite-gitcode-source-") as tmp:
                 source = model_archive(
-                    run["head_sha"],
+                    run.get("_ci_execution_sha", run["head_sha"]),
                     Path(tmp),
                     source_repo=self.repo,
                     provider="gitcode",

@@ -163,14 +163,19 @@ class SourceProfileTests(unittest.TestCase):
 
     # 看护模型仓完整用例计划在不同 Worker 按归属分发，手动和 PR 使用同一来源。
     def test_profile_discovery_routes_all_cases_to_their_own_worker(self):
-        with patch("ci_core.ssh_runner.model_archive", return_value=self.archive):
+        with patch(
+            "ci_core.ssh_runner.model_archive", return_value=self.archive
+        ) as archive:
             run = self.client.running_workflows()[0]
             plan = self.client.ci_request(run)
+            self.assertEqual(archive.call_args.args[0], "a" * 40)
             self.assertEqual(
                 [c["test_id"] for c in plan["cases"]], [r["test_id"] for r in profile()]
             )
             self.assertEqual(len({c["case_id"] for c in plan["cases"]}), len(profile()))
             self.assertEqual(run["_ci_source_repo"], "someone/torchtitan-npu")
+            self.assertEqual(run["_ci_execution_sha"], "a" * 40)
+            self.assertEqual(plan["sha"], "a" * 40)
             for worker, expected in (
                 ("blue", ["os_blue", "small", "large", "small"]),
                 ("yellow", ["os_yellow"]),
@@ -194,6 +199,25 @@ class SourceProfileTests(unittest.TestCase):
             rows[0][field] = value
             with self.assertRaises(ValueError):
                 source_plan(rows, run, self.client.repo)
+
+    def test_mr_merge_sha_uses_current_pr_head_for_source_and_result_identity(self):
+        merge_sha = "c" * 40
+        pr_head_sha = "d" * 40
+        self.run["head_sha"] = merge_sha
+        self.pr["head"]["sha"] = pr_head_sha
+        with patch(
+            "ci_core.ssh_runner.model_archive", return_value=self.archive
+        ) as archive:
+            run = self.client.running_workflows()[0]
+            self.assertEqual(run["head_sha"], merge_sha)
+            self.assertEqual(run["_ci_execution_sha"], pr_head_sha)
+            plan = self.client.ci_request(run)
+            self.assertEqual(archive.call_args.args[0], pr_head_sha)
+            self.assertEqual(plan["sha"], pr_head_sha)
+            self.client.validate_current(run)
+            self.pr["head"]["sha"] = "e" * 40
+            with self.assertRaises(ValueError):
+                self.client.validate_current(run)
 
     def test_prefix_discovery_ignores_trigger_type(self):
         for event in ("Manual", "MR", "Schedule", "Note", "Push"):
