@@ -295,7 +295,7 @@ Lite Actions 的 Worker 通过 systemd Timer 主动检查可信 Git 源。默认
 先确认本机现有 Worker 的 systemd 服务名：
 
 ~~~bash
-systemctl list-units --all --type=service | grep -E 'lite-actions.*\\.service'
+systemctl list-units --all --type=service | grep -E 'lite-actions.*\.service'
 systemctl status lite-actions-yellow.service --no-pager
 ~~~
 
@@ -321,11 +321,11 @@ lite-actions-yellow.service
 使用经过审核、干净的 Lite Actions Git 工作树。以下示例使用 Python 3.12：
 
 ~~~bash
-sudo /usr/local/bin/python3.12 scripts/auto_update_preflight.py \\
-  --python /usr/local/bin/python3.12 \\
-  --worker-unit lite-actions-yellow.service \\
-  --install-root /opt/lite-actions \\
-  --git-url https://github.com/depeng1994/lite-actions.git \\
+sudo /usr/local/bin/python3.12 scripts/auto_update_preflight.py \
+  --python /usr/local/bin/python3.12 \
+  --worker-unit lite-actions-yellow.service \
+  --install-root /opt/lite-actions \
+  --git-url https://github.com/depeng1994/lite-actions.git \
   --git-ref refs/heads/main
 ~~~
 
@@ -336,19 +336,19 @@ Preflight 会逐项检查 Python、Git、systemd、Worker Unit、current/release
 无代理的主机不需要额外参数：
 
 ~~~bash
-sudo bash scripts/install_auto_update.sh \\
-  --worker-unit lite-actions-yellow.service \\
-  --install-root /opt/lite-actions \\
+sudo bash scripts/install_auto_update.sh \
+  --worker-unit lite-actions-yellow.service \
+  --install-root /opt/lite-actions \
   --python /usr/local/bin/python3.12
 ~~~
 
 安装器会再次执行完整 Preflight，然后安装 Bootstrap、systemd Timer/Service 和解释器配置，执行首次检查与 Ready 验证。--dry-run 也会先执行完整 Preflight，但不会写入配置或重启 Worker：
 
 ~~~bash
-sudo bash scripts/install_auto_update.sh \\
-  --worker-unit lite-actions-yellow.service \\
-  --install-root /opt/lite-actions \\
-  --python /usr/local/bin/python3.12 \\
+sudo bash scripts/install_auto_update.sh \
+  --worker-unit lite-actions-yellow.service \
+  --install-root /opt/lite-actions \
+  --python /usr/local/bin/python3.12 \
   --dry-run
 ~~~
 
@@ -380,10 +380,10 @@ GIT_SSL_CAINFO
 安装时显式提供该文件：
 
 ~~~bash
-sudo bash scripts/install_auto_update.sh \\
-  --worker-unit lite-actions-yellow.service \\
-  --install-root /opt/lite-actions \\
-  --python /usr/local/bin/python3.12 \\
+sudo bash scripts/install_auto_update.sh \
+  --worker-unit lite-actions-yellow.service \
+  --install-root /opt/lite-actions \
+  --python /usr/local/bin/python3.12 \
   --proxy-env-file /etc/lite-actions/auto-update-proxy.source.env
 ~~~
 
