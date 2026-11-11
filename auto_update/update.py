@@ -200,6 +200,8 @@ def _block(settings: Settings, sha: str, reason: str) -> None:
 def _recover(settings: Settings) -> bool:
     """Recover exactly one interrupted nonterminal transaction, never retry it now."""
     state = _read_json(settings.state_dir / "transaction.json")
+    if state and state.get("phase") == "RECOVERY_REQUIRED":
+        raise UpdateError("manual_recovery_required")
     if not state or state.get("phase") in _TERMINAL:
         return False
     old_sha = state.get("old_sha")
@@ -266,6 +268,7 @@ def _run(settings: Settings) -> int:
         "created_at": time.time(),
     }
     stop_started = False
+    stop_completed = False
     stage = None
     begin_download = time.monotonic()
     times = {"check_duration_ms": check_duration}
@@ -281,10 +284,11 @@ def _run(settings: Settings) -> int:
         # TODO(auto-update): add scheduler quiesce/drain/resume protocol.
         # V1 deliberately does not skip an update because jobs are running.
         # Existing Worker SIGTERM/Router.close() cleanup and quarantine apply.
-        stop_started = True
         _transition(settings, txn, "STOPPING")
+        stop_started = True
         start_stop = time.monotonic()
         stop_worker(settings.unit)
+        stop_completed = True
         times["stop_duration_ms"] = int((time.monotonic() - start_stop) * 1000)
         _transition(settings, txn, "SWITCHING")
         switch_current(settings.root, target_path)
@@ -323,6 +327,19 @@ def _run(settings: Settings) -> int:
         if stage is not None and stage.is_dir():
             import shutil
             shutil.rmtree(stage, ignore_errors=True)
+        if stop_started and not stop_completed:
+            # A failed stop that left the old service alive must not stop it a
+            # second time or claim to have switched releases.
+            try:
+                _, live_sha = current_release(settings.root)
+                old_still_running = live_sha == old_sha and is_active(settings.unit)
+            except (SwitchError, SourceError, OSError):
+                old_still_running = False
+            if old_still_running:
+                _transition(settings, txn, "FAILED_PREPARE")
+                _audit(settings, "FAILED_STOP", old_sha=old_sha,
+                       target_sha=target_sha, error_code=reason)
+                return 2
         if not stop_started:
             _transition(settings, txn, "FAILED_PREPARE")
             _audit(settings, "FAILED_PREPARE", old_sha=old_sha,

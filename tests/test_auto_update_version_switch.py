@@ -76,11 +76,13 @@ class SwitchTests(unittest.TestCase):
             patch("auto_update.update._validate_candidate"),
             patch("auto_update.update.prepare_release", return_value=self.b),
             patch("auto_update.update.stop_worker", side_effect=SwitchError("worker_stop_failed")),
-            patch("auto_update.update.restore_old", return_value="process_active"),
+            patch("auto_update.update.is_active", return_value=True),
+            patch("auto_update.update.restore_old") as rollback,
             patch("auto_update.update.switch_current") as switching,
         ):
-            self.assertEqual(_run(settings(self.root)), 3)
+            self.assertEqual(_run(settings(self.root)), 2)
             switching.assert_not_called()
+            rollback.assert_not_called()
         self.assertEqual(current_release(self.root)[1], self.sha_a)
 
     def test_au07_start_failure_rolls_back_old_code(self):

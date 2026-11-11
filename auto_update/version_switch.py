@@ -49,7 +49,8 @@ def current_release(root: Path) -> tuple[Path, str]:
     except OSError as exc:
         raise SwitchError("current_broken") from exc
     sha = target.name
-    if target != release_at(root, sha).resolve(strict=True):
+    release_dir = root / "releases"
+    if target.parent != release_dir.resolve(strict=True) or release_at(root, sha).is_symlink():
         raise SwitchError("current_outside_releases")
     if checkout_sha(target) != sha:
         raise SwitchError("current_sha_mismatch")
@@ -191,6 +192,9 @@ def restore_old(
 ) -> str:
     """Prefer recovering code availability; legacy A may lack Ready support."""
     if is_active(unit):
+        # If a failed stop left the old Worker alive, do not interrupt it again.
+        if (root / "current").is_symlink() and (root / "current").resolve() == old:
+            return "old_worker_already_active"
         stop_worker(unit)
     switch_current(root, old)
     if ready_path.is_symlink():

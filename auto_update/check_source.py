@@ -30,6 +30,8 @@ def validate_source(url: str, ref: str) -> None:
         or not re.fullmatch(r"/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?", parsed.path)
     ):
         raise SourceError("untrusted_git_url")
+    if any(part in {".", ".."} for part in parsed.path.split("/")):
+        raise SourceError("untrusted_git_path")
     suffix = ref.removeprefix("refs/heads/")
     if (
         not REF.fullmatch(ref)
