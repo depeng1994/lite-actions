@@ -65,7 +65,7 @@ def results(comments, plan, author):
             prefix
         ):
             continue
-        marker, separator, payload = body.partition("\n", 1)
+        marker, separator, payload = body.partition("\n")
         case_id = marker[len(prefix) :]
         if not separator or case_id not in cases:
             raise ValueError("unknown self-smoke result")
@@ -139,7 +139,7 @@ def wait(environ=os.environ):
             case_id for case_id, result in found.items() if not case_passed(result)
         ]
         if failures:
-            raise ValueError("self-smoke cases failed: " + ", ".join(failures))
+            raise ValueError("self-smoke cases failed: " + ", ".join(sorted(failures)))
         if len(found) == len(plan["cases"]):
             return
         time.sleep(20)
