@@ -71,7 +71,9 @@ class IntegrationTests(unittest.TestCase):
         script = (ROOT / "auto_update/bootstrap.sh").read_text()
         self.assertIn('readlink -f "$ROOT/current"', script)
         self.assertIn('cd "$code_dir"', script)
-        self.assertIn('configured_python="$(printenv LITE_ACTIONS_UPDATE_PYTHON || true)"', script)
+        self.assertIn(
+            'configured_python="$(printenv LITE_ACTIONS_UPDATE_PYTHON || true)"', script
+        )
         self.assertIn('exec "$PYTHON" -u -m auto_update.update', script)
         self.assertIn("for name in python3 python3.11 python3.12", script)
         self.assertNotIn("kill -9", script)
