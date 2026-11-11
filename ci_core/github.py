@@ -265,6 +265,16 @@ class GitHubClient:
         import re
 
         title = run.get("display_title", "")
+        commit = re.fullmatch(r"lite-vllm-commit-([0-9a-f]{40})-([0-9a-f]{40})", title)
+        if commit:
+            if (
+                run.get("head_sha") != commit[2]
+                or run.get("path", "").rsplit("/", 1)[-1] != "lite_actions_dispatcher_smoke.yml"
+            ):
+                return None
+            return {**run, "head_sha": commit[1], "_ci_control_sha": commit[2]}
+        if title.startswith("lite-vllm-commit-"):
+            return None
         if not title.startswith("lite-vllm-recheck-"):
             return run
         match = re.fullmatch(

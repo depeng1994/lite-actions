@@ -100,7 +100,7 @@ def validate_source(source, run, plan, approved_controls):
             or source["head_repo_id"] != REPO_ID
             or run.get("event") != "workflow_dispatch"
             or source["base_ref"] != run.get("head_branch")
-            or any(source[k] != control for k in ("head_sha", "base_sha", "source_sha"))
+            or any(source[k] != run["head_sha"] for k in ("head_sha", "base_sha", "source_sha"))
         ):
             raise ValueError("native manual source binding mismatch")
     else:

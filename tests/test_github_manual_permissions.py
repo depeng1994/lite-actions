@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from ci_core.contract import SELF_REPO, SELF_WORKFLOW, VLLM_REPO
+from ci_core.github import GitHubClient
 from ci_core.router import Router
 
 
@@ -73,6 +74,20 @@ class GitHubManualPermissionsTests(unittest.TestCase):
         self.assertTrue(self.router.eligible(recheck))
         self.router.client.role = "read"
         self.assertFalse(self.router.eligible(recheck))
+
+    def test_manual_commit_is_bound_to_authorized_controller(self):
+        controller, target = "a" * 40, "b" * 40
+        run = {**self.run, "display_title": f"lite-vllm-commit-{target}-{controller}"}
+        client = GitHubClient("unused")
+        normalized = client.normalize_native_recheck(run)
+        self.assertEqual(normalized["head_sha"], target)
+        self.assertEqual(normalized["_ci_control_sha"], controller)
+        self.assertTrue(self.router.eligible(normalized))
+        self.router.client.role = "read"
+        self.assertFalse(self.router.eligible(normalized))
+        self.assertIsNone(client.normalize_native_recheck({**run, "head_sha": target}))
+        self.assertIsNone(client.normalize_native_recheck({**run, "path": "other.yml"}))
+        self.assertIsNone(client.normalize_native_recheck({**run, "display_title": "lite-vllm-commit-bad"}))
 
     def test_reconciler_bot_is_confined_to_default_branch(self):
         bot = {

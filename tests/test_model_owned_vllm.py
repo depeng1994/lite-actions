@@ -228,6 +228,23 @@ class ModelOwnedVllmTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             read_source(self.client(), run, self.plan)
 
+    def test_manual_commit_is_distinct_from_controller_but_fully_bound(self):
+        run = {**self.run, "event": "workflow_dispatch", "head_branch": "main"}
+        source = {
+            **self.source,
+            "mode": "commit",
+            "pr_number": 0,
+            "head_repo_id": 1438625957,
+            "base_ref": "main",
+            "base_sha": self.head,
+            "source_sha": self.head,
+        }
+        self.assertEqual(validate_source(source, run, self.plan, {self.control}), source)
+        with self.assertRaises(ValueError):
+            validate_source({**source, "source_sha": self.control}, run, self.plan, {self.control})
+        with self.assertRaises(ValueError):
+            validate_source(source, run, self.plan, {self.head})
+
     def test_prepare_can_be_found_beyond_the_first_page(self):
         class Client:
             def request(self, method, path):
