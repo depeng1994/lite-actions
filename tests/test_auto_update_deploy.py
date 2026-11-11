@@ -121,7 +121,12 @@ class PythonSelectionTests(unittest.TestCase):
             good = fake_python(bindir / "python3.11", "3.11.9", accepted=True, log=log)
             env = os.environ.copy()
             env.pop("LITE_ACTIONS_UPDATE_PYTHON", None)
-            env.update({"LITE_ACTIONS_UPDATE_ROOT": str(root), "PATH": str(bindir) + ":/usr/bin:/bin"})
+            env.update(
+                {
+                    "LITE_ACTIONS_UPDATE_ROOT": str(root),
+                    "PATH": str(bindir) + ":/usr/bin:/bin",
+                }
+            )
             result = subprocess.run(
                 ["bash", str(BOOTSTRAP), "--check"],
                 env=env,
@@ -144,9 +149,9 @@ class ProxyEnvironmentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             source = self._source(
                 Path(tmp) / "proxy.env",
-                'https_proxy=http://proxy.invalid:8080\n'
-                'NO_PROXY=localhost,.internal\n'
-                'GIT_SSL_CAINFO=/etc/ssl/certs/proxy-ca.pem\n',
+                "https_proxy=http://proxy.invalid:8080\n"
+                "NO_PROXY=localhost,.internal\n"
+                "GIT_SSL_CAINFO=/etc/ssl/certs/proxy-ca.pem\n",
             )
             values = read_proxy_env_file(source, expected_uid=os.geteuid())
             rendered = render_systemd_environment(values)
@@ -157,7 +162,9 @@ class ProxyEnvironmentTests(unittest.TestCase):
     def test_proxy_file_rejects_bad_mode_symlink_unknown_duplicate_and_crlf(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            bad_mode = self._source(root / "bad-mode.env", "https_proxy=http://proxy\n", 0o644)
+            bad_mode = self._source(
+                root / "bad-mode.env", "https_proxy=http://proxy\n", 0o644
+            )
             with self.assertRaisesRegex(DeploySupportError, "0600"):
                 read_proxy_env_file(bad_mode, expected_uid=os.geteuid())
 
@@ -213,16 +220,20 @@ class ProxyEnvironmentTests(unittest.TestCase):
 
 
 class SeedCloneTests(unittest.TestCase):
-    @unittest.skipUnless(os.geteuid() == 0, "requires root to reproduce a user-owned worktree")
+    @unittest.skipUnless(
+        os.geteuid() == 0, "requires root to reproduce a user-owned worktree"
+    )
     def test_seed_clone_from_non_root_owned_worktree(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "user-worktree"
             source.mkdir()
+
             def git(*args):
                 return subprocess.check_output(
                     ["git", "-C", str(source), *args], text=True
                 ).strip()
+
             git("init", "-q")
             git("config", "user.name", "Fixture")
             git("config", "user.email", "fixture@example.invalid")
@@ -256,9 +267,19 @@ class PreflightTests(unittest.TestCase):
         return sha, release, source
 
     def _run(
-        self, root: Path, *, unit="loaded", binding=True, dirty="",
-        remote_ok=True, valid_current=True, python_ok=True, git_available=True,
-        systemd_ok=True, working_dir_ok=True, proxy_file=None
+        self,
+        root: Path,
+        *,
+        unit="loaded",
+        binding=True,
+        dirty="",
+        remote_ok=True,
+        valid_current=True,
+        python_ok=True,
+        git_available=True,
+        systemd_ok=True,
+        working_dir_ok=True,
+        proxy_file=None,
     ):
         sha, release, source = self._layout(root)
         if not binding:
@@ -266,12 +287,14 @@ class PreflightTests(unittest.TestCase):
         if not valid_current:
             (root / "current").unlink()
             (root / "current").write_text("not a link")
+
         def fake_git(path, args, extra_safe=()):
             if args[0] == "rev-parse":
                 return sha
             if args[0] == "status":
                 return dirty
             raise AssertionError(args)
+
         with (
             patch(
                 "auto_update.preflight.validate_python_interpreter",
@@ -286,13 +309,18 @@ class PreflightTests(unittest.TestCase):
             patch(
                 "auto_update.preflight._systemctl_show",
                 side_effect=lambda _unit, prop: (
-                    unit if prop == "LoadState"
-                    else (str(release) if working_dir_ok else "/wrong/working-directory")
+                    unit
+                    if prop == "LoadState"
+                    else (
+                        str(release) if working_dir_ok else "/wrong/working-directory"
+                    )
                 ),
             ),
             patch(
                 "auto_update.preflight.read_proxy_env_file",
-                side_effect=DeploySupportError("proxy file mode invalid") if proxy_file else None,
+                side_effect=DeploySupportError("proxy file mode invalid")
+                if proxy_file
+                else None,
             ),
             patch("auto_update.preflight._run_git", side_effect=fake_git),
             patch(
@@ -329,12 +357,12 @@ class PreflightTests(unittest.TestCase):
         self.assertTrue(any(c.name == "source worktree" and not c.ok for c in checks))
         with tempfile.TemporaryDirectory() as tmp:
             checks = self._run(Path(tmp), remote_ok=False)
-        self.assertTrue(any(c.name == "GitHub HTTPS source" and not c.ok for c in checks))
+        self.assertTrue(
+            any(c.name == "GitHub HTTPS source" and not c.ok for c in checks)
+        )
         with tempfile.TemporaryDirectory() as tmp:
             checks = self._run(Path(tmp), valid_current=False)
         self.assertTrue(any(c.name == "current release" and not c.ok for c in checks))
-
-
 
     def test_preflight_reports_python_git_systemd_workdir_and_proxy_failures(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -348,7 +376,9 @@ class PreflightTests(unittest.TestCase):
         self.assertTrue(any(c.name == "systemd" and not c.ok for c in checks))
         with tempfile.TemporaryDirectory() as tmp:
             checks = self._run(Path(tmp), working_dir_ok=False)
-        self.assertTrue(any(c.name == "Worker WorkingDirectory" and not c.ok for c in checks))
+        self.assertTrue(
+            any(c.name == "Worker WorkingDirectory" and not c.ok for c in checks)
+        )
         with tempfile.TemporaryDirectory() as tmp:
             checks = self._run(Path(tmp), proxy_file="/tmp/fake-proxy.env")
         self.assertTrue(any(c.name == "proxy file" and not c.ok for c in checks))
@@ -360,9 +390,13 @@ class PreflightTests(unittest.TestCase):
         )[0]
         self.assertIn('if [[ -n "$proxy_env_file" ]]', block)
         self.assertIn("install-proxy", block)
-        self.assertNotIn("install-proxy", installer.split("# Proxy support is opt-in.", 1)[0])
+        self.assertNotIn(
+            "install-proxy", installer.split("# Proxy support is opt-in.", 1)[0]
+        )
 
-    def test_python_path_is_persisted_and_template_has_no_system_python_assumption(self):
+    def test_python_path_is_persisted_and_template_has_no_system_python_assumption(
+        self,
+    ):
         installer = (ROOT / "scripts" / "install_auto_update.sh").read_text()
         self.assertIn("LITE_ACTIONS_UPDATE_PYTHON=$python_path", installer)
         self.assertIn('"$python_path" - "$ready_file"', installer)
