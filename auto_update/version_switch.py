@@ -197,24 +197,31 @@ def wait_ready(
 def restore_old(
     root: Path, old: Path, unit: str, ready_path: Path, *, timeout: int = 120
 ) -> str:
-    """Prefer recovering code availability; legacy A may lack Ready support."""
-    if is_active(unit):
-        # If a failed stop left the old Worker alive, do not interrupt it again.
-        if (root / "current").is_symlink() and (root / "current").resolve() == old:
-            return "old_worker_already_active"
-        stop_worker(unit)
-    switch_current(root, old)
+    """Never attest recovery from ActiveState alone on a Ready-capable release."""
     if ready_path.is_symlink():
         raise SwitchError("unsafe_ready_symlink")
-    ready_path.unlink(missing_ok=True)
-    start_worker(unit)
+    active = is_active(unit)
+    current = root / "current"
+    already_old = active and current.is_symlink() and current.resolve() == old
+    not_before = 0.0
+    if not already_old:
+        if active:
+            stop_worker(unit)
+        switch_current(root, old)
+        ready_path.unlink(missing_ok=True)
+        not_before = time.time()
+        start_worker(unit)
+
+    capable = (old / "ci_core" / "worker_ready.py").is_file()
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if is_active(unit) and main_pid(unit) > 0:
-            return (
-                "legacy_process_active"
-                if not (old / "ci_core" / "worker_ready.py").exists()
-                else "process_active"
-            )
+        pid = main_pid(unit) if is_active(unit) else 0
+        if pid > 0:
+            if capable and verify_ready(
+                ready_path, expected_sha=old.name, expected_pid=pid, not_before=not_before
+            ):
+                return "ready_verified"
+            if not capable and Path(f"/proc/{pid}/cwd").resolve() == old:
+                return "legacy_process_active"
         time.sleep(0.25)
     raise SwitchError("rollback_worker_unavailable")
