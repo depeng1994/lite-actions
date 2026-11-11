@@ -163,6 +163,43 @@ source's Python directly on the worker, so this mode grants Fork code the worker
 operating-system permissions. A new dispatch of the same run gets separate task,
 log and result identities.
 
+### Yellow：GitCode / GitHub 仓库来源配置
+
+Yellow 的模型仓来源按平台分别配置，不能把同一个仓库同时配置到两个平台：
+
+- **TorchTitan NPU**：从 GitCode 仓库 `cann/torchtitan-npu` 发现 Workflow；配置 `LITE_ACTIONS_GITCODE_REPOS`。不要配置 GitHub 的 `torchtitan-npu`。
+- **vLLM Ascend**：继续从 GitHub 仓库 `cann-framework/vllm-ascend` 发现 Workflow；配置 `LITE_ACTIONS_MODEL_REPOS`。
+
+在 Yellow 已由 systemd `EnvironmentFile` 加载的 root-only 环境文件（例如 `/etc/lite-actions/yellow.env`）中维护以下配置。先确认现有文件，不要覆盖其中已有的 Worker、路径、Token 或其他环境设置：
+
+```bash
+sudo stat -c '%U:%G %a %n' /etc/lite-actions/yellow.env
+sudoedit /etc/lite-actions/yellow.env
+sudo chown root:root /etc/lite-actions/yellow.env
+sudo chmod 0600 /etc/lite-actions/yellow.env
+```
+
+如果文件不存在，先按现有 Worker 的 systemd `EnvironmentFile` 配置确认正确路径，再创建新文件；不要用 `install /dev/null` 覆盖已有环境文件。
+
+示例内容（占位符必须替换为已授权的账号和 Token；不要把真实凭据提交到仓库）：
+
+```ini
+# GitHub source: vLLM Ascend only
+LITE_ACTIONS_MODEL_REPOS=cann-framework/vllm-ascend
+
+# Router requires the common result-author identity.
+LITE_ACTIONS_RESULT_AUTHOR=<github-result-account>
+
+# GitCode source: TorchTitan NPU only
+LITE_ACTIONS_GITCODE_REPOS=cann/torchtitan-npu
+LITE_ACTIONS_GITCODE_TOKEN=<gitcode-personal-access-token>
+LITE_ACTIONS_GITCODE_RESULT_AUTHOR=<gitcode-result-account>
+```
+
+`LITE_ACTIONS_GITCODE_RESULT_AUTHOR` 必须是对应 GitCode Token 所属、且有权限发布结果的账号。修改环境文件后，在确认没有不允许中断的在途任务后，按主机维护流程重启 Worker，使 systemd 重新加载环境。
+
+**不要配置 GitHub 的 `torchtitan-npu`**：TorchTitan 的 Yellow 任务来源是 GitCode `cann/torchtitan-npu`；GitHub 侧保留 `cann-framework/vllm-ascend`。此配置不改变 GitCode/GitHub 的仓库 canonical alias，也不跟随 GitHub 301 重定向。
+
 Cancellation terminates only the case's marked ranks and checks NPU occupancy.
 State is atomically persisted and fsynced before execution. Restart never blindly
 reruns a case; pending reports retry without training. With the default policy,
@@ -298,6 +335,8 @@ args=(--python "$py" --worker-unit lite-actions-yellow.service --install-root /o
 # args+=(--proxy-env-file /etc/lite-actions/auto-update-proxy.source.env)
 sudo "$py" scripts/auto_update_preflight.py "${args[@]}"
 ```
+
+如果工作树属于普通部署用户、安装器通过 `sudo` 运行，Preflight 和安装器检查 clean 状态时使用 `git --no-optional-locks status`。它禁止 Git 为可选的 index 刷新获取/写入锁，避免 root 检查时把普通用户工作树的 `.git/index` 改成 root 所有；不会改变 status 的脏文件判断。无需为了安装把整个源码工作树 `chown` 给 root。
 
 代理主机先创建专用文件：`sudo install -m 0600 /dev/null /etc/lite-actions/auto-update-proxy.source.env`，再用 `sudoedit` 填入代理/CA 配置。文件必须 root 所有、权限 `0600`、普通文件且非软链；仅接受 `http_proxy`、`https_proxy`、`HTTP_PROXY`、`HTTPS_PROXY`、`no_proxy`、`NO_PROXY`、`SSL_CERT_FILE`、`CURL_CA_BUNDLE`、`GIT_SSL_CAINFO` 九个 `KEY=VALUE`，不要传含 Token 的 `yellow.env`。无代理主机不用建文件。自检出现 `FAIL` 时按 `Next:` 提示处理；没有 `.git` 的快照须先迁移。
 

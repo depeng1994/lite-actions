@@ -13,11 +13,12 @@
 ## 首次部署前提
 
 1. 获取已经审核的 Lite Actions Git 工作树；本地 HEAD 与设置的远端 ref HEAD 必须一致。
-2. 机器必须运行真实 systemd，存在受管理的 Worker Unit；代码位于 /opt/lite-actions/releases/<40位SHA>，current 是指向它的软链接。否则先独立迁移，禁止强行安装。
-3. 只读核对现有 Worker Unit、EnvFile、WorkingDirectory、StopTimeout、持久状态目录、资源锁和隔离；记录旧 SHA，不输出 Token。
-4. current 的 config/state/logs/cache 若为外部软链接，只能指向现有受控目录。安装器不能覆盖业务状态和资源隔离。
-5. 测试分支要使用明确的 --git-ref refs/heads/<branch> 参数，不能悄悄变成生产持续更新来源。
-6. 首次安装可能正常停止/重启 Worker，打断在途任务。只有在允许中断任务的窗口进行。
+2. 如果工作树属于普通用户、安装器通过 sudo 执行，Preflight 和安装器的 clean 状态检查使用 `git --no-optional-locks status`，避免可选 index 刷新改变 `.git/index` 属主；不需要递归 chown 工作树。
+3. 机器必须运行真实 systemd，存在受管理的 Worker Unit；代码位于 /opt/lite-actions/releases/<40位SHA>，current 是指向它的软链接。否则先独立迁移，禁止强行安装。
+4. 只读核对现有 Worker Unit、EnvFile、WorkingDirectory、StopTimeout、持久状态目录、资源锁和隔离；记录旧 SHA，不输出 Token。
+5. current 的 config/state/logs/cache 若为外部软链接，只能指向现有受控目录。安装器不能覆盖业务状态和资源隔离。
+6. 测试分支要使用明确的 --git-ref refs/heads/<branch> 参数，不能悄悄变成生产持续更新来源。
+7. 首次安装可能正常停止/重启 Worker，打断在途任务。只有在允许中断任务的窗口进行。
 
 ## 一键首次安装
 
