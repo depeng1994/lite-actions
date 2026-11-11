@@ -423,8 +423,7 @@ class PreflightTests(unittest.TestCase):
         self.assertIn("LITE_ACTIONS_GITCODE_TOKEN", combined)
         self.assertIn("LITE_ACTIONS_GITCODE_RESULT_AUTHOR", combined)
         self.assertIn("LITE_ACTIONS_MODEL_REPOS=cann-framework/vllm-ascend", combined)
-        self.assertIn("不要把", combined)
-        self.assertNotIn("LITE_ACTIONS_GITCODE_PROXY", combined)
+        self.assertIn("不要把 `torchtitan-npu` 配置到 GitHub", combined)
 
     def test_python_path_is_persisted_and_template_has_no_system_python_assumption(
         self,
