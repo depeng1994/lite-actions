@@ -386,7 +386,14 @@ class ModelOwnedVllmTests(unittest.TestCase):
             try:
                 router._receive_one(run)
                 records = router.state.read().values()
-                self.assertEqual(len(records), len(plan["cases"]))
+                self.assertEqual(
+                    {row["item"]["case_id"] for row in records},
+                    {
+                        item["case_id"]
+                        for item in plan["cases"]
+                        if item["worker"] == "blue"
+                    },
+                )
                 self.assertTrue(
                     all(
                         row["run"]["_ci_execution_sha"] == self.merge for row in records
@@ -461,7 +468,14 @@ class ModelOwnedVllmTests(unittest.TestCase):
             router = Router(Path(tmp), "blue", Client(), "reporter")
             try:
                 router._receive_one(run)
-                self.assertEqual(len(router.state.read()), len(plan["cases"]))
+                self.assertEqual(
+                    {row["item"]["case_id"] for row in router.state.read().values()},
+                    {
+                        item["case_id"]
+                        for item in plan["cases"]
+                        if item["worker"] == "blue"
+                    },
+                )
             finally:
                 router.close()
 
