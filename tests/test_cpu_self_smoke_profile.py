@@ -9,6 +9,13 @@ from ci_core import self_smoke
 
 
 class CpuSelfSmoke(unittest.TestCase):
+    def test_cpu_only_rejects_device_jobs_regardless_of_name(self):
+        from tests.integration_tests.training_cases.dispatch_smoke import SMOKE_PROFILES
+
+        with patch.dict(SMOKE_PROFILES, {"cpu-only": ["dispatch_smoke_8p"]}):
+            with self.assertRaisesRegex(ValueError, "cannot schedule device jobs"):
+                self_smoke.expected_plan({"display_title": self_smoke.CPU_TITLE})
+
     def test_prepare_matches_worker_plan_without_changing_full_profile(self):
         run = dict(
             id=22, run_attempt=1, head_sha="a" * 40, path=self_smoke.SELF_WORKFLOW

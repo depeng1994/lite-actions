@@ -299,6 +299,22 @@ full profile, in plan order: Blue OS, Yellow OS, single-node 8P, two-node 16P,
 and a second single-node 8P. Both OS probes use zero NPUs. The independent
 `cpu-only` deployment profile still probes Blue alone. The full suite runs
 automatically after a PR lands on `main`, or manually on a deployed revision.
+Edit `SMOKE_PROFILES` in the case definition above to change either suite.
+`prepare` generates the GitHub matrix from the resolved plan, preserving order and
+repeated instances; the workflow and Worker do not keep separate case lists.
+Each planned instance has its own GitHub job. In a full run, `case_001_worker_os_yellow`
+waits for the Yellow Worker, not the hosted runner: four passing Blue jobs cannot
+satisfy it. A waiting job means its authenticated result is missing, not that the
+Worker is necessarily offline. Compare the run SHA to Yellow’s `worker-ready.release_sha`
+and check the subscription below. As in vLLM-Ascend Dispatcher Smoke, the final `Lite-Actions-Smoke` job requires
+`prepare` and every selected matrix case to succeed.
+For a fresh attempt, re-run **all** jobs so `prepare` publishes that attempt’s plan.
+
+In each OS probe's matrix job, expand the Worker receipt step to see the executing
+host, architecture, kernel, OS, Python, online logical CPUs, host-wide CPU busy
+percentage over one second (excludes idle, I/O wait and steal), and 1/5/15-minute
+load averages (not percentages). These are measurements from the assigned Worker,
+not the GitHub runner. Older receipts can show only the fields they actually contain.
 
 To opt a Worker into the self-smoke route, include `depeng1994/lite-actions` in
 `LITE_ACTIONS_MODEL_REPOS` and set `LITE_ACTIONS_SELF_SMOKE_ENABLED=1`. Set the

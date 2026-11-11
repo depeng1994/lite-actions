@@ -166,6 +166,136 @@ class SelfSmokeTests(unittest.TestCase):
         self.assertIn(f"{self.plan['cases'][0]['case_id']}: PASS", output.getvalue())
         self.assertIn("cleanup_verified=False", output.getvalue())
 
+    def test_full_follows_declared_profile_without_required_worker_names(self):
+        from tests.integration_tests.training_cases.dispatch_smoke import SMOKE_PROFILES
+
+        # A differently sized profile, with no Yellow and repeated NPU instances.
+        names = ["dispatch_smoke_8p", "worker_os_blue", "dispatch_smoke_8p"]
+        with (
+            patch.dict(SMOKE_PROFILES, dispatch_smoke=names),
+            patch("ci_core.self_smoke.PLAN", Path(self.temp.name) / "plan.json"),
+        ):
+            plan = prepare(self.env)
+        self.assertEqual(
+            [c["case_id"] for c in plan["cases"]],
+            [f"case_{i:03d}_{name}" for i, name in enumerate(names)],
+        )
+
+    def test_matrix_output_is_the_selected_plan(self):
+        # Job IDs come from the selected plan, including repeated 8P instances.
+        for profile, size in (("full", 5), ("cpu-only", 1)):
+            with self.subTest(profile=profile):
+                output = Path(self.temp.name) / (profile + ".out")
+                env = {
+                    **self.env,
+                    "GITHUB_OUTPUT": str(output),
+                    "SELF_SMOKE_PROFILE": profile,
+                }
+                with patch(
+                    "ci_core.self_smoke.PLAN", Path(self.temp.name) / "plan.json"
+                ):
+                    plan = prepare(env)
+                key, value = output.read_text().strip().split("=", 1)
+                self.assertEqual(key, "matrix")
+                self.assertEqual(json.loads(value), {"include": plan["cases"]})
+                self.assertEqual(len({c["case_id"] for c in plan["cases"]}), size)
+
+    def test_matrix_receipts_and_final_gate(self):
+        run = {
+            "id": 42,
+            "run_attempt": 1,
+            "head_sha": self.env["GITHUB_SHA"],
+            "path": SELF_WORKFLOW,
+            "_ci_repo": SELF_REPO,
+        }
+        env = {**self.env, "GH_TOKEN": "fixture", "CI_RESULT_AUTHOR": "reporter"}
+        rows = [
+            {
+                "user": {"login": "reporter"},
+                "body": body_for(
+                    run,
+                    item,
+                    report(
+                        run,
+                        item,
+                        self.plan["plan_digest"],
+                        "PASS",
+                        0,
+                        [
+                            f"WORKER_HOSTNAME=sample-{item['worker']}",
+                            "WORKER_CPU_ONLINE=17",
+                        ],
+                        True,
+                    ),
+                ),
+            }
+            for item in self.plan["cases"]
+        ]
+        yellow = self.plan["cases"][1]["case_id"]
+        ids = [c["case_id"] for c in self.plan["cases"] if c["worker"] == "blue"]
+        blue = rows[:1] + rows[2:]
+        client = Mock()
+        with (
+            patch("ci_core.self_smoke.PLAN", Path(self.temp.name) / "plan.json"),
+            patch("ci_core.self_smoke.GitHubClient", return_value=client),
+            redirect_stdout(io.StringIO()) as out,
+        ):
+            client.commit_comments.return_value = blue
+            for case_id in ids:
+                wait(env, only=case_id, once=True)
+            for only in (yellow, None):
+                with self.assertRaisesRegex(TimeoutError, yellow):
+                    wait(env, only=only, once=True)
+            self.assertIn("Waiting for yellow Worker receipt", out.getvalue())
+            with self.assertRaisesRegex(ValueError, "case selector"):
+                wait(env, only="", once=True)
+            forged = copy.deepcopy(rows[1])
+            marker, payload = forged["body"].split("\n", 1)
+            data = json.loads(payload)
+            for key, value in [
+                ("worker", "blue"),
+                ("sha", "f" * 40),
+                ("plan_digest", "f" * 64),
+                ("attempt", 2),
+            ]:
+                client.commit_comments.return_value = blue + [
+                    {**forged, "body": marker + "\n" + json.dumps({**data, key: value})}
+                ]
+                with (
+                    self.subTest(field=key),
+                    self.assertRaisesRegex(ValueError, "identity mismatch"),
+                ):
+                    wait(env, only=yellow, once=True)
+            client.commit_comments.return_value = blue + [
+                {
+                    **forged,
+                    "body": marker
+                    + "\n"
+                    + json.dumps({**data, "cleanup_verified": False}),
+                }
+            ]
+            wait(env, only=ids[0], once=True)
+            for only in (yellow, None):
+                with self.assertRaisesRegex(ValueError, "self-smoke cases failed"):
+                    wait(env, only=only, once=True)
+            out.seek(0)
+            out.truncate()
+            client.commit_comments.return_value = blue + [
+                {**forged, "user": {"login": "someone-else"}}
+            ]
+            with self.assertRaisesRegex(TimeoutError, yellow):
+                wait(env, only=yellow, once=True)
+            self.assertNotIn(
+                "WORKER_HOSTNAME=sample-yellow", out.getvalue().splitlines()
+            )
+            client.commit_comments.return_value = rows
+            wait(env, only=yellow, once=True)
+            wait(env, once=True)
+            self.assertEqual(
+                out.getvalue().splitlines().count("WORKER_HOSTNAME=sample-yellow"), 1
+            )
+            self.assertIn("WORKER_CPU_ONLINE=17", out.getvalue().splitlines())
+
     def test_launch_consumes_complete_two_node_lease(self):
         case = next(
             case
