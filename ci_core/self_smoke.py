@@ -8,6 +8,7 @@ from pathlib import Path
 from ci_core.contract import SELF_REPO, SELF_WORKFLOW, parse_plan
 from ci_core.gitcode import _unique_object, source_plan
 from ci_core.github import GitHubClient
+from ci_core.worker_probe import safe_probe_line
 from tests.integration_tests.tools.lite_actions.entrypoint import inspect_profile
 
 PLAN = Path(".ci-request/ci-request.json")
@@ -103,6 +104,16 @@ def results(comments, plan, author, *, only=None):
     return found
 
 
+def print_probe_receipt(result):
+    # Never evaluate the payload as shell/Actions commands or sample the hosted runner.
+    lines = result.get("last_20_lines")
+    if not isinstance(lines, list) or len(lines) > 20:
+        raise ValueError("invalid Worker probe receipt lines")
+    for line in lines:
+        if safe_probe_line(line):
+            print(line, flush=True)
+
+
 def wait(environ=os.environ, *, only=None, once=False):
     plan = json.loads(PLAN.read_text(), object_pairs_hook=_unique_object)
     if (
@@ -147,6 +158,8 @@ def wait(environ=os.environ, *, only=None, once=False):
                 f"cleanup_verified={result.get('cleanup_verified')!r}"
             )
             print(f"{case_id}: {outcome}", flush=True)
+            if only is not None and selected[case_id]["kind"] == "worker_probe":
+                print_probe_receipt(result)
         shown.update(found)
         failures = [
             case_id for case_id, result in found.items() if not case_passed(result)

@@ -196,7 +196,18 @@ class SelfSmokeTests(unittest.TestCase):
                 "body": body_for(
                     run,
                     item,
-                    report(run, item, self.plan["plan_digest"], "PASS", 0, [], True),
+                    report(
+                        run,
+                        item,
+                        self.plan["plan_digest"],
+                        "PASS",
+                        0,
+                        [
+                            f"WORKER_HOSTNAME=sample-{item['worker']}",
+                            "WORKER_CPU_ONLINE=17",
+                        ],
+                        True,
+                    ),
                 ),
             }
             for item in self.plan["cases"]
@@ -248,14 +259,23 @@ class SelfSmokeTests(unittest.TestCase):
             for only in (yellow, None):
                 with self.assertRaisesRegex(ValueError, "self-smoke cases failed"):
                     wait(env, only=only, once=True)
+            out.seek(0)
+            out.truncate()
             client.commit_comments.return_value = blue + [
                 {**forged, "user": {"login": "someone-else"}}
             ]
             with self.assertRaisesRegex(TimeoutError, yellow):
                 wait(env, only=yellow, once=True)
+            self.assertNotIn(
+                "WORKER_HOSTNAME=sample-yellow", out.getvalue().splitlines()
+            )
             client.commit_comments.return_value = rows
             wait(env, only=yellow, once=True)
             wait(env, once=True)
+            self.assertEqual(
+                out.getvalue().splitlines().count("WORKER_HOSTNAME=sample-yellow"), 1
+            )
+            self.assertIn("WORKER_CPU_ONLINE=17", out.getvalue().splitlines())
 
     def test_launch_consumes_complete_two_node_lease(self):
         case = next(

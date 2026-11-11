@@ -272,6 +272,12 @@ Worker is necessarily offline. Compare the run SHA to Yellow’s `worker-ready.r
 and check the subscription below. The final `smoke` job verifies the entire receipt set.
 For a fresh attempt, re-run **all** jobs so `prepare` publishes that attempt’s plan.
 
+In each OS probe's matrix job, expand the Worker receipt step to see the executing
+host, architecture, kernel, OS, Python, online logical CPUs, host-wide CPU busy
+percentage over one second (excludes idle, I/O wait and steal), and 1/5/15-minute
+load averages (not percentages). These are measurements from the assigned Worker,
+not the GitHub runner. Older receipts can show only the fields they actually contain.
+
 To opt a Worker into the self-smoke route, include `depeng1994/lite-actions` in
 `LITE_ACTIONS_MODEL_REPOS` and set `LITE_ACTIONS_SELF_SMOKE_ENABLED=1`. Set the
 repository variable `LITE_CI_RESULT_ACTOR` to the Worker's result-author account.
