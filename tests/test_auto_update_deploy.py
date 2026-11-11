@@ -398,7 +398,7 @@ class PreflightTests(unittest.TestCase):
         self,
     ):
         installer = (ROOT / "scripts" / "install_auto_update.sh").read_text()
-        self.assertIn("LITE_ACTIONS_UPDATE_PYTHON=$python_path", installer)
+        self.assertIn('LITE_ACTIONS_UPDATE_PYTHON="$python_path"', installer)
         self.assertIn('"$python_path" - "$ready_file"', installer)
         service = (ROOT / "deploy" / "lite-actions-blue.service").read_text()
         self.assertNotIn("/usr/bin/python3", service)
