@@ -305,6 +305,14 @@ class ModelOwnedVllmTests(unittest.TestCase):
                     self.source,
                 )
 
+    def test_pr_workflow_can_use_the_verified_merge_as_controller(self):
+        source = {**self.source, "control_sha": self.merge}
+        run = {**self.run, "event": "pull_request", "head_sha": self.head}
+        bound = bind_request_source(self.client(), run, source)
+        self.assertEqual(
+            read_source(self.client(), bound, self.plan, source=source), source
+        )
+
     def test_manual_source_is_the_exact_approved_branch_commit(self):
         run = {
             **self.run,

@@ -141,11 +141,23 @@ def check_current(client, source, *, check_run=False):
             raise ValueError("NATIVE_RUN_CANCELLED_OR_SUPERSEDED")
 
 
-def approved_controls(client, run, candidate, *, base_ref=None):
+def approved_controls(client, run, candidate, *, source=None):
     """Prove the controller belongs to a repository branch, independent of trigger."""
     if not isinstance(candidate, str) or not SHA.fullmatch(candidate):
         raise ValueError("invalid controller SHA")
-    for branch in dict.fromkeys((run.get("head_branch"), base_ref)):
+    if (
+        isinstance(source, dict)
+        and source.get("mode") == "merge_result"
+        and candidate in (source.get("head_sha"), source.get("source_sha"))
+    ):
+        # PR workflows may themselves be loaded from the verified head or merge.
+        return {candidate}
+    for branch in dict.fromkeys(
+        (
+            run.get("head_branch"),
+            source.get("base_ref") if isinstance(source, dict) else None,
+        )
+    ):
         if not isinstance(branch, str) or not branch or len(branch) > 255:
             continue
         try:
@@ -248,7 +260,7 @@ def read_source(client, run, plan, *, source=None):
             client,
             run,
             candidate,
-            base_ref=source.get("base_ref") if isinstance(source, dict) else None,
+            source=source,
         ),
         repository_id=repository_id,
     )
