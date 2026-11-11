@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from auto_update import preflight
+from auto_update.check_source import SourceError
 from auto_update.deploy_support import (
     DeploySupportError,
     clone_seed,
@@ -121,7 +122,7 @@ class PythonSelectionTests(unittest.TestCase):
             good = fake_python(bindir / "python3.11", "3.11.9", accepted=True, log=log)
             env = os.environ.copy()
             env.pop("LITE_ACTIONS_UPDATE_PYTHON", None)
-            env.update({"LITE_ACTIONS_UPDATE_ROOT": str(root), "PATH": str(bindir)})
+            env.update({"LITE_ACTIONS_UPDATE_ROOT": str(root), "PATH": str(bindir) + ":/usr/bin:/bin"})
             result = subprocess.run(
                 ["bash", str(BOOTSTRAP), "--check"],
                 env=env,
@@ -277,7 +278,7 @@ class PreflightTests(unittest.TestCase):
             patch(
                 "auto_update.preflight.check_source",
                 return_value=sha if remote_ok else None,
-                side_effect=None if remote_ok else SourceUnavailable(),
+                side_effect=None if remote_ok else SourceError("source_unavailable"),
             ),
         ):
             checks = preflight.run_preflight(
@@ -291,7 +292,6 @@ class PreflightTests(unittest.TestCase):
         return checks
 
     def test_preflight_all_core_checks_pass(self):
-        from auto_update.check_source import SourceError
         with tempfile.TemporaryDirectory() as tmp:
             checks = self._run(Path(tmp))
         self.assertTrue(all(check.ok for check in checks), checks)
@@ -313,9 +313,6 @@ class PreflightTests(unittest.TestCase):
             checks = self._run(Path(tmp), valid_current=False)
         self.assertTrue(any(c.name == "current release" and not c.ok for c in checks))
 
-
-class SourceUnavailable(Exception):
-    pass
 
 
 if __name__ == "__main__":
