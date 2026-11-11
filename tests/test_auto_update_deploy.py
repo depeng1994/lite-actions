@@ -1,6 +1,5 @@
 """Deployment hardening tests for Python selection, preflight and proxy setup."""
 
-import json
 import os
 import shutil
 import stat
