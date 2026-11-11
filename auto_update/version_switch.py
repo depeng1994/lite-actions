@@ -218,7 +218,10 @@ def restore_old(
         pid = main_pid(unit) if is_active(unit) else 0
         if pid > 0:
             if capable and verify_ready(
-                ready_path, expected_sha=old.name, expected_pid=pid, not_before=not_before
+                ready_path,
+                expected_sha=old.name,
+                expected_pid=pid,
+                not_before=not_before,
             ):
                 return "ready_verified"
             if not capable and Path(f"/proc/{pid}/cwd").resolve() == old:
