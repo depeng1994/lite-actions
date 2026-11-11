@@ -202,14 +202,6 @@ def allocations(case: dict, pools: dict) -> list[dict]:
     return nodes
 
 
-def legacy_vllm_case(test_case: str | None) -> bool:
-    if not VLLM:
-        return False
-    from ci_core.vllm_ascend import CASES
-
-    return test_case in CASES
-
-
 def stage(
     node: dict, base: str, archive: Path, sha: str, test_case: str | None = None
 ) -> str:
@@ -233,16 +225,11 @@ def stage(
         + q(dest + "/source.tar.gz")
         + " | cut -d ' ' -f1)\"",
     )
-    required = (
-        ".github/scripts/lite_actions/a5_smoke.py"
-        if legacy_vllm_case(test_case)
-        else "tests/integration_tests/__init__.py"
-    )
     ssh(
         host,
         f"cd {q(dest)} && tar -xzf source.tar.gz -C repo && "
         f"printf '%s\\n' {q(sha)} > source_sha.txt && "
-        f"test -f repo/{required}",
+        "test -f repo/tests/integration_tests/__init__.py",
     )
     print(f"STAGED: {node['host_id']} SHA={sha[:12]} dir={dest}", flush=True)
     return dest
@@ -259,29 +246,12 @@ def remote_command(
 ) -> str:
     """Remote job owns its own process group; its complete log stays remote."""
     # Generic, fixed model-owned entrypoint; never interpolate GitHub modules.
-    if legacy_vllm_case(test_case):
-        entry = (
-            "python3 -u -m torch.distributed.run"
-            + f" --nnodes={len(nodes)} --nproc-per-node={len(node['devices'])}"
-            + f" --node-rank={node['position']}"
-            + " --master-addr="
-            + q(nodes[0]["node_ip"])
-            + " --master-port="
-            + q(runner.get("LITE_CI_MASTER_PORT", 16000))
-            + " --max-restarts=0"
-            + " .github/scripts/lite_actions/a5_smoke.py"
-            + " --test-id="
-            + q(test_case)
-            + " --output-dir="
-            + q(dest + "/output")
-        )
-    else:
-        entry = (
-            "python3 -u -m tests.integration_tests.tools.lite_actions.entrypoint launch --test-id "
-            + q(test_case)
-            + " --output-dir "
-            + q(dest + "/output")
-        )
+    entry = (
+        "python3 -u -m tests.integration_tests.tools.lite_actions.entrypoint launch --test-id "
+        + q(test_case)
+        + " --output-dir "
+        + q(dest + "/output")
+    )
     env = {
         "NODE_IPS": ",".join(x["node_ip"] for x in nodes),
         "NGPU": str(len(node["devices"])),
@@ -466,25 +436,6 @@ for entry in Path('/proc').glob('[0-9]*'):
 def verify(
     nodes: list[dict], runner: dict, base: str, timeout: int, test_case: str
 ) -> int:
-    if legacy_vllm_case(test_case):
-        # rank 0 writes evidence only after all ranks completed collective.
-        node = nodes[0]
-        evidence = base + "/node0/output/a5-smoke-evidence.json"
-        command = (
-            "python3 -c "
-            + q(
-                "import json,sys; d=json.load(open(sys.argv[1])); "
-                "assert d['status']=='PASS' and d['world_size']==int(sys.argv[2])"
-            )
-            + " "
-            + q(evidence)
-            + " "
-            + str(len(nodes) * len(node["devices"]))
-        )
-        try:
-            return ssh(node["ssh"], command, timeout=30, check=False).returncode
-        except (OSError, subprocess.TimeoutExpired):
-            return 124
     if runner["mode"] != "distributed":
         return 0
     node = nodes[0]

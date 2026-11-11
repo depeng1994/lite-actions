@@ -114,13 +114,13 @@ class Service(GitHubClient):
             id=ident,
             run_attempt=attempt,
             head_sha="a" * 40,
-            path=".github/workflows/nightly_fulltests.yml",
+            path=".github/workflows/lite-ci-fixture.yml",
             created_at="2026-01-01T00:00:00Z",
             status="in_progress",
             event="workflow_dispatch",
             head_branch="master",
             actor=dict(login="maintainer"),
-            name="Nightly",
+            name="lite-ci-fixture",
             run_number=ident,
         )
         plan = create_plan(
@@ -128,7 +128,7 @@ class Service(GitHubClient):
             run_id=ident,
             attempt=attempt,
             sha=run["head_sha"],
-            workflow="nightly_fulltests.yml",
+            workflow="lite-ci-fixture.yml",
             defaults=DEFAULTS,
         )
         self.runs[ident], self.plans[ident] = run, plan
@@ -213,6 +213,20 @@ class Service(GitHubClient):
         from contextlib import ExitStack
 
         stack = ExitStack()
+        source = {"source_sha": "a" * 40}
+        stack.enter_context(
+            patch("ci_core.github_source.read_source_artifact", return_value=source)
+        )
+        stack.enter_context(
+            patch(
+                "ci_core.github_source.bind_request_source",
+                side_effect=lambda client, run, source: run,
+            )
+        )
+        stack.enter_context(
+            patch("ci_core.github_source.read_source", return_value=source)
+        )
+        stack.enter_context(patch("ci_core.github_source.check_current"))
         stack.enter_context(patch("urllib.request.build_opener", return_value=self))
         stack.enter_context(patch("urllib.request.urlopen", side_effect=self.download))
         stack.enter_context(

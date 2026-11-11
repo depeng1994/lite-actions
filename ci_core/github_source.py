@@ -8,10 +8,6 @@ import re
 import urllib.parse
 import zipfile
 
-from ci_core.contract import VLLM_REPO
-from ci_core.vllm_ascend import CASES as LEGACY_A5_CASES
-
-REPO_ID = 1438625957
 SOURCE_KEYS = {
     "schema",
     "provider",
@@ -34,22 +30,13 @@ SOURCE_KEYS = {
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 
 
-def requires_source(plan):
-    if plan.get("repo") != VLLM_REPO:
-        return False
-    legacy = [c.get("test_id") in LEGACY_A5_CASES for c in plan.get("cases", [])]
-    if any(legacy) and not all(legacy):
-        raise ValueError("legacy A5 and model-owned smoke cannot share a plan")
-    return bool(legacy) and not any(legacy)
-
-
-def validate_source(source, run, plan, approved_controls, *, repository_id=REPO_ID):
+def validate_source(source, run, plan, approved_controls, *, repository_id):
     if not isinstance(source, dict) or set(source) != SOURCE_KEYS:
         raise ValueError("invalid native source structure")
     expected = {
         "schema": 1,
         "provider": "github",
-        "repository": run.get("_ci_repo", VLLM_REPO),
+        "repository": run["_ci_repo"],
         "repository_id": repository_id,
         "run_id": run["id"],
         "attempt": run.get("run_attempt", 1),
@@ -191,23 +178,10 @@ def prepare_ready(client, run):
 
 def approved_controls(client, run, candidate=None, *, merge_source=False):
     """Resolve the live trusted workflow branch without pinning every commit."""
-    if run.get("event") == "pull_request_target":
-        repo = client.request("GET", "")
-        if repo.get("id") != REPO_ID:
-            raise ValueError("unexpected controller repository")
-        branch = repo.get("default_branch")
-        explicit = set()
-    elif run.get("event") == "workflow_dispatch":
-        branch = run.get("head_branch")
-        explicit = set()
-        actor = (run.get("triggering_actor") or run.get("actor") or {}).get("login")
-        if (
-            actor == "github-actions[bot]"
-            and client.request("GET", "").get("default_branch") != branch
-        ):
-            raise ValueError("unapproved automatic controller branch")
-    else:
+    if run.get("event") != "workflow_dispatch":
         raise ValueError("unapproved controller event")
+    branch = run.get("head_branch")
+    explicit = set()
     if not isinstance(branch, str) or not branch or len(branch) > 255:
         raise ValueError("invalid controller branch")
     head = (
@@ -217,11 +191,7 @@ def approved_controls(client, run, candidate=None, *, merge_source=False):
     )
     if not isinstance(head, str) or not SHA.fullmatch(head):
         raise ValueError("invalid controller branch SHA")
-    is_pr_control = run.get("event") == "pull_request_target" or (
-        run.get("event") == "workflow_dispatch"
-        and merge_source
-        and type(run.get("_ci_pr_number")) is int
-    )
+    is_pr_control = merge_source and type(run.get("_ci_pr_number")) is int
     if is_pr_control and candidate != head:
         if not isinstance(candidate, str) or not SHA.fullmatch(candidate):
             raise ValueError("invalid controller SHA")

@@ -160,18 +160,20 @@ class MultiRepoWorkerTests(unittest.TestCase):
                 "head_sha": sha,
                 "_ci_repo": repo,
                 "_ci_pr_number": 4,
-                "path": ".github/workflows/lite_actions_dispatcher_smoke.yml",
+                "path": ".github/workflows/lite-ci-dispatcher-smoke.yml",
                 "actor": {"login": "depeng1994"},
                 "event": event,
                 "status": "in_progress",
                 "created_at": "2026-10-31T00:00:00Z",
             }
+            if repo == VLLM_REPO:
+                run.update(name="lite-ci-smoke", event="workflow_dispatch")
             plan = create_plan(
                 [case],
                 run_id=33,
                 attempt=1,
                 sha=sha,
-                workflow="lite_actions_dispatcher_smoke.yml",
+                workflow="lite-ci-dispatcher-smoke.yml",
                 defaults=defaults,
                 repo=repo,
             )
@@ -191,6 +193,19 @@ class MultiRepoWorkerTests(unittest.TestCase):
                     {
                         "LITE_ACTIONS_TORCHTITAN_ALLOWED_ACTORS": "depeng1994",
                     },
+                ),
+                patch.object(Router, "eligible", return_value=True),
+                patch(
+                    "ci_core.github_source.read_source_artifact",
+                    return_value={"source_sha": sha},
+                ),
+                patch(
+                    "ci_core.github_source.bind_request_source",
+                    side_effect=lambda client, run, source: run,
+                ),
+                patch(
+                    "ci_core.github_source.read_source",
+                    return_value={"source_sha": sha},
                 ),
             ):
                 router = Router(Path(tmp), "yellow", Combined(clients), "depeng1994")

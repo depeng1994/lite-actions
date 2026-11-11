@@ -18,7 +18,9 @@ from ci_core.github_source import (
     check_current,
     prepare_ready,
     read_source,
-    validate_source,
+)
+from ci_core.github_source import (
+    validate_source as _validate_source,
 )
 from ci_core.plan import verify_definition
 from ci_core.reporting import report
@@ -26,6 +28,10 @@ from ci_core.router import Router
 from tests.integration_tests.tools.lite_actions.entrypoint import inspect_profile
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def validate_source(source, run, plan, controls):
+    return _validate_source(source, run, plan, controls, repository_id=1438625957)
 
 
 class ModelOwnedVllmTests(unittest.TestCase):
@@ -45,8 +51,9 @@ class ModelOwnedVllmTests(unittest.TestCase):
             "_ci_source_repo": "another-fork/vllm-ascend",
             "_ci_base_ref": "releases/v0.30.0",
             "_ci_control_sha": self.control,
-            "path": ".github/workflows/lite_actions_dispatcher_smoke.yml",
-            "event": "pull_request_target",
+            "path": ".github/workflows/lite-ci-dispatcher-smoke.yml",
+            "event": "workflow_dispatch",
+            "head_branch": "main",
         }
         self.plan = source_plan(inspect_profile(), self.run, VLLM_REPO)
         self.source = {
@@ -338,38 +345,6 @@ class ModelOwnedVllmTests(unittest.TestCase):
                     item["test_id"],
                 )
 
-    def test_pr_admission_binds_every_instance_to_merge_source(self):
-        class Client:
-            repo = VLLM_REPO
-
-            def ci_request(inner, run):
-                return self.plan
-
-        run = {
-            **self.run,
-            "actor": {"login": "another-contributor"},
-            "status": "in_progress",
-        }
-        with (
-            tempfile.TemporaryDirectory() as tmp,
-            patch(
-                "ci_core.router.load", return_value=({"blue": {"enabled": True}}, {})
-            ),
-            patch("ci_core.github_source.read_source", return_value=self.source),
-            patch.object(Router, "transition"),
-            patch.dict("os.environ", {"LITE_ACTIONS_STATE_DIR": ""}),
-        ):
-            router = Router(Path(tmp), "blue", Client(), "reporter")
-            try:
-                router._receive_one(run)
-                records = router.state.read().values()
-                self.assertEqual(len(records), len(self.plan["cases"]))
-                self.assertTrue(
-                    all(r["run"]["_ci_execution_sha"] == self.merge for r in records)
-                )
-            finally:
-                router.close()
-
     def test_generic_request_is_admitted_from_artifacts_not_run_title(self):
         client = self.client()
         run = {
@@ -406,6 +381,76 @@ class ModelOwnedVllmTests(unittest.TestCase):
                         row["run"]["_ci_execution_sha"] == self.merge for row in records
                     )
                 )
+            finally:
+                router.close()
+
+    def test_another_configured_repository_uses_the_same_request_contract(self):
+        repo = "cann-framework/cann-deepinfer-recipe"
+        run = {
+            **self.run,
+            "_ci_repo": repo,
+            "name": "lite-ci-any-model",
+            "path": ".github/workflows/model.yml",
+            "display_title": "a regular title",
+            "event": "workflow_dispatch",
+            "head_branch": "main",
+            "head_sha": self.control,
+            "actor": {"login": "maintainer"},
+            "status": "in_progress",
+        }
+        with patch.dict("os.environ", {"LITE_ACTIONS_MODEL_REPOS": repo}, clear=True):
+            plan = source_plan(inspect_profile(), {**run, "head_sha": self.head}, repo)
+        source = {
+            **self.source,
+            "repository": repo,
+            "repository_id": 987654,
+            "plan_digest": plan["plan_digest"],
+            "mode": "commit",
+            "pr_number": 0,
+            "head_repo_id": 987654,
+            "base_ref": "main",
+            "base_sha": self.head,
+            "source_sha": self.head,
+        }
+
+        class Client:
+            def __init__(inner):
+                inner.repo = repo
+
+            def request(inner, method, path):
+                if path == "":
+                    return {"id": 987654}
+                if path.startswith("/collaborators/"):
+                    return {"permission": "write"}
+                if path == "/branches/main":
+                    return {"commit": {"sha": self.control}}
+                if path == "/git/commits/" + self.head:
+                    return {"sha": self.head, "tree": {"sha": self.tree}}
+                raise AssertionError(path)
+
+            def workflow_status(inner, run_id):
+                return {"status": "in_progress", "run_attempt": 1}
+
+            def ci_request(inner, bound):
+                return plan
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.dict(
+                "os.environ",
+                {"LITE_ACTIONS_MODEL_REPOS": repo, "LITE_ACTIONS_STATE_DIR": ""},
+                clear=True,
+            ),
+            patch(
+                "ci_core.router.load", return_value=({"blue": {"enabled": True}}, {})
+            ),
+            patch("ci_core.github_source.read_source_artifact", return_value=source),
+            patch.object(Router, "transition"),
+        ):
+            router = Router(Path(tmp), "blue", Client(), "reporter")
+            try:
+                router._receive_one(run)
+                self.assertEqual(len(router.state.read()), len(plan["cases"]))
             finally:
                 router.close()
 

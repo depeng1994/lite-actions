@@ -35,7 +35,8 @@ class GitHubManualPermissionsTests(unittest.TestCase):
         self.router.client = PermissionClient(VLLM_REPO)
         self.run = {
             "_ci_repo": VLLM_REPO,
-            "path": ".github/workflows/lite_actions_dispatcher_smoke.yml",
+            "name": "lite-ci-dispatcher-smoke",
+            "path": ".github/workflows/lite-ci-dispatcher-smoke.yml",
             "event": "workflow_dispatch",
             "status": "in_progress",
             "head_branch": "features/smoke",
@@ -86,18 +87,6 @@ class GitHubManualPermissionsTests(unittest.TestCase):
         self.assertFalse(self.router.eligible(run))
         self.router.client.role = "write"
         self.assertFalse(self.router.eligible({**run, "name": "other-check"}))
-
-    def test_reconciler_bot_is_confined_to_default_branch(self):
-        bot = {
-            **self.run,
-            "actor": {"login": "github-actions[bot]"},
-            "head_branch": "main",
-            "_ci_pr_number": 4,
-            "_ci_control_sha": "c" * 40,
-        }
-        self.assertTrue(self.router.eligible(bot))
-        self.assertFalse(self.router.eligible({**bot, "head_branch": "other"}))
-        self.assertFalse(self.router.eligible({**bot, "_ci_pr_number": None}))
 
     def test_self_smoke_also_requires_checkout_identity(self):
         self.router.client = PermissionClient(SELF_REPO)

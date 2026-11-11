@@ -58,7 +58,6 @@ def trusted_repositories():
     return SUPPORTED_REPOS | frozenset(configured_repos())
 
 
-WORKFLOWS = {"nightly_fulltests.yml", "lite_actions_dispatcher_smoke.yml"}
 WORKERS = {"blue", "yellow"}
 TEST = re.compile(r"[a-z][a-z0-9_]{0,79}\Z")
 KINDS = {"train", "npu_smoke", "worker_probe"}
@@ -217,8 +216,7 @@ def parse_plan(plan, run, workflow, *, repo=REPO):
             else (
                 {SELF_WORKFLOW}
                 if repo == SELF_REPO
-                else WORKFLOWS
-                | (
+                else (
                     {workflow}
                     if str(run.get("name", "")).startswith("lite-ci-")
                     or str(workflow).startswith("lite-ci-")

@@ -220,7 +220,7 @@ class SelfSmokeTests(unittest.TestCase):
                 "event": "workflow_dispatch",
                 "head_branch": "ci/test",
                 "actor": {"login": "maintainer"},
-                "name": "Self-Smoke",
+                "name": "lite-ci-self-smoke",
                 "run_number": 42,
             }
         }
@@ -320,6 +320,7 @@ class SelfSmokeTests(unittest.TestCase):
         router.root, router.self_sha = root, sha
         run = {
             "_ci_repo": SELF_REPO,
+            "name": "lite-ci-self-smoke",
             "event": "workflow_dispatch",
             "path": ".github/workflows/" + SELF_WORKFLOW,
             "status": "in_progress",

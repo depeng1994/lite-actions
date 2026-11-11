@@ -13,7 +13,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 
-from ci_core.contract import REPO, SELF_REPO, VLLM_REPO, trusted_repositories
+from ci_core.contract import REPO, trusted_repositories
 
 API = f"https://api.github.com/repos/{REPO}"
 
@@ -159,78 +159,15 @@ class GitHubClient:
             raise ValueError("artifact download exceeds byte budget")
         return payload
 
-    def normalize_pr_run(self, run: dict) -> dict | None:
-        """Bind a pull_request run to exactly one current upstream PR head.
-
-        GitHub may return pull_requests=[] for fork-originated runs. Resolve
-        using (head repo ID, head SHA), not a branch name or actor string.
-        Stale runs are not allowed to consume NPUs.
-        """
-        associated = run.get("pull_requests") or []
-        source = run.get("head_repository") or {}
-        source_id = source.get("id")
-        sha = run.get("head_sha")
-        if not isinstance(sha, str) or len(sha) != 40 or type(source_id) is not int:
-            return None
-        if len(associated) > 1:
-            return None
-        if associated:
-            candidates = associated
-        else:
-            candidates = []
-            for page in range(1, 6):
-                prs = self.request("GET", f"/pulls?state=open&per_page=100&page={page}")
-                if not isinstance(prs, list):
-                    raise ValueError("unexpected PR listing")
-                for pr in prs:
-                    if (
-                        pr.get("head", {}).get("sha") == sha
-                        and pr.get("head", {}).get("repo", {}).get("id") == source_id
-                        and pr.get("base", {}).get("ref") == "master"
-                        and pr.get("base", {}).get("repo", {}).get("full_name")
-                        == self.repo
-                    ):
-                        candidates.append(pr)
-                if len(prs) < 100:
-                    break
-            else:
-                # Cannot prove the scan covered all open PRs.
-                return None
-        if len(candidates) != 1:
-            return None
-        number = candidates[0].get("number")
-        if type(number) is not int or number < 1:
-            return None
-        pr = self.request("GET", f"/pulls/{number}")
-        if (
-            pr.get("state") != "open"
-            or pr.get("base", {}).get("repo", {}).get("full_name") != self.repo
-            or pr.get("base", {}).get("ref") != "master"
-            or pr.get("head", {}).get("repo", {}).get("id") != source_id
-            or pr.get("head", {}).get("sha") != sha
-        ):
-            return None
-        if associated and associated[0].get("head", {}).get("sha") != sha:
-            return None
-        return {**run, "head_sha": sha, "_ci_pr_number": number}
-
     def running_workflows(self) -> list[dict]:
         runs = {}
-        events = (
-            ("workflow_dispatch",)
-            if self.repo == SELF_REPO
-            else ("workflow_dispatch",)
-            if self.repo == VLLM_REPO
-            else ("workflow_dispatch", "pull_request")
-        )
+        events = ("workflow_dispatch",)
         for event in events:
             for status in ("queued", "in_progress"):
                 data = self.request(
                     "GET", f"/actions/runs?event={event}&status={status}&per_page=100"
                 )
                 for run in data.get("workflow_runs", []):
-                    if event == "pull_request":
-                        run = self.normalize_pr_run(run)
                     if run is None or run.get("status") not in {
                         "queued",
                         "in_progress",

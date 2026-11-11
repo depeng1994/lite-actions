@@ -19,9 +19,6 @@ from ci_core.contract import (
     REPO,
     SELF_REPO,
     SELF_WORKFLOW,
-    TORCHTITAN_REPO,
-    VLLM_REPO,
-    WORKFLOWS,
     configured_repos,
     parse_plan,
 )
@@ -179,26 +176,15 @@ class Router:
             return False
         try:
             client = self.client_for(run)
-            if actor == "github-actions[bot]":
-                if (
-                    run.get("_ci_repo") != VLLM_REPO
-                    or type(run.get("_ci_pr_number")) is not int
-                    or client.request("GET", "").get("default_branch") != branch
-                ):
-                    return False
-                # Source admission verifies the recorded controller against
-                # trusted default-branch history, including a concurrent push.
-                return True
-            else:
-                if not re.fullmatch(
-                    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", actor
-                ):
-                    return False
-                result = client.request(
-                    "GET", f"/collaborators/{quote(actor, safe='')}/permission"
-                )
-                if result.get("permission") not in {"write", "maintain", "admin"}:
-                    return False
+            if not re.fullmatch(
+                r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", actor
+            ):
+                return False
+            result = client.request(
+                "GET", f"/collaborators/{quote(actor, safe='')}/permission"
+            )
+            if result.get("permission") not in {"write", "maintain", "admin"}:
+                return False
             current = client.request("GET", "/branches/" + quote(branch, safe=""))
             return current.get("commit", {}).get("sha") == sha
         except Exception:
@@ -258,56 +244,19 @@ class Router:
 
             return (
                 self.self_sha is not None
+                and str(run.get("name", "")).startswith("lite-ci-")
                 and run.get("event") == "workflow_dispatch"
                 and filename == SELF_WORKFLOW
                 and run.get("status") in {"queued", "in_progress"}
                 and run.get("head_sha") == self.self_sha == checkout_sha(self.root)
                 and self.trusted_manual(run)
             )
-        if (
-            filename not in WORKFLOWS
-            and not str(run.get("name", "")).startswith("lite-ci-")
-        ) or run.get("status") not in {
-            "queued",
-            "in_progress",
-        }:
-            return False
-        if str(run.get("name", "")).startswith("lite-ci-"):
-            return run.get("event") == "workflow_dispatch" and self.trusted_manual(run)
-        if repo == VLLM_REPO:
-            allowed = set()
-            branches = set()
-        elif repo == TORCHTITAN_REPO:
-            actors_value = os.environ.get(
-                "LITE_ACTIONS_TORCHTITAN_ALLOWED_ACTORS",
-                os.environ.get("LITE_ACTIONS_ALLOWED_ACTORS", ""),
-            )
-            branches_value = os.environ.get(
-                "LITE_ACTIONS_TORCHTITAN_ALLOWED_BRANCHES",
-                os.environ.get("LITE_ACTIONS_ALLOWED_BRANCHES", "master"),
-            )
-            allowed = set(filter(None, actors_value.split(",")))
-            branches = set(filter(None, branches_value.split(",")))
-        else:
-            return False
-        event = run.get("event")
-        if event in ("pull_request", "pull_request_target"):
-            admitted = type(run.get("_ci_pr_number")) is int and (
-                (repo == VLLM_REPO and event == "pull_request_target")
-                or (
-                    repo == TORCHTITAN_REPO
-                    and event == "pull_request"
-                    and run.get("actor", {}).get("login") in allowed
-                )
-            )
-        else:
-            admitted = event == "workflow_dispatch" and (
-                self.trusted_manual(run)
-                if repo == VLLM_REPO
-                else run.get("head_branch") in branches
-                and run.get("actor", {}).get("login") in allowed
-            )
-        return admitted
+        return (
+            str(run.get("name", "")).startswith("lite-ci-")
+            and run.get("status") in {"queued", "in_progress"}
+            and run.get("event") == "workflow_dispatch"
+            and self.trusted_manual(run)
+        )
 
     def transition(self, key, phase, **fields):
         self.state.update(key, phase=phase, **fields)
@@ -354,7 +303,9 @@ class Router:
         if not self.eligible(run):
             return
         generic_source = None
-        if str(run.get("name", "")).startswith("lite-ci-"):
+        if run.get("_ci_repo") != SELF_REPO and str(run.get("name", "")).startswith(
+            "lite-ci-"
+        ):
             from ci_core.github_source import bind_request_source, read_source_artifact
 
             client = self.client_for(run)
@@ -383,20 +334,17 @@ class Router:
         owned = [c for c in plan["cases"] if c["worker"] == self.worker]
         if not owned or all(task_key(run, c) in self.state.read() for c in owned):
             return
-        if generic_source is not None or run.get("_ci_repo") == VLLM_REPO:
-            from ci_core.github_source import read_source, requires_source
+        if generic_source is not None:
+            from ci_core.github_source import read_source
 
-            if generic_source is not None or requires_source(plan):
-                source = read_source(
-                    self.client_for(run), run, plan, source=generic_source
-                )
-                if source is None:
-                    return
-                run = {
-                    **run,
-                    "_ci_source": source,
-                    "_ci_execution_sha": source["source_sha"],
-                }
+            source = read_source(self.client_for(run), run, plan, source=generic_source)
+            if source is None:
+                return
+            run = {
+                **run,
+                "_ci_source": source,
+                "_ci_execution_sha": source["source_sha"],
+            }
         counts = Counter(item["test_id"] for item in plan["cases"])
         entries = []
         for item in owned:

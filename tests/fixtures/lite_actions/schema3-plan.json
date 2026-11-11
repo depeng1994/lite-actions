@@ -1,7 +1,7 @@
 {
   "schema": 3,
   "repo": "cann-framework/torchtitan-npu",
-  "workflow": "nightly_fulltests.yml",
+  "workflow": "lite-ci-fixture.yml",
   "run_id": 19,
   "attempt": 2,
   "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -57,5 +57,5 @@
       "execution_timeout_seconds": 90
     }
   ],
-  "plan_digest": "2eefa0f27e50948eb3c0965b1fe1e0f5cfbe03828488e71542763a37d202dd76"
+  "plan_digest": "dfe81952ce7ce0269214ca548457b9e9eecc7064adda640caacec3d4f36534a9"
 }
