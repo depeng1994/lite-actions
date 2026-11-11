@@ -1,9 +1,10 @@
 name: lite-ci-self-smoke
 run-name: "Lite Actions self smoke: ${{ inputs.profile || 'full' }}"
 on:
-  pull_request_target:
+  # main requires a PR with no bypass. A push to this ref exposes the actual
+  # landed SHA both in GITHUB_SHA and in the REST run consumed by Blue.
+  push:
     branches: [main]
-    types: [closed]
   workflow_dispatch:
     inputs:
       profile:
@@ -17,21 +18,18 @@ permissions:
   actions: read
 jobs:
   smoke:
-    if: >-
-      github.repository == 'depeng1994/lite-actions' &&
-      (github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true)
+    if: github.repository == 'depeng1994/lite-actions'
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.profile == 'cpu-only' && 10 || 180 }}
     steps:
-      # The Worker, request artifact and checkout must all refer to this merge,
-      # not the PR head or a later main commit. Fail before creating a request.
-      - name: Verify the merged revision
-        if: github.event_name == 'pull_request_target'
+      - name: Verify the revision the Worker will see
         env:
-          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if [[ "$GITHUB_SHA" != "$MERGE_SHA" ]]; then
-            echo '::error::Workflow SHA does not match the merged PR; no smoke request submitted.'
+          set -euo pipefail
+          worker_sha=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .head_sha)
+          if [[ "$worker_sha" != "$GITHUB_SHA" ]]; then
+            echo "::error::Run head $worker_sha differs from checkout $GITHUB_SHA; no request submitted."
             exit 1
           fi
       - uses: actions/checkout@v4
@@ -41,7 +39,10 @@ jobs:
       - name: Prepare the pinned repository plan
         env:
           SELF_SMOKE_PROFILE: ${{ inputs.profile || 'full' }}
-        run: python3 -m ci_core.self_smoke prepare
+        run: |
+          set -euo pipefail
+          python3 -m ci_core.self_smoke prepare
+          jq -r '.cases[] | "\(.case_id): \(.kind), \(.resources.nodes) nodes × \(.resources.devices_per_node) NPUs"' .ci-request/ci-request.json | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: lite-ci-request-${{ github.run_attempt }}
