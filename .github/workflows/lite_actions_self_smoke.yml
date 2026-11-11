@@ -8,22 +8,31 @@ jobs:
   smoke:
     if: github.repository == 'depeng1994/lite-actions'
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Prepare the pinned repository plan
-        run: python3 -m ci_core.self_smoke prepare
+      - name: Prepare the pinned CPU-only repository plan
+        run: |
+          python3 -m ci_core.self_smoke prepare
+          python3 - <<'PY'
+          import json
+          cases = json.load(open('.ci-request/ci-request.json'))['cases']
+          assert len(cases) == 1 and cases[0]['test_id'] == 'worker_os_blue'
+          r = cases[0]['resources']
+          assert r['nodes'] == 0 and r['devices_per_node'] == 0
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: lite-ci-request-${{ github.run_attempt }}
           path: .ci-request/ci-request.json
           if-no-files-found: error
           retention-days: 1
-      - name: Wait for all cases and verified cleanup
+      - name: Wait for the authenticated case result and verified cleanup
         env:
           GH_TOKEN: ${{ github.token }}
-          CI_RESULT_AUTHOR: ${{ vars.LITE_CI_RESULT_ACTOR }}
+          # Fixed expected reporter for this test repository; no actor-derived identity.
+          CI_RESULT_AUTHOR: depeng1994
         run: python3 -m ci_core.self_smoke wait
