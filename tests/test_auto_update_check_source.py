@@ -91,7 +91,6 @@ class SourceTests(unittest.TestCase):
                 with self.subTest(url=url), self.assertRaises(check_source.SourceError):
                     check_source.validate_source(url, "refs/heads/main")
 
-
     def test_git_passes_only_proxy_and_ca_allowlist(self):
         fake = {
             "http_proxy": "http://proxy.invalid:8080",
