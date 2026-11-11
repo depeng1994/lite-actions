@@ -71,6 +71,14 @@ def _run_git(root: Path, args: list[str], extra_safe: tuple[Path, ...] = ()) -> 
         config.unlink(missing_ok=True)
 
 
+def systemd_available() -> bool:
+    return bool(
+        shutil.which("systemctl")
+        and shutil.which("systemd-analyze")
+        and Path("/run/systemd/system").exists()
+    )
+
+
 def _systemctl_show(unit: str, prop: str) -> str:
     result = subprocess.run(
         ["systemctl", "show", "--property=" + prop, "--value", unit],
@@ -135,9 +143,7 @@ def run_preflight(
     else:
         checks.append(Check("Git", False, "git executable not found", "Install Git and ensure it is in PATH."))
 
-    systemctl = shutil.which("systemctl")
-    systemd_analyze = shutil.which("systemd-analyze")
-    if systemctl and systemd_analyze and Path("/run/systemd/system").exists():
+    if systemd_available():
         checks.append(Check("systemd", True, "systemd manager and systemd-analyze available", ""))
         try:
             load_state = _systemctl_show(worker_unit, "LoadState")
