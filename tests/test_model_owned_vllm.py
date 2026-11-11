@@ -54,7 +54,11 @@ class ModelOwnedVllmTests(unittest.TestCase):
             "event": "workflow_dispatch",
             "head_branch": "main",
         }
-        self.plan = source_plan(inspect_profile(), self.run, VLLM_REPO)
+        self.plan = source_plan(
+            [r for r in inspect_profile() if r["kind"] != "worker_probe"],
+            self.run,
+            VLLM_REPO,
+        )
         self.source = {
             "schema": 1,
             "provider": "github",
@@ -320,7 +324,11 @@ class ModelOwnedVllmTests(unittest.TestCase):
             "head_branch": "ci/pilot",
             "event": "workflow_dispatch",
         }
-        plan = source_plan(inspect_profile(), run, VLLM_REPO)
+        plan = source_plan(
+            [r for r in inspect_profile() if r["kind"] != "worker_probe"],
+            run,
+            VLLM_REPO,
+        )
         source = {
             **self.source,
             "mode": "commit",
@@ -341,6 +349,7 @@ class ModelOwnedVllmTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             archive = Path(tmp) / "model.tar.gz"
             with tarfile.open(archive, "w:gz") as tar:
+                tar.add(ROOT / ".ci/lite-actions.json", arcname=".ci/lite-actions.json")
                 for name in (
                     "tests/__init__.py",
                     "tests/integration_tests/__init__.py",
@@ -369,7 +378,11 @@ class ModelOwnedVllmTests(unittest.TestCase):
             "status": "in_progress",
         }
         plan_run = {**run, "head_sha": self.head}
-        plan = source_plan(inspect_profile(), plan_run, VLLM_REPO)
+        plan = source_plan(
+            [r for r in inspect_profile() if r["kind"] != "worker_probe"],
+            plan_run,
+            VLLM_REPO,
+        )
         source = {**self.source, "plan_digest": plan["plan_digest"]}
         client.ci_request = lambda bound: plan
         with (
@@ -410,7 +423,11 @@ class ModelOwnedVllmTests(unittest.TestCase):
             "status": "in_progress",
         }
         with patch.dict("os.environ", {"LITE_ACTIONS_MODEL_REPOS": repo}, clear=True):
-            plan = source_plan(inspect_profile(), {**run, "head_sha": self.head}, repo)
+            plan = source_plan(
+                [r for r in inspect_profile() if r["kind"] != "worker_probe"],
+                {**run, "head_sha": self.head},
+                repo,
+            )
         source = {
             **self.source,
             "repository": repo,

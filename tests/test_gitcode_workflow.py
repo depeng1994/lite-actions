@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from ci_core.contract import digest, normalize
 from ci_core.gitcode import GitCodeClient, MultiPlatformClient, source_plan
-from ci_core.router import Router, task_key
+from ci_core.router import Router
 from tests.scenarios import Service, definition, write_workspace
 
 
@@ -76,7 +76,7 @@ class GitCodeWorkflowTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 client.ci_request(run)
 
-    def test_gitcode_and_github_probes_report_to_their_own_repositories(self):
+    def test_model_artifacts_cannot_request_probes_on_either_platform(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             write_workspace(root)
@@ -178,7 +178,10 @@ class GitCodeWorkflowTests(unittest.TestCase):
                 ),
                 patch.object(gitcode, "send_result", side_effect=send),
                 patch.object(gitcode, "request", side_effect=request),
-                patch("ci_core.router.verify_definition"),
+                patch(
+                    "ci_core.router.verify_definition",
+                    return_value={"env_vars": {"ASCEND_SET_ENV_PATH": "/fixture/cann"}},
+                ),
                 patch(
                     "ci_core.router.probe_worker",
                     return_value=subprocess.CompletedProcess(
@@ -197,22 +200,9 @@ class GitCodeWorkflowTests(unittest.TestCase):
                         router.flush()
                         if not router.active:
                             break
-                    self.assertEqual(
-                        router.state.read()[task_key(run, case)]["phase"], "REPORTED"
-                    )
-                    gitcode_results = [
-                        json.loads(x["body"].split("\n", 1)[1])
-                        for x in comments
-                        if x["body"].startswith("Lite-CI-V3 ")
-                    ]
-                    self.assertEqual(
-                        [(x["test_id"], x["status"]) for x in gitcode_results],
-                        [("gitcode_os", "PASS")],
-                    )
-                    self.assertEqual(
-                        [(x["test_id"], x["status"]) for x in github.results()],
-                        [("github_os", "PASS")],
-                    )
+                    self.assertFalse(router.state.read())
+                    self.assertFalse(comments)
+                    self.assertFalse(github.results())
                 finally:
                     router.close()
 
@@ -308,7 +298,10 @@ class GitCodeWorkflowTests(unittest.TestCase):
                 ),
                 patch.object(gitcode, "send_result", side_effect=send),
                 patch.object(gitcode, "request", return_value=None),
-                patch("ci_core.router.verify_definition"),
+                patch(
+                    "ci_core.router.verify_definition",
+                    return_value={"env_vars": {"ASCEND_SET_ENV_PATH": "/fixture/cann"}},
+                ),
                 patch("ci_core.router.execute", side_effect=execute),
             ):
                 router = Router(

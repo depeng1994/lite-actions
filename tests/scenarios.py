@@ -62,8 +62,39 @@ def write_workspace(root):
     )
     (config / "pools.json").write_text(json.dumps({"pool_blue": pool}))
     (config / "workers.json").write_text(
-        json.dumps({w: dict(enabled=True) for w in ["blue", "yellow"]})
+        json.dumps(
+            {
+                w: dict(
+                    enabled=True,
+                    case_environments={
+                        docker: {
+                            "ASCEND_SET_ENV_PATH": [
+                                "/fixture/cann",
+                                "/usr/local/Ascend/ascend-toolkit/set_env.sh",
+                            ],
+                            "HF_ASSETS_PATH": ["/fixture/model"],
+                            "CKPT_INIT_LOAD_PATH": ["/fixture/checkpoint"],
+                        }
+                        for docker in ["training", "cann_master_torchtitan_master_xyj"]
+                    },
+                )
+                for w in ["blue", "yellow"]
+            }
+        )
     )
+
+
+def write_catalog(tar, rows):
+    items = [r for r in rows if r["kind"] != "worker_probe"]
+    doc = {
+        "version": 1,
+        "cases": {r["test_id"]: r for r in items},
+        "suites": {"dispatch_smoke": [r["test_id"] for r in items]},
+    }
+    data = json.dumps(doc).encode()
+    member = tarfile.TarInfo(".ci/lite-actions.json")
+    member.size = len(data)
+    tar.addfile(member, io.BytesIO(data))
 
 
 class Service(GitHubClient):
@@ -92,21 +123,8 @@ class Service(GitHubClient):
             )
             for d in definitions
         ]
-        inspector = (
-            "import json,sys\nrows=" + repr(rows) + "\n"
-            "name=sys.argv[sys.argv.index('--test-id')+1]\n"
-            "print(json.dumps([r for r in rows if r['test_id']==name]))\n"
-        )
         with tarfile.open(self.archive, "w:gz") as archive:
-            for name in [
-                "tests/__init__.py",
-                "tests/integration_tests/__init__.py",
-                "tests/integration_tests/tools/lite_actions/entrypoint.py",
-            ]:
-                data = inspector.encode() if name.endswith("entrypoint.py") else b""
-                member = tarfile.TarInfo(name)
-                member.size = len(data)
-                archive.addfile(member, io.BytesIO(data))
+            write_catalog(archive, rows)
         self.add_run(20)
 
     def add_run(self, ident, *, attempt=1):

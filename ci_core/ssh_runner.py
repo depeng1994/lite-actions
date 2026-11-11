@@ -22,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from ci_core.contract import REPO as MODEL_REPO
-from ci_core.registry import SELECTOR, resolve_test
+from ci_core.registry import SELECTOR
 from ci_core.scheduler import validate_allocation
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -498,19 +498,10 @@ def run(
                 else None
             ),
         )
-        definition = resolve_test(
-            archive,
-            test_case,
-            nodes=len(nodes),
-            ngpu=len(nodes[0]["devices"]),
-            repo=source_repo,
-        )
-        # These values are resolved from the pinned SHA's OverrideDefinitions.
-        # The Lite Actions JSON has no testcase-owned environment fields.
         runner = {
             "kind": case.get("kind"),
             "mode": "single" if len(nodes) == 1 else "distributed",
-            "env_vars": definition["env_vars"],
+            "env_vars": case["verified_env"],
             "LITE_CI_MASTER_PORT": case.get("master_port", 16000),
             "LITE_CI_HCCL_IF_BASE_PORT": case.get("hccl_if_base_port", 20000),
             "LITE_CI_HCCL_HOST_PORT_RANGE": case.get(

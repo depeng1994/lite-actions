@@ -42,7 +42,10 @@ class QuarantinePolicyTests(unittest.TestCase):
         failed_cleanup = Execution(0, ["cleanup unverified"], log, False)
         with (
             self.service.connected(),
-            patch("ci_core.router.verify_definition"),
+            patch(
+                "ci_core.router.verify_definition",
+                return_value={"env_vars": {"ASCEND_SET_ENV_PATH": "/fixture/cann"}},
+            ),
             patch("ci_core.router.execute", return_value=failed_cleanup),
         ):
             router.receive([self.service.runs[20]])

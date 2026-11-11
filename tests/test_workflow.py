@@ -70,7 +70,7 @@ class WorkflowTests(unittest.TestCase):
                 return
         self.fail("workflow did not settle")
 
-    def test_artifact_routes_to_independent_workers_and_reports_once(self):
+    def test_model_artifact_cannot_request_host_probes_on_either_worker(self):
         service = Service(
             [
                 definition("blue_os", kind="worker_probe"),
@@ -85,11 +85,9 @@ class WorkflowTests(unittest.TestCase):
                 router.tick()
                 self.drain(router)
                 router.tick()
-        self.assertEqual(
-            {(x["test_id"], x["worker"], x["status"]) for x in service.results()},
-            {("blue_os", "blue", "PASS"), ("yellow_os", "yellow", "PASS")},
-        )
-        self.assertEqual(len(service.results()), 2)
+        self.assertFalse(blue.state.read())
+        self.assertFalse(yellow.state.read())
+        self.assertEqual(service.results(), [])
 
     def test_parallel_cases_hold_disjoint_devices_and_ports_until_report(self):
         service = Service([definition("first"), definition("second")], self.root)

@@ -226,6 +226,7 @@ class SelfSmokeTests(unittest.TestCase):
         }
         service.plans = {42: self.plan}
         with tarfile.open(service.archive, "w:gz") as tar:
+            tar.add(ROOT / ".ci/lite-actions.json", arcname=".ci/lite-actions.json")
             for name in (
                 "tests/__init__.py",
                 "tests/integration_tests/__init__.py",

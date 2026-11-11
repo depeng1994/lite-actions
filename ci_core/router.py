@@ -38,6 +38,14 @@ from ci_core.ssh_runner import model_archive
 from ci_core.worker_probe import probe as probe_worker
 
 
+def self_request(run):
+    return (
+        run.get("_ci_provider", "github") == "github"
+        and run.get("_ci_repo") == SELF_REPO
+        and run.get("path") == ".github/workflows/" + SELF_WORKFLOW
+    )
+
+
 def task_key(run, item):
     prefix = "gitcode:" if run.get("_ci_provider") == "gitcode" else ""
     dispatch = f":{run['_ci_dispatch_id']}" if run.get("_ci_dispatch_id") else ""
@@ -239,14 +247,13 @@ class Router:
                 run["path"].rsplit("/", 1)[-1],
                 repo=run.get("_ci_repo", REPO),
             )
-            if (
-                run.get("_ci_repo") == SELF_REPO
-                and run.get("path", "").rsplit("/", 1)[-1] == SELF_WORKFLOW
-            ):
+            if self_request(run):
                 from ci_core.self_smoke import expected_plan
 
                 if plan != expected_plan(run):
                     raise ValueError("self-smoke plan differs from its pinned profile")
+            elif any(i["kind"] == "worker_probe" for i in plan["cases"]):
+                raise ValueError("MODEL_HOST_PROBE_FORBIDDEN")
             self.plans[identity] = plan
         else:
             plan = cached
@@ -404,10 +411,7 @@ class Router:
         run = r["run"]
         launched = False
         try:
-            if (
-                run.get("_ci_repo") == SELF_REPO
-                and run.get("path", "").rsplit("/", 1)[-1] == SELF_WORKFLOW
-            ):
+            if self_request(run):
                 from ci_core.self_identity import checkout_sha
 
                 if (
@@ -422,27 +426,23 @@ class Router:
 
                 check_current(self.client_for(run), run["_ci_source"], check_run=True)
             self.transition(key, "STAGING")
-            with tempfile.TemporaryDirectory(prefix="lite-definition-") as tmp:
-                source_repo = run.get("_ci_repo", REPO)
-                archive = model_archive(
-                    run.get("_ci_execution_sha", run["head_sha"]),
-                    Path(tmp),
-                    source_repo=source_repo,
-                    provider=run.get("_ci_provider", "github"),
-                    fallback_repo=run.get("_ci_source_repo"),
-                    source_pr=(
-                        run["_ci_pr_number"]
-                        if run.get("_ci_source", {}).get("mode") == "merge_result"
-                        else None
-                    ),
-                )
-                verify_definition(archive, item, r["defaults"], repo=source_repo)
             if run.get("_ci_provider") == "gitcode":
                 self.client_for(run).validate_current(run)
             if cancel.is_set():
                 self.finish(key, "CANCELLED", 130, ["Cancelled before launch"])
                 return
             if item["kind"] == "worker_probe":
+                # Recheck persisted tasks: a pre-upgrade queue is not an authorization.
+                if not self_request(run):
+                    raise ValueError("MODEL_HOST_PROBE_FORBIDDEN")
+                from ci_core.self_smoke import expected_plan
+
+                approved = expected_plan(run)
+                if (
+                    r["digest"] != approved["plan_digest"]
+                    or item not in approved["cases"]
+                ):
+                    raise ValueError("self-smoke probe identity mismatch")
                 self.transition(key, "RUNNING")
                 p = probe_worker()
                 if cancel.is_set():
@@ -463,6 +463,40 @@ class Router:
                     (p.stdout + p.stderr).splitlines(),
                 )
                 return
+            with tempfile.TemporaryDirectory(prefix="lite-definition-") as tmp:
+                source_repo = run.get("_ci_repo", REPO)
+                archive = model_archive(
+                    run.get("_ci_execution_sha", run["head_sha"]),
+                    Path(tmp),
+                    source_repo=source_repo,
+                    provider=run.get("_ci_provider", "github"),
+                    fallback_repo=run.get("_ci_source_repo"),
+                    source_pr=(
+                        run["_ci_pr_number"]
+                        if run.get("_ci_source", {}).get("mode") == "merge_result"
+                        else None
+                    ),
+                )
+                definition = verify_definition(
+                    archive, item, r["defaults"], repo=source_repo
+                )
+            from ci_core.registry import validate_case_environment
+
+            environment = validate_case_environment(
+                definition["env_vars"], kind=item["kind"]
+            )
+            # The model selects values; only the deployment may authorize them.
+            rules = (
+                self.workers[self.worker]
+                .get("case_environments", {})
+                .get(item["docker"], {})
+            )
+            if any(
+                type(rules.get(k)) is not list or v not in rules[k]
+                for k, v in environment.items()
+            ):
+                raise ValueError("MODEL_ENV_NOT_APPROVED")
+            case = {**case, "verified_env": environment}
             if run.get("_ci_source"):
                 case = {**case, "native_source": run["_ci_source"]}
             subrun = {

@@ -13,7 +13,6 @@ import shlex
 import signal
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,7 +25,6 @@ from ci_core.contract import (
     trusted_repositories,
 )
 from ci_core.logs import metadata, select_remote
-from ci_core.registry import resolve_test
 
 BASE = Path(__file__).resolve().parents[1]
 CHIP_PROCESS = re.compile(r"^\|\s*(\d+)\s*([01])\s*\|\s*(\d+)\s*\|")
@@ -809,33 +807,6 @@ def summarize(log: Path, rc: int) -> list[str]:
     return list(tail) or [f"Execution returned {rc} without output"]
 
 
-def prepare_profile(case: dict, run: dict) -> dict:
-    from ci_core.ssh_runner import model_archive
-
-    with tempfile.TemporaryDirectory(prefix="lite-model-") as tmp:
-        source_repo = run.get("_ci_repo", TORCHTITAN_REPO)
-        archive = model_archive(
-            run.get("_ci_execution_sha", run["head_sha"]),
-            Path(tmp),
-            source_repo=source_repo,
-            provider=run.get("_ci_provider", "github"),
-            fallback_repo=run.get("_ci_source_repo"),
-            source_pr=(
-                run["_ci_pr_number"]
-                if run.get("_ci_source", {}).get("mode") == "merge_result"
-                else None
-            ),
-        )
-        definition = resolve_test(
-            archive,
-            run["_ci_test_id"],
-            nodes=case["resources"]["nodes"],
-            ngpu=case["resources"]["devices_per_node"],
-            repo=source_repo,
-        )
-    return definition["env_vars"]
-
-
 def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
     if not case.get("enabled"):
         raise ValueError("disabled case")
@@ -846,7 +817,7 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
     if cancel is not None and cancel.is_set():
         logfile.write_text("Cancelled before launch\n", encoding="utf-8")
         return Execution(130, ["Cancelled before launch"], logfile, True)
-    environment = prepare_profile(case, run)
+    environment = case["verified_env"]
     setup = environment["ASCEND_SET_ENV_PATH"]
     case = {**case, "ascend_set_env_path": setup}
     pools = json.loads((root / "config/pools.json").read_text())

@@ -35,17 +35,12 @@ class ExecutorSafetyTests(unittest.TestCase):
             "resources": {"nodes": 1, "devices_per_node": 2},
             "allocation": [{"host_id": "192.0.2.10:22", "devices": [0, 1]}],
             "execution_timeout_seconds": 90,
+            "verified_env": {"ASCEND_SET_ENV_PATH": "/cann"},
         }
 
     def boundaries(self, *, stub_preflight=True):
         stack = ExitStack()
         mocks = SimpleNamespace()
-        stack.enter_context(
-            patch(
-                "ci_core.executor.prepare_profile",
-                return_value={"ASCEND_SET_ENV_PATH": "/cann"},
-            )
-        )
         if stub_preflight:
             stack.enter_context(patch("ci_core.executor.remote_preflight"))
         mocks.broadcast = stack.enter_context(
@@ -129,7 +124,12 @@ class ExecutorSafetyTests(unittest.TestCase):
                 )
             )
             stack.enter_context(self.service.connected())
-            stack.enter_context(patch("ci_core.router.verify_definition"))
+            stack.enter_context(
+                patch(
+                    "ci_core.router.verify_definition",
+                    return_value={"env_vars": {"ASCEND_SET_ENV_PATH": "/fixture/cann"}},
+                )
+            )
             router = Router(self.root, "blue", self.service, "reporter")
             stack.callback(router.close)
             header = "| NPU ID | Chip ID | Process id in container |\n"
