@@ -166,6 +166,101 @@ class SelfSmokeTests(unittest.TestCase):
         self.assertIn(f"{self.plan['cases'][0]['case_id']}: PASS", output.getvalue())
         self.assertIn("cleanup_verified=False", output.getvalue())
 
+    def test_full_rejects_missing_or_misrouted_yellow_probe(self):
+        from tests.integration_tests.tools.lite_actions.entrypoint import (
+            inspect_profile,
+        )
+
+        rows = inspect_profile()
+        missing = [r for r in rows if r["test_id"] != "worker_os_yellow"]
+        wrong = copy.deepcopy(rows)
+        next(r for r in wrong if r["test_id"] == "worker_os_yellow")["ci_overrides"][
+            "worker"
+        ] = "blue"
+        for definitions in (missing, wrong):
+            with (
+                self.subTest(definitions=definitions),
+                patch("ci_core.self_smoke.inspect_profile", return_value=definitions),
+                self.assertRaisesRegex(ValueError, "Yellow OS probe"),
+            ):
+                prepare(self.env)
+
+    def test_matrix_receipts_and_final_gate(self):
+        run = {
+            "id": 42,
+            "run_attempt": 1,
+            "head_sha": self.env["GITHUB_SHA"],
+            "path": SELF_WORKFLOW,
+            "_ci_repo": SELF_REPO,
+        }
+        env = {**self.env, "GH_TOKEN": "fixture", "CI_RESULT_AUTHOR": "reporter"}
+        rows = [
+            {
+                "user": {"login": "reporter"},
+                "body": body_for(
+                    run,
+                    item,
+                    report(run, item, self.plan["plan_digest"], "PASS", 0, [], True),
+                ),
+            }
+            for item in self.plan["cases"]
+        ]
+        yellow = self.plan["cases"][1]["case_id"]
+        ids = [c["case_id"] for c in self.plan["cases"] if c["worker"] == "blue"]
+        blue = rows[:1] + rows[2:]
+        client = Mock()
+        with (
+            patch("ci_core.self_smoke.PLAN", Path(self.temp.name) / "plan.json"),
+            patch("ci_core.self_smoke.GitHubClient", return_value=client),
+            redirect_stdout(io.StringIO()) as out,
+        ):
+            client.commit_comments.return_value = blue
+            for case_id in ids:
+                wait(env, only=case_id, once=True)
+            for only in (yellow, None):
+                with self.assertRaisesRegex(TimeoutError, yellow):
+                    wait(env, only=only, once=True)
+            self.assertIn("Waiting for yellow Worker receipt", out.getvalue())
+            with self.assertRaisesRegex(ValueError, "case selector"):
+                wait(env, only="", once=True)
+            forged = copy.deepcopy(rows[1])
+            marker, payload = forged["body"].split("\n", 1)
+            data = json.loads(payload)
+            for key, value in [
+                ("worker", "blue"),
+                ("sha", "f" * 40),
+                ("plan_digest", "f" * 64),
+                ("attempt", 2),
+            ]:
+                client.commit_comments.return_value = blue + [
+                    {**forged, "body": marker + "\n" + json.dumps({**data, key: value})}
+                ]
+                with (
+                    self.subTest(field=key),
+                    self.assertRaisesRegex(ValueError, "identity mismatch"),
+                ):
+                    wait(env, only=yellow, once=True)
+            client.commit_comments.return_value = blue + [
+                {
+                    **forged,
+                    "body": marker
+                    + "\n"
+                    + json.dumps({**data, "cleanup_verified": False}),
+                }
+            ]
+            wait(env, only=ids[0], once=True)
+            for only in (yellow, None):
+                with self.assertRaisesRegex(ValueError, "self-smoke cases failed"):
+                    wait(env, only=only, once=True)
+            client.commit_comments.return_value = blue + [
+                {**forged, "user": {"login": "someone-else"}}
+            ]
+            with self.assertRaisesRegex(TimeoutError, yellow):
+                wait(env, only=yellow, once=True)
+            client.commit_comments.return_value = rows
+            wait(env, only=yellow, once=True)
+            wait(env, once=True)
+
     def test_launch_consumes_complete_two_node_lease(self):
         case = next(
             case

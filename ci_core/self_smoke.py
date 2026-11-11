@@ -31,7 +31,17 @@ def expected_plan(run):
         if len(rows) != 1 or rows[0]["kind"] != "worker_probe":
             raise ValueError("expected exactly one pinned OS probe")
         # source_plan separately rejects a probe with nonzero nodes or devices.
-    return source_plan(rows, run, SELF_REPO)
+    plan = source_plan(rows, run, SELF_REPO)
+    if run.get("display_title") != CPU_TITLE:
+        yellow = [
+            case for case in plan["cases"] if case["test_id"] == "worker_os_yellow"
+        ]
+        if len(yellow) != 1 or (yellow[0]["worker"], yellow[0]["kind"]) != (
+            "yellow",
+            "worker_probe",
+        ):
+            raise ValueError("full self-smoke requires one zero-device Yellow OS probe")
+    return plan
 
 
 def prepare(environ=os.environ):
@@ -53,7 +63,7 @@ def prepare(environ=os.environ):
     return plan
 
 
-def results(comments, plan, author):
+def results(comments, plan, author, *, only=None):
     if not author:
         raise ValueError("result author is required")
     cases = {item["case_id"]: item for item in plan["cases"]}
@@ -69,6 +79,8 @@ def results(comments, plan, author):
         case_id = marker[len(prefix) :]
         if not separator or case_id not in cases:
             raise ValueError("unknown self-smoke result")
+        if only is not None and only != case_id:
+            continue  # Other matrix jobs check their own receipts; the gate checks all.
         result = json.loads(payload, object_pairs_hook=_unique_object)
         item = cases[case_id]
         expected = {
@@ -103,7 +115,7 @@ def results(comments, plan, author):
     return found
 
 
-def wait(environ=os.environ):
+def wait(environ=os.environ, *, only=None, once=False):
     plan = json.loads(PLAN.read_text(), object_pairs_hook=_unique_object)
     if (
         plan["repo"] != environ["GITHUB_REPOSITORY"]
@@ -120,12 +132,25 @@ def wait(environ=os.environ):
     )
     author = environ["CI_RESULT_AUTHOR"]
     client = GitHubClient(environ["GH_TOKEN"], SELF_REPO)
-    deadline = time.monotonic() + 10800
+    selected = {
+        c["case_id"]: c for c in plan["cases"] if only is None or c["case_id"] == only
+    }
+    if not selected:
+        raise ValueError("unknown self-smoke case selector")
+    if only is not None:
+        print(
+            f"Waiting for {selected[only]['worker']} Worker receipt: {only} on {plan['sha']} "
+            f"(run {plan['run_id']}, attempt {plan['attempt']}). "
+            "Check worker-ready.release_sha and the self-smoke subscription if no receipt arrives.",
+            flush=True,
+        )
+    deadline = time.monotonic() + (
+        540 if environ.get("SELF_SMOKE_PROFILE") == "cpu-only" else 10680
+    )
     shown = set()
-    found = {}
-    while time.monotonic() < deadline:
-        found = results(client.commit_comments(plan["sha"]), plan, author)
-        for case_id in found.keys() - shown:
+    while True:
+        found = results(client.commit_comments(plan["sha"]), plan, author, only=only)
+        for case_id in sorted(found.keys() - shown):
             result = found[case_id]
             outcome = (
                 "PASS"
@@ -140,11 +165,14 @@ def wait(environ=os.environ):
         ]
         if failures:
             raise ValueError("self-smoke cases failed: " + ", ".join(sorted(failures)))
-        if len(found) == len(plan["cases"]):
+        missing = selected.keys() - found.keys()
+        if not missing:
             return
+        if once or time.monotonic() >= deadline:
+            raise TimeoutError(
+                "self-smoke results incomplete: " + ", ".join(sorted(missing))
+            )
         time.sleep(20)
-    missing = {item["case_id"] for item in plan["cases"]} - found.keys()
-    raise TimeoutError("self-smoke results incomplete: " + ", ".join(sorted(missing)))
 
 
 if __name__ == "__main__":
@@ -155,7 +183,11 @@ if __name__ == "__main__":
             prepare()
         elif sys.argv[1:] == ["wait"]:
             wait()
+        elif sys.argv[1:] == ["wait-case"]:
+            wait(only=os.environ["SELF_SMOKE_CASE_ID"])
+        elif sys.argv[1:] == ["verify"]:
+            wait(once=True)
         else:
-            raise SystemExit("expected prepare or wait")
+            raise SystemExit("expected prepare, wait, wait-case or verify")
     except (ValueError, TimeoutError) as exc:
         raise SystemExit(str(exc)) from exc

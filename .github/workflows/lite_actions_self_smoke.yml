@@ -16,11 +16,15 @@ on:
 permissions:
   contents: read
   actions: read
+env:
+  SELF_SMOKE_PROFILE: ${{ inputs.profile || 'full' }}
 jobs:
-  smoke:
+  prepare:
     if: github.repository == 'depeng1994/lite-actions'
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.profile == 'cpu-only' && 10 || 180 }}
+    timeout-minutes: 10
+    outputs:
+      cases: ${{ steps.plan.outputs.cases }}
     steps:
       - name: Verify the revision the Worker will see
         env:
@@ -37,11 +41,11 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Prepare the pinned repository plan
-        env:
-          SELF_SMOKE_PROFILE: ${{ inputs.profile || 'full' }}
+        id: plan
         run: |
           set -euo pipefail
           python3 -m ci_core.self_smoke prepare
+          echo "cases=$(jq -ce '[.cases[].case_id] | select(length > 0)' .ci-request/ci-request.json)" >> "$GITHUB_OUTPUT"
           jq -r '.cases[] | "\(.case_id): \(.kind), \(.resources.nodes) nodes × \(.resources.devices_per_node) NPUs"' .ci-request/ci-request.json | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
@@ -49,8 +53,52 @@ jobs:
           path: .ci-request/ci-request.json
           if-no-files-found: error
           retention-days: 1
-      - name: Wait for all selected cases and verified cleanup
+  receipt:
+    name: ${{ matrix.case_id }}
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.profile == 'cpu-only' && 10 || 180 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        case_id: ${{ fromJSON(needs.prepare.outputs.cases) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: lite-ci-request-${{ github.run_attempt }}
+          path: .ci-request
+      - name: Wait for this Worker's authenticated receipt and verified cleanup
+        env:
+          SELF_SMOKE_CASE_ID: ${{ matrix.case_id }}
+          GH_TOKEN: ${{ github.token }}
+          CI_RESULT_AUTHOR: ${{ vars.LITE_CI_RESULT_ACTOR }}
+        run: python3 -m ci_core.self_smoke wait-case
+
+  smoke:
+    needs: [prepare, receipt]
+    if: ${{ always() && github.repository == 'depeng1994/lite-actions' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require prepare and every selected case to succeed
+        env:
+          PREPARE: ${{ needs.prepare.result }}
+          RECEIPTS: ${{ needs.receipt.result }}
+        run: test "$PREPARE" = success && test "$RECEIPTS" = success
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: lite-ci-request-${{ github.run_attempt }}
+          path: .ci-request
+      - name: Verify the complete receipt set for this run attempt
         env:
           GH_TOKEN: ${{ github.token }}
           CI_RESULT_AUTHOR: ${{ vars.LITE_CI_RESULT_ACTOR }}
-        run: python3 -m ci_core.self_smoke wait
+        run: python3 -m ci_core.self_smoke verify

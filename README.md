@@ -262,6 +262,12 @@ full profile, in plan order: Blue OS, Yellow OS, single-node 8P, two-node 16P,
 and a second single-node 8P. Both OS probes use zero NPUs. The independent
 `cpu-only` deployment profile still probes Blue alone. The full suite runs
 automatically after a PR lands on `main`, or manually on a deployed revision.
+Each planned instance has its own GitHub job. In a full run, `case_001_worker_os_yellow`
+waits for the Yellow Worker, not the hosted runner: four passing Blue jobs cannot
+satisfy it. A waiting job means its authenticated result is missing, not that the
+Worker is necessarily offline. Compare the run SHA to Yellow’s `worker-ready.release_sha`
+and check the subscription below. The final `smoke` job verifies the entire receipt set.
+For a fresh attempt, re-run **all** jobs so `prepare` publishes that attempt’s plan.
 
 To opt a Worker into the self-smoke route, include `depeng1994/lite-actions` in
 `LITE_ACTIONS_MODEL_REPOS` and set `LITE_ACTIONS_SELF_SMOKE_ENABLED=1`. Set the
