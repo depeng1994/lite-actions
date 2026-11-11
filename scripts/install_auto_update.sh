@@ -173,7 +173,7 @@ LITE_ACTIONS_UPDATE_STATE_DIR=/var/lib/lite-actions/auto-update
 LITE_ACTIONS_UPDATE_LOG_FILE=/var/log/lite-actions/management/updates.jsonl
 LITE_ACTIONS_UPDATE_READY_FILE=$ready_file
 LITE_ACTIONS_UPDATE_READY_TIMEOUT=120
-LITE_ACTIONS_UPDATE_PYTHON=$python_path
+LITE_ACTIONS_UPDATE_PYTHON="$python_path"
 EOF
 sed '/^LITE_ACTIONS_UPDATE_PYTHON=/d' "$expected_env" > "$legacy_env"
 if [[ -e "$env_file" || -L "$env_file" ]]; then
