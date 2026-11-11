@@ -1,0 +1,60 @@
+name: Sync to GitCode
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# The GitHub source is public; no GitHub credential or checkout is needed.
+permissions: {}
+concurrency:
+  group: lite-actions-gitcode-mirror
+  queue: max
+
+jobs:
+  mirror:
+    if: github.repository == 'depeng1994/lite-actions' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GIT_TERMINAL_PROMPT: '0'
+      LC_ALL: C
+    steps:
+      - name: Snapshot all GitHub branches and tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          git init --quiet --bare mirror.git
+          cd mirror.git
+          # Fetch fresh after acquiring the concurrency slot, even on a rerun.
+          git fetch --atomic --no-tags https://github.com/depeng1994/lite-actions.git \
+            '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'
+          # Never prune a destination from an empty or invalid source.
+          git rev-parse --verify 'refs/heads/main^{commit}'
+          git for-each-ref --format='%(objectname)%09%(refname)' refs/heads refs/tags \
+            | sort > "$RUNNER_TEMP/expected.refs"
+
+      - name: Mirror to GitCode and verify every ref
+        shell: bash
+        env:
+          GITCODE_USER: ${{ secrets.GITCODE_USER }}
+          GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+        run: |
+          set -euo pipefail
+          : "${GITCODE_USER:?Missing GITCODE_USER}" "${GITCODE_TOKEN:?Missing GITCODE_TOKEN}"
+          cd "$RUNNER_TEMP/mirror.git"
+          target=https://gitcode.com/depeng1994/lite-actions.git
+          # Supply credentials to Git only for this exact HTTPS destination.
+          # The helper text contains variable names, not their values.
+          gitcode() {
+            git -c http.followRedirects=false -c credential.helper= \
+              -c credential.useHttpPath=true \
+              -c 'credential.https://gitcode.com/depeng1994/lite-actions.git.helper=!f() { if test "$1" = get; then printf "username=%s\npassword=%s\n" "$GITCODE_USER" "$GITCODE_TOKEN"; fi; }; f' "$@"
+          }
+          # One transaction: a protected/refused update must not leave a partial mirror.
+          gitcode push --atomic --prune "$target" \
+            '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'
+          gitcode ls-remote --refs "$target" 'refs/heads/*' 'refs/tags/*' \
+            | sort > "$RUNNER_TEMP/gitcode.refs"
+          diff -u "$RUNNER_TEMP/expected.refs" "$RUNNER_TEMP/gitcode.refs"
+          printf 'Verified %s refs; main=%s\n' "$(wc -l < "$RUNNER_TEMP/expected.refs")" "$(git rev-parse refs/heads/main)"
