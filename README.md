@@ -198,7 +198,7 @@ LITE_ACTIONS_GITCODE_RESULT_AUTHOR=<gitcode-result-account>
 
 `LITE_ACTIONS_GITCODE_RESULT_AUTHOR` 必须是对应 GitCode Token 所属、且有权限发布结果的账号。修改环境文件后，在确认没有不允许中断的在途任务后，按主机维护流程重启 Worker，使 systemd 重新加载环境。
 
-**不要配置 GitHub 的 `torchtitan-npu`**：TorchTitan 的 Yellow 任务来源是 GitCode `cann/torchtitan-npu`；GitHub 侧保留 `cann-framework/vllm-ascend`。此配置不改变 GitCode/GitHub 的仓库 canonical alias，也不跟随 GitHub 301 重定向。
+**不要配置 GitHub 的 `torchtitan-npu`**：TorchTitan 的 Yellow 任务来源是 GitCode `cann/torchtitan-npu`；GitHub 侧保留 `cann-framework/vllm-ascend`。此配置不改变 GitCode/GitHub 的仓库 canonical alias，也不跟随 GitHub 301 重定向。 详见[Yellow Worker GitCode 配置指南](docs/yellow-worker.md)。
 
 Cancellation terminates only the case's marked ranks and checks NPU occupancy.
 State is atomically persisted and fsynced before execution. Restart never blindly
