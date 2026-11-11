@@ -256,7 +256,11 @@ class PreflightTests(unittest.TestCase):
         (source / ".git").mkdir(parents=True)
         return sha, release, source
 
-    def _run(self, root: Path, *, unit="loaded", binding=True, dirty="", remote_ok=True, valid_current=True):
+    def _run(
+        self, root: Path, *, unit="loaded", binding=True, dirty="",
+        remote_ok=True, valid_current=True, python_ok=True, git_available=True,
+        systemd_ok=True, working_dir_ok=True, proxy_file=None
+    ):
         sha, release, source = self._layout(root)
         if not binding:
             shutil.rmtree(release / "cache")
@@ -270,10 +274,27 @@ class PreflightTests(unittest.TestCase):
                 return dirty
             raise AssertionError(args)
         with (
-            patch("auto_update.preflight.validate_python_interpreter", return_value="3.12.2"),
-            patch("auto_update.preflight.systemd_available", return_value=True),
-            patch("auto_update.preflight.shutil.which", return_value="/usr/bin/git"),
-            patch("auto_update.preflight._systemctl_show", side_effect=lambda _unit, prop: unit if prop == "LoadState" else str(release)),
+            patch(
+                "auto_update.preflight.validate_python_interpreter",
+                return_value="3.12.2" if python_ok else None,
+                side_effect=None if python_ok else DeploySupportError("python too old"),
+            ),
+            patch("auto_update.preflight.systemd_available", return_value=systemd_ok),
+            patch(
+                "auto_update.preflight.shutil.which",
+                return_value="/usr/bin/git" if git_available else None,
+            ),
+            patch(
+                "auto_update.preflight._systemctl_show",
+                side_effect=lambda _unit, prop: (
+                    unit if prop == "LoadState"
+                    else (str(release) if working_dir_ok else "/wrong/working-directory")
+                ),
+            ),
+            patch(
+                "auto_update.preflight.read_proxy_env_file",
+                side_effect=DeploySupportError("proxy file mode invalid") if proxy_file else None,
+            ),
             patch("auto_update.preflight._run_git", side_effect=fake_git),
             patch(
                 "auto_update.preflight.check_source",
@@ -288,6 +309,7 @@ class PreflightTests(unittest.TestCase):
                 source_root=source,
                 git_url="https://github.com/owner/repo.git",
                 git_ref="refs/heads/main",
+                proxy_env_file=proxy_file,
             )
         return checks
 
@@ -313,6 +335,41 @@ class PreflightTests(unittest.TestCase):
             checks = self._run(Path(tmp), valid_current=False)
         self.assertTrue(any(c.name == "current release" and not c.ok for c in checks))
 
+
+
+    def test_preflight_reports_python_git_systemd_workdir_and_proxy_failures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            checks = self._run(Path(tmp), python_ok=False)
+        self.assertTrue(any(c.name == "Python" and not c.ok for c in checks))
+        with tempfile.TemporaryDirectory() as tmp:
+            checks = self._run(Path(tmp), git_available=False)
+        self.assertTrue(any(c.name == "Git" and not c.ok for c in checks))
+        with tempfile.TemporaryDirectory() as tmp:
+            checks = self._run(Path(tmp), systemd_ok=False)
+        self.assertTrue(any(c.name == "systemd" and not c.ok for c in checks))
+        with tempfile.TemporaryDirectory() as tmp:
+            checks = self._run(Path(tmp), working_dir_ok=False)
+        self.assertTrue(any(c.name == "Worker WorkingDirectory" and not c.ok for c in checks))
+        with tempfile.TemporaryDirectory() as tmp:
+            checks = self._run(Path(tmp), proxy_file="/tmp/fake-proxy.env")
+        self.assertTrue(any(c.name == "proxy file" and not c.ok for c in checks))
+
+    def test_no_proxy_option_does_not_install_proxy_files(self):
+        installer = (ROOT / "scripts" / "install_auto_update.sh").read_text()
+        block = installer.split("# Proxy support is opt-in.", 1)[1].split(
+            "systemd-analyze verify", 1
+        )[0]
+        self.assertIn('if [[ -n "$proxy_env_file" ]]', block)
+        self.assertIn("install-proxy", block)
+        self.assertNotIn("install-proxy", installer.split("# Proxy support is opt-in.", 1)[0])
+
+    def test_python_path_is_persisted_and_template_has_no_system_python_assumption(self):
+        installer = (ROOT / "scripts" / "install_auto_update.sh").read_text()
+        self.assertIn("LITE_ACTIONS_UPDATE_PYTHON=$python_path", installer)
+        self.assertIn('"$python_path" - "$ready_file"', installer)
+        service = (ROOT / "deploy" / "lite-actions-blue.service").read_text()
+        self.assertNotIn("/usr/bin/python3", service)
+        self.assertIn("<PYTHON_3_11_OR_NEWER>", service)
 
 
 if __name__ == "__main__":
