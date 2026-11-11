@@ -1,4 +1,4 @@
-name: Lite Actions self smoke
+name: lite-ci-self-smoke
 run-name: 'Lite Actions self smoke: ${{ inputs.profile }}'
 on:
   workflow_dispatch:
