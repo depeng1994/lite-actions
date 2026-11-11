@@ -7,7 +7,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,7 +16,9 @@ from auto_update.deploy_support import (
     DeploySupportError,
     _check_existing_file,
     read_proxy_env_file,
+    render_systemd_environment,
     validate_python_interpreter,
+    _DROPIN_CONTENT,
 )
 
 
@@ -296,8 +297,6 @@ def run_preflight(
             dropin = Path(
                 "/etc/systemd/system/lite-actions-auto-update.service.d/20-proxy-env.conf"
             )
-            from auto_update.deploy_support import _DROPIN_CONTENT, render_systemd_environment
-
             _check_existing_file(
                 managed,
                 render_systemd_environment(proxy_values).encode(),
