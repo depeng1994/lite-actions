@@ -124,7 +124,7 @@ class IntegrationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            old, old_sha = checkout(root, "old")
+            old, _ = checkout(root, "old")
             new, new_sha = checkout(root, "candidate")
             (root / "current").symlink_to(old)
             stage = root / "staging" / "candidate"
@@ -138,7 +138,10 @@ class IntegrationTests(unittest.TestCase):
                 patch("auto_update.update.prepare_release", return_value=new),
                 patch("auto_update.update.stop_worker"),
                 patch("auto_update.update.start_worker"),
-                patch("auto_update.update.wait_ready", side_effect=SwitchError("worker_not_active")),
+                patch(
+                    "auto_update.update.wait_ready",
+                    side_effect=SwitchError("worker_not_active"),
+                ),
                 patch("auto_update.update.restore_old", return_value="old_ready"),
             ):
                 self.assertEqual(_run(cfg), 3)
@@ -166,12 +169,16 @@ class IntegrationTests(unittest.TestCase):
                 patch("auto_update.update.prepare_release", return_value=new),
                 patch("auto_update.update.stop_worker"),
                 patch("auto_update.update.start_worker"),
-                patch("auto_update.update.wait_ready", side_effect=SwitchError("candidate_runtime_invalid")),
+                patch(
+                    "auto_update.update.wait_ready",
+                    side_effect=SwitchError("candidate_runtime_invalid"),
+                ),
                 patch("auto_update.update.restore_old", return_value="old_ready"),
             ):
                 self.assertEqual(_run(cfg), 3)
             blocked = json.loads((cfg.state_dir / "blocked.json").read_text())
             self.assertEqual(blocked["sha"], new_sha)
+
 
 if __name__ == "__main__":
     unittest.main()
