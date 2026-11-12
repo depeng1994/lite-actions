@@ -160,6 +160,43 @@ commit, accepts only its own cases, and publishes results as the configured
 `Dispatcher Smoke`. For NPU tasks the Worker reads the fixed commit's declarative `.ci/lite-actions.json`, never model Python. Missing catalogs stop admission; do not roll back to running the model entrypoint on the host. A new dispatch of the same run gets separate task,
 log and result identities.
 
+### Yellow：GitCode / GitHub 仓库来源配置
+
+Yellow 的模型仓来源按平台分别配置，不能把同一个仓库同时配置到两个平台：
+
+- **TorchTitan NPU**：从 GitCode 仓库 `cann/torchtitan-npu` 发现 Workflow；配置 `LITE_ACTIONS_GITCODE_REPOS`。不要配置 GitHub 的 `torchtitan-npu`。
+- **vLLM Ascend**：继续从 GitHub 仓库 `cann-framework/vllm-ascend` 发现 Workflow；配置 `LITE_ACTIONS_MODEL_REPOS`。
+
+在 Yellow 已由 systemd `EnvironmentFile` 加载的 root-only 环境文件（例如 `/etc/lite-actions/yellow.env`）中维护以下配置。先确认现有文件，不要覆盖其中已有的 Worker、路径、Token 或其他环境设置：
+
+```bash
+sudo stat -c '%U:%G %a %n' /etc/lite-actions/yellow.env
+sudoedit /etc/lite-actions/yellow.env
+sudo chown root:root /etc/lite-actions/yellow.env
+sudo chmod 0600 /etc/lite-actions/yellow.env
+```
+
+如果文件不存在，先按现有 Worker 的 systemd `EnvironmentFile` 配置确认正确路径，再创建新文件；不要用 `install /dev/null` 覆盖已有环境文件。
+
+示例内容（占位符必须替换为已授权的账号和 Token；不要把真实凭据提交到仓库）：
+
+```ini
+# GitHub: vLLM model jobs and Lite Actions self-smoke
+LITE_ACTIONS_MODEL_REPOS=cann-framework/vllm-ascend,depeng1994/lite-actions
+
+# Router requires the common result-author identity.
+LITE_ACTIONS_RESULT_AUTHOR=<github-result-account>
+
+# GitCode source: TorchTitan NPU only
+LITE_ACTIONS_GITCODE_REPOS=cann/torchtitan-npu
+LITE_ACTIONS_GITCODE_TOKEN=<gitcode-personal-access-token>
+LITE_ACTIONS_GITCODE_RESULT_AUTHOR=<gitcode-result-account>
+```
+
+`LITE_ACTIONS_GITCODE_RESULT_AUTHOR` 必须是对应 GitCode Token 所属、且有权限发布结果的账号。修改环境文件后，在确认没有不允许中断的在途任务后，按主机维护流程重启 Worker，使 systemd 重新加载环境。
+
+**不要配置 GitHub 的 `torchtitan-npu`**：TorchTitan 的 Yellow 任务来源是 GitCode `cann/torchtitan-npu`；GitHub 侧保留 `cann-framework/vllm-ascend`，并订阅 `depeng1994/lite-actions` 以接收本仓探针。此配置不改变 GitCode/GitHub 的仓库 canonical alias，也不跟随 GitHub 301 重定向。
+
 Cancellation terminates only the case's marked ranks and checks NPU occupancy.
 State is atomically persisted and fsynced before execution. Restart never blindly
 reruns a case; pending reports retry without training. With the default policy,
@@ -247,17 +284,40 @@ python3 -m unittest discover -s tests
 
 The lint command runs Ruff lint/format checks and requires `device_ids`/`devices`
 arrays in `config/pools.json` to remain on one line. Use `--fix` to format both.
-Pull requests run the same checks in GitHub Actions. See [test scope](docs/testing.md)
+A push to the protected main branch runs the same checks in GitHub Actions. See [test scope](docs/testing.md)
 before adding a scenario; configuration snapshots are not the test objective.
 
 For trusted candidates, `.github/workflows/lite_actions_self_smoke.yml` can be
 started manually after the Worker is running from a clean checkout of that exact
 commit. It uses the repository's `tests/integration_tests/training_cases/dispatch_smoke.py`
-profile: a Blue OS probe followed by 8P, 16P and 8P HCCL Smoke. The Yellow OS
-probe is disabled in the default profile. PRs continue to run CPU checks only.
+full profile, in plan order: Blue OS, Yellow OS, single-node 8P, two-node 16P,
+and a second single-node 8P. Both OS probes use zero NPUs. The independent
+`cpu-only` deployment profile still probes Blue alone. The full suite runs
+automatically after a PR lands on `main`, or manually on a deployed revision.
+Edit `SMOKE_PROFILES` in the case definition above to change either suite.
+`prepare` generates the GitHub matrix from the resolved plan, preserving order and
+repeated instances; the workflow and Worker do not keep separate case lists.
+Each planned instance has its own GitHub job. In a full run, `case_001_worker_os_yellow`
+waits for the Yellow Worker, not the hosted runner: four passing Blue jobs cannot
+satisfy it. A waiting job means its authenticated result is missing, not that the
+Worker is necessarily offline. Compare the run SHA to Yellow’s `worker-ready.release_sha`
+and check the subscription below. As in vLLM-Ascend Dispatcher Smoke, the final `Lite-Actions-Smoke` job requires
+`prepare` and every selected matrix case to succeed.
+For a fresh attempt, re-run **all** jobs so `prepare` publishes that attempt’s plan.
 
-To opt a Worker into the self-smoke route, include `depeng1994/lite-actions` in
-`LITE_ACTIONS_MODEL_REPOS` and set `LITE_ACTIONS_SELF_SMOKE_ENABLED=1`. Set the
+In each OS probe's matrix job, expand the Worker receipt step to see the executing
+host, architecture, kernel, OS, Python, online logical CPUs, host-wide CPU busy
+percentage over one second (excludes idle, I/O wait and steal), and 1/5/15-minute
+load averages (not percentages). These are measurements from the assigned Worker,
+not the GitHub runner. Older receipts can show only the fields they actually contain.
+
+On both Yellow and Blue, append `depeng1994/lite-actions` once to the existing
+`LITE_ACTIONS_MODEL_REPOS` list. Removing it disables self-smoke discovery without
+affecting other subscriptions. With GitHub polling enabled, run `--validate` in
+the service environment to check the list before restarting the updated Worker.
+Yellow uses the ordinary repository poller at most once a minute for discovery;
+each idle GitHub repo costs two list GETs per round (queued + in progress).
+Active cancellation checks and result delivery do not wait for that minute. Set the
 repository variable `LITE_CI_RESULT_ACTOR` to the Worker's result-author account.
 A user with repository write, maintain or admin permission can start the workflow
 from a repository branch whose current commit is deployed on the Worker:
@@ -268,15 +328,14 @@ gh workflow run lite_actions_self_smoke.yml -R depeng1994/lite-actions --ref <re
 
 The Worker rejects a run unless its SHA matches its own verified checkout. Keep
 the configured resource locks and cleanup policy, and record the Run ID, SHA,
-all four case results and cleanup evidence. Missing results or unverified cleanup
+all five case results and cleanup evidence. Missing results or unverified cleanup
 are failures. Record resource and timing evidence when evaluating FIFO; admission
 order alone does not prove actual start order.
 
 Stop the candidate gracefully after the run. Check for unfinished or quarantined
 allocations and reconcile them as needed before restoring the previous Worker with
 the same state and locks. Preserve logs and the evidence linking both SHAs, the Run
-and the live Worker. The pull-request checks above run CPU contracts only; they do
-not certify 8P/16P hardware execution.
+and both live Workers. The unit tests alone do not certify 8P/16P hardware execution.
 
 
 ## 安装自动更新
@@ -292,6 +351,8 @@ args=(--python "$py" --worker-unit lite-actions-yellow.service --install-root /o
 # args+=(--proxy-env-file /etc/lite-actions/auto-update-proxy.source.env)
 sudo "$py" scripts/auto_update_preflight.py "${args[@]}"
 ```
+
+如果工作树属于普通部署用户、安装器通过 `sudo` 运行，Preflight 和安装器检查 clean 状态时使用 `git --no-optional-locks status`。它禁止 Git 为可选的 index 刷新获取/写入锁，避免 root 检查时把普通用户工作树的 `.git/index` 改成 root 所有；不会改变 status 的脏文件判断。无需为了安装把整个源码工作树 `chown` 给 root。
 
 代理主机先创建专用文件：`sudo install -m 0600 /dev/null /etc/lite-actions/auto-update-proxy.source.env`，再用 `sudoedit` 填入代理/CA 配置。文件必须 root 所有、权限 `0600`、普通文件且非软链；仅接受 `http_proxy`、`https_proxy`、`HTTP_PROXY`、`HTTPS_PROXY`、`no_proxy`、`NO_PROXY`、`SSL_CERT_FILE`、`CURL_CA_BUNDLE`、`GIT_SSL_CAINFO` 九个 `KEY=VALUE`，不要传含 Token 的 `yellow.env`。无代理主机不用建文件。自检出现 `FAIL` 时按 `Next:` 提示处理；没有 `.git` 的快照须先迁移。
 

@@ -243,7 +243,17 @@ class Egress:
                 raise Rejected("UNSUPPORTED_URL")
             if method == "GET":
                 if (
-                    not _READ.fullmatch(path)
+                    not (
+                        _READ.fullmatch(path)
+                        or (
+                            provider == "gitcode"
+                            and not url.query
+                            and re.fullmatch(
+                                r"/commits/refs%2Fmerge-requests%2F[1-9][0-9]{0,9}%2Fmerge",
+                                path,
+                            )
+                        )
+                    )
                     or payload is not None
                     or not all(
                         k in _QUERY and re.fullmatch(_QUERY[k], v)

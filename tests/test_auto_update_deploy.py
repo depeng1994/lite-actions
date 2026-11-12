@@ -280,6 +280,7 @@ class PreflightTests(unittest.TestCase):
         systemd_ok=True,
         working_dir_ok=True,
         proxy_file=None,
+        git_calls=None,
     ):
         sha, release, source = self._layout(root)
         if not binding:
@@ -289,9 +290,11 @@ class PreflightTests(unittest.TestCase):
             (root / "current").write_text("not a link")
 
         def fake_git(path, args, extra_safe=()):
+            if git_calls is not None:
+                git_calls.append((path, list(args)))
             if args[0] == "rev-parse":
                 return sha
-            if args[0] == "status":
+            if "status" in args:
                 return dirty
             raise AssertionError(args)
 
@@ -339,6 +342,23 @@ class PreflightTests(unittest.TestCase):
                 proxy_env_file=proxy_file,
             )
         return checks
+
+    def test_git_status_disables_optional_index_writes(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as tmp:
+            self._run(Path(tmp), git_calls=calls)
+
+        status_calls = [args for _, args in calls if "status" in args]
+        self.assertEqual(
+            status_calls,
+            [["--no-optional-locks", "status", "--porcelain", "--untracked-files=all"]],
+        )
+
+        installer = (ROOT / "scripts" / "install_auto_update.sh").read_text()
+        self.assertIn(
+            "git_in_source --no-optional-locks status --porcelain --untracked-files=all",
+            installer,
+        )
 
     def test_preflight_all_core_checks_pass(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -393,6 +413,65 @@ class PreflightTests(unittest.TestCase):
         self.assertNotIn(
             "install-proxy", installer.split("# Proxy support is opt-in.", 1)[0]
         )
+
+    @unittest.skipUnless(
+        os.geteuid() == 0 and shutil.which("chown"), "requires root/chown"
+    )
+    def test_no_optional_locks_preserves_user_owned_git_index(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "user-worktree"
+            root.mkdir()
+
+            def git(*args):
+                return subprocess.check_output(
+                    ["git", "-C", str(root), *args], text=True
+                ).strip()
+
+            git("init", "-q")
+            git("config", "user.name", "Fixture")
+            git("config", "user.email", "fixture@example.invalid")
+            tracked = root / "tracked.txt"
+            tracked.write_text("unchanged\n")
+            git("add", "tracked.txt")
+            git("commit", "-qm", "fixture")
+            subprocess.run(["chown", "-R", "65534:65534", str(root)], check=True)
+
+            config = Path(tmp) / "safe-git.config"
+            config.write_text(
+                f'[safe]\n    directory = "{root}"\n    directory = "{root / ".git"}"\n'
+            )
+            config.chmod(0o600)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "GIT_CONFIG_GLOBAL": str(config),
+                    "GIT_CONFIG_NOSYSTEM": "1",
+                    "GIT_OPTIONAL_LOCKS": "1",
+                }
+            )
+            index = root / ".git" / "index"
+            before = index.stat()
+            os.utime(tracked, (before.st_mtime + 5, before.st_mtime + 5))
+
+            result = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(root),
+                    "--no-optional-locks",
+                    "status",
+                    "--porcelain",
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            after = index.stat()
+            self.assertEqual(after.st_uid, 65534)
+            self.assertEqual(after.st_ino, before.st_ino)
+            self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
 
     def test_python_path_is_persisted_and_template_has_no_system_python_assumption(
         self,

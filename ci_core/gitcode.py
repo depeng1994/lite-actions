@@ -19,6 +19,7 @@ from ci_core.contract import (
     digest,
     normalize,
     parse_plan,
+    plan_sha,
     trusted_gitcode_repositories,
 )
 
@@ -64,7 +65,7 @@ def source_plan(rows, run, repo):
         workflow=run["path"].rsplit("/", 1)[-1],
         run_id=run["id"],
         attempt=run["run_attempt"],
-        sha=run["head_sha"],
+        sha=plan_sha(run),
         defaults=defaults,
         cases=cases,
     )
@@ -191,11 +192,41 @@ class GitCodeClient:
                 r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}",
                 source,
             )
-            or head.get("sha") != details.get("head_sha")
-            or head.get("ref") != details.get("head_branch")
+            or not isinstance(head.get("sha"), str)
+            or not re.fullmatch(r"[0-9a-f]{40}", head["sha"])
+            or not isinstance(head.get("ref"), str)
+            or not head["ref"]
+            or head["ref"] != details.get("head_branch")
         ):
             raise RunChanged("PR source no longer matches run")
-        return int(number), source
+        run_sha = details.get("head_sha")
+        if run_sha != head["sha"]:
+            # A moving PR head alone cannot identify what an older run tested.
+            # Resolve this target repository's *specific PR merge ref*, not an
+            # arbitrary merge object or a SHA/parent list supplied by the model.
+            base_sha = base.get("sha")
+            if (
+                details.get("event") != "MR"
+                or not isinstance(run_sha, str)
+                or not re.fullmatch(r"[0-9a-f]{40}", run_sha)
+                or not isinstance(base_sha, str)
+                or not re.fullmatch(r"[0-9a-f]{40}", base_sha)
+            ):
+                raise RunChanged("unbound GitCode MR revision")
+            ref = urllib.parse.quote(f"refs/merge-requests/{number}/merge", safe="")
+            merge = self.request("GET", f"/commits/{ref}")
+            parents = merge.get("parents") if isinstance(merge, dict) else None
+            if (
+                not isinstance(parents, list)
+                or len(parents) != 2
+                or not all(isinstance(p, dict) for p in parents)
+                or merge.get("sha") != run_sha
+                or [p.get("sha") for p in parents] != [base_sha, head["sha"]]
+            ):
+                raise RunChanged(
+                    "run does not match the current PR merge ref and parents"
+                )
+        return int(number), source, head["sha"]
 
     def running_workflows(self):
         runs = []
@@ -265,9 +296,11 @@ class GitCodeClient:
                         continue
                     dispatch_fields = {"_ci_dispatch_id": dispatch}
                 pr_fields = {}
+                if details.get("event") == "MR" and not details.get("pull_request_id"):
+                    continue
                 if details.get("pull_request_id"):
                     try:
-                        number, source = self.pr_source(details)
+                        number, source, execution_sha = self.pr_source(details)
                     except (
                         urllib.error.URLError,
                         TimeoutError,
@@ -280,7 +313,11 @@ class GitCodeClient:
                             type(exc).__name__,
                         )
                         continue
-                    pr_fields = {"_ci_pr_number": number, "_ci_source_repo": source}
+                    pr_fields = {
+                        "_ci_pr_number": number,
+                        "_ci_source_repo": source,
+                        "_ci_execution_sha": execution_sha,
+                    }
                 runs.append(
                     {
                         "_ci_provider": "gitcode",
@@ -329,6 +366,7 @@ class GitCodeClient:
         if "_ci_pr_number" in run and self.pr_source(details) != (
             run.get("_ci_pr_number"),
             run.get("_ci_source_repo"),
+            run.get("_ci_execution_sha"),
         ):
             raise RunChanged("GitCode PR source changed")
 
@@ -340,7 +378,7 @@ class GitCodeClient:
             self.validate_current(run)
             with tempfile.TemporaryDirectory(prefix="lite-gitcode-source-") as tmp:
                 source = model_archive(
-                    run["head_sha"],
+                    run.get("_ci_execution_sha", run["head_sha"]),
                     Path(tmp),
                     source_repo=self.repo,
                     provider="gitcode",

@@ -101,7 +101,7 @@ git_in_source() {
 }
 approved_sha="$(git_in_source rev-parse --verify 'HEAD^{commit}')"
 [[ "$approved_sha" =~ ^[0-9a-f]{40}$ ]] || fail "Source commit SHA invalid"
-[[ -z "$(git_in_source status --porcelain --untracked-files=all)" ]] || fail "Source worktree changed after preflight"
+[[ -z "$(git_in_source --no-optional-locks status --porcelain --untracked-files=all)" ]] || fail "Source worktree changed after preflight"
 
 old_path="$(readlink -e "$install_root/current")"
 git config --file "$safe_git_config" --add safe.directory "$old_path"

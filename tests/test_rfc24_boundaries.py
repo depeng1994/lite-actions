@@ -144,6 +144,29 @@ class Rfc24Boundaries(unittest.TestCase):
         self.now = 11 * 86400 + 1
         self.policy().reserve(True, 5)
 
+    def test_gitcode_merge_ref_read_is_bounded_to_one_native_ref_shape(self):
+        repo = "cann/torchtitan-npu"
+        base = f"https://api.gitcode.com/api/v5/repos/{repo}/commits/"
+        ref = "refs%2Fmerge-requests%2F1244%2Fmerge"
+        policy = self.policy()
+        policy.before(urllib.request.Request(base + ref), repo=repo, provider="gitcode")
+        for bad in (
+            ref.replace("1244", "x"),
+            ref.replace("merge-requests", "heads"),
+            ref + "?page=1",
+            ref + "%2Fother",
+        ):
+            with self.subTest(bad=bad), self.assertRaises(Rejected):
+                policy.before(
+                    urllib.request.Request(base + bad), repo=repo, provider="gitcode"
+                )
+        with self.assertRaises(Rejected):
+            policy.before(
+                urllib.request.Request(base + ref, method="POST", data=b"{}"),
+                repo=repo,
+                provider="gitcode",
+            )
+
     def test_virtual_hour_provider_discovery_and_unsigned_storage(self):
         g = self.policy()
         repo = "cann/torchtitan-npu"

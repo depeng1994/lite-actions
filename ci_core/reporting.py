@@ -7,6 +7,12 @@ from ci_core.contract import REPO
 from ci_core.logs import clean, sanitized_lines, yellow_lines
 
 
+def result_sha(run):
+    if run.get("_ci_provider") == "gitcode" and run.get("_ci_execution_sha"):
+        return run["_ci_execution_sha"]
+    return run["head_sha"]
+
+
 def marker(run, item):
     dispatch = f":{run['_ci_dispatch_id']}" if run.get("_ci_dispatch_id") else ""
     return f"Lite-CI-V3 {run['id']}:{run.get('run_attempt', 1)}{dispatch}:{item['case_id']}"
@@ -19,7 +25,7 @@ def report(run, item, plan_digest, status, rc, lines, cleanup_verified=True):
         workflow=run["path"].rsplit("/", 1)[-1],
         run_id=run["id"],
         attempt=run.get("run_attempt", 1),
-        sha=run["head_sha"],
+        sha=result_sha(run),
         plan_digest=plan_digest,
         case_id=item["case_id"],
         test_id=item["test_id"],
@@ -81,9 +87,10 @@ def post(
     body = body_for(run, item, result, local_worker=local_worker)
     prefix = marker(run, item) + "\n"
     cache = {} if cache is None else cache
-    key = (id(client), run["head_sha"])
+    sha = result_sha(run)
+    key = (id(client), sha)
     if key not in cache:
-        cache[key] = client.commit_comments(run["head_sha"])
+        cache[key] = client.commit_comments(sha)
     prior = [
         c
         for c in cache[key]
@@ -96,7 +103,7 @@ def post(
         return
     if verify_only:
         raise ValueError("UNCONFIRMED_MANUAL_RECOVERY")
-    client.send_result(run["head_sha"], body)
+    client.send_result(sha, body)
 
 
 def progress_body(run, item, digest, phase):
@@ -123,7 +130,7 @@ def progress(client, run, item, digest, phase, comment_id=None):
     if comment_id:
         client.request("PATCH", f"/comments/{comment_id}", {"body": body})
         return comment_id
-    return client.send_result(run["head_sha"], body)["id"]
+    return client.send_result(result_sha(run), body)["id"]
 
 
 def case_passed(log, test_id):

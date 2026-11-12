@@ -24,7 +24,14 @@ from ci_core.executor import ExternalNpuOccupancy, execute
 from ci_core.gitcode import RunChanged
 from ci_core.job_state import JobState
 from ci_core.plan import verify_definition
-from ci_core.reporting import body_for, post, progress, progress_body, report
+from ci_core.reporting import (
+    body_for,
+    post,
+    progress,
+    progress_body,
+    report,
+    result_sha,
+)
 from ci_core.resources import (
     ResourceBusy,
     reserve,
@@ -38,11 +45,11 @@ from ci_core.ssh_runner import model_archive
 from ci_core.worker_probe import probe as probe_worker
 
 
-def self_request(run):
+def _is_self_smoke(run):
     return (
         run.get("_ci_provider", "github") == "github"
         and run.get("_ci_repo") == SELF_REPO
-        and run.get("path") == ".github/workflows/" + SELF_WORKFLOW
+        and run.get("path") == f".github/workflows/{SELF_WORKFLOW}"
     )
 
 
@@ -65,7 +72,6 @@ def run_key(run):
 class Router:
     def __init__(self, root, worker, client, author, *, deployment_config=None):
         self.deployment = deployment_config
-        self.next_discovery = 0.0
         self.release_logs = None
         self.next_expiry = 0.0
         if (
@@ -94,12 +100,14 @@ class Router:
                 "case_environments"
             ]
         self.self_sha = None
-        if SELF_REPO in configured_repos():
-            if os.environ.get("LITE_ACTIONS_SELF_SMOKE_ENABLED") != "1":
-                raise ValueError("self-smoke requires explicit opt-in")
+        if (
+            SELF_REPO in configured_repos()
+            and os.environ.get("LITE_ACTIONS_GITHUB_ENABLED", "true").lower() == "true"
+        ):
             from ci_core.self_identity import checkout_sha
 
             self.self_sha = checkout_sha(self.root)
+        self.next_discovery = 0.0
         self.state = JobState(self.root)
         self.quarantine_enabled = worker not in {
             name.strip()
@@ -197,10 +205,7 @@ class Router:
             "status"
         ) not in {"queued", "in_progress"}:
             return False
-        if (
-            run.get("_ci_repo", REPO) == SELF_REPO
-            and (run.get("path") or "").rsplit("/", 1)[-1] == SELF_WORKFLOW
-        ):
+        if _is_self_smoke(run):
             from ci_core.self_identity import checkout_sha
 
             return self.self_sha is not None and run.get(
@@ -257,7 +262,7 @@ class Router:
                 target = progress_body(run, item, r["digest"], "QUEUED")
                 matches = [
                     c
-                    for c in client.commit_comments(run["head_sha"])
+                    for c in client.commit_comments(result_sha(run))
                     if c.get("user", {}).get("login") == author
                     and c.get("body") == target
                 ]
@@ -359,6 +364,7 @@ class Router:
             run["id"],
             run.get("run_attempt", 1),
             run["head_sha"],
+            run.get("_ci_execution_sha"),
             run.get("_ci_dispatch_id"),
         )
         cached = self.plans.get(identity)
@@ -369,10 +375,7 @@ class Router:
         if not self.eligible(run):
             return
         generic_source = None
-        if run.get("_ci_provider") != "gitcode" and not (
-            run.get("_ci_repo") == SELF_REPO
-            and run.get("path", "").rsplit("/", 1)[-1] == SELF_WORKFLOW
-        ):
+        if run.get("_ci_provider") != "gitcode" and not _is_self_smoke(run):
             from ci_core.github_source import bind_request_source, read_source_artifact
 
             client = self.client_for(run)
@@ -390,7 +393,7 @@ class Router:
                 run["path"].rsplit("/", 1)[-1],
                 repo=run.get("_ci_repo", REPO),
             )
-            if self_request(run):
+            if _is_self_smoke(run):
                 from ci_core.self_smoke import expected_plan
 
                 if plan != expected_plan(run):
@@ -446,6 +449,13 @@ class Router:
                     ),
                 )
             )
+        if (
+            run.get("_ci_provider") == "gitcode"
+            and run.get("_ci_pr_number")
+            and run.get("_ci_execution_sha") != run["head_sha"]
+        ):
+            # The PR may have moved during source inspection or since a cache hit.
+            self.client_for(run).validate_current(run)
         for key in self.state.admit(entries):
             self.transition(key, "QUEUED")
 
@@ -633,7 +643,7 @@ class Router:
         run = r["run"]
         launched = False
         try:
-            if self_request(run):
+            if _is_self_smoke(run):
                 from ci_core.self_identity import checkout_sha
 
                 if (
@@ -666,7 +676,7 @@ class Router:
                         or run.get("_ci_dispatch_id") != f"os-{proof['job_id']}"
                     ):
                         raise ValueError("INFRA_STALE_PROBE")
-                elif self_request(run):
+                elif _is_self_smoke(run):
                     from ci_core.self_smoke import expected_plan
 
                     approved = expected_plan(run)
@@ -1102,11 +1112,12 @@ class Router:
                 and not r.get("progress_id")
                 and (
                     r["item"]["kind"] != "worker_probe"
-                    or self_request(run)
+                    or _is_self_smoke(run)
                     or run.get("_ci_infra") is True
                 )
             ):
                 self.maybe_ack(key, r)
+        # Limit only discovery. Cancellation, queue progress and outbox keep ticking.
         now = time.monotonic()
         if self.worker != "yellow" or now >= self.next_discovery:
             self.next_discovery = now + 60

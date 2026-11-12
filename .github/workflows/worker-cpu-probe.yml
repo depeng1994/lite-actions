@@ -28,4 +28,4 @@ jobs:
           CALLEE_SHA: ${{ job.workflow_sha }}
           RESULT_AUTHOR: ${{ vars.LITE_CI_RESULT_ACTOR }}
           LITE_ACTIONS_MODEL_REPOS: ${{ github.repository }}
-        run: python3 -m ci_core.worker_probe
+        run: python3 -m ci_core.worker_probe wait

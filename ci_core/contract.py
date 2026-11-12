@@ -186,6 +186,17 @@ def create_plan(cases, *, run_id, attempt, sha, workflow, defaults, repo=REPO):
     return plan
 
 
+def plan_sha(run):
+    """Expected source from the platform-bound run, never from the proposed plan."""
+    if (
+        run.get("_ci_provider") == "gitcode"
+        and run.get("event") == "MR"
+        and run.get("_ci_pr_number")
+    ):
+        return run.get("_ci_execution_sha")
+    return run["head_sha"]
+
+
 def parse_plan(plan, run, workflow, *, repo=REPO):
     gitcode = run.get("_ci_provider") == "gitcode"
     if repo not in (
@@ -221,7 +232,7 @@ def parse_plan(plan, run, workflow, *, repo=REPO):
         or plan["attempt"] < 1
         or plan["run_id"] != run["id"]
         or plan["attempt"] != run.get("run_attempt", 1)
-        or plan["sha"] != run["head_sha"]
+        or plan["sha"] != plan_sha(run)
         or not re.fullmatch(r"[0-9a-f]{40}", str(plan["sha"]))
     ):
         raise ValueError("plan identity mismatch")
