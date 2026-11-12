@@ -316,14 +316,10 @@ percentage over one second (excludes idle, I/O wait and steal), and 1/5/15-minut
 load averages (not percentages). These are measurements from the assigned Worker,
 not the GitHub runner. Older receipts can show only the fields they actually contain.
 
-To opt a Worker into the self-smoke route, include `depeng1994/lite-actions` in
-`LITE_ACTIONS_MODEL_REPOS` alongside its existing GitHub sources. This list is the
-only opt-in: the old `LITE_ACTIONS_SELF_SMOKE_ENABLED` flag has no effect by itself.
-On **both** Workers, append the repo once to the service's existing list (do not
-replace other subscriptions); to opt out, omit the repo. During a rolling upgrade,
-keep the old flag at `1` for older binaries that still require it. Remove it after
-cutover. GitHub polling must be enabled. Check the list with `--validate` using
-the service environment, then reload the service configuration in a maintenance window.
+On both Yellow and Blue, append `depeng1994/lite-actions` once to the existing
+`LITE_ACTIONS_MODEL_REPOS` list. Removing it disables self-smoke discovery without
+affecting other subscriptions. With GitHub polling enabled, run `--validate` in
+the service environment to check the list before restarting the updated Worker.
 Yellow uses the ordinary repository poller at most once a minute for discovery;
 each idle GitHub repo costs two list GETs per round (queued + in progress).
 Active cancellation checks and result delivery do not wait for that minute. Set the

@@ -545,26 +545,27 @@ class SelfSmokeTests(unittest.TestCase):
                 self.assertEqual(r.pump.call_count, 4)
                 self.assertEqual(r.flush.call_count, 8)
 
-    def test_old_flag_alone_does_not_subscribe_to_an_extra_repo(self):
+    def test_unsubscribed_workers_skip_self_checkout(self):
         root = Path(self.temp.name) / "worker"
         write_workspace(root)
         service = Service([fixture_definition("dummy")], root)
         env = {
             "LITE_ACTIONS_MODEL_REPOS": TORCHTITAN_REPO,
-            "LITE_ACTIONS_SELF_SMOKE_ENABLED": "1",
             "LITE_ACTIONS_RESOURCE_LOCK_ROOT": str(root / "leases"),
             "LITE_ACTIONS_STATE_DIR": "",
         }
         with (
-            patch.dict(os.environ, env, clear=False),
+            patch.dict(os.environ, env, clear=True),
             patch("ci_core.self_identity.checkout_sha") as checkout,
         ):
-            router = Router(root, "yellow", service, "reporter")
-            try:
-                self.assertIsNone(router.self_sha)
-                checkout.assert_not_called()
-            finally:
-                router.close()
+            for worker in ("yellow", "blue"):
+                with self.subTest(worker=worker):
+                    router = Router(root, worker, service, "reporter")
+                    try:
+                        self.assertIsNone(router.self_sha)
+                    finally:
+                        router.close()
+            checkout.assert_not_called()
 
 
 if __name__ == "__main__":
