@@ -171,7 +171,7 @@ class SmokeQueueTests(unittest.TestCase):
             first_entered, release_first = threading.Event(), threading.Event()
             started = []
 
-            def send(_, body):
+            def send(_, body, **kwargs):
                 row = {
                     "id": len(comments) + 1,
                     "body": body,
@@ -213,7 +213,10 @@ class SmokeQueueTests(unittest.TestCase):
                 patch.object(gitcode, "commit_comments", return_value=comments),
                 patch.object(gitcode, "send_result", side_effect=send),
                 patch.object(gitcode, "request", return_value=None),
-                patch("ci_core.router.verify_definition"),
+                patch(
+                    "ci_core.router.verify_definition",
+                    return_value={"env_vars": {"ASCEND_SET_ENV_PATH": "/fixture/cann"}},
+                ),
                 patch("ci_core.router.execute", side_effect=execute),
             ):
                 router = Router(

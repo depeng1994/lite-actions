@@ -162,3 +162,93 @@ def runtime_case(item, pools, worker):
         execution_timeout_seconds=item["execution_timeout_seconds"],
         force_reclaim=pool.get("force_reclaim", False),
     )
+
+
+def identify_worker(addresses, assigned, asserted=None):
+    """Derive the role from exact host IPv4s; never infer it from network reachability."""
+    from ipaddress import IPv4Address
+
+    if set(assigned) != {"blue", "yellow"} or len(set(assigned.values())) != 2:
+        raise ValueError("WORKER_IDENTITY_CONFIG_INVALID")
+    for ip in assigned.values():
+        if not isinstance(ip, str) or str(IPv4Address(ip)) != ip:
+            raise ValueError("WORKER_IDENTITY_CONFIG_INVALID")
+    matched = [w for w, ip in assigned.items() if ip in addresses]
+    if len(matched) != 1 or asserted is not None and asserted != matched[0]:
+        raise ValueError("WORKER_IDENTITY_MISMATCH")
+    return matched[0]
+
+
+def deployment(asserted=None):
+    """Read operator-owned configuration before any provider credentials or HTTP."""
+    import os
+    import stat
+    import subprocess
+    from pathlib import Path
+
+    path = Path("/etc/lite-actions/deployment.json")
+    for parent in path.parents:
+        st = parent.lstat()
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o022:
+            raise ValueError("UNTRUSTED_DEPLOYMENT_DIRECTORY")
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as f:
+        st = os.fstat(f.fileno())
+        data = f.read(65537) if stat.S_ISREG(st.st_mode) else b""
+        if not data or len(data) > 65536 or st.st_uid != 0 or st.st_mode & 0o022:
+            raise ValueError("UNTRUSTED_DEPLOYMENT_CONFIG")
+    from ci_core.registry import _unique
+
+    doc = json.loads(data, object_pairs_hook=_unique)
+    locals_ = json.loads(
+        subprocess.check_output(["ip", "-j", "-4", "address", "show"], timeout=5)
+    )
+    ips = {
+        a["local"]
+        for link in locals_
+        for a in link["addr_info"]
+        if a.get("family") == "inet"
+    }
+    worker = identify_worker(ips, doc["addresses"], asserted)
+    cfg = doc["workers"][worker]
+    state = Path(cfg["state_dir"])
+    if (
+        not state.is_absolute()
+        or state.resolve() != state
+        or Path(os.environ.get("LITE_ACTIONS_STATE_DIR", str(state))) != state
+    ):
+        raise ValueError("STATE_OWNER_MISMATCH")
+    # Preprovision this marker even for a fresh worker. Never adopt an old directory by writing a marker at startup.
+    if (
+        not state.is_dir()
+        or state.stat().st_uid not in {0, os.geteuid()}
+        or state.stat().st_mode & 0o022
+    ):
+        raise ValueError("UNTRUSTED_STATE_DIRECTORY")
+    owner = state / "worker-id"
+    st = owner.lstat()
+    if (
+        not stat.S_ISREG(st.st_mode)
+        or st.st_uid not in {0, os.geteuid()}
+        or st.st_size > 8
+        or st.st_mode & 0o022
+        or owner.read_text().strip() != worker
+    ):
+        raise ValueError("STATE_OWNER_MISMATCH")
+    if worker == "yellow" and (
+        type(cfg.get("daily_upload_bytes")) is not int or cfg["daily_upload_bytes"] < 1
+    ):
+        raise ValueError("YELLOW_DAILY_QUOTA_REQUIRED")
+    statefile = state / "unified-jobs.json"
+    if statefile.exists():
+        from ci_core.job_state import _META
+
+        records = json.loads(statefile.read_bytes(), object_pairs_hook=_unique)
+        for key, record in records.items():
+            if (
+                key != _META
+                and record.get("phase") != "REPORTED"
+                and record.get("item", {}).get("worker") != worker
+            ):
+                raise ValueError("STATE_OWNER_MISMATCH")
+    return worker, {**cfg, "address": doc["addresses"][worker]}

@@ -251,6 +251,7 @@ class ReclaimTests(unittest.TestCase):
                 "kind": "npu_smoke",
                 "resources": {"nodes": 1, "devices_per_node": 1},
                 "execution_timeout_seconds": 30,
+                "verified_env": {"ASCEND_SET_ENV_PATH": "/cann"},
             }
             run = {
                 "created_at": "2026-10-31T00:00:00Z",
@@ -278,12 +279,6 @@ class ReclaimTests(unittest.TestCase):
                 return SimpleNamespace(returncode=0, stdout=EMPTY if idle else EXTERNAL)
 
             with ExitStack() as stack:
-                stack.enter_context(
-                    patch(
-                        "ci_core.executor.prepare_profile",
-                        return_value={"ASCEND_SET_ENV_PATH": "/cann"},
-                    )
-                )
                 stack.enter_context(patch("ci_core.scheduler.validate_allocation"))
                 stack.enter_context(
                     patch(

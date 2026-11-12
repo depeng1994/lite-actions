@@ -24,7 +24,14 @@ from ci_core.executor import ExternalNpuOccupancy, execute
 from ci_core.gitcode import RunChanged
 from ci_core.job_state import JobState
 from ci_core.plan import verify_definition
-from ci_core.reporting import post, progress, report
+from ci_core.reporting import (
+    body_for,
+    post,
+    progress,
+    progress_body,
+    report,
+    result_sha,
+)
 from ci_core.resources import (
     ResourceBusy,
     reserve,
@@ -63,7 +70,22 @@ def run_key(run):
 
 
 class Router:
-    def __init__(self, root, worker, client, author):
+    def __init__(self, root, worker, client, author, *, deployment_config=None):
+        self.deployment = deployment_config
+        self.release_logs = None
+        self.next_expiry = 0.0
+        if (
+            worker == "blue"
+            and deployment_config
+            and deployment_config.get("public_release")
+        ):
+            from ci_core.github import ReleaseLogs
+
+            self.release_logs = ReleaseLogs(
+                worker,
+                deployment_config,
+                token=os.environ.get("LITE_ACTIONS_BLUE_RELEASE_TOKEN"),
+            )
         if not author:
             raise ValueError("LITE_ACTIONS_RESULT_AUTHOR is required")
         self.root, self.worker, self.client, self.author = (
@@ -73,6 +95,10 @@ class Router:
             author,
         )
         self.workers, self.pools = load(self.root, worker)
+        if deployment_config is not None:
+            self.workers[worker]["case_environments"] = deployment_config[
+                "case_environments"
+            ]
         self.self_sha = None
         if (
             SELF_REPO in configured_repos()
@@ -149,6 +175,13 @@ class Router:
                     ["Worker restarted; remote cleanup unverified"],
                     False,
                 )
+                if self.deployment:
+                    path = self.case_folder(key) / "pipeline.log"
+                    with path.open("a", encoding="utf8") as f:
+                        f.write("INTERRUPTED_CLEANUP_UNVERIFIED\n")
+                    self.finalize_report(
+                        result, {"host": self.deployment["address"], "path": str(path)}
+                    )
                 self.state.update(
                     key,
                     phase="PENDING_REPORT",
@@ -183,6 +216,12 @@ class Router:
     def transition(self, key, phase, **fields):
         self.state.update(key, phase=phase, **fields)
         r = self.state.read()[key]
+        if self.worker == "yellow":
+            if phase == "QUEUED":
+                self.maybe_ack(key, r)
+            return
+        if r.get("last_sent_phase") == phase:
+            return
         try:
             ident = progress(
                 self.client_for(r["run"]),
@@ -192,9 +231,77 @@ class Router:
                 phase,
                 r.get("progress_id"),
             )
-            self.state.update(key, progress_id=ident)
+            self.state.update(key, progress_id=ident, last_sent_phase=phase)
         except Exception:
             logging.warning("progress pending for %s", key)
+
+    def maybe_ack(self, key, r):
+        """Persist intent before POST. A retry confirms uncertain delivery before writing."""
+        if (
+            r.get("progress_id")
+            or r.get("ack_blocked")
+            or r.get("ack_retry_at", 0) > time.time()
+        ):
+            return
+        n = r.get("ack_attempts", 0)
+        if n >= 8:
+            return
+        client = self.client_for(r["run"])
+        run = r["run"]
+        item = r["item"]
+        author = (
+            os.environ.get("LITE_ACTIONS_GITCODE_RESULT_AUTHOR", self.author)
+            if run.get("_ci_provider") == "gitcode"
+            else self.author
+        )
+        try:
+            self.state.update(
+                key, ack_attempts=n + 1, ack_retry_at=time.time() + min(900, 30 * 2**n)
+            )
+            if n:
+                target = progress_body(run, item, r["digest"], "QUEUED")
+                matches = [
+                    c
+                    for c in client.commit_comments(
+                        result_sha(run), category="ack_retry_lookup"
+                    )
+                    if c.get("user", {}).get("login") == author
+                    and c.get("body") == target
+                ]
+                if len(matches) > 1:
+                    raise ValueError("DUPLICATE_ACK")
+                if matches:
+                    self.state.update(
+                        key, progress_id=matches[0]["id"], last_sent_phase="QUEUED"
+                    )
+                    return
+            ident = progress(client, run, item, r["digest"], "QUEUED", retry=bool(n))
+            self.state.update(key, progress_id=ident, last_sent_phase="QUEUED")
+        except Exception as exc:
+            from email.utils import parsedate_to_datetime
+            from urllib.error import HTTPError
+
+            from ci_core.egress_policy import Deferred
+
+            if isinstance(exc, Deferred):
+                self.state.update(key, ack_attempts=n)
+            elif isinstance(exc, ValueError):
+                self.state.update(key, ack_blocked=True)
+            elif isinstance(exc, HTTPError) and exc.headers.get("Retry-After"):
+                header = exc.headers["Retry-After"]
+                try:
+                    until = (
+                        time.time() + int(header)
+                        if header.isdigit()
+                        else parsedate_to_datetime(header).timestamp()
+                    )
+                    self.state.update(
+                        key,
+                        ack_retry_at=max(self.state.read()[key]["ack_retry_at"], until),
+                    )
+                except (ValueError, TypeError, OverflowError):
+                    pass
+            logging.warning("ACK not confirmed for %s (%s)", key, type(exc).__name__)
 
     def receive(self, runs):
         for run in sorted(runs, key=lambda r: (r.get("created_at", ""), str(r["id"]))):
@@ -208,7 +315,51 @@ class Router:
                     type(exc).__name__,
                 )
 
+    def probe_rule(self, run):
+        if not self.deployment or run.get("_ci_provider", "github") != "github":
+            return None
+        rules = [
+            r
+            for r in self.deployment.get("probe_callers", [])
+            if r.get("repo") == run.get("_ci_repo")
+            and r.get("workflow") == run.get("path")
+        ]
+        if len(rules) > 1:
+            raise ValueError("AMBIGUOUS_INFRA_CALLER")
+        return rules[0] if rules else None
+
+    def receive_probe(self, run, rule):
+        from ci_core.contract import digest
+        from ci_core.worker_probe import fixed_item, github_call
+
+        proof = github_call(self.client_for(run), run, rule)
+        run = {**run, "_ci_infra": True, "_ci_dispatch_id": f"os-{proof['job_id']}"}
+        item = fixed_item(self.worker)
+        key = task_key(run, item)
+        record = dict(
+            phase="QUEUED",
+            repo=proof["repo"],
+            run=run,
+            item=item,
+            digest=digest(proof),
+            defaults={},
+            queued_at=time.time(),
+            use_instance_id=True,
+        )
+        for admitted in self.state.admit([(key, record)]):
+            self.transition(admitted, "QUEUED")
+
     def _receive_one(self, run):
+        rule = self.probe_rule(run)
+        if rule is not None and self.eligible(run):
+            try:
+                self.receive_probe(run, rule)
+            except Exception as exc:
+                logging.warning(
+                    "fixed probe unavailable: %s (%s)", run["id"], type(exc).__name__
+                )
+            if rule.get("mode") == "cpu-only":
+                return
         identity = (
             run.get("_ci_provider", "github"),
             run.get("_ci_repo", REPO),
@@ -249,6 +400,8 @@ class Router:
 
                 if plan != expected_plan(run):
                     raise ValueError("self-smoke plan differs from its pinned profile")
+            elif any(i["kind"] == "worker_probe" for i in plan["cases"]):
+                raise ValueError("MODEL_HOST_PROBE_FORBIDDEN")
             self.plans[identity] = plan
         else:
             plan = cached
@@ -270,6 +423,19 @@ class Router:
         entries = []
         for item in owned:
             key = task_key(run, item)
+            if self.deployment is not None:
+                # Refuse permanently undeployable envelopes before allocating hardware.
+                minimal = report(
+                    run, item, plan["plan_digest"], "RESOURCE_TIMEOUT", 125, [], False
+                )
+                self.finalize_report(
+                    minimal,
+                    {
+                        "host": self.deployment["address"],
+                        "path": str(self.case_folder(key) / "pipeline.log"),
+                    },
+                )
+                body_for(run, item, minimal, local_worker=self.worker)
             entries.append(
                 (
                     key,
@@ -362,7 +528,29 @@ class Router:
                 raise
         return None
 
-    def finish(self, key, status, rc, lines, clean=True):
+    def case_folder(self, key):
+        import hashlib
+
+        folder = (
+            Path(self.deployment["state_dir"])
+            / "logs"
+            / "runs"
+            / hashlib.sha256(key.encode()).hexdigest()
+        )
+        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        return folder
+
+    def finalize_report(self, result, locator):
+        from ci_core.contract import digest
+
+        result["log_locator"] = locator
+        result["finished_at"] = int(time.time())
+        if "native_source" in result:
+            result["source_digest"] = digest(result.pop("native_source"))
+
+    def finish(
+        self, key, status, rc, lines, clean=True, *, locator=None, diagnostic=None
+    ):
         r = self.state.read()[key]
         if status == "PASS" and r["run"].get("_ci_source"):
             from ci_core.github_source import check_current
@@ -398,13 +586,57 @@ class Router:
                     125,
                     ["GitCode run identity could not be verified"],
                 )
+        if status == "PASS" and r["run"].get("_ci_infra") is True:
+            from ci_core.contract import digest
+            from ci_core.worker_probe import github_call
+
+            try:
+                if (
+                    digest(
+                        github_call(
+                            self.client_for(r["run"]),
+                            r["run"],
+                            self.probe_rule(r["run"]),
+                        )
+                    )
+                    != r["digest"]
+                ):
+                    raise ValueError
+            except Exception:
+                status, rc, lines = "INFRA_ERROR", 125, ["INFRA_PUBLICATION_UNVERIFIED"]
+        result = report(r["run"], r["item"], r["digest"], status, rc, lines, clean)
+        if self.deployment is not None:
+            if locator is None:
+                path = self.case_folder(key) / "pipeline.log"
+                with path.open("a", encoding="utf-8") as f:
+                    f.write(f"{status} rc={rc}\n")
+                locator = {"host": self.deployment["address"], "path": str(path)}
+            self.finalize_report(result, locator)
+            if self.worker == "blue" and diagnostic is not None:
+                data, truncated = diagnostic
+                result["last_20_lines"] = []
+                if len(data) <= 2048 and not truncated:
+                    result["diagnostics"] = data.decode().splitlines()
+                else:
+                    result["attachment_status"] = "unavailable"
+                    if self.release_logs:
+                        try:
+                            result["attachment_ref"] = self.release_logs.deliver(
+                                key, data, truncated
+                            )
+                            result["attachment_status"] = "available"
+                        except Exception as exc:
+                            logging.warning(
+                                "Blue log delivery unavailable (%s)", type(exc).__name__
+                            )
+
         self.state.update(
             key,
             phase="PENDING_REPORT",
             quarantined=bool(r.get("allocation"))
             and not clean
             and (self.quarantine_enabled or r["item"].get("worker") != self.worker),
-            report=report(r["run"], r["item"], r["digest"], status, rc, lines, clean),
+            report=result,
         )
 
     def work(self, key, case, lease, cancel, preflight):
@@ -428,29 +660,42 @@ class Router:
 
                 check_current(self.client_for(run), run["_ci_source"], check_run=True)
             self.transition(key, "STAGING")
-            with tempfile.TemporaryDirectory(prefix="lite-definition-") as tmp:
-                source_repo = run.get("_ci_repo", REPO)
-                archive = model_archive(
-                    run.get("_ci_execution_sha", run["head_sha"]),
-                    Path(tmp),
-                    source_repo=source_repo,
-                    provider=run.get("_ci_provider", "github"),
-                    fallback_repo=run.get("_ci_source_repo"),
-                    source_pr=(
-                        run["_ci_pr_number"]
-                        if run.get("_ci_source", {}).get("mode") == "merge_result"
-                        else None
-                    ),
-                )
-                verify_definition(archive, item, r["defaults"], repo=source_repo)
-            if run.get("_ci_provider") == "gitcode":
-                self.client_for(run).validate_current(run)
             if cancel.is_set():
                 self.finish(key, "CANCELLED", 130, ["Cancelled before launch"])
                 return
             if item["kind"] == "worker_probe":
+                # Recheck persisted tasks: a pre-upgrade queue is not an authorization.
+                if run.get("_ci_infra") is True:
+                    from ci_core.contract import digest
+                    from ci_core.worker_probe import fixed_item, github_call
+
+                    rule = self.probe_rule(run)
+                    if rule is None or item != fixed_item(self.worker):
+                        raise ValueError("INFRA_CALLER_NOT_APPROVED")
+                    proof = github_call(self.client_for(run), run, rule)
+                    if (
+                        digest(proof) != r["digest"]
+                        or run.get("_ci_dispatch_id") != f"os-{proof['job_id']}"
+                    ):
+                        raise ValueError("INFRA_STALE_PROBE")
+                elif _is_self_smoke(run):
+                    from ci_core.self_smoke import expected_plan
+
+                    approved = expected_plan(run)
+                    if (
+                        r["digest"] != approved["plan_digest"]
+                        or item not in approved["cases"]
+                    ):
+                        raise ValueError("self-smoke probe identity mismatch")
+                else:
+                    raise ValueError("MODEL_HOST_PROBE_FORBIDDEN")
                 self.transition(key, "RUNNING")
                 p = probe_worker()
+                locator = None
+                if self.deployment is not None:
+                    path = self.case_folder(key) / "probe.log"
+                    path.write_text(p.stdout + p.stderr, encoding="utf-8")
+                    locator = {"host": self.deployment["address"], "path": str(path)}
                 if cancel.is_set():
                     self.finish(
                         key, "CANCELLED", 130, ["Cancelled during worker probe"]
@@ -467,8 +712,45 @@ class Router:
                     "PASS" if p.returncode == 0 else "INFRA_ERROR",
                     p.returncode,
                     (p.stdout + p.stderr).splitlines(),
+                    locator=locator,
                 )
                 return
+            with tempfile.TemporaryDirectory(prefix="lite-definition-") as tmp:
+                source_repo = run.get("_ci_repo", REPO)
+                archive = model_archive(
+                    run.get("_ci_execution_sha", run["head_sha"]),
+                    Path(tmp),
+                    source_repo=source_repo,
+                    provider=run.get("_ci_provider", "github"),
+                    fallback_repo=run.get("_ci_source_repo"),
+                    source_pr=(
+                        run["_ci_pr_number"]
+                        if run.get("_ci_source", {}).get("mode") == "merge_result"
+                        else None
+                    ),
+                )
+                definition = verify_definition(
+                    archive, item, r["defaults"], repo=source_repo
+                )
+            if run.get("_ci_provider") == "gitcode":
+                self.client_for(run).validate_current(run)
+            from ci_core.registry import validate_case_environment
+
+            environment = validate_case_environment(
+                definition["env_vars"], kind=item["kind"]
+            )
+            # The model selects values; only the deployment may authorize them.
+            rules = (
+                self.workers[self.worker]
+                .get("case_environments", {})
+                .get(item["docker"], {})
+            )
+            if any(
+                type(rules.get(k)) is not list or v not in rules[k]
+                for k, v in environment.items()
+            ):
+                raise ValueError("MODEL_ENV_NOT_APPROVED")
+            case = {**case, "verified_env": environment}
             if run.get("_ci_source"):
                 case = {**case, "native_source": run["_ci_source"]}
             subrun = {
@@ -491,6 +773,10 @@ class Router:
             subrun["_ci_runtime_callback"] = lambda runtime: self.state.update(
                 key, runtime=runtime
             )
+            if self.deployment is not None:
+                subrun["_ci_pipeline_folder"] = self.case_folder(key)
+                subrun["_ci_zone"] = self.worker
+                subrun["_ci_worker_address"] = self.deployment["address"]
             execution = execute(case, subrun, root=self.root)
             self.transition(key, "CLEANING")
             from ci_core.reporting import case_passed
@@ -513,6 +799,8 @@ class Router:
                 130 if status == "CANCELLED" else execution.exit_code,
                 execution.tail,
                 execution.release_verified,
+                locator=execution.locator,
+                diagnostic=execution.diagnostic,
             )
         except ExternalNpuOccupancy:
             if launched:
@@ -534,7 +822,7 @@ class Router:
                 key,
                 "INFRA_ERROR",
                 125,
-                [f"Infrastructure error: {type(exc).__name__}: {str(exc)[:160]}"],
+                [f"Infrastructure error: {type(exc).__name__}"],
                 not launched,
             )
         finally:
@@ -691,11 +979,27 @@ class Router:
                             key, phase="QUEUED", allocation=[], quarantined=False
                         )
                     raise
-                self.finish(key, "INFRA_ERROR", 125, [str(exc)[:180]], clean)
+                self.finish(
+                    key,
+                    "INFRA_ERROR",
+                    125,
+                    [f"Capacity check failed: {type(exc).__name__}"],
+                    clean,
+                )
 
     def flush(self):
+        import random
+        from email.utils import parsedate_to_datetime
+        from urllib.error import HTTPError
+
+        from ci_core.egress_policy import Deferred
+
+        cache = {}
         for key, r in self.state.read().items():
-            if r.get("phase") != "PENDING_REPORT":
+            if (
+                r.get("phase") not in {"PENDING_REPORT", "VERIFY_REPORT"}
+                or r.get("next_retry_at", 0) > time.time()
+            ):
                 continue
             try:
                 post(
@@ -706,12 +1010,48 @@ class Router:
                     os.environ.get("LITE_ACTIONS_GITCODE_RESULT_AUTHOR", self.author)
                     if r["run"].get("_ci_provider") == "gitcode"
                     else self.author,
+                    local_worker=self.worker,
+                    cache=cache,
+                    verify_only=r.get("phase") == "VERIFY_REPORT",
+                    retry=bool(r.get("send_attempts")),
                 )
-                self.state.update(key, phase="REPORTED")
-            except Exception:
+                self.state.update(key, phase="REPORTED", published_at=time.time())
+            except Deferred:
+                self.state.update(key, next_retry_at=time.time() + 30)
+            except Exception as exc:
+                n = r.get("send_attempts", 0) + 1
+                permanent = isinstance(exc, ValueError)
+                delay = random.uniform(0.85, 1) * min(900, 30 * 2 ** min(n - 1, 5))
+                if isinstance(exc, HTTPError):
+                    header = exc.headers.get("Retry-After", "")
+                    permanent = exc.code in (400, 401, 404, 422)
+                    if header.isdigit():
+                        delay = max(delay, int(header))
+                    elif header:
+                        try:
+                            delay = max(
+                                delay,
+                                parsedate_to_datetime(header).timestamp() - time.time(),
+                            )
+                        except (ValueError, TypeError, OverflowError):
+                            pass
+                self.state.update(
+                    key,
+                    phase="REPORT_BLOCKED"
+                    if permanent or r.get("phase") == "VERIFY_REPORT"
+                    else ("VERIFY_REPORT" if n >= 8 else "PENDING_REPORT"),
+                    send_attempts=n,
+                    next_retry_at=time.time() + delay,
+                )
                 logging.warning("result remains pending: %s", key)
 
     def tick(self):
+        if self.release_logs and time.monotonic() >= self.next_expiry:
+            self.next_expiry = time.monotonic() + 3600
+            try:
+                self.release_logs.expire()
+            except Exception as exc:
+                logging.warning("Blue log retention deferred (%s)", type(exc).__name__)
         # Outbox survives completed GitHub Runs; never depend on an active-run listing.
         self.flush()
         statuses = {}
@@ -770,6 +1110,16 @@ class Router:
                         130,
                         ["CI Run ended or source changed before launch"],
                     )
+            elif (
+                self.worker == "yellow"
+                and not r.get("progress_id")
+                and (
+                    r["item"]["kind"] != "worker_probe"
+                    or _is_self_smoke(run)
+                    or run.get("_ci_infra") is True
+                )
+            ):
+                self.maybe_ack(key, r)
         # Limit only discovery. Cancellation, queue progress and outbox keep ticking.
         now = time.monotonic()
         if self.worker != "yellow" or now >= self.next_discovery:

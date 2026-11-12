@@ -30,6 +30,18 @@ class WorkerProbeTests(unittest.TestCase):
         ):
             worker_probe.snapshot()
 
+    def test_wait_and_snapshot_cannot_fall_through_to_one_another(self):
+        with (
+            patch.object(worker_probe, "snapshot") as snapshot,
+            patch.object(worker_probe, "wait") as waiter,
+        ):
+            worker_probe.main(["wait"])
+            waiter.assert_called_once_with(os.environ)
+            for invalid in ([], ["arbitrary"], ["snapshot", "extra"]):
+                with self.assertRaises(SystemExit):
+                    worker_probe.main(invalid)
+            snapshot.assert_not_called()
+
     def test_real_probe_fits_receipt_and_displays_only_approved_fields(self):
         sample = worker_probe.probe()
         self.assertEqual(sample.returncode, 0, sample.stderr)

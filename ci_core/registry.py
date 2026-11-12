@@ -6,7 +6,9 @@ cases; deployment/runtime resource configuration stays with Lite Actions.
 
 from __future__ import annotations
 
+import gzip
 import json
+import posixpath
 import re
 import tarfile
 from pathlib import Path
@@ -31,7 +33,9 @@ RESERVED_RUNTIME_ENV = frozenset(
 CASE_ENV_KEY = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 
 
-def validate_case_environment(env: object, *, kind: str = "train") -> dict[str, str]:
+def validate_case_environment(
+    env: object, *, kind: str = "train", execution: bool = True
+) -> dict[str, str]:
     """Validate trusted model-derived environment before SSH and preflight.
 
     An A5 case without configured assets remains discoverable with `inspect`,
@@ -43,6 +47,8 @@ def validate_case_environment(env: object, *, kind: str = "train") -> dict[str, 
         if (
             not isinstance(key, str)
             or not CASE_ENV_KEY.fullmatch(key)
+            or key.startswith(("LD_", "DYLD_", "PYTHON", "GIT_", "BASH_FUNC_"))
+            or key in {"BASH_ENV", "ENV", "SHELLOPTS", "PATH", "IFS"}
             or key in RESERVED_RUNTIME_ENV
             or not isinstance(value, str)
             or "\x00" in value
@@ -52,6 +58,11 @@ def validate_case_environment(env: object, *, kind: str = "train") -> dict[str, 
             raise ValueError("invalid/forbidden test-owned environment variable")
     if kind not in {"train", "npu_smoke"}:
         raise ValueError("unsupported NPU execution kind")
+    if not execution:
+        # Discovery includes training recipes whose assets are not provisioned.
+        # Never let one dormant recipe disable every smoke case; enforce mandatory
+        # operator-approved paths when the selected case is actually admitted.
+        return env.copy()
     required = ASSET_ENV_KEYS if kind == "train" else ("ASCEND_SET_ENV_PATH",)
     for key in required:
         path = env.get(key)
@@ -60,87 +71,166 @@ def validate_case_environment(env: object, *, kind: str = "train") -> dict[str, 
     return env.copy()
 
 
-def _discovery_tar_filter(member: tarfile.TarInfo, path: str):
-    """Strict extraction filter for metadata discovery.
+CATALOG = ".ci/lite-actions.json"
+MAX_CATALOG = 256 * 1024
+MAX_SCAN = 512 * 1024 * 1024
+MAX_MEMBERS = 65536
+ROW_KEYS = {
+    "test_id",
+    "label",
+    "nnodes",
+    "ngpu",
+    "timeout",
+    "kind",
+    "ci_overrides",
+    "env_vars",
+}
 
-    Model metadata inspection does not need repository symlinks/hardlinks.
-    Drop all links and retain Python data_filter protections for ordinary
-    files/directories, including absolute paths and path traversal.
-    """
-    if member.issym() or member.islnk():
-        return None
-    return tarfile.data_filter(member, path)
+
+def _unique(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("CATALOG_INVALID: duplicate key")
+        result[key] = value
+    return result
+
+
+def decode_catalog(data):
+    """The catalog is data, not authority. Routing and environment approval follow."""
+    if len(data) > MAX_CATALOG:
+        raise ValueError("CATALOG_INVALID: size")
+    try:
+        doc = json.loads(data.decode("utf-8"), object_pairs_hook=_unique)
+        if (
+            type(doc) is not dict
+            or set(doc) != {"version", "cases", "suites"}
+            or type(doc["version"]) is not int
+            or doc["version"] != 1
+        ):
+            raise ValueError
+        cases, suites = doc["cases"], doc["suites"]
+        if (
+            not isinstance(cases, dict)
+            or not 1 <= len(cases) <= 4096
+            or not isinstance(suites, dict)
+            or not 1 <= len(suites) <= 256
+        ):
+            raise ValueError
+        for key, row in cases.items():
+            if (
+                not SELECTOR.fullmatch(key)
+                or type(row) is not dict
+                or set(row) != ROW_KEYS
+                or row["test_id"] != key
+            ):
+                raise ValueError
+            if (
+                row["kind"] not in ("train", "npu_smoke")
+                or not isinstance(row["label"], str)
+                or not 1 <= len(row["label"]) <= 115
+                or not row["label"].isprintable()
+            ):
+                raise ValueError
+            for field, upper in [("ngpu", 256), ("nnodes", 16), ("timeout", 14400)]:
+                if type(row[field]) is not int or not 1 <= row[field] <= upper:
+                    raise ValueError
+            overrides = row["ci_overrides"]
+            if (
+                not isinstance(overrides, dict)
+                or set(overrides) - {"worker", "target_pool", "docker"}
+                or not all(
+                    isinstance(v, str) and 0 < len(v) <= 256 and v.isprintable()
+                    for v in overrides.values()
+                )
+            ):
+                raise ValueError
+            validate_case_environment(
+                row["env_vars"], kind=row["kind"], execution=False
+            )
+        for suite, ids in suites.items():
+            if (
+                not SELECTOR.fullmatch(suite)
+                or not isinstance(ids, list)
+                or not 1 <= len(ids) <= 256
+                or any(not isinstance(i, str) or i not in cases for i in ids)
+            ):
+                raise ValueError
+    except (ValueError, TypeError, KeyError, RecursionError) as exc:
+        raise ValueError("CATALOG_INVALID: schema") from exc
+    return doc
+
+
+class _BoundedInfo(tarfile.TarInfo):
+    # tarfile consumes PAX/long-name payloads before exposing the next member.
+    def _proc_member(self, tar):
+        if self.size < 0 or self.size > MAX_SCAN or self.type == tarfile.GNUTYPE_SPARSE:
+            raise ValueError("CATALOG_INVALID: tar metadata")
+        if (
+            self.type
+            in (
+                tarfile.XHDTYPE,
+                tarfile.XGLTYPE,
+                tarfile.GNUTYPE_LONGNAME,
+                tarfile.GNUTYPE_LONGLINK,
+                tarfile.SOLARIS_XHDTYPE,
+            )
+            and self.size > 65536
+        ):
+            raise ValueError("CATALOG_INVALID: extended header")
+        return super()._proc_member(tar)
+
+
+class _ScanReader:
+    def __init__(self, source):
+        self.source = source
+        self.remaining = MAX_SCAN
+
+    def read(self, size):
+        chunk = self.source.read(min(size, self.remaining + 1))
+        self.remaining -= len(chunk)
+        if self.remaining < 0:
+            raise ValueError("CATALOG_INVALID: scan budget")
+        return chunk
 
 
 def inspect_archive(archive: Path, selection: dict, *, repo=None) -> list[dict]:
-    """Import only trusted pinned-SHA model definitions in an isolated tmpdir.
-
-    This is not a security sandbox: actor/branch/SHA authorization remains the
-    prerequisite; a Python build_test_list runs trusted repository code.
-    """
-    from ci_core.contract import REPO
-
-    repo = REPO if repo is None else repo
-
-    import os
-    import subprocess
-    import sys
-    import tempfile
-
-    with tempfile.TemporaryDirectory(prefix="lite-ci-discovery-") as temp:
-        folder = Path(temp)
-        with tarfile.open(archive, "r:gz") as tar:
-            tar.extractall(folder, filter=_discovery_tar_filter)
-        argv = [
-            sys.executable,
-            "-m",
-            "tests.integration_tests.tools.lite_actions.entrypoint",
-            "inspect",
-        ]
-        argv += (
-            ["--suite", selection["suite"]]
-            if "suite" in selection
-            else ["--test-id", selection["test_id"]]
-        )
-        env = {
-            k: v
-            for k, v in os.environ.items()
-            if not any(
-                s in k.upper()
-                for s in (
-                    "TOKEN",
-                    "SECRET",
-                    "PASSWORD",
-                    "CREDENTIAL",
-                    "PRIVATE_KEY",
-                    "CHECKS_KEY",
+    """Read one literal regular member; never extract or invoke model Python."""
+    data = None
+    try:
+        with (
+            gzip.open(archive, "rb") as raw,
+            tarfile.open(
+                fileobj=_ScanReader(raw), mode="r|", tarinfo=_BoundedInfo
+            ) as tar,
+        ):
+            for count, member in enumerate(tar, 1):
+                if count > MAX_MEMBERS or tar.offset > MAX_SCAN:
+                    raise ValueError("CATALOG_INVALID: scan budget")
+                path = posixpath.normpath("/" + member.name.replace("\\", "/")).lstrip(
+                    "/"
                 )
-            )
-        }
-        env["PYTHONPATH"] = str(folder)
-        proc = subprocess.run(
-            argv, cwd=folder, env=env, capture_output=True, text=True, timeout=45
-        )
-        if proc.returncode or not proc.stdout.strip():
-            raise ValueError("untrusted/missing CI definition: " + proc.stderr[-220:])
-        rows = json.loads(proc.stdout.strip().splitlines()[-1])
-        if not isinstance(rows, list) or not rows:
-            raise ValueError("empty test selection")
-        return rows
-
-
-def resolve_test(
-    archive: Path, test_id: str, *, nodes: int, ngpu: int, repo=None
-) -> dict:
-    rows = inspect_archive(archive, {"test_id": test_id}, repo=repo)
-    if len(rows) != 1 or rows[0].get("test_id") != test_id:
-        raise ValueError("missing or ambiguous pinned test")
-    found = rows[0]
-    if (found.get("nnodes"), found.get("ngpu")) != (nodes, ngpu):
-        raise ValueError("test topology does not match leased resources")
-    return {
-        **found,
-        "env_vars": validate_case_environment(
-            found.get("env_vars"), kind=found["kind"]
-        ),
-    }
+                if path == ".ci" and not member.isdir():
+                    raise ValueError("CATALOG_INVALID: directory")
+                if path != CATALOG:
+                    continue
+                if (
+                    data is not None
+                    or member.name != CATALOG
+                    or member.type not in (tarfile.REGTYPE, tarfile.AREGTYPE)
+                    or member.sparse is not None
+                    or not 0 < member.size <= MAX_CATALOG
+                ):
+                    raise ValueError("CATALOG_INVALID: member")
+                with tar.extractfile(member) as stream:
+                    data = stream.read(member.size)
+    except (tarfile.TarError, EOFError, OSError) as exc:
+        raise ValueError("CATALOG_INVALID: archive") from exc
+    if data is None:
+        raise ValueError("CATALOG_MISSING")
+    doc = decode_catalog(data)
+    if set(selection) == {"test_id"} and selection["test_id"] in doc["cases"]:
+        return [doc["cases"][selection["test_id"]]]
+    if set(selection) == {"suite"} and selection["suite"] in doc["suites"]:
+        return [doc["cases"][i] for i in doc["suites"][selection["suite"]]]
+    raise ValueError("CATALOG_INVALID: unknown selection")

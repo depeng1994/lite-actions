@@ -21,7 +21,7 @@ python3 -m unittest discover -s tests
 | 上报断网与重启 | 恢复已完成结果，不重复训练、不重复发送结果 |
 | 发布目录更换与管理操作并发 | 更换代码副本仍恢复同一份待报结果；管理进程写入隔离记录时，接单到结果回写不会丢任务或隔离。复用上报恢复场景，只新增一个真实进程并发场景 |
 | 执行中崩溃 | 保留隔离，不盲目重跑或复用仍可能被占用的设备 |
-| 日志预算 | 完整工作流结果保持身份字段，并满足 20 行、180 字符、6100/7000 字节预算 |
+| 日志预算 | Yellow 10 行/2,048 B；Blue 按 4 MiB 计、不按行计；身份和实际发送字节分别验证 |
 | 成功/失败诊断 | 成功结果实际经过 LOSS 选择后回写；失败结果保留根因报错，避免错误被收尾噪声覆盖。后者是必要的独立失败路径，不能由成功预算场景替代 |
 
 训练成功的摘录必须包含 LOSS，优先 rank 0；失败时选择关键报错和 traceback 上下文。过长前缀不能截掉 LOSS 数值或异常消息。通信 smoke 不训练模型，因此返回 collective 校验结果而非伪造 LOSS。训练没有 LOSS 证据时，不报告 PASS。
@@ -40,3 +40,16 @@ python3 -m unittest discover -s tests
 E1/E2：隔离 Linux 的真实 systemd Timer/Service A→B、NO_CHANGE、停止运行中任务、启动失败回滚和一次事务中断恢复。验证新 Worker 请求启动/进程出现/Ready 的 5/30/120 秒设计目标。
 
 E3/E4：选定真实 Worker 的首次一键安装、自动切换、CPU-only Worker OS Probe、结果回写及再次接单。当前阶段为避免启动昂贵资源，Dispatch 验证输入仅选择 CPU Probe，**8P 和 16P 保持 NOT_TESTED**；不得改变主线正式 Dispatch 默认用例集或将 CPU 结果冒充 NPU 验证。若目标 Remote 容器没有 systemd，真实部署 E2E 必须标记 BLOCKED，不得用 CPU DT 抵消。
+
+
+<a id="rfc24"></a>
+## RFC 24：候选分支验证与生产前置条件
+
+**不要直接安装替换线上。** 基础设施 fixed probe、区外上限、三仓 E2E 是不同的验收门槛。托管 runner 的 `uname`、成功的模板解析、非生产机上的单测都不等于 Yellow probe 或 NPU smoke。
+
+1. 无外网/生产凭据的开发 CPU 环境中，从每个模型仓受测源码导出 `.ci/lite-actions.json`，用相同 suite 参数重新运行 `python3 /path/to/lite-actions/scripts/export_case_catalog.py --repo-root . --check`。TorchTitan 的 native 分支加 `--suite dispatch_smoke --suite base --suite pr --suite nightly`；保留重复 8P。导出器会运行模型代码，**绝不能在 Worker 或持有生产凭据的 job 中执行**。无清单的旧 SHA 不能回退执行。依赖尚未配置的训练项可发现，但执行时仍必须满足必需资源/环境条件。
+2. 受信运维管理员准备 root 所有、不可由组/其他用户写的 `/etc/lite-actions/deployment.json`。顶层 `addresses` 放两条经批准的本地网卡 IPv4（不是 NAT 出口）；`workers.<zone>` 包含 `state_dir`、`case_environments`、可选 `probe_callers`。Yellow 另须 `daily_upload_bytes`（UTC 日窗口，经运维确认）及 `artifact_hosts`（仅精确核准的无凭据下载域名）。`case_environments` 按环境名、环境变量键映射到允许运行的值列表；不可从 PR 扩充。状态目录必须预先创建且权限受控，内有独立 `worker-id` 标记；切换旧 outbox 必须核实归属并排空冲突。无固定地址/身份不符时拒绝启动，不允许在测试容器改 IP 或复制凭据冒充生产节点。`--validate` 也执行身份预检。
+3. 目前 GitHub probe 只接受显式授权的 `workflow_dispatch`：在 `probe_callers` 中登记 `repo`、准确 `workflow` 路径、`branch`、`approved_caller_shas`、`approved_template_shas` 及 `mode`（`cpu-only` / `mixed`）。模型仓变量 `LITE_CI_RESULT_ACTOR` 须匹配现有可信发布者。Worker 从平台原 run/attempt 的 `referenced_workflows` 与活动 job ID 独立核验，不由请求自报身份。GitCode 的可复用 YAML 是**先决 marker 试点**，缺独立 callee/dispatch 证据就退出非零；当前分支不宣称 GitCode 的主机 probe 已实现或验通。
+4. Blue 公开脱敏日志默认关闭。启用须登记 `public_release` 下 `public_diagnostics_approved`（true）、`repository`、已存在且非 draft 的 `release_id`、`tag` 和 `publisher_login`；写身份从既有受控 `LITE_ACTIONS_BLUE_RELEASE_TOKEN` 注入。不要创建临时放宽权限的 Release/Token 来测试。模型配置 `LITE_CI_PUBLIC_LOG_REPO` 与实际目的地一致；普通读者无须登录。每个 case 先占用持久额度再发送，一份文件、字节数和 SHA-256；不明回执先查重，只清理有自己回执且身份/摘要一致的过期文件。日志是否成功投递和用例是否通过分别报告。
+5. 在固定分支 SHA 跑 `python3 scripts/lint.py`、`python3 -m unittest discover -s tests -v`。`tests.test_rfc24_boundaries` 覆盖真实 loopback 正对照/无模型执行、安全边界及原生 Release 协议的假后端；`tests.test_workflow.Rfc24RecoveryTests` 用真路由与状态文件、虚拟时钟和假平台验证丢回执/断线/重启，并检查模型代码未在到达执行边界前运行。记录跳过项，不以 mock 代真机。
+6. E1/E2/E5 核心必跑；E5 只做一次三仓回归：TT-GC 组织仓 Dispatcher Smoke、vLLM-GH 完整 Dispatcher Smoke、Lite Actions 同部署 SHA 的 `profile=full`。不跑 Nightly 权重训练；核对每个必需实例、真实资源、exit=0、cleanup_verified=true 和日志位置。TT-GC 合入及其现有 Actions 同步证据另记，不对 TT-GH 写入。E3 真机验收必须匿名读回 4 MiB 合成文件核对哈希；E4 实际出口计量和 ACK 时效需独立线上样本，虚拟时钟不得当作生产网络证据。

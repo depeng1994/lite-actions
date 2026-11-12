@@ -21,14 +21,19 @@ from tests.scenarios import write_workspace
 
 
 def profile():
-    def probe(worker):
+    def regional(worker):
         return dict(
-            test_id=f"os_{worker}",
+            test_id=f"local_{worker}",
             label=worker,
-            kind="worker_probe",
-            nnodes=0,
-            ngpu=0,
-            ci_overrides={"worker": worker},
+            kind="npu_smoke",
+            nnodes=1,
+            ngpu=2,
+            env_vars={"ASCEND_SET_ENV_PATH": "/fixture/cann"},
+            ci_overrides={
+                "worker": worker,
+                "target_pool": "pool_" + worker,
+                "docker": "training",
+            },
             timeout=90,
         )
 
@@ -36,6 +41,7 @@ def profile():
         return dict(
             test_id=name,
             label=name,
+            env_vars={"ASCEND_SET_ENV_PATH": "/fixture/cann"},
             kind="npu_smoke",
             nnodes=nodes,
             ngpu=8,
@@ -48,8 +54,8 @@ def profile():
         )
 
     return [
-        probe("blue"),
-        probe("yellow"),
+        regional("blue"),
+        regional("yellow"),
         smoke("small", 1),
         smoke("large", 2),
         smoke("small", 1),
@@ -59,23 +65,16 @@ def profile():
 def source_archive(root, rows):
     """Fixture model repository whose real inspect entrypoint returns the profile."""
     archive_path = root / "model.tar.gz"
-    entrypoint = (
-        "import json,sys\nrows=" + repr(rows) + "\n"
-        "if '--test-id' in sys.argv:\n"
-        " name=sys.argv[sys.argv.index('--test-id')+1]\n"
-        " rows=[r for r in rows if r['test_id']==name][:1]\n"
-        "print(json.dumps(rows))\n"
-    )
-    with tarfile.open(archive_path, "w:gz") as archive:
-        for name in (
-            "tests/__init__.py",
-            "tests/integration_tests/__init__.py",
-            "tests/integration_tests/tools/lite_actions/entrypoint.py",
-        ):
-            data = entrypoint.encode() if name.endswith("entrypoint.py") else b""
-            info = tarfile.TarInfo(name)
-            info.size = len(data)
-            archive.addfile(info, io.BytesIO(data))
+    from tests.scenarios import write_catalog
+
+    with tarfile.open(archive_path, "w:gz") as tar:
+        write_catalog(tar, rows)
+        data = b"raise RuntimeError('model code executed on Worker')"
+        info = tarfile.TarInfo(
+            "tests/integration_tests/tools/lite_actions/entrypoint.py"
+        )
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
     return archive_path
 
 
@@ -132,7 +131,9 @@ class SourceProfileTests(unittest.TestCase):
             patch.dict(os.environ, env),
             patch.object(self.client, "request", side_effect=self.api),
             patch.object(
-                self.client, "commit_comments", side_effect=lambda _: self.comments
+                self.client,
+                "commit_comments",
+                side_effect=lambda *args, **kwargs: self.comments,
             ),
             patch.object(self.client, "send_result", side_effect=self.send),
         ):
@@ -153,7 +154,7 @@ class SourceProfileTests(unittest.TestCase):
             return self.merge_ref
         raise AssertionError((method, path))
 
-    def send(self, sha, body):
+    def send(self, sha, body, **kwargs):
         row = {
             "id": len(self.comments) + 1,
             "body": body,
@@ -186,8 +187,8 @@ class SourceProfileTests(unittest.TestCase):
             self.assertEqual(run["_ci_execution_sha"], "a" * 40)
             self.assertEqual(plan["sha"], "a" * 40)
             for worker, expected in (
-                ("blue", ["os_blue", "small", "large", "small"]),
-                ("yellow", ["os_yellow"]),
+                ("blue", ["local_blue", "small", "large", "small"]),
+                ("yellow", ["local_yellow"]),
             ):
                 router = self.router(worker)
                 router.receive([run, run])
@@ -203,7 +204,7 @@ class SourceProfileTests(unittest.TestCase):
                 [r["test_id"] for r in profile()],
             )
 
-        for field, value in (("kind", "smoke_typo"), ("ngpu", 1)):
+        for field, value in (("kind", "smoke_typo"), ("ngpu", 0)):
             rows = profile()
             rows[0][field] = value
             with self.assertRaises(ValueError):
@@ -240,7 +241,9 @@ class SourceProfileTests(unittest.TestCase):
                     self.assertEqual((row["phase"], item["worker"]), ("QUEUED", worker))
                     result = report(stored, item, row["digest"], "PASS", 0, [], True)
                     post(self.client, stored, item, result, "reporter")
-                    self.client.commit_comments.assert_called_with(head)
+                    self.client.commit_comments.assert_called_with(
+                        head, category="terminal_replay_lookup"
+                    )
                     dest, body = self.client.send_result.call_args.args
                     self.assertEqual(
                         (dest, json.loads(body.split("\n", 1)[1])["sha"]), (head, head)
@@ -341,35 +344,38 @@ class SourceProfileTests(unittest.TestCase):
             )
 
     # 看护运行中探针收到取消时不能报告成功。
-    def test_cancellation_during_probe_cannot_report_success(self):
-        entered, release = threading.Event(), threading.Event()
-
-        def probe():
-            entered.set()
-            if not release.wait(5):
-                raise RuntimeError("test timed out")
-            return subprocess.CompletedProcess([], 0, "probe ok", "")
-
+    def test_recovered_model_probe_is_refused_before_source_or_commands(self):
+        run = self.client.running_workflows()[0]
+        router = self.router("blue")
+        row = {
+            "kind": "worker_probe",
+            "test_id": "old_host_probe",
+            "label": "old",
+            "nnodes": 0,
+            "ngpu": 0,
+            "ci_overrides": {"worker": "blue"},
+            "timeout": 90,
+        }
+        plan = source_plan([row], run, self.client.repo)
+        item = plan["cases"][0]
+        router.state.update(
+            "legacy",
+            phase="QUEUED",
+            run=run,
+            item=item,
+            digest=plan["plan_digest"],
+            defaults=plan["defaults"],
+        )
         with (
-            patch("ci_core.ssh_runner.model_archive", return_value=self.archive),
-            patch("ci_core.router.model_archive", return_value=self.archive),
-            patch("ci_core.router.probe_worker", side_effect=probe),
+            patch("ci_core.router.probe_worker") as probe,
+            patch("ci_core.router.model_archive") as archive,
         ):
-            router = self.router("blue")
-            router.receive(self.client.running_workflows())
-            router.pump()
-            self.assertTrue(entered.wait(5))
-            self.pr["head"]["sha"] = "b" * 40
-            router.tick()
-            release.set()
-            for future, _, _ in router.active.values():
-                future.result(timeout=5)
-            probe_record = next(
-                r
-                for r in router.state.read().values()
-                if r["item"]["kind"] == "worker_probe"
-            )
-            self.assertEqual(probe_record["report"]["status"], "CANCELLED")
+            router.work("legacy", None, None, threading.Event(), threading.Event())
+            probe.assert_not_called()
+            archive.assert_not_called()
+        self.assertEqual(
+            router.state.read()["legacy"]["report"]["status"], "INFRA_ERROR"
+        )
 
     # 看护重跑取消旧用例，且新旧结果、执行目录互不混淆。
     def test_rerun_cancels_old_cases_and_uses_distinct_result_and_execution_identity(
@@ -447,12 +453,29 @@ class SourceProfileTests(unittest.TestCase):
         ).strip()
         work = self.root / "work"
         work.mkdir()
+        # Isolate rewriting from user configuration, including on Git <2.31.
+        home = self.root / "home"
+        home.mkdir()
+        for remote, repo in [
+            ("cann/torchtitan-npu", self.root / "missing"),
+            ("someone/torchtitan-npu", source),
+        ]:
+            subprocess.run(
+                [
+                    "git",
+                    "config",
+                    "--file",
+                    str(home / ".gitconfig"),
+                    f"url.file://{repo}.insteadOf",
+                    f"https://gitcode.com/{remote}.git",
+                ],
+                check=True,
+            )
         env = {
-            "GIT_CONFIG_COUNT": "2",
-            "GIT_CONFIG_KEY_0": f"url.file://{self.root}/missing.insteadOf",
-            "GIT_CONFIG_VALUE_0": "https://gitcode.com/cann/torchtitan-npu.git",
-            "GIT_CONFIG_KEY_1": f"url.file://{source}.insteadOf",
-            "GIT_CONFIG_VALUE_1": "https://gitcode.com/someone/torchtitan-npu.git",
+            "HOME": str(home),
+            "XDG_CONFIG_HOME": str(home),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_TERMINAL_PROMPT": "0",
         }
         with patch.dict(os.environ, env), patch("ci_core.ssh_runner.ROOT", self.root):
             archive = model_archive(

@@ -1,0 +1,31 @@
+name: Lite Actions fixed Worker probe
+on: workflow_call
+permissions:
+  contents: read
+  actions: read
+jobs:
+  worker_os:
+    name: Lite Actions worker-os-v1
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Verify callee context
+        env:
+          CALLEE_REPO: ${{ job.workflow_repository }}
+          CALLEE_SHA: ${{ job.workflow_sha }}
+        run: |
+          test "$CALLEE_REPO" = depeng1994/lite-actions
+          [[ "$CALLEE_SHA" =~ ^[0-9a-f]{40}$ ]]
+      - uses: actions/checkout@v4
+        with:
+          repository: depeng1994/lite-actions
+          ref: ${{ job.workflow_sha }}
+          persist-credentials: false
+      - name: Wait for the actual Worker (not this runner)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CALLER_REF: ${{ github.workflow_ref }}
+          CALLEE_SHA: ${{ job.workflow_sha }}
+          RESULT_AUTHOR: ${{ vars.LITE_CI_RESULT_ACTOR }}
+          LITE_ACTIONS_MODEL_REPOS: ${{ github.repository }}
+        run: python3 -m ci_core.worker_probe wait

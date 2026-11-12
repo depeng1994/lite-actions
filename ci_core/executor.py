@@ -13,7 +13,6 @@ import shlex
 import signal
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,7 +25,6 @@ from ci_core.contract import (
     trusted_repositories,
 )
 from ci_core.logs import metadata, select_remote
-from ci_core.registry import resolve_test
 
 BASE = Path(__file__).resolve().parents[1]
 CHIP_PROCESS = re.compile(r"^\|\s*(\d+)\s*([01])\s*\|\s*(\d+)\s*\|")
@@ -44,6 +42,8 @@ class Execution:
     tail: list[str]
     log: Path
     release_verified: bool = True
+    locator: dict | None = None
+    diagnostic: tuple[bytes, bool] | None = None
 
 
 def _local_run_time(run: dict) -> dt.datetime:
@@ -809,44 +809,17 @@ def summarize(log: Path, rc: int) -> list[str]:
     return list(tail) or [f"Execution returned {rc} without output"]
 
 
-def prepare_profile(case: dict, run: dict) -> dict:
-    from ci_core.ssh_runner import model_archive
-
-    with tempfile.TemporaryDirectory(prefix="lite-model-") as tmp:
-        source_repo = run.get("_ci_repo", TORCHTITAN_REPO)
-        archive = model_archive(
-            run.get("_ci_execution_sha", run["head_sha"]),
-            Path(tmp),
-            source_repo=source_repo,
-            provider=run.get("_ci_provider", "github"),
-            fallback_repo=run.get("_ci_source_repo"),
-            source_pr=(
-                run["_ci_pr_number"]
-                if run.get("_ci_source", {}).get("mode") == "merge_result"
-                else None
-            ),
-        )
-        definition = resolve_test(
-            archive,
-            run["_ci_test_id"],
-            nodes=case["resources"]["nodes"],
-            ngpu=case["resources"]["devices_per_node"],
-            repo=source_repo,
-        )
-    return definition["env_vars"]
-
-
 def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
     if not case.get("enabled"):
         raise ValueError("disabled case")
     cancel = run.get("_ci_cancel_event")
-    log_dir = task_dir(run, root)
+    log_dir = run.get("_ci_pipeline_folder") or task_dir(run, root)
     log_dir.mkdir(parents=True, exist_ok=True)
     logfile = log_dir / "pipeline.log"
     if cancel is not None and cancel.is_set():
         logfile.write_text("Cancelled before launch\n", encoding="utf-8")
         return Execution(130, ["Cancelled before launch"], logfile, True)
-    environment = prepare_profile(case, run)
+    environment = case["verified_env"]
     setup = environment["ASCEND_SET_ENV_PATH"]
     case = {**case, "ascend_set_env_path": setup}
     pools = json.loads((root / "config/pools.json").read_text())
@@ -1027,11 +1000,29 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
 
         location = metadata(logfile)
         selected_hosts = {n["host_id"] for n in case["allocation"]}
-        approved = {
-            execution_node(n, case["docker"])["ssh"]
+        endpoints = {
+            execution_node(n, case["docker"])["ssh"]: n["host_id"]
             for n in pools[case["pool"]]["nodes"]
             if n["host_id"] in selected_hosts
         }
+        approved = set(endpoints)
+        locator = None
+        if "_ci_worker_address" in run:
+            from ci_core.ssh_runner import DEST_ROOT
+
+            managed = endpoints.get(location["host"])
+            rank = next(
+                (
+                    i
+                    for i, n in enumerate(case["allocation"])
+                    if n["host_id"] == managed
+                ),
+                None,
+            )
+            path = f"{DEST_ROOT}/{remote_task_name(run)}/node{rank}/run.log"
+            if rank is None or location["path"] != path:
+                raise ValueError("LOG_LOCATOR_MISMATCH")
+            locator = {"host": managed, "path": path}
         excerpt = select_remote(
             location["host"],
             location["path"],
@@ -1040,10 +1031,23 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
             require_loss=case["kind"] == "train",
         )
     except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:
+        locator = None
         excerpt = summarize(logfile, rc)[-18:]
-        excerpt.append(f"Log collection failed: {type(exc).__name__}: {str(exc)[:120]}")
+        excerpt.append(f"Log collection failed: {type(exc).__name__}")
         if rc == 0:
             rc = 125
+    diagnostic = None
+    if run.get("_ci_zone") == "blue":
+        from ci_core.logs import blue_remote
+
+        try:
+            if locator:
+                diagnostic = blue_remote(location["host"], location["path"], approved)
+            # The internal management/preflight transcript is never a public asset.
+        except (ValueError, OSError, subprocess.SubprocessError):
+            pass  # Diagnostic transport must not rewrite the actual test outcome.
     if cancel is not None and cancel.is_set() and rc == 0:
         rc = 130
-    return Execution(rc, excerpt[:20], logfile, release_verified)
+    if locator is None and "_ci_worker_address" in run:
+        locator = {"host": run["_ci_worker_address"], "path": str(logfile)}
+    return Execution(rc, excerpt[:20], logfile, release_verified, locator, diagnostic)

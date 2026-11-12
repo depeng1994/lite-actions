@@ -133,7 +133,7 @@ class MultiRepoWorkerTests(unittest.TestCase):
             def ci_request(self, run):
                 return self.plan
 
-            def send_result(self, sha, body):
+            def send_result(self, sha, body, **kwargs):
                 self.posted.append((sha, body))
                 return {"id": len(self.posted)}
 

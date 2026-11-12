@@ -1,9 +1,10 @@
 """Identity-bound, byte-budgeted result outbox and metadata-only progress."""
 
 import json
+from itertools import islice
 
 from ci_core.contract import REPO
-from ci_core.logs import clean
+from ci_core.logs import clean, sanitized_lines, yellow_lines
 
 
 def result_sha(run):
@@ -35,7 +36,7 @@ def report(run, item, plan_digest, status, rc, lines, cleanup_verified=True):
         status=status,
         exit_code=rc,
         cleanup_verified=cleanup_verified,
-        last_20_lines=[clean(x) for x in lines[:20]],
+        last_20_lines=[clean(x) for x in islice(sanitized_lines(lines), 20)],
     )
     if run.get("_ci_dispatch_id"):
         result["dispatch_id"] = run["_ci_dispatch_id"]
@@ -44,8 +45,16 @@ def report(run, item, plan_digest, status, rc, lines, cleanup_verified=True):
     return result
 
 
-def body_for(run, item, result):
+def body_for(run, item, result, *, local_worker=None):
     result = {**result, "last_20_lines": list(result["last_20_lines"])}
+    if local_worker is not None and result["worker"] != local_worker:
+        raise ValueError("STATE_OWNER_MISMATCH")
+    if local_worker == "yellow":
+        result["last_20_lines"] = yellow_lines(result["last_20_lines"])
+        if "native_source" in result:
+            from ci_core.contract import digest
+
+            result["source_digest"] = digest(result.pop("native_source"))
     while True:
         body = (
             marker(run, item)
@@ -53,19 +62,48 @@ def body_for(run, item, result):
             + json.dumps(result, ensure_ascii=False, separators=(",", ":"))
         )
         request = json.dumps({"body": body}, separators=(",", ":"))
+        if local_worker == "yellow":
+            # Yellow's final request-size policy must see the intact metadata first;
+            # it removes optional diagnostics atomically or refuses the whole request.
+            return body
         if len(body.encode()) <= 6100 and len(request.encode()) <= 7000:
             return body
+        if result.get("diagnostics"):
+            result["diagnostics"] = result["diagnostics"][:-1]
+            result["inline_truncated"] = True
+            continue
         if not result["last_20_lines"]:
             raise ValueError("metadata exceeds upload budget")
         result["last_20_lines"].pop()
 
 
-def post(client, run, item, result, author):
-    body = body_for(run, item, result)
+def post(
+    client,
+    run,
+    item,
+    result,
+    author,
+    *,
+    local_worker=None,
+    cache=None,
+    verify_only=False,
+    retry=False,
+):
+    body = body_for(run, item, result, local_worker=local_worker)
     prefix = marker(run, item) + "\n"
+    cache = {} if cache is None else cache
+    sha = result_sha(run)
+    key = (id(client), sha)
+    if key not in cache:
+        cache[key] = client.commit_comments(
+            sha,
+            category="old_result_replay_lookup"
+            if verify_only
+            else ("terminal_retry_lookup" if retry else "terminal_replay_lookup"),
+        )
     prior = [
         c
-        for c in client.commit_comments(result_sha(run))
+        for c in cache[key]
         if c.get("user", {}).get("login") == author
         and c.get("body", "").startswith(prefix)
     ]
@@ -73,11 +111,13 @@ def post(client, run, item, result, author):
         if any(c["body"] != body for c in prior):
             raise ValueError("conflicting existing result")
         return
-    client.send_result(result_sha(run), body)
+    if verify_only:
+        raise ValueError("UNCONFIRMED_MANUAL_RECOVERY")
+    client.send_result(sha, body, category="terminal_retry" if retry else "terminal")
 
 
-def progress(client, run, item, digest, phase, comment_id=None):
-    body = "Lite-CI-PROGRESS " + json.dumps(
+def progress_body(run, item, digest, phase):
+    return "Lite-CI-PROGRESS " + json.dumps(
         dict(
             run_id=run["id"],
             attempt=run.get("run_attempt", 1),
@@ -93,10 +133,22 @@ def progress(client, run, item, digest, phase, comment_id=None):
         ),
         separators=(",", ":"),
     )
+
+
+def progress(client, run, item, digest, phase, comment_id=None, *, retry=False):
+    body = progress_body(run, item, digest, phase)
     if comment_id:
         client.request("PATCH", f"/comments/{comment_id}", {"body": body})
         return comment_id
-    return client.send_result(result_sha(run), body)["id"]
+    return client.send_result(
+        result_sha(run),
+        body,
+        category=(
+            "ack_retry"
+            if retry and phase == "QUEUED"
+            else ("ack" if phase == "QUEUED" else "progress")
+        ),
+    )["id"]
 
 
 def case_passed(log, test_id):

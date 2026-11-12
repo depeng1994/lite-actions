@@ -70,7 +70,7 @@ class WorkflowTests(unittest.TestCase):
                 return
         self.fail("workflow did not settle")
 
-    def test_artifact_routes_to_independent_workers_and_reports_once(self):
+    def test_model_artifact_cannot_request_host_probes_on_either_worker(self):
         service = Service(
             [
                 definition("blue_os", kind="worker_probe"),
@@ -85,11 +85,9 @@ class WorkflowTests(unittest.TestCase):
                 router.tick()
                 self.drain(router)
                 router.tick()
-        self.assertEqual(
-            {(x["test_id"], x["worker"], x["status"]) for x in service.results()},
-            {("blue_os", "blue", "PASS"), ("yellow_os", "yellow", "PASS")},
-        )
-        self.assertEqual(len(service.results()), 2)
+        self.assertFalse(blue.state.read())
+        self.assertFalse(yellow.state.read())
+        self.assertEqual(service.results(), [])
 
     def test_parallel_cases_hold_disjoint_devices_and_ports_until_report(self):
         service = Service([definition("first"), definition("second")], self.root)
@@ -718,8 +716,9 @@ class WorkflowTests(unittest.TestCase):
                 release = self.root / "replacement-checkout"
                 write_workspace(release)
                 recovered = self.router(service, existing=release)
-                recovered.tick()
-                recovered.tick()
+                with patch("ci_core.router.time.time", return_value=time.time() + 901):
+                    recovered.tick()
+                    recovered.tick()
             self.assertEqual(execution.call_count, 1)
             self.assertEqual(len(service.results()), 1)
 
@@ -899,3 +898,174 @@ AdminState(Path(sys.argv[1])).update('operator_guard',phase='REPORTED',
             )
         )
         self.assertLessEqual(len(result["last_20_lines"]), 20)
+
+
+class Rfc24RecoveryTests(unittest.TestCase):
+    def test_yellow_tick_restart_ack_and_terminal_after_lost_responses(self):
+        """Use the real scheduler/outbox and state file. Only clocks/remote I/O are fakes."""
+        with tempfile.TemporaryDirectory() as tmp, ExitStack() as stack:
+            root = Path(tmp)
+            write_workspace(root)
+            stack.enter_context(
+                patch.dict(
+                    os.environ,
+                    LITE_ACTIONS_STATE_DIR=str(root / "state"),
+                    LITE_ACTIONS_RESOURCE_LOCK_ROOT=str(root / "locks"),
+                )
+            )
+            service = Service(
+                [definition("one", kind="npu_smoke", worker="yellow")], root
+            )
+            run = service.runs[20]
+            plan = service.plans[20]
+            item = plan["cases"][0]
+            key = task_key(run, item)
+            stateclock = [100000.0]
+            counts = {"discover": 0, "post": 0}
+            stack.enter_context(
+                patch(
+                    "ci_core.router.time.monotonic", side_effect=lambda: stateclock[0]
+                )
+            )
+            stack.enter_context(
+                patch("ci_core.router.time.time", side_effect=lambda: stateclock[0])
+            )
+
+            def empty():
+                counts["discover"] += 1
+                return []
+
+            stack.enter_context(
+                patch.object(service, "running_workflows", side_effect=empty)
+            )
+
+            def start():
+                router = Router(root, "yellow", service, "reporter")
+                stack.callback(router.close)
+                return router
+
+            router = start()
+            for _ in range(360):
+                router.tick()
+                stateclock[0] += 10
+            self.assertEqual(counts["discover"], 60)
+            self.assertEqual(service.comments, [])
+            router.state.admit(
+                [
+                    (
+                        key,
+                        {
+                            "phase": "QUEUED",
+                            "run": run,
+                            "item": item,
+                            "digest": plan["plan_digest"],
+                            "defaults": plan["defaults"],
+                            "queued_at": stateclock[0],
+                        },
+                    )
+                ]
+            )
+            original = service.send_result
+
+            def drop(sha, body, **kwargs):
+                counts["post"] += 1
+                original(sha, body, **kwargs)
+                raise TimeoutError("response lost after durable platform write")
+
+            with patch.object(service, "send_result", side_effect=drop):
+                router.transition(key, "QUEUED")
+            self.assertEqual(len(service.comments), 1)
+            # Interrupted/partitioned discovery; preserve persisted ownership without scheduling work.
+            router.state.update(key, phase="QUEUED")
+            router.close()
+            router = start()
+            stateclock[0] += 30
+            router.maybe_ack(key, router.state.read()[key])
+            self.assertTrue(router.state.read()[key]["progress_id"])
+            self.assertEqual(len(service.comments), 1)
+            router.transition(key, "CLEANING")
+            router.transition(key, "CLEANING")
+            self.assertEqual(len(service.comments), 1)
+            router.finish(key, "FAIL", 1, ["fixture failure"])
+            n = 0
+            with patch.object(
+                service, "commit_comments", side_effect=OSError("fixture partition")
+            ):
+                for _ in range(180):
+                    router.tick()
+                    stateclock[0] += 10
+                n = router.state.read()[key]["send_attempts"]
+            self.assertTrue(1 <= n <= 8)
+            self.assertEqual(router.state.read()[key]["phase"], "PENDING_REPORT")
+            self.assertEqual(counts["post"], 1)
+            stateclock[0] += 1800
+            with patch.object(service, "send_result", side_effect=drop):
+                router.tick()
+            self.assertEqual(counts["post"], 2)
+            self.assertEqual(len(service.results()), 1)
+            router.close()
+            router = start()
+            stateclock[0] += 1800
+            router.tick()
+            self.assertEqual(router.state.read()[key]["phase"], "REPORTED")
+            self.assertEqual(len(service.results()), 1)
+            self.assertFalse(router.active)
+
+    def test_real_admission_and_work_use_only_data_until_execution_boundary(self):
+        with tempfile.TemporaryDirectory() as tmp, ExitStack() as stack:
+            root = Path(tmp)
+            write_workspace(root)
+            service = Service([definition("one", kind="npu_smoke")], root)
+            import io
+            import tarfile
+
+            with tarfile.open(service.archive, "r:gz") as t:
+                data = t.extractfile(".ci/lite-actions.json").read()
+            marker = root / "unauthorized"
+            source = f"from pathlib import Path; Path({str(marker)!r}).touch()".encode()
+            with tarfile.open(service.archive, "w:gz") as t:
+                for path, blob in [
+                    (
+                        "tests/integration_tests/tools/lite_actions/entrypoint.py",
+                        source,
+                    ),
+                    (".ci/lite-actions.json", data),
+                ]:
+                    info = tarfile.TarInfo(path)
+                    info.size = len(blob)
+                    t.addfile(info, io.BytesIO(blob))
+            stack.enter_context(
+                patch.dict(
+                    os.environ,
+                    LITE_ACTIONS_STATE_DIR=str(root / "state"),
+                    LITE_ACTIONS_RESOURCE_LOCK_ROOT=str(root / "locks"),
+                )
+            )
+            router = Router(root, "blue", service, "reporter")
+            stack.callback(router.close)
+            stack.enter_context(service.connected())
+
+            def endpoint(case, run, **_):
+                self.assertEqual(
+                    case["verified_env"]["ASCEND_SET_ENV_PATH"], "/fixture/cann"
+                )
+                return completed_execution(root, case, run)
+
+            intercepted = stack.enter_context(
+                patch("ci_core.router.execute", side_effect=endpoint)
+            )
+            pc = stack.enter_context(
+                patch(
+                    "subprocess.Popen",
+                    side_effect=AssertionError("model process launched"),
+                )
+            )
+            router.tick()
+            for fut, _, _ in list(router.active.values()):
+                fut.result(timeout=5)
+            router.pump()
+            router.flush()
+            self.assertEqual(intercepted.call_count, 1)
+            pc.assert_not_called()
+            self.assertFalse(marker.exists())
+            self.assertEqual(service.results()[0]["status"], "PASS")

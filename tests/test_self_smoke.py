@@ -374,6 +374,7 @@ class SelfSmokeTests(unittest.TestCase):
         }
         service.plans = {42: self.plan}
         with tarfile.open(service.archive, "w:gz") as tar:
+            tar.add(ROOT / ".ci/lite-actions.json", arcname=".ci/lite-actions.json")
             for name in (
                 "tests/__init__.py",
                 "tests/integration_tests/__init__.py",
@@ -401,10 +402,10 @@ class SelfSmokeTests(unittest.TestCase):
             # Exercise normal multi-repo discovery, not an injected self-smoke run.
             client = MultiRepoGitHubClient("fixture", configured_repos())
 
-            def self_api(method, path, data=None):
+            def self_api(method, path, data=None, **kwargs):
                 if path == "/actions/workflows/50":
                     return {"name": "lite-ci-self-smoke"}
-                return service.request(method, path, data)
+                return service.request(method, path, data, **kwargs)
 
             own = self.enterContext(
                 patch.object(
@@ -530,9 +531,13 @@ class SelfSmokeTests(unittest.TestCase):
         # A waiting job must still notice cancellation and pending receipts between discoveries.
         for worker, rounds in (("yellow", 2), ("blue", 4)):
             with self.subTest(worker=worker):
-                r = Mock(worker=worker, next_discovery=0.0, active={})
+                r = Mock(
+                    worker=worker, next_discovery=0.0, active={}, release_logs=None
+                )
                 run = {"id": 42}
-                r.state.read.return_value = {"job": {"run": run, "phase": "QUEUED"}}
+                r.state.read.return_value = {
+                    "job": {"run": run, "phase": "QUEUED", "progress_id": 1}
+                }
                 status = r.client_for.return_value.workflow_status
                 status.return_value = {"status": "in_progress"}
                 with patch(
