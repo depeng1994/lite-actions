@@ -14,7 +14,15 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from ci_core.contract import SELF_REPO, SELF_WORKFLOW, TORCHTITAN_REPO, parse_plan
+from ci_core.contract import (
+    SELF_REPO,
+    SELF_WORKFLOW,
+    TORCHTITAN_REPO,
+    VLLM_REPO,
+    configured_repos,
+    parse_plan,
+)
+from ci_core.github import MultiRepoGitHubClient
 from ci_core.reporting import body_for, report
 from ci_core.router import Router
 from ci_core.self_identity import checkout_sha
@@ -359,7 +367,8 @@ class SelfSmokeTests(unittest.TestCase):
                 "event": "workflow_dispatch",
                 "head_branch": "ci/test",
                 "actor": {"login": "maintainer"},
-                "name": "lite-ci-self-smoke",
+                "name": "Lite Actions self smoke: full",
+                "workflow_id": 50,
                 "run_number": 42,
             }
         }
@@ -374,8 +383,7 @@ class SelfSmokeTests(unittest.TestCase):
             ):
                 tar.add(ROOT / name, arcname=name)
         env = {
-            "LITE_ACTIONS_MODEL_REPOS": SELF_REPO,
-            "LITE_ACTIONS_SELF_SMOKE_ENABLED": "1",
+            "LITE_ACTIONS_MODEL_REPOS": f"{VLLM_REPO},{SELF_REPO}",
             "LITE_ACTIONS_RESOURCE_LOCK_ROOT": str(root / "leases"),
             "LITE_ACTIONS_STATE_DIR": "",
         }
@@ -390,8 +398,31 @@ class SelfSmokeTests(unittest.TestCase):
             service.connected(),
             patch("ci_core.router.execute", side_effect=execute),
         ):
-            router = Router(root, "blue", service, "reporter")
-            yellow = Router(root, "yellow", service, "reporter")
+            # Exercise normal multi-repo discovery, not an injected self-smoke run.
+            client = MultiRepoGitHubClient("fixture", configured_repos())
+
+            def self_api(method, path, data=None):
+                if path == "/actions/workflows/50":
+                    return {"name": "lite-ci-self-smoke"}
+                return service.request(method, path, data)
+
+            own = self.enterContext(
+                patch.object(
+                    client.for_repo(SELF_REPO), "request", side_effect=self_api
+                )
+            )
+            model = self.enterContext(
+                patch.object(
+                    client.for_repo(VLLM_REPO),
+                    "request",
+                    return_value={"workflow_runs": []},
+                )
+            )
+            router = Router(root, "blue", client, "reporter")
+            with patch.dict(
+                os.environ, LITE_ACTIONS_STATE_DIR=str(root / "yellow-state")
+            ):
+                yellow = Router(root, "yellow", client, "reporter")
             try:
                 for _ in range(20):
                     for worker in (router, yellow):
@@ -400,9 +431,23 @@ class SelfSmokeTests(unittest.TestCase):
                             future.result(10)
                     if len(service.results()) == 5:
                         break
-                self.assertEqual(
-                    len(results(service.comments, self.plan, "reporter")), 5
+                accepted = results(service.comments, self.plan, "reporter")
+                self.assertEqual(len(accepted), 5)
+                self.assertTrue(
+                    all(
+                        r["status"] == "PASS"
+                        and r["exit_code"] == 0
+                        and r["cleanup_verified"] is True
+                        for r in accepted.values()
+                    )
                 )
+                self.assertEqual(
+                    [r["item"]["case_id"] for r in yellow.state.read().values()],
+                    ["case_001_worker_os_yellow"],
+                )
+                queued = ("GET", "/actions/runs?status=queued&per_page=100&page=1")
+                own.assert_any_call(*queued)
+                model.assert_any_call(*queued)
             finally:
                 yellow.close()
                 router.close()
@@ -481,25 +526,46 @@ class SelfSmokeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             router.eligible(run)
 
-    def test_explicit_self_smoke_does_not_require_repo_subscription(self):
+    def test_yellow_throttles_only_shared_discovery(self):
+        # A waiting job must still notice cancellation and pending receipts between discoveries.
+        for worker, rounds in (("yellow", 2), ("blue", 4)):
+            with self.subTest(worker=worker):
+                r = Mock(worker=worker, next_discovery=0.0, active={})
+                run = {"id": 42}
+                r.state.read.return_value = {"job": {"run": run, "phase": "QUEUED"}}
+                status = r.client_for.return_value.workflow_status
+                status.return_value = {"status": "in_progress"}
+                with patch(
+                    "ci_core.router.time.monotonic", side_effect=(100, 110, 159, 160)
+                ):
+                    for _ in range(4):
+                        Router.tick(r)
+                self.assertEqual(r.client.running_workflows.call_count, rounds)
+                self.assertEqual(status.call_count, 4)
+                self.assertEqual(r.pump.call_count, 4)
+                self.assertEqual(r.flush.call_count, 8)
+
+    def test_unsubscribed_workers_skip_self_checkout(self):
         root = Path(self.temp.name) / "worker"
         write_workspace(root)
         service = Service([fixture_definition("dummy")], root)
         env = {
             "LITE_ACTIONS_MODEL_REPOS": TORCHTITAN_REPO,
-            "LITE_ACTIONS_SELF_SMOKE_ENABLED": "1",
             "LITE_ACTIONS_RESOURCE_LOCK_ROOT": str(root / "leases"),
             "LITE_ACTIONS_STATE_DIR": "",
         }
         with (
-            patch.dict(os.environ, env, clear=False),
-            patch("ci_core.self_identity.checkout_sha", return_value="a" * 40),
+            patch.dict(os.environ, env, clear=True),
+            patch("ci_core.self_identity.checkout_sha") as checkout,
         ):
-            router = Router(root, "yellow", service, "reporter")
-            try:
-                self.assertEqual(router.self_sha, "a" * 40)
-            finally:
-                router.close()
+            for worker in ("yellow", "blue"):
+                with self.subTest(worker=worker):
+                    router = Router(root, worker, service, "reporter")
+                    try:
+                        self.assertIsNone(router.self_sha)
+                    finally:
+                        router.close()
+            checkout.assert_not_called()
 
 
 if __name__ == "__main__":

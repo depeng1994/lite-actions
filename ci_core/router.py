@@ -38,6 +38,14 @@ from ci_core.ssh_runner import model_archive
 from ci_core.worker_probe import probe as probe_worker
 
 
+def _is_self_smoke(run):
+    return (
+        run.get("_ci_provider", "github") == "github"
+        and run.get("_ci_repo") == SELF_REPO
+        and run.get("path") == f".github/workflows/{SELF_WORKFLOW}"
+    )
+
+
 def task_key(run, item):
     prefix = "gitcode:" if run.get("_ci_provider") == "gitcode" else ""
     dispatch = f":{run['_ci_dispatch_id']}" if run.get("_ci_dispatch_id") else ""
@@ -66,17 +74,14 @@ class Router:
         )
         self.workers, self.pools = load(self.root, worker)
         self.self_sha = None
-        self_smoke_enabled = os.environ.get("LITE_ACTIONS_SELF_SMOKE_ENABLED") == "1"
-        if self_smoke_enabled:
-            # Self smoke is a worker capability, not a model-repository
-            # subscription. Yellow may be configured to serve only the model
-            # repositories while still accepting the explicitly enabled,
-            # SHA-bound Lite Actions self-smoke run.
+        if (
+            SELF_REPO in configured_repos()
+            and os.environ.get("LITE_ACTIONS_GITHUB_ENABLED", "true").lower() == "true"
+        ):
             from ci_core.self_identity import checkout_sha
 
             self.self_sha = checkout_sha(self.root)
-        elif SELF_REPO in configured_repos():
-            raise ValueError("self-smoke requires explicit opt-in")
+        self.next_discovery = 0.0
         self.state = JobState(self.root)
         self.quarantine_enabled = worker not in {
             name.strip()
@@ -167,10 +172,7 @@ class Router:
             "status"
         ) not in {"queued", "in_progress"}:
             return False
-        if (
-            run.get("_ci_repo", REPO) == SELF_REPO
-            and (run.get("path") or "").rsplit("/", 1)[-1] == SELF_WORKFLOW
-        ):
+        if _is_self_smoke(run):
             from ci_core.self_identity import checkout_sha
 
             return self.self_sha is not None and run.get(
@@ -224,10 +226,7 @@ class Router:
         if not self.eligible(run):
             return
         generic_source = None
-        if run.get("_ci_provider") != "gitcode" and not (
-            run.get("_ci_repo") == SELF_REPO
-            and run.get("path", "").rsplit("/", 1)[-1] == SELF_WORKFLOW
-        ):
+        if run.get("_ci_provider") != "gitcode" and not _is_self_smoke(run):
             from ci_core.github_source import bind_request_source, read_source_artifact
 
             client = self.client_for(run)
@@ -245,10 +244,7 @@ class Router:
                 run["path"].rsplit("/", 1)[-1],
                 repo=run.get("_ci_repo", REPO),
             )
-            if (
-                run.get("_ci_repo") == SELF_REPO
-                and run.get("path", "").rsplit("/", 1)[-1] == SELF_WORKFLOW
-            ):
+            if _is_self_smoke(run):
                 from ci_core.self_smoke import expected_plan
 
                 if plan != expected_plan(run):
@@ -417,10 +413,7 @@ class Router:
         run = r["run"]
         launched = False
         try:
-            if (
-                run.get("_ci_repo") == SELF_REPO
-                and run.get("path", "").rsplit("/", 1)[-1] == SELF_WORKFLOW
-            ):
+            if _is_self_smoke(run):
                 from ci_core.self_identity import checkout_sha
 
                 if (
@@ -777,7 +770,11 @@ class Router:
                         130,
                         ["CI Run ended or source changed before launch"],
                     )
-        self.receive(self.client.running_workflows())
+        # Limit only discovery. Cancellation, queue progress and outbox keep ticking.
+        now = time.monotonic()
+        if self.worker != "yellow" or now >= self.next_discovery:
+            self.next_discovery = now + 60
+            self.receive(self.client.running_workflows())
         self.pump()
         self.flush()
 

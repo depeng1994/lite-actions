@@ -184,8 +184,8 @@ sudo chmod 0600 /etc/lite-actions/yellow.env
 示例内容（占位符必须替换为已授权的账号和 Token；不要把真实凭据提交到仓库）：
 
 ```ini
-# GitHub source: vLLM Ascend only
-LITE_ACTIONS_MODEL_REPOS=cann-framework/vllm-ascend
+# GitHub: vLLM model jobs and Lite Actions self-smoke
+LITE_ACTIONS_MODEL_REPOS=cann-framework/vllm-ascend,depeng1994/lite-actions
 
 # Router requires the common result-author identity.
 LITE_ACTIONS_RESULT_AUTHOR=<github-result-account>
@@ -198,7 +198,7 @@ LITE_ACTIONS_GITCODE_RESULT_AUTHOR=<gitcode-result-account>
 
 `LITE_ACTIONS_GITCODE_RESULT_AUTHOR` 必须是对应 GitCode Token 所属、且有权限发布结果的账号。修改环境文件后，在确认没有不允许中断的在途任务后，按主机维护流程重启 Worker，使 systemd 重新加载环境。
 
-**不要配置 GitHub 的 `torchtitan-npu`**：TorchTitan 的 Yellow 任务来源是 GitCode `cann/torchtitan-npu`；GitHub 侧保留 `cann-framework/vllm-ascend`。此配置不改变 GitCode/GitHub 的仓库 canonical alias，也不跟随 GitHub 301 重定向。
+**不要配置 GitHub 的 `torchtitan-npu`**：TorchTitan 的 Yellow 任务来源是 GitCode `cann/torchtitan-npu`；GitHub 侧保留 `cann-framework/vllm-ascend`，并订阅 `depeng1994/lite-actions` 以接收本仓探针。此配置不改变 GitCode/GitHub 的仓库 canonical alias，也不跟随 GitHub 301 重定向。
 
 Cancellation terminates only the case's marked ranks and checks NPU occupancy.
 State is atomically persisted and fsynced before execution. Restart never blindly
@@ -316,8 +316,13 @@ percentage over one second (excludes idle, I/O wait and steal), and 1/5/15-minut
 load averages (not percentages). These are measurements from the assigned Worker,
 not the GitHub runner. Older receipts can show only the fields they actually contain.
 
-To opt a Worker into the self-smoke route, include `depeng1994/lite-actions` in
-`LITE_ACTIONS_MODEL_REPOS` and set `LITE_ACTIONS_SELF_SMOKE_ENABLED=1`. Set the
+On both Yellow and Blue, append `depeng1994/lite-actions` once to the existing
+`LITE_ACTIONS_MODEL_REPOS` list. Removing it disables self-smoke discovery without
+affecting other subscriptions. With GitHub polling enabled, run `--validate` in
+the service environment to check the list before restarting the updated Worker.
+Yellow uses the ordinary repository poller at most once a minute for discovery;
+each idle GitHub repo costs two list GETs per round (queued + in progress).
+Active cancellation checks and result delivery do not wait for that minute. Set the
 repository variable `LITE_CI_RESULT_ACTOR` to the Worker's result-author account.
 A user with repository write, maintain or admin permission can start the workflow
 from a repository branch whose current commit is deployed on the Worker:
