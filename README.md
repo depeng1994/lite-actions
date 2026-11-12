@@ -306,7 +306,7 @@ Each planned instance has its own GitHub job. In a full run, `case_001_worker_os
 waits for the Yellow Worker, not the hosted runner: four passing Blue jobs cannot
 satisfy it. A waiting job means its authenticated result is missing, not that the
 Worker is necessarily offline. Compare the run SHA to Yellow’s `worker-ready.release_sha`
-and check the subscription below. As in vLLM-Ascend Dispatcher Smoke, the final `Lite-Actions-Smoke` job requires
+and check the effective GitHub discovery settings below. As in vLLM-Ascend Dispatcher Smoke, the final `Lite-Actions-Smoke` job requires
 `prepare` and every selected matrix case to succeed.
 For a fresh attempt, re-run **all** jobs so `prepare` publishes that attempt’s plan.
 
@@ -316,8 +316,13 @@ percentage over one second (excludes idle, I/O wait and steal), and 1/5/15-minut
 load averages (not percentages). These are measurements from the assigned Worker,
 not the GitHub runner. Older receipts can show only the fields they actually contain.
 
-To opt a Worker into the self-smoke route, include `depeng1994/lite-actions` in
-`LITE_ACTIONS_MODEL_REPOS` and set `LITE_ACTIONS_SELF_SMOKE_ENABLED=1`. Set the
+With GitHub polling enabled, set `LITE_ACTIONS_SELF_SMOKE_ENABLED=1` to opt in.
+Leave the model repository list unchanged: if it omits `depeng1994/lite-actions`,
+only the `lite_actions_self_smoke.yml` workflow is added to discovery (one GET
+per minute when idle, no heartbeat writes). An explicit Lite Actions repository
+subscription is not duplicated; disabling GitHub polling still disables this route.
+Run `python3 unified_router.py --worker-id yellow --validate` in the service's
+environment to inspect the discovery settings without sending a request. Set the
 repository variable `LITE_CI_RESULT_ACTOR` to the Worker's result-author account.
 A user with repository write, maintain or admin permission can start the workflow
 from a repository branch whose current commit is deployed on the Worker:

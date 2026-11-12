@@ -8,12 +8,13 @@ import logging
 import os
 import subprocess
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
 
-from ci_core.contract import REPO, trusted_repositories
+from ci_core.contract import REPO, SELF_REPO, SELF_WORKFLOW, trusted_repositories
 
 API = f"https://api.github.com/repos/{REPO}"
 
@@ -272,11 +273,52 @@ class GitHubClient:
         return self.request("POST", f"/commits/{sha}/comments", {"body": body})
 
 
+class _SelfSmokeClient(GitHubClient):
+    """Implicit opt-in is one workflow, not a subscription to every Lite Actions job."""
+
+    def __init__(self, token: str):
+        super().__init__(token, SELF_REPO)
+        self.next_poll = 0.0
+
+    def running_workflows(self) -> list[dict]:
+        now = time.monotonic()
+        if now < self.next_poll:
+            return []
+        # A plan cannot exist before prepare starts. One GET per idle minute,
+        # including on API failure; active case/cancel and outbox polling are separate.
+        self.next_poll = now + 60
+        runs = []
+        for page in range(1, 11):
+            listing = self.request(
+                "GET",
+                f"/actions/workflows/{SELF_WORKFLOW}/runs?status=in_progress&per_page=100&page={page}",
+            )
+            rows = listing["workflow_runs"]
+            for run in rows:
+                if (
+                    run.get("repository", {}).get("full_name") == SELF_REPO
+                    and run.get("path") == f".github/workflows/{SELF_WORKFLOW}"
+                    and run.get("status") == "in_progress"
+                ):
+                    # GitHub may return run-name rather than the workflow's name.
+                    # Identity comes from the scoped endpoint, repo and path, not that title.
+                    runs.append(
+                        {**run, "_ci_repo": SELF_REPO, "name": "lite-ci-self-smoke"}
+                    )
+            if len(rows) < 100:
+                break
+        return runs
+
+
 class MultiRepoGitHubClient:
     """One poller returns runs from all configured repositories."""
 
-    def __init__(self, token: str, repos: tuple[str, ...]):
+    def __init__(
+        self, token: str, repos: tuple[str, ...], *, implicit_self_smoke=False
+    ):
         self.clients = {repo: GitHubClient(token, repo) for repo in repos}
+        if implicit_self_smoke and SELF_REPO not in self.clients:
+            self.clients[SELF_REPO] = _SelfSmokeClient(token)
 
     def for_repo(self, repo: str) -> GitHubClient:
         return self.clients[repo]
