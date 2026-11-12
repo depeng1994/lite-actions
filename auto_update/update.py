@@ -416,7 +416,19 @@ def _run(settings: Settings) -> int:
             status = restore_old(
                 settings.root, old_path, settings.unit, settings.ready_file
             )
-            _block(settings, target_sha, reason)
+            # A service that starts but never becomes Ready can be blocked by
+            # operator-owned prerequisites (deployment.json, state ownership,
+            # local address identity). Keep the rollback, but do not poison the
+            # immutable code SHA: after the operator repairs configuration the
+            # next timer tick must be allowed to retry it.
+            retryable_setup = isinstance(exc, SwitchError) and str(exc) in {
+                "worker_not_active",
+                "worker_pid_timeout",
+                "worker_ready_timeout",
+                "systemctl_start_failed",
+            }
+            if not retryable_setup:
+                _block(settings, target_sha, reason)
             _transition(settings, txn, "ROLLED_BACK")
             _audit(
                 settings,
