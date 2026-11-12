@@ -119,7 +119,9 @@ class IntegrationTests(unittest.TestCase):
             self.assertNotIn("yellow", text)
 
 
-    def test_worker_setup_failure_rolls_back_without_permanently_blocking_sha(self):
+    def test_worker_setup_failure_rolls_back_without_permanently_blocking_sha(
+        self,
+    ):
         from auto_update.version_switch import SwitchError
 
         with tempfile.TemporaryDirectory() as tmp:
