@@ -119,5 +119,59 @@ class IntegrationTests(unittest.TestCase):
             self.assertNotIn("yellow", text)
 
 
+    def test_worker_setup_failure_rolls_back_without_permanently_blocking_sha(self):
+        from auto_update.version_switch import SwitchError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old, old_sha = checkout(root, "old")
+            new, new_sha = checkout(root, "candidate")
+            (root / "current").symlink_to(old)
+            stage = root / "staging" / "candidate"
+            stage.mkdir(parents=True)
+            cfg = settings(root)
+            cfg.state_dir.mkdir()
+            with (
+                patch("auto_update.update.check_source", return_value=new_sha),
+                patch("auto_update.update.stage_source", return_value=stage),
+                patch("auto_update.update._validate_candidate"),
+                patch("auto_update.update.prepare_release", return_value=new),
+                patch("auto_update.update.stop_worker"),
+                patch("auto_update.update.start_worker"),
+                patch("auto_update.update.wait_ready", side_effect=SwitchError("worker_not_active")),
+                patch("auto_update.update.restore_old", return_value="old_ready"),
+            ):
+                self.assertEqual(_run(cfg), 3)
+            self.assertEqual((root / "current").resolve(), old)
+            self.assertFalse((cfg.state_dir / "blocked.json").exists())
+            txn = json.loads((cfg.state_dir / "transaction.json").read_text())
+            self.assertEqual(txn["phase"], "ROLLED_BACK")
+
+    def test_candidate_failure_still_permanently_blocks_sha(self):
+        from auto_update.version_switch import SwitchError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old, old_sha = checkout(root, "old")
+            new, new_sha = checkout(root, "candidate")
+            (root / "current").symlink_to(old)
+            stage = root / "staging" / "candidate"
+            stage.mkdir(parents=True)
+            cfg = settings(root)
+            cfg.state_dir.mkdir()
+            with (
+                patch("auto_update.update.check_source", return_value=new_sha),
+                patch("auto_update.update.stage_source", return_value=stage),
+                patch("auto_update.update._validate_candidate"),
+                patch("auto_update.update.prepare_release", return_value=new),
+                patch("auto_update.update.stop_worker"),
+                patch("auto_update.update.start_worker"),
+                patch("auto_update.update.wait_ready", side_effect=SwitchError("candidate_runtime_invalid")),
+                patch("auto_update.update.restore_old", return_value="old_ready"),
+            ):
+                self.assertEqual(_run(cfg), 3)
+            blocked = json.loads((cfg.state_dir / "blocked.json").read_text())
+            self.assertEqual(blocked["sha"], new_sha)
+
 if __name__ == "__main__":
     unittest.main()
