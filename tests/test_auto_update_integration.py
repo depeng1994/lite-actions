@@ -132,6 +132,13 @@ class IntegrationTests(unittest.TestCase):
             stage.mkdir(parents=True)
             cfg = settings(root)
             cfg.state_dir.mkdir()
+
+            def restore(root_arg, old_arg, unit, ready_file):
+                from auto_update.version_switch import switch_current
+
+                switch_current(root_arg, old_arg)
+                return "old_ready"
+
             with (
                 patch("auto_update.update.check_source", return_value=new_sha),
                 patch("auto_update.update.stage_source", return_value=stage),
@@ -143,7 +150,7 @@ class IntegrationTests(unittest.TestCase):
                     "auto_update.update.wait_ready",
                     side_effect=SwitchError("worker_not_active"),
                 ),
-                patch("auto_update.update.restore_old", return_value="old_ready"),
+                patch("auto_update.update.restore_old", side_effect=restore),
             ):
                 self.assertEqual(_run(cfg), 3)
             self.assertEqual((root / "current").resolve(), old)
