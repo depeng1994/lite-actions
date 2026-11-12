@@ -102,7 +102,9 @@ def main():
                         logging.exception("worker readiness publication failed")
                 if a.once:
                     break
-                time.sleep(int(os.environ.get("LITE_ACTIONS_POLL_SECONDS", "60")))
+                time.sleep(
+                    max(60, int(os.environ.get("LITE_ACTIONS_POLL_SECONDS", "60")))
+                )
         except KeyboardInterrupt:
             pass
         finally:
