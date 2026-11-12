@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 from ci_core.config import load
-from ci_core.contract import SELF_REPO, configured_repos
+from ci_core.contract import configured_repos
 from ci_core.gitcode import GitCodeClient, MultiPlatformClient
 from ci_core.github import GitHubClient, MultiRepoGitHubClient, authorization
 from ci_core.resources import single_agent
@@ -26,22 +26,8 @@ def main():
     a = p.parse_args()
     load(ROOT, a.worker_id)
     repos = configured_repos()
-    github_enabled = (
-        os.environ.get("LITE_ACTIONS_GITHUB_ENABLED", "true").lower() == "true"
-    )
-    implicit_self_smoke = (
-        github_enabled
-        and os.environ.get("LITE_ACTIONS_SELF_SMOKE_ENABLED") == "1"
-        and SELF_REPO not in repos
-    )
     if a.validate:
         print(f"Validated worker {a.worker_id} repositories: {', '.join(repos)}")
-        if not github_enabled:
-            print("GitHub discovery disabled")
-        elif implicit_self_smoke:
-            print(
-                f"Additional GitHub discovery: {SELF_REPO} (self-smoke workflow only)"
-            )
         return
 
     def stop(signum, frame):
@@ -53,13 +39,11 @@ def main():
     )
     with single_agent():
         client = None
-        if github_enabled:
+        if os.environ.get("LITE_ACTIONS_GITHUB_ENABLED", "true").lower() == "true":
             token = authorization()
             client = (
-                MultiRepoGitHubClient(
-                    token, repos, implicit_self_smoke=implicit_self_smoke
-                )
-                if len(repos) > 1 or implicit_self_smoke
+                MultiRepoGitHubClient(token, repos)
+                if len(repos) > 1
                 else GitHubClient(token, repos[0])
             )
         gitcode_repos = tuple(

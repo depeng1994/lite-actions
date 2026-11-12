@@ -10,13 +10,19 @@ import sys
 import tarfile
 import tempfile
 import unittest
-import zipfile
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from ci_core.contract import SELF_REPO, SELF_WORKFLOW, TORCHTITAN_REPO, parse_plan
-from ci_core.github import GitHubClient
+from ci_core.contract import (
+    SELF_REPO,
+    SELF_WORKFLOW,
+    TORCHTITAN_REPO,
+    VLLM_REPO,
+    configured_repos,
+    parse_plan,
+)
+from ci_core.github import MultiRepoGitHubClient
 from ci_core.reporting import body_for, report
 from ci_core.router import Router
 from ci_core.self_identity import checkout_sha
@@ -361,7 +367,8 @@ class SelfSmokeTests(unittest.TestCase):
                 "event": "workflow_dispatch",
                 "head_branch": "ci/test",
                 "actor": {"login": "maintainer"},
-                "name": "lite-ci-self-smoke",
+                "name": "Lite Actions self smoke: full",
+                "workflow_id": 50,
                 "run_number": 42,
             }
         }
@@ -376,8 +383,7 @@ class SelfSmokeTests(unittest.TestCase):
             ):
                 tar.add(ROOT / name, arcname=name)
         env = {
-            "LITE_ACTIONS_MODEL_REPOS": SELF_REPO,
-            "LITE_ACTIONS_SELF_SMOKE_ENABLED": "1",
+            "LITE_ACTIONS_MODEL_REPOS": f"{VLLM_REPO},{SELF_REPO}",
             "LITE_ACTIONS_RESOURCE_LOCK_ROOT": str(root / "leases"),
             "LITE_ACTIONS_STATE_DIR": "",
         }
@@ -392,8 +398,31 @@ class SelfSmokeTests(unittest.TestCase):
             service.connected(),
             patch("ci_core.router.execute", side_effect=execute),
         ):
-            router = Router(root, "blue", service, "reporter")
-            yellow = Router(root, "yellow", service, "reporter")
+            # Exercise normal multi-repo discovery, not an injected self-smoke run.
+            client = MultiRepoGitHubClient("fixture", configured_repos())
+
+            def self_api(method, path, data=None):
+                if path == "/actions/workflows/50":
+                    return {"name": "lite-ci-self-smoke"}
+                return service.request(method, path, data)
+
+            own = self.enterContext(
+                patch.object(
+                    client.for_repo(SELF_REPO), "request", side_effect=self_api
+                )
+            )
+            model = self.enterContext(
+                patch.object(
+                    client.for_repo(VLLM_REPO),
+                    "request",
+                    return_value={"workflow_runs": []},
+                )
+            )
+            router = Router(root, "blue", client, "reporter")
+            with patch.dict(
+                os.environ, LITE_ACTIONS_STATE_DIR=str(root / "yellow-state")
+            ):
+                yellow = Router(root, "yellow", client, "reporter")
             try:
                 for _ in range(20):
                     for worker in (router, yellow):
@@ -402,9 +431,23 @@ class SelfSmokeTests(unittest.TestCase):
                             future.result(10)
                     if len(service.results()) == 5:
                         break
-                self.assertEqual(
-                    len(results(service.comments, self.plan, "reporter")), 5
+                accepted = results(service.comments, self.plan, "reporter")
+                self.assertEqual(len(accepted), 5)
+                self.assertTrue(
+                    all(
+                        r["status"] == "PASS"
+                        and r["exit_code"] == 0
+                        and r["cleanup_verified"] is True
+                        for r in accepted.values()
+                    )
                 )
+                self.assertEqual(
+                    [r["item"]["case_id"] for r in yellow.state.read().values()],
+                    ["case_001_worker_os_yellow"],
+                )
+                queued = ("GET", "/actions/runs?status=queued&per_page=100&page=1")
+                own.assert_any_call(*queued)
+                model.assert_any_call(*queued)
             finally:
                 yellow.close()
                 router.close()
@@ -483,161 +526,26 @@ class SelfSmokeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             router.eligible(run)
 
-    def test_model_only_yellow_discovers_self_run_and_acks_its_own_case(self):
-        # Start at the CLI: injecting a ready-made self-repo client hides this bug.
-        import unified_router
+    def test_yellow_throttles_only_shared_discovery(self):
+        # A waiting job must still notice cancellation and pending receipts between discoveries.
+        for worker, rounds in (("yellow", 2), ("blue", 4)):
+            with self.subTest(worker=worker):
+                r = Mock(worker=worker, next_discovery=0.0, active={})
+                run = {"id": 42}
+                r.state.read.return_value = {"job": {"run": run, "phase": "QUEUED"}}
+                status = r.client_for.return_value.workflow_status
+                status.return_value = {"status": "in_progress"}
+                with patch(
+                    "ci_core.router.time.monotonic", side_effect=(100, 110, 159, 160)
+                ):
+                    for _ in range(4):
+                        Router.tick(r)
+                self.assertEqual(r.client.running_workflows.call_count, rounds)
+                self.assertEqual(status.call_count, 4)
+                self.assertEqual(r.pump.call_count, 4)
+                self.assertEqual(r.flush.call_count, 8)
 
-        root = Path(self.temp.name) / "worker"
-        write_workspace(root)
-        run = dict(
-            id=42,
-            run_attempt=1,
-            head_sha="a" * 40,
-            path=f".github/workflows/{SELF_WORKFLOW}",
-            status="in_progress",
-            name="Lite Actions self smoke: full",
-            display_title="Lite Actions self smoke: full",
-            repository={"full_name": SELF_REPO},
-        )
-        archive = io.BytesIO()
-        with zipfile.ZipFile(archive, "w") as z:
-            z.writestr("ci-request.json", json.dumps(self.plan))
-        reads, writes = [], []
-
-        def request(client, method, path, data=None):
-            if method == "POST":
-                writes.append((client.repo, path, data["body"]))
-                return {"id": 1}
-            reads.append((client.repo, path))
-            if client.repo == TORCHTITAN_REPO and path.startswith("/actions/runs?"):
-                return {"workflow_runs": []}
-            if client.repo == SELF_REPO and path.startswith(
-                f"/actions/workflows/{SELF_WORKFLOW}/runs?"
-            ):
-                return {
-                    "workflow_runs": [
-                        run,
-                        dict(run, id=43, head_sha="b" * 40),
-                        dict(run, id=44, path=".github/workflows/other.yml"),
-                    ]
-                }
-            if client.repo == SELF_REPO and path.startswith(
-                "/actions/runs/42/artifacts?"
-            ):
-                return {
-                    "artifacts": [
-                        {
-                            "id": 5,
-                            "name": "lite-ci-request-1",
-                            "workflow_run": {"id": 42},
-                        }
-                    ]
-                }
-            raise AssertionError((client.repo, method, path))
-
-        with (
-            patch.dict(
-                os.environ,
-                {
-                    "LITE_ACTIONS_MODEL_REPOS": TORCHTITAN_REPO,
-                    "LITE_ACTIONS_SELF_SMOKE_ENABLED": "1",
-                    "LITE_ACTIONS_RESULT_AUTHOR": "reporter",
-                },
-                clear=True,
-            ),
-            patch.object(sys, "argv", ["router", "--worker-id", "yellow", "--once"]),
-            patch.object(unified_router, "ROOT", root),
-            patch.object(unified_router, "single_agent"),
-            patch.object(unified_router, "authorization", return_value="fixture"),
-            patch.object(unified_router.signal, "signal"),
-            patch("ci_core.self_identity.checkout_sha", return_value="a" * 40),
-            patch.object(GitHubClient, "request", request),
-            patch.object(
-                GitHubClient, "download_artifact", return_value=archive.getvalue()
-            ) as download,
-            patch.object(
-                Router, "pump"
-            ),  # stop after durable admission + actual ACK construction
-        ):
-            unified_router.main()
-        self.assertEqual(len(writes), 1)
-        repo, path, body = writes[0]
-        self.assertEqual(
-            (repo, path), (SELF_REPO, "/commits/" + run["head_sha"] + "/comments")
-        )
-        ack = json.loads(body.removeprefix("Lite-CI-PROGRESS "))
-        self.assertEqual(
-            (ack["worker"], ack["phase"], ack["case_id"], ack["plan_digest"]),
-            ("yellow", "QUEUED", "case_001_worker_os_yellow", self.plan["plan_digest"]),
-        )
-        download.assert_called_once_with(5, limit=262144)
-        self.assertEqual(
-            [path for repo, path in reads if repo == SELF_REPO],
-            [
-                f"/actions/workflows/{SELF_WORKFLOW}/runs?status=in_progress&per_page=100&page=1",
-                "/actions/runs/42/artifacts?name=lite-ci-request-1&per_page=10",
-            ],
-        )
-
-    def test_cli_preserves_disabled_and_explicit_discovery(self):
-        import unified_router
-
-        for model_repos, opt_in, gh_on, expected in [
-            (TORCHTITAN_REPO, "0", "true", [TORCHTITAN_REPO]),
-            (
-                f"{TORCHTITAN_REPO},{SELF_REPO}",
-                "1",
-                "true",
-                [TORCHTITAN_REPO, SELF_REPO],
-            ),
-            (TORCHTITAN_REPO, "1", "false", []),
-        ]:
-            env = {
-                "LITE_ACTIONS_MODEL_REPOS": model_repos,
-                "LITE_ACTIONS_SELF_SMOKE_ENABLED": opt_in,
-                "LITE_ACTIONS_GITHUB_ENABLED": gh_on,
-                "LITE_ACTIONS_GITCODE_REPOS": "cann/torchtitan-npu",
-                "LITE_ACTIONS_GITCODE_TOKEN": "fixture",
-            }
-            with (
-                self.subTest(env=(model_repos, opt_in, gh_on)),
-                patch.dict(os.environ, env, clear=True),
-                patch.object(
-                    sys, "argv", ["router", "--worker-id", "yellow", "--once"]
-                ),
-                patch.object(unified_router, "load"),
-                patch.object(unified_router, "single_agent"),
-                patch.object(unified_router.signal, "signal"),
-                patch.object(unified_router, "Router") as router,
-                patch.object(
-                    unified_router, "authorization", return_value="fixture"
-                ) as auth,
-                patch.object(
-                    GitHubClient,
-                    "request",
-                    autospec=True,
-                    return_value={"workflow_runs": []},
-                ) as http,
-            ):
-                unified_router.main()
-                multi = router.call_args.args[2]
-                self.assertEqual(list(multi.gitcode), ["cann/torchtitan-npu"])
-                if multi.github:
-                    multi.github.running_workflows()
-                self.assertEqual(auth.call_count, int(gh_on == "true"))
-                # Explicitly subscribed repos still use their existing two-status list.
-                self.assertEqual(
-                    [c.args[0].repo for c in http.call_args_list],
-                    [r for r in expected for _ in range(2)],
-                )
-                self.assertTrue(
-                    all(
-                        c.args[2].startswith("/actions/runs?")
-                        for c in http.call_args_list
-                    )
-                )
-
-    def test_explicit_self_smoke_does_not_require_repo_subscription(self):
+    def test_old_flag_alone_does_not_subscribe_to_an_extra_repo(self):
         root = Path(self.temp.name) / "worker"
         write_workspace(root)
         service = Service([fixture_definition("dummy")], root)
@@ -649,11 +557,12 @@ class SelfSmokeTests(unittest.TestCase):
         }
         with (
             patch.dict(os.environ, env, clear=False),
-            patch("ci_core.self_identity.checkout_sha", return_value="a" * 40),
+            patch("ci_core.self_identity.checkout_sha") as checkout,
         ):
             router = Router(root, "yellow", service, "reporter")
             try:
-                self.assertEqual(router.self_sha, "a" * 40)
+                self.assertIsNone(router.self_sha)
+                checkout.assert_not_called()
             finally:
                 router.close()
 
