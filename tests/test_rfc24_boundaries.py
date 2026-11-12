@@ -173,8 +173,15 @@ class Rfc24Boundaries(unittest.TestCase):
         state = json.loads(self.policy().path.read_bytes())
         row = state["classified"]["github:metadata_get"]
         self.assertEqual(
-            (row["sent"], row["rejected"], row["max_request_bytes"]), (1, 1, 2000)
+            (
+                row["admitted"],
+                row["rejected"],
+                row["overlimit_rejected"],
+                row["max_request_bytes"],
+            ),
+            (1, 1, 1, 2000),
         )
+        self.assertEqual(row["sent_violations"], 0)
 
     def test_discovery_get_caps_are_per_repo_and_600_seconds(self):
         policy = self.policy()
@@ -189,6 +196,87 @@ class Rfc24Boundaries(unittest.TestCase):
         policy.before(urllib.request.Request(url), repo=repo, provider="github")
         state = json.loads(policy.path.read_bytes())
         self.assertEqual(state["discovery_600s"][f"github:{repo}"]["count"], 1)
+
+    def test_discovery_global_cap_is_50_across_two_github_and_one_gitcode_repo(self):
+        policy = self.policy()
+        gh_repos = ("cann-framework/torchtitan-npu", "cann-framework/vllm-ascend")
+        gc_repo = "cann/torchtitan-npu"
+
+        def request(provider, repo):
+            host = "api.github.com" if provider == "github" else "api.gitcode.com"
+            prefix = (
+                f"/repos/{repo}" if provider == "github" else f"/api/v5/repos/{repo}"
+            )
+            return urllib.request.Request(
+                f"https://{host}{prefix}/actions/runs?status=queued&per_page=100&page=1"
+            )
+
+        for repo in gh_repos:
+            for _ in range(20):
+                policy.before(request("github", repo), repo=repo, provider="github")
+                self.now += 1
+        for _ in range(10):
+            policy.before(request("gitcode", gc_repo), repo=gc_repo, provider="gitcode")
+            self.now += 1
+        with self.assertRaisesRegex(Deferred, "DISCOVERY_POLL_LIMIT"):
+            policy.before(
+                request("github", gh_repos[0]), repo=gh_repos[0], provider="github"
+            )
+        state = json.loads(policy.path.read_bytes())
+        self.assertEqual(state["discovery_600s_total"]["count"], 50)
+
+    def test_egress_counter_migrates_legacy_schema_without_resetting_totals(self):
+        path = self.policy().path
+        path.write_text(
+            json.dumps(
+                {
+                    "at": self.now,
+                    "day": int(self.now // 86400),
+                    "used": 12,
+                    "reads": 10,
+                    "writes": 4,
+                    "bytes": 16000,
+                    "requests": 1,
+                    "classified": {
+                        "github:metadata_get": {
+                            "sent": 3,
+                            "rejected": 2,
+                            "max_request_bytes": 1800,
+                            "bytes": 5000,
+                        }
+                    },
+                }
+            )
+        )
+        req = urllib.request.Request(
+            "https://api.github.com/repos/depeng1994/lite-actions/branches/main"
+        )
+        self.policy().before(req, repo="depeng1994/lite-actions", provider="github")
+        row = json.loads(path.read_bytes())["classified"]["github:metadata_get"]
+        self.assertEqual(row["admitted"], 4)
+        self.assertEqual(row["rejected"], 2)
+        self.assertEqual(row["overlimit_rejected"], 2)
+        self.assertEqual(row["sent_violations"], 0)
+        self.assertEqual(row["max_request_bytes"], 1800)
+        self.assertGreater(row["bytes"], 5000)
+        self.assertGreater(json.loads(path.read_bytes())["used"], 12)
+
+    def test_sent_violation_audit_counter_is_distinct_from_pre_send_rejection(self):
+        policy = self.policy()
+        policy.before(
+            urllib.request.Request(
+                "https://api.github.com/repos/depeng1994/lite-actions/branches/main"
+            ),
+            repo="depeng1994/lite-actions",
+            provider="github",
+        )
+        policy.record_sent_violation("github", "metadata_get", 2001)
+        state = json.loads(policy.path.read_bytes())
+        row = state["classified"]["github:metadata_get"]
+        self.assertEqual(row["admitted"], 1)
+        self.assertEqual(row["rejected"], 0)
+        self.assertEqual(row["sent_violations"], 1)
+        self.assertEqual(row["max_request_bytes"], 2001)
 
     def test_restart_and_clock_do_not_replenish_daily_or_burst_allowance(self):
         self.cfg["daily_upload_bytes"] = 19
@@ -443,3 +531,82 @@ class Rfc24Boundaries(unittest.TestCase):
         ]:
             with self.assertRaises(ValueError):
                 check(d, j)
+
+    def test_retry_and_replay_categories_are_separate_and_low_sensitivity(self):
+        repo = "depeng1994/lite-actions"
+        url = f"https://api.github.com/repos/{repo}/commits/{'a' * 40}/comments?per_page=100&page=1"
+        for category in (
+            "ack_retry_lookup",
+            "terminal_retry_lookup",
+            "old_result_replay_lookup",
+        ):
+            req = urllib.request.Request(url)
+            self.policy().before(req, repo=repo, provider="github", category=category)
+        item = normalize(
+            definition("task", kind="npu_smoke", worker="yellow"), DEFAULTS, 0
+        )
+        run = {"id": 123, "head_sha": "a" * 40, "path": ".github/workflows/smoke.yml"}
+        result = report(run, item, "b" * 64, "PASS", 0, ["diagnostic"])
+        body = body_for(run, item, result, local_worker="yellow")
+        payload = json.dumps(
+            {"body": body}, separators=(",", ":"), ensure_ascii=False
+        ).encode()
+        for category in ("ack_retry", "terminal_retry"):
+            req = urllib.request.Request(
+                f"https://api.github.com/repos/{repo}/commits/{'a' * 40}/comments",
+                data=payload,
+                headers={"Authorization": "Bearer fixture-secret"},
+                method="POST",
+            )
+            self.policy().before(req, repo=repo, provider="github", category=category)
+        state = json.loads(self.policy().path.read_bytes())
+        for category in (
+            "ack_retry_lookup",
+            "terminal_retry_lookup",
+            "old_result_replay_lookup",
+            "ack_retry",
+            "terminal_retry",
+        ):
+            row = state["classified"][f"github:{category}"]
+            self.assertEqual(row["admitted"], 1)
+            self.assertEqual(row["sent_violations"], 0)
+            self.assertEqual(row["overlimit_rejected"], 0)
+            self.assertEqual(row["rejected"], 0)
+            self.assertGreater(row["max_request_bytes"], 0)
+        text = json.dumps(state, ensure_ascii=False)
+        self.assertNotIn("fixture-secret", text)
+        self.assertNotIn("diagnostic", text)
+        self.assertNotIn("?per_page", text)
+
+    def test_terminal_diagnostics_are_removed_before_reject_without_mutating_identity(
+        self,
+    ):
+        repo = "depeng1994/lite-actions"
+        item = normalize(
+            definition("task", kind="npu_smoke", worker="yellow"), DEFAULTS, 0
+        )
+        run = {"id": 123, "head_sha": "a" * 40, "path": ".github/workflows/smoke.yml"}
+        result = report(run, item, "b" * 64, "PASS", 0, ["x" * 180] * 20)
+        body = body_for(run, item, result, local_worker="yellow")
+        payload = json.dumps(
+            {"body": body}, separators=(",", ":"), ensure_ascii=False
+        ).encode()
+        req = urllib.request.Request(
+            f"https://api.github.com/repos/{repo}/commits/{'a' * 40}/comments",
+            data=payload,
+            headers={"Authorization": "Bearer fixture"},
+            method="POST",
+        )
+        checked = self.policy().before(
+            req, repo=repo, provider="github", category="terminal"
+        )
+        self.assertIs(checked, req)
+        sent = json.loads(req.data)["body"].split("\n", 1)[1]
+        decoded = json.loads(sent)
+        self.assertEqual(decoded["run_id"], 123)
+        self.assertEqual(decoded["plan_digest"], "b" * 64)
+        self.assertEqual(decoded["status"], "PASS")
+        self.assertEqual(decoded["exit_code"], 0)
+        self.assertTrue(decoded["cleanup_verified"])
+        self.assertEqual(decoded["last_20_lines"], [])
+        self.assertLess(len(req.data), len(payload))

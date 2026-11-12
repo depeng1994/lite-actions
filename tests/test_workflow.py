@@ -967,9 +967,9 @@ class Rfc24RecoveryTests(unittest.TestCase):
             )
             original = service.send_result
 
-            def drop(sha, body):
+            def drop(sha, body, **kwargs):
                 counts["post"] += 1
-                original(sha, body)
+                original(sha, body, **kwargs)
                 raise TimeoutError("response lost after durable platform write")
 
             with patch.object(service, "send_result", side_effect=drop):

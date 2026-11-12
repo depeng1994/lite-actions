@@ -152,7 +152,7 @@ class Service(GitHubClient):
         self.runs[ident], self.plans[ident] = run, plan
         return run, plan
 
-    def request(self, method, path, payload=None):
+    def request(self, method, path, payload=None, *, egress_category=None):
         if method == "GET" and path.startswith("/collaborators/"):
             return {"permission": "write"}
         if method == "GET" and path.startswith("/branches/"):

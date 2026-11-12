@@ -126,7 +126,7 @@ class GitCodeClient:
         self.v8 = f"https://api.gitcode.com/api/v8/repos/{repo}"
         self.v5 = f"https://api.gitcode.com/api/v5/repos/{repo}"
 
-    def request(self, method, path, data=None, *, api=5):
+    def request(self, method, path, data=None, *, api=5, egress_category=None):
         if (
             not path.startswith("/")
             or path.startswith("//")
@@ -162,7 +162,9 @@ class GitCodeClient:
             method=method,
         )
         if self.policy:
-            req = self.policy.before(req, repo=self.repo, provider="gitcode")
+            req = self.policy.before(
+                req, repo=self.repo, provider="gitcode", category=egress_category
+            )
         with urllib.request.build_opener(NoRedirect()).open(
             req, timeout=30
         ) as response:
@@ -174,7 +176,9 @@ class GitCodeClient:
             r"[A-Za-z0-9_-]{1,128}", run_id
         ):
             raise ValueError("invalid GitCode run ID")
-        result = self.request("GET", f"/actions/runs/{run_id}", api=8)
+        result = self.request(
+            "GET", f"/actions/runs/{run_id}", api=8, egress_category="cancel_check_get"
+        )
         return {
             "status": "completed"
             if result.get("status") in {"COMPLETED", "FAILED", "CANCELED", "IGNORED"}
@@ -469,11 +473,15 @@ class GitCodeClient:
             raise ValueError("only zero-device probes are enabled")
         return plan
 
-    def commit_comments(self, sha):
+    def commit_comments(self, sha, *, category="metadata_get"):
         comments = []
         for page in range(1, 21):
             rows = (
-                self.request("GET", f"/commits/{sha}/comments?per_page=100&page={page}")
+                self.request(
+                    "GET",
+                    f"/commits/{sha}/comments?per_page=100&page={page}",
+                    egress_category=category,
+                )
                 or []
             )
             if not isinstance(rows, list):
@@ -483,8 +491,10 @@ class GitCodeClient:
                 return comments
         raise RuntimeError("too many comments")
 
-    def send_result(self, sha, body):
-        return self.request("POST", f"/commits/{sha}/comments", {"body": body})
+    def send_result(self, sha, body, *, category="terminal"):
+        return self.request(
+            "POST", f"/commits/{sha}/comments", {"body": body}, egress_category=category
+        )
 
 
 class MultiPlatformClient:

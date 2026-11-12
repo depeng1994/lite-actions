@@ -47,7 +47,9 @@ class GitHubClient:
         self.sent_bytes = 0
         self.requests = 0
 
-    def request(self, method: str, path: str, data: dict | None = None):
+    def request(
+        self, method: str, path: str, data: dict | None = None, *, egress_category=None
+    ):
         if (
             not isinstance(path, str)
             or (path and not path.startswith("/"))
@@ -104,7 +106,9 @@ class GitHubClient:
         )
 
         if self.policy:
-            request = self.policy.before(request, repo=self.repo, provider="github")
+            request = self.policy.before(
+                request, repo=self.repo, provider="github", category=egress_category
+            )
         # Repository aliases/redirects must not silently change trusted identity.
         with urllib.request.build_opener(NoRedirect()).open(
             request, timeout=30
@@ -268,11 +272,15 @@ class GitHubClient:
         )
         return request_data
 
-    def commit_comments(self, sha: str) -> list[dict]:
+    def commit_comments(self, sha: str, *, category="metadata_get") -> list[dict]:
         comments = []
         for page in range(1, 21):
             data = (
-                self.request("GET", f"/commits/{sha}/comments?per_page=100&page={page}")
+                self.request(
+                    "GET",
+                    f"/commits/{sha}/comments?per_page=100&page={page}",
+                    egress_category=category,
+                )
                 or []
             )
             if not isinstance(data, list):
@@ -284,8 +292,10 @@ class GitHubClient:
             "too many commit comments; cannot safely correlate prior result"
         )
 
-    def send_result(self, sha: str, body: str):
-        return self.request("POST", f"/commits/{sha}/comments", {"body": body})
+    def send_result(self, sha: str, body: str, *, category="terminal"):
+        return self.request(
+            "POST", f"/commits/{sha}/comments", {"body": body}, egress_category=category
+        )
 
 
 class MultiRepoGitHubClient:

@@ -262,7 +262,9 @@ class Router:
                 target = progress_body(run, item, r["digest"], "QUEUED")
                 matches = [
                     c
-                    for c in client.commit_comments(result_sha(run))
+                    for c in client.commit_comments(
+                        result_sha(run), category="ack_retry_lookup"
+                    )
                     if c.get("user", {}).get("login") == author
                     and c.get("body") == target
                 ]
@@ -273,7 +275,7 @@ class Router:
                         key, progress_id=matches[0]["id"], last_sent_phase="QUEUED"
                     )
                     return
-            ident = progress(client, run, item, r["digest"], "QUEUED")
+            ident = progress(client, run, item, r["digest"], "QUEUED", retry=bool(n))
             self.state.update(key, progress_id=ident, last_sent_phase="QUEUED")
         except Exception as exc:
             from email.utils import parsedate_to_datetime
@@ -1011,6 +1013,7 @@ class Router:
                     local_worker=self.worker,
                     cache=cache,
                     verify_only=r.get("phase") == "VERIFY_REPORT",
+                    retry=bool(r.get("send_attempts")),
                 )
                 self.state.update(key, phase="REPORTED", published_at=time.time())
             except Deferred:

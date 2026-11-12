@@ -7,13 +7,17 @@ class FakeClient:
     def __init__(self):
         self.read_shas = []
         self.sent = []
+        self.read_categories = []
+        self.sent_categories = []
 
-    def commit_comments(self, sha):
+    def commit_comments(self, sha, **kwargs):
         self.read_shas.append(sha)
+        self.read_categories.append(kwargs.get("category"))
         return []
 
-    def send_result(self, sha, body):
+    def send_result(self, sha, body, **kwargs):
         self.sent.append((sha, body))
+        self.sent_categories.append(kwargs.get("category"))
         return {"id": 123}
 
 
@@ -51,6 +55,24 @@ class ReportingShaTests(unittest.TestCase):
         self.assertEqual(client.sent[0][0], "b" * 40)
         progress(client, run, item, "digest", "RUNNING")
         self.assertEqual(client.sent[1][0], "b" * 40)
+        self.assertEqual(client.read_categories, ["terminal_replay_lookup"])
+        self.assertEqual(client.sent_categories, ["terminal", "progress"])
+
+    def test_retry_and_old_result_replay_categories_are_explicit(self):
+        run, item = sample_run(), sample_item()
+        result = report(run, item, "digest", "PASS", 0, [], True)
+        client = FakeClient()
+        post(client, run, item, result, "reporter", retry=True)
+        self.assertEqual(client.read_categories, ["terminal_retry_lookup"])
+        self.assertEqual(client.sent_categories, ["terminal_retry"])
+        client = FakeClient()
+        with self.assertRaisesRegex(ValueError, "UNCONFIRMED_MANUAL_RECOVERY"):
+            post(client, run, item, result, "reporter", verify_only=True)
+        self.assertEqual(client.read_categories, ["old_result_replay_lookup"])
+        self.assertEqual(client.sent, [])
+        client = FakeClient()
+        progress(client, run, item, "digest", "QUEUED", retry=True)
+        self.assertEqual(client.sent_categories, ["ack_retry"])
 
     def test_github_and_gitcode_manual_keep_run_head_sha(self):
         for provider, run in (

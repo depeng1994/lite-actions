@@ -187,7 +187,25 @@ def yellow_body(payload, commit):
         raise Rejected("YELLOW_IDENTITY_MISMATCH")
 
 
-def _category(provider, method, path, payload):
+def _category(provider, method, path, payload, override=None):
+    if override is not None:
+        if override not in {
+            "discovery_get",
+            "metadata_get",
+            "cancel_check_get",
+            "ack",
+            "ack_retry",
+            "ack_retry_lookup",
+            "progress",
+            "terminal",
+            "terminal_retry",
+            "terminal_retry_lookup",
+            "terminal_replay_lookup",
+            "old_result_replay_lookup",
+            "other_write",
+        }:
+            raise Rejected("UNKNOWN_EGRESS_CATEGORY")
+        return override
     if method == "GET" and path == "/actions/runs":
         return "discovery_get"
     if method == "POST" and path.endswith("/comments"):
@@ -212,7 +230,7 @@ class Egress:
         self.root = Path(cfg["state_dir"])
         self.path = self.root / "http-egress.json"
 
-    def before(self, request, *, repo, provider, storage=False):
+    def before(self, request, *, repo, provider, storage=False, category=None):
         if self.worker != "yellow":
             return request
         url = urllib.parse.urlsplit(request.full_url)
@@ -291,9 +309,9 @@ class Egress:
         host_line = len(f"Host: {url.netloc}\r\n".encode())
         size = request_line + host_line + headers + 2 + 128 + len(payload or b"")
         category = _category(
-            provider, method, path if not storage else url.path, payload
+            provider, method, path if not storage else url.path, payload, category
         )
-        if size >= 2000 and category == "terminal" and payload:
+        if size >= 2000 and category in {"terminal", "terminal_retry"} and payload:
             # Diagnostics are optional; preserve every identity, result and cleanup field.
             from ci_core.registry import _unique
 
@@ -336,6 +354,18 @@ class Egress:
         )
         return request
 
+    @staticmethod
+    def _counter_row(counters, key):
+        row = counters.setdefault(key, {})
+        # Upgrade earlier persisted counters without resetting A07 totals.
+        row.setdefault("admitted", row.get("sent", 0))
+        row.setdefault("rejected", 0)
+        row.setdefault("overlimit_rejected", row.get("rejected", 0))
+        row.setdefault("sent_violations", 0)
+        row.setdefault("max_request_bytes", 0)
+        row.setdefault("bytes", 0)
+        return row
+
     def record_rejection(self, provider, category, size):
         self.reserve_counter(provider, category, size, rejected=True)
 
@@ -358,13 +388,37 @@ class Egress:
             )
             counters = saved.setdefault("classified", {})
             key = f"{provider}:{category}"
-            row = counters.setdefault(
-                key, {"sent": 0, "rejected": 0, "max_request_bytes": 0, "bytes": 0}
-            )
-            row["rejected" if rejected else "sent"] += 1
+            row = self._counter_row(counters, key)
+            row["rejected" if rejected else "admitted"] += 1
+            if rejected:
+                row["overlimit_rejected"] += 1
             row["max_request_bytes"] = max(row["max_request_bytes"], size)
             if not rejected:
                 row["bytes"] += size
+            self._save(saved)
+
+    def record_sent_violation(self, provider, category, size):
+        """Persist a post-send audit finding; normal admission never calls this."""
+        with (self.root / "http-egress.lock").open("a+b") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            saved = (
+                json.loads(self.path.read_bytes())
+                if self.path.exists()
+                else {
+                    "at": self.clock(),
+                    "day": int(self.clock() // 86400),
+                    "used": 0,
+                    "reads": 10,
+                    "writes": 4,
+                    "bytes": 16384,
+                    "requests": 0,
+                }
+            )
+            row = self._counter_row(
+                saved.setdefault("classified", {}), f"{provider}:{category}"
+            )
+            row["sent_violations"] += 1
+            row["max_request_bytes"] = max(row["max_request_bytes"], size)
             self._save(saved)
 
     def _save(self, saved):
@@ -432,7 +486,12 @@ class Egress:
                 if entry["window"] != window:
                     entry.update(window=window, count=0)
                 cap = 20 if provider == "github" else 10
-                if entry["count"] >= cap:
+                total = saved.setdefault(
+                    "discovery_600s_total", {"window": window, "count": 0}
+                )
+                if total["window"] != window:
+                    total.update(window=window, count=0)
+                if entry["count"] >= cap or total["count"] >= 50:
                     raise Deferred("DISCOVERY_POLL_LIMIT")
             if (
                 saved[key] < 1
@@ -442,6 +501,7 @@ class Egress:
                 raise Deferred("YELLOW_BUDGET_EXHAUSTED")
             if category == "discovery_get":
                 entry["count"] += 1
+                total["count"] += 1
             saved[key] -= 1
             saved["bytes"] -= size
             saved["used"] += size
@@ -450,11 +510,8 @@ class Egress:
             counter = "read_attempts" if read else "write_attempts"
             saved[counter] = saved.get(counter, 0) + 1
             counters = saved.setdefault("classified", {})
-            row = counters.setdefault(
-                f"{provider}:{category}",
-                {"sent": 0, "rejected": 0, "max_request_bytes": 0, "bytes": 0},
-            )
-            row["sent"] += 1
+            row = self._counter_row(counters, f"{provider}:{category}")
+            row["admitted"] += 1
             row["bytes"] += size
             row["max_request_bytes"] = max(row["max_request_bytes"], size)
             self._save(saved)

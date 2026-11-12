@@ -146,7 +146,7 @@ class GitCodeWorkflowTests(unittest.TestCase):
                     return details
                 raise AssertionError(f"unexpected API request: {path}")
 
-            def send(sha, body):
+            def send(sha, body, **kwargs):
                 entry = {
                     "id": len(comments) + 1,
                     "body": body,
@@ -174,7 +174,9 @@ class GitCodeWorkflowTests(unittest.TestCase):
                     return_value={"status": "in_progress", "run_attempt": 1},
                 ),
                 patch.object(
-                    gitcode, "commit_comments", side_effect=lambda sha: comments
+                    gitcode,
+                    "commit_comments",
+                    side_effect=lambda *args, **kwargs: comments,
                 ),
                 patch.object(gitcode, "send_result", side_effect=send),
                 patch.object(gitcode, "request", side_effect=request),
@@ -265,7 +267,7 @@ class GitCodeWorkflowTests(unittest.TestCase):
                 release.wait(10)
                 return completed_execution(root, selected, current)
 
-            def send(sha, body):
+            def send(sha, body, **kwargs):
                 entry = {
                     "id": len(comments) + 1,
                     "body": body,
@@ -294,7 +296,9 @@ class GitCodeWorkflowTests(unittest.TestCase):
                     return_value={"status": "in_progress", "run_attempt": 1},
                 ),
                 patch.object(
-                    gitcode, "commit_comments", side_effect=lambda sha: comments
+                    gitcode,
+                    "commit_comments",
+                    side_effect=lambda *args, **kwargs: comments,
                 ),
                 patch.object(gitcode, "send_result", side_effect=send),
                 patch.object(gitcode, "request", return_value=None),

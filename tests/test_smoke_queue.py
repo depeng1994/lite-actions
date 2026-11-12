@@ -171,7 +171,7 @@ class SmokeQueueTests(unittest.TestCase):
             first_entered, release_first = threading.Event(), threading.Event()
             started = []
 
-            def send(_, body):
+            def send(_, body, **kwargs):
                 row = {
                     "id": len(comments) + 1,
                     "body": body,

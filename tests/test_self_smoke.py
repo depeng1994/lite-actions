@@ -402,10 +402,10 @@ class SelfSmokeTests(unittest.TestCase):
             # Exercise normal multi-repo discovery, not an injected self-smoke run.
             client = MultiRepoGitHubClient("fixture", configured_repos())
 
-            def self_api(method, path, data=None):
+            def self_api(method, path, data=None, **kwargs):
                 if path == "/actions/workflows/50":
                     return {"name": "lite-ci-self-smoke"}
-                return service.request(method, path, data)
+                return service.request(method, path, data, **kwargs)
 
             own = self.enterContext(
                 patch.object(

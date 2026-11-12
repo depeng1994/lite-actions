@@ -131,7 +131,9 @@ class SourceProfileTests(unittest.TestCase):
             patch.dict(os.environ, env),
             patch.object(self.client, "request", side_effect=self.api),
             patch.object(
-                self.client, "commit_comments", side_effect=lambda _: self.comments
+                self.client,
+                "commit_comments",
+                side_effect=lambda *args, **kwargs: self.comments,
             ),
             patch.object(self.client, "send_result", side_effect=self.send),
         ):
@@ -152,7 +154,7 @@ class SourceProfileTests(unittest.TestCase):
             return self.merge_ref
         raise AssertionError((method, path))
 
-    def send(self, sha, body):
+    def send(self, sha, body, **kwargs):
         row = {
             "id": len(self.comments) + 1,
             "body": body,
@@ -239,7 +241,9 @@ class SourceProfileTests(unittest.TestCase):
                     self.assertEqual((row["phase"], item["worker"]), ("QUEUED", worker))
                     result = report(stored, item, row["digest"], "PASS", 0, [], True)
                     post(self.client, stored, item, result, "reporter")
-                    self.client.commit_comments.assert_called_with(head)
+                    self.client.commit_comments.assert_called_with(
+                        head, category="terminal_replay_lookup"
+                    )
                     dest, body = self.client.send_result.call_args.args
                     self.assertEqual(
                         (dest, json.loads(body.split("\n", 1)[1])["sha"]), (head, head)

@@ -62,6 +62,10 @@ def body_for(run, item, result, *, local_worker=None):
             + json.dumps(result, ensure_ascii=False, separators=(",", ":"))
         )
         request = json.dumps({"body": body}, separators=(",", ":"))
+        if local_worker == "yellow":
+            # Yellow's final request-size policy must see the intact metadata first;
+            # it removes optional diagnostics atomically or refuses the whole request.
+            return body
         if len(body.encode()) <= 6100 and len(request.encode()) <= 7000:
             return body
         if result.get("diagnostics"):
@@ -83,6 +87,7 @@ def post(
     local_worker=None,
     cache=None,
     verify_only=False,
+    retry=False,
 ):
     body = body_for(run, item, result, local_worker=local_worker)
     prefix = marker(run, item) + "\n"
@@ -90,7 +95,12 @@ def post(
     sha = result_sha(run)
     key = (id(client), sha)
     if key not in cache:
-        cache[key] = client.commit_comments(sha)
+        cache[key] = client.commit_comments(
+            sha,
+            category="old_result_replay_lookup"
+            if verify_only
+            else ("terminal_retry_lookup" if retry else "terminal_replay_lookup"),
+        )
     prior = [
         c
         for c in cache[key]
@@ -103,7 +113,7 @@ def post(
         return
     if verify_only:
         raise ValueError("UNCONFIRMED_MANUAL_RECOVERY")
-    client.send_result(sha, body)
+    client.send_result(sha, body, category="terminal_retry" if retry else "terminal")
 
 
 def progress_body(run, item, digest, phase):
@@ -125,12 +135,20 @@ def progress_body(run, item, digest, phase):
     )
 
 
-def progress(client, run, item, digest, phase, comment_id=None):
+def progress(client, run, item, digest, phase, comment_id=None, *, retry=False):
     body = progress_body(run, item, digest, phase)
     if comment_id:
         client.request("PATCH", f"/comments/{comment_id}", {"body": body})
         return comment_id
-    return client.send_result(result_sha(run), body)["id"]
+    return client.send_result(
+        result_sha(run),
+        body,
+        category=(
+            "ack_retry"
+            if retry and phase == "QUEUED"
+            else ("ack" if phase == "QUEUED" else "progress")
+        ),
+    )["id"]
 
 
 def case_passed(log, test_id):
