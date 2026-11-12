@@ -118,7 +118,6 @@ class IntegrationTests(unittest.TestCase):
             self.assertNotIn("blue", text)
             self.assertNotIn("yellow", text)
 
-
     def test_worker_setup_failure_rolls_back_without_permanently_blocking_sha(
         self,
     ):
