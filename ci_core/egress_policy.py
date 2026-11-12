@@ -35,16 +35,12 @@ _QUERY = {
 def yellow_body(payload, commit):
     from ci_core.logs import yellow_lines
 
-    if not payload or len(payload) > 7000:
+    if not payload:
         raise Rejected("YELLOW_ENVELOPE_SIZE")
     from ci_core.registry import _unique
 
     obj = json.loads(payload, object_pairs_hook=_unique)
-    if (
-        set(obj) != {"body"}
-        or not isinstance(obj["body"], str)
-        or len(obj["body"].encode()) > 6100
-    ):
+    if set(obj) != {"body"} or not isinstance(obj["body"], str):
         raise Rejected("YELLOW_ENVELOPE_SHAPE")
     body = obj["body"]
     if body.startswith("Lite-CI-PROGRESS "):
@@ -191,6 +187,21 @@ def yellow_body(payload, commit):
         raise Rejected("YELLOW_IDENTITY_MISMATCH")
 
 
+def _category(provider, method, path, payload):
+    if method == "GET" and path == "/actions/runs":
+        return "discovery_get"
+    if method == "POST" and path.endswith("/comments"):
+        body = (payload or b"").decode("utf-8", "replace")
+        if body.startswith('{"body":"Lite-CI-PROGRESS '):
+            return "ack"
+        if body.startswith('{"body":"Lite-CI-V3 ') or body.startswith(
+            '{"body":"Lite-CI-V4 '
+        ):
+            return "terminal"
+        return "other_write"
+    return "metadata_get" if method == "GET" else "other_write"
+
+
 class Egress:
     def __init__(self, worker, cfg, clock=time.time):
         if worker not in {"blue", "yellow"}:
@@ -203,7 +214,7 @@ class Egress:
 
     def before(self, request, *, repo, provider, storage=False):
         if self.worker != "yellow":
-            return
+            return request
         url = urllib.parse.urlsplit(request.full_url)
         method = request.get_method()
         payload = request.data
@@ -268,20 +279,120 @@ class Egress:
                 if method != "POST" or url.query or not m:
                     raise Rejected("UNSUPPORTED_WRITE")
                 yellow_body(payload, m[1])
-        # Conservative HTTP/1 header estimate; excludes TLS, which needs gateway measurement.
+        # Count the complete HTTP/1 request line, URL, supplied final headers
+        # (including authentication), body and a tested 128-byte allowance for
+        # urllib/http.client generated Host/Connection/Accept-Encoding framing.
         headers = sum(
-            len(k.encode()) + len(v.encode()) + 4 for k, v in request.header_items()
+            len(k.encode()) + 2 + len(v.encode()) + 2 for k, v in request.header_items()
         )
-        size = (
-            192
-            + len(method)
-            + len(request.full_url.encode())
-            + headers
-            + len(payload or b"")
+        request_line = len(
+            f"{method} {url.path or '/'}{('?' + url.query) if url.query else ''} HTTP/1.1\r\n".encode()
         )
-        self.reserve(method == "GET", size, len(payload or b""))
+        host_line = len(f"Host: {url.netloc}\r\n".encode())
+        size = request_line + host_line + headers + 2 + 128 + len(payload or b"")
+        category = _category(
+            provider, method, path if not storage else url.path, payload
+        )
+        if size >= 2000 and category == "terminal" and payload:
+            # Diagnostics are optional; preserve every identity, result and cleanup field.
+            from ci_core.registry import _unique
 
-    def reserve(self, read, size, body_bytes=0):
+            try:
+                envelope = json.loads(payload, object_pairs_hook=_unique)
+                body = envelope["body"]
+                marker, sep, text = body.partition("\n")
+                result = json.loads(text, object_pairs_hook=_unique) if sep else None
+                if isinstance(result, dict) and (
+                    "diagnostics" in result or "last_20_lines" in result
+                ):
+                    key = "diagnostics" if "diagnostics" in result else "last_20_lines"
+                    result[key] = []
+                    envelope["body"] = (
+                        marker
+                        + "\n"
+                        + json.dumps(result, separators=(",", ":"), ensure_ascii=False)
+                    )
+                    payload = json.dumps(
+                        envelope, separators=(",", ":"), ensure_ascii=False
+                    ).encode()
+                    request.data = payload
+                    headers = sum(
+                        len(k.encode()) + 2 + len(v.encode()) + 2
+                        for k, v in request.header_items()
+                    )
+                    size = request_line + host_line + headers + 2 + 128 + len(payload)
+            except (ValueError, KeyError, TypeError):
+                pass
+        if size >= 2000:
+            self.record_rejection(provider, category, size)
+            raise Rejected("REQUEST_SIZE_LIMIT")
+        self.reserve(
+            method == "GET",
+            size,
+            len(payload or b""),
+            provider=provider,
+            repo=repo,
+            category=category,
+        )
+        return request
+
+    def record_rejection(self, provider, category, size):
+        self.reserve_counter(provider, category, size, rejected=True)
+
+    def reserve_counter(self, provider, category, size, *, rejected=False):
+        with (self.root / "http-egress.lock").open("a+b") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            now = self.clock()
+            saved = (
+                json.loads(self.path.read_bytes())
+                if self.path.exists()
+                else {
+                    "at": now,
+                    "day": int(now // 86400),
+                    "used": 0,
+                    "reads": 10,
+                    "writes": 4,
+                    "bytes": 16384,
+                    "requests": 0,
+                }
+            )
+            counters = saved.setdefault("classified", {})
+            key = f"{provider}:{category}"
+            row = counters.setdefault(
+                key, {"sent": 0, "rejected": 0, "max_request_bytes": 0, "bytes": 0}
+            )
+            row["rejected" if rejected else "sent"] += 1
+            row["max_request_bytes"] = max(row["max_request_bytes"], size)
+            if not rejected:
+                row["bytes"] += size
+            self._save(saved)
+
+    def _save(self, saved):
+        with tempfile.NamedTemporaryFile(dir=self.root, delete=False) as temp:
+            name = temp.name
+            try:
+                temp.write(json.dumps(saved, allow_nan=False).encode())
+                temp.flush()
+                os.fsync(temp.fileno())
+                os.replace(name, self.path)
+                fd = os.open(self.root, os.O_RDONLY)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+            finally:
+                Path(name).unlink(missing_ok=True)
+
+    def reserve(
+        self,
+        read,
+        size,
+        body_bytes=0,
+        *,
+        provider="unknown",
+        repo="unknown",
+        category="other",
+    ):
         with (self.root / "http-egress.lock").open("a+b") as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
             now = self.clock()
@@ -312,12 +423,25 @@ class Egress:
             ]:
                 saved[key] = min(cap, saved[key] + elapsed * rate / 60)
             key = "reads" if read else "writes"
+            if category == "discovery_get":
+                window = int(now // 600)
+                polls = saved.setdefault("discovery_600s", {})
+                entry = polls.setdefault(
+                    f"{provider}:{repo}", {"window": window, "count": 0}
+                )
+                if entry["window"] != window:
+                    entry.update(window=window, count=0)
+                cap = 20 if provider == "github" else 10
+                if entry["count"] >= cap:
+                    raise Deferred("DISCOVERY_POLL_LIMIT")
             if (
                 saved[key] < 1
                 or saved["bytes"] < size
                 or saved["used"] + size > self.cfg["daily_upload_bytes"]
             ):
                 raise Deferred("YELLOW_BUDGET_EXHAUSTED")
+            if category == "discovery_get":
+                entry["count"] += 1
             saved[key] -= 1
             saved["bytes"] -= size
             saved["used"] += size
@@ -325,17 +449,12 @@ class Egress:
             saved["body_bytes"] = saved.get("body_bytes", 0) + body_bytes
             counter = "read_attempts" if read else "write_attempts"
             saved[counter] = saved.get(counter, 0) + 1
-            with tempfile.NamedTemporaryFile(dir=self.root, delete=False) as temp:
-                name = temp.name
-                try:
-                    temp.write(json.dumps(saved, allow_nan=False).encode())
-                    temp.flush()
-                    os.fsync(temp.fileno())
-                    os.replace(name, self.path)
-                    fd = os.open(self.root, os.O_RDONLY)
-                    try:
-                        os.fsync(fd)
-                    finally:
-                        os.close(fd)
-                finally:
-                    Path(name).unlink(missing_ok=True)
+            counters = saved.setdefault("classified", {})
+            row = counters.setdefault(
+                f"{provider}:{category}",
+                {"sent": 0, "rejected": 0, "max_request_bytes": 0, "bytes": 0},
+            )
+            row["sent"] += 1
+            row["bytes"] += size
+            row["max_request_bytes"] = max(row["max_request_bytes"], size)
+            self._save(saved)

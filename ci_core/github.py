@@ -68,8 +68,14 @@ class GitHubClient:
             if path.startswith("/check-runs")
             else (32 * 1024 if path.endswith("/dispatches") else 7000)
         )
-        if payload is not None and len(payload) > budget:
-            raise ValueError("API payload exceeds endpoint budget")
+        if payload is not None:
+            ceiling = (
+                65536
+                if self.policy and getattr(self.policy, "worker", None) == "yellow"
+                else budget
+            )
+            if len(payload) > ceiling:
+                raise ValueError("API payload exceeds endpoint budget")
         headers = {
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
@@ -98,7 +104,7 @@ class GitHubClient:
         )
 
         if self.policy:
-            self.policy.before(request, repo=self.repo, provider="github")
+            request = self.policy.before(request, repo=self.repo, provider="github")
         # Repository aliases/redirects must not silently change trusted identity.
         with urllib.request.build_opener(NoRedirect()).open(
             request, timeout=30
@@ -127,7 +133,7 @@ class GitHubClient:
             },
         )
         if self.policy:
-            self.policy.before(request, repo=self.repo, provider="github")
+            request = self.policy.before(request, repo=self.repo, provider="github")
         try:
             with opener.open(request, timeout=20):
                 raise ValueError("artifact download did not redirect")

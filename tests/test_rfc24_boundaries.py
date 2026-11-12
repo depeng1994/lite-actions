@@ -123,6 +123,73 @@ class Rfc24Boundaries(unittest.TestCase):
         text = "-----BEGIN PRIVATE KEY-----\nprivate-fixture-value\n-----END PRIVATE KEY-----\nOK"
         self.assertEqual(yellow_lines([text]), ["[REDACTED]"] * 3 + ["OK"])
 
+    def test_request_wire_budget_accepts_1999_and_rejects_2000_offline(self):
+        from urllib.parse import urlsplit
+
+        class RequestFixture:
+            def __init__(self, pad):
+                self.full_url = "https://api.github.com/repos/cann-framework/torchtitan-npu/branches/main"
+                self.data = None
+                self.pad = pad
+
+            def get_method(self):
+                return "GET"
+
+            def header_items(self):
+                return [("X-Pad", "x" * self.pad)]
+
+        def make(target):
+            url = urlsplit(
+                "https://api.github.com/repos/cann-framework/torchtitan-npu/branches/main"
+            )
+            line = len(f"GET {url.path} HTTP/1.1\r\n".encode())
+            host = len(f"Host: {url.netloc}\r\n".encode())
+            empty = line + host + 9 + 2 + 128
+            return RequestFixture(target - empty)
+
+        for target in (1999, 2000):
+            req = make(target)
+            u = urlsplit(req.full_url)
+            headers = sum(
+                len(k.encode()) + 2 + len(v.encode()) + 2 for k, v in req.header_items()
+            )
+            actual = (
+                len(f"GET {u.path} HTTP/1.1\r\n".encode())
+                + len(f"Host: {u.netloc}\r\n".encode())
+                + headers
+                + 2
+                + 128
+            )
+            self.assertEqual(actual, target)
+            if target == 1999:
+                self.policy().before(
+                    req, repo="cann-framework/torchtitan-npu", provider="github"
+                )
+            else:
+                with self.assertRaisesRegex(Rejected, "REQUEST_SIZE_LIMIT"):
+                    self.policy().before(
+                        req, repo="cann-framework/torchtitan-npu", provider="github"
+                    )
+        state = json.loads(self.policy().path.read_bytes())
+        row = state["classified"]["github:metadata_get"]
+        self.assertEqual(
+            (row["sent"], row["rejected"], row["max_request_bytes"]), (1, 1, 2000)
+        )
+
+    def test_discovery_get_caps_are_per_repo_and_600_seconds(self):
+        policy = self.policy()
+        repo = "cann-framework/torchtitan-npu"
+        url = f"https://api.github.com/repos/{repo}/actions/runs?status=queued&per_page=100&page=1"
+        for _ in range(20):
+            policy.before(urllib.request.Request(url), repo=repo, provider="github")
+            self.now += 1
+        with self.assertRaisesRegex(Deferred, "DISCOVERY_POLL_LIMIT"):
+            policy.before(urllib.request.Request(url), repo=repo, provider="github")
+        self.now += 600
+        policy.before(urllib.request.Request(url), repo=repo, provider="github")
+        state = json.loads(policy.path.read_bytes())
+        self.assertEqual(state["discovery_600s"][f"github:{repo}"]["count"], 1)
+
     def test_restart_and_clock_do_not_replenish_daily_or_burst_allowance(self):
         self.cfg["daily_upload_bytes"] = 19
         g = self.policy()
