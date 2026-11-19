@@ -1,0 +1,17 @@
+name = "lite-actions-control-center"
+main = "src/index.ts"
+compatibility_date = "2026-08-15"
+workers_dev = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "lite-actions-control-center"
+database_id = "00000000-0000-0000-0000-000000000000"
+
+[triggers]
+crons = ["* * * * *", "0 2 * * *"]
+
+# Enable with the frontend build from FE-05.
+# [assets]
+# directory = "./public"
+# run_worker_first = ["/api/*"]
