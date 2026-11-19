@@ -50,7 +50,9 @@ function nodeFromIdentity(identity, worker, pool, deviceGroups = []) {
     worker: workerLabel(worker), pool,
     ip: match?.[1] || display, port: Number(match?.[2] || 22),
     cards: deviceGroups.reduce((sum, group) => sum + group.devices.length, 0),
-    groups: groups.length ? groups : ["0–7"], binding: "control-center",
+    groups: groups.length ? groups : ["0–7"],
+    groupCards: Object.fromEntries(deviceGroups.map((group) => [rangeLabel(group.devices), group.devices.length])),
+    binding: "control-center",
     unknown: deviceGroups.filter((group) => group.state === "UNKNOWN_BUSY").map((group) => rangeLabel(group.devices)).filter(Boolean),
     probes: Object.fromEntries(deviceGroups.map((group) => [rangeLabel(group.devices), {
       lastSeen: group.updated_at ? new Date(group.updated_at * 1000).toLocaleTimeString("zh-CN", {hour12: false}) : null,
@@ -89,7 +91,10 @@ function clusterViewConfig(cluster) {
     }
   }
   const applied = Object.fromEntries((cluster?.workers || []).map((worker) => [workerLabel(worker.worker_id), worker.applied_rev || 0]));
-  return {desired: cluster?.revision || 0, applied, flags, pending: null};
+  const workerStatus = Object.fromEntries((cluster?.workers || []).map((worker) => [workerLabel(worker.worker_id), {
+    offline: Boolean(worker.offline), status: worker.status, error: worker.error_msg,
+  }]));
+  return {desired: cluster?.revision || 0, applied, flags, workerStatus, pending: null};
 }
 
 function clusterPoolNames(cluster) {
@@ -98,16 +103,26 @@ function clusterPoolNames(cluster) {
 
 function taskToCase(task, nodesByRef, runKey, isHistory = false, index = 0) {
   const allocation = task.allocation?.[0];
-  const node = allocation ? nodesByRef.get(allocation.node_ref) : null;
+  const node = allocation ? nodesByRef.get(allocation.node_ref) || {
+    id: allocation.node_ref || allocation.display_host_id || allocation.host_id,
+    worker: workerLabel(task.worker_id), pool: task.target_pool,
+    ip: (allocation.display_host_id || allocation.host_id || "未知节点").replace(/:\d+$/, ""),
+    port: Number((allocation.display_host_id || allocation.host_id || "").match(/:(\d+)$/)?.[1] || 22),
+    cards: allocation.devices?.length || task.allocated_cards || task.req_devices,
+  } : null;
   const groups = task.allocation?.map((item) => rangeLabel(item.devices)).filter(Boolean) || [];
   const estimate = task.estimated_sec == null ? null : Math.max(1, Math.round(task.estimated_sec / 60));
+  const elapsed = task.duration_sec == null ? null : task.duration_sec / 60;
   return {
     id: task.task_uid || `${runKey}-${task.case_id}`,
     historyId: isHistory ? (task.task_uid || `${runKey}-${task.case_id}`) : undefined,
     run: runKey, name: task.label || task.test_id || task.case_id, status: phaseLabel(task),
-    worker: workerLabel(task.worker_id), pool: task.target_pool, nodes: task.req_nodes, cards: task.req_devices,
-    node: node?.id, groups, started: minuteOfDay(task.running_at || task.queued_at) ?? 0,
-    finished: minuteOfDay(task.finished_at), estimate, samples: task.sample_count || 0,
+    worker: workerLabel(task.worker_id), pool: task.target_pool, nodes: task.req_nodes,
+    cards: task.allocated_cards ?? task.req_devices, node: node?.id, allocation: node, groups,
+    started: minuteOfDay(task.started_at), finished: minuteOfDay(task.finished_at),
+    start: task.started_at == null ? null : task.started_at * 1000,
+    end: task.finished_at == null ? null : task.finished_at * 1000,
+    elapsed, estimate, samples: task.sample_count || 0,
     position: task.queue_pos == null ? index + 1 : task.queue_pos + 1, plannedNode: node?.id,
     plannedGroups: groups, archived: isHistory,
   };
@@ -118,8 +133,8 @@ function taskRun(task, model, tasks, isHistory, nodesByRef, index) {
     id: task.run_id, attempt: task.attempt, model, platform: platformLabel(task.provider), repo: task.repo,
     owner: task.repo?.startsWith("depeng1994/") ? "个人仓" : "组织仓", author: task.pr_author,
     actor: task.trigger_actor || "—", pr: task.pr_number, trigger: task.event_type === "pull_request" ? "PR" : task.event_type === "workflow_dispatch" ? "手动" : "事件",
-    action: task.workflow_file?.replace(/^.*\//, "").replace(/\.ya?ml$/, "") || "Smoke", commit: task.dispatch_id || "—",
-    submitted: minuteOfDay(task.queued_at) ?? 0,
+    action: task.workflow_name || task.workflow_file?.replace(/^.*\//, "").replace(/\.ya?ml$/, "") || "Workflow", commit: task.dispatch_id || "—",
+    submitted: minuteOfDay(task.submitted_at ?? task.queued_at),
   };
   run.cases = tasks.map((item, caseIndex) => taskToCase(item, nodesByRef, workflowKey(run), isHistory, caseIndex));
   return run;
@@ -179,7 +194,7 @@ export async function loadControlCenter(access = "public") {
       .sort((a, b) => a.submitted - b.submitted).map(workflowKey);
     const snapshot = {overview, timeline, cluster, queueVersion: workflowSnapshot?.queue_version || 0,
       historyCursor: workflowSnapshot?.next_cursor || null, historyHasMore: Boolean(workflowSnapshot?.has_more),
-      clusterConfig: clusterViewConfig(cluster), clusterPools: clusterPoolNames(cluster), nodes, cases, workflowOrder, repositories, runs: activeRuns, history: historyRuns};
+    clusterConfig: clusterViewConfig(cluster), clusterHistory: cluster?.history || [], clusterPools: clusterPoolNames(cluster), nodes, cases, workflowOrder, repositories, runs: activeRuns, history: historyRuns};
     applyLiveArrays(snapshot);
     return snapshot;
   } catch (error) {
@@ -215,9 +230,10 @@ export async function moveWorkflowUp(run, queueVersion) {
 }
 export async function clusterPreview(baseRevision, operation) { return request("/admin/cluster/preview", {method: "POST", body: {base_revision: baseRevision, operation}}); }
 export async function clusterPublish(baseRevision, operation, previewHash) { return request("/admin/cluster/publish", {method: "POST", body: {base_revision: baseRevision, operation, preview_hash: previewHash}}); }
+export async function clusterRollback(baseRevision, targetRevision) { return request("/admin/cluster/rollback", {method: "POST", body: {base_revision: baseRevision, target_revision: targetRevision}}); }
 export async function listUsers() { return request("/admin/users"); }
 export async function createUser(username) { return request("/admin/users", {method: "POST", body: {username}}); }
 export async function resetUserKey(userId) { return request(`/admin/users/${encodeURIComponent(userId)}/reset-key`, {method: "POST"}); }
 export async function deleteUser(userId) { return request(`/admin/users/${encodeURIComponent(userId)}`, {method: "DELETE"}); }
 
-export const controlApi = {request, getSession, login, logout, cancelWorkflow, moveUp, moveWorkflowUp, clusterPreview, clusterPublish, listUsers, createUser, resetUserKey, deleteUser, loadMoreHistory};
+export const controlApi = {request, getSession, login, logout, cancelWorkflow, moveUp, moveWorkflowUp, clusterPreview, clusterPublish, clusterRollback, listUsers, createUser, resetUserKey, deleteUser, loadMoreHistory};

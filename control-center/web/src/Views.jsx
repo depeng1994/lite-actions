@@ -1,5 +1,5 @@
-import { ArrowRight, CalendarBlank, CaretDown, CaretRight, Pause, Play, Plus, Trash, X } from "@phosphor-icons/react";
-import { useState } from "react";
+import { CalendarBlank, CaretDown, CaretRight, Pause, Play, Plus, Trash, X } from "@phosphor-icons/react";
+import { useEffect, useState } from "react";
 import { clock, dateLabel, flagFor, now, plannedTime, poolId, runs, statusTone, targetFor, timelineEnd, timelineStart, workers, workflowKey } from "./formal-data.js";
 import { lastSeenDateTime, resourceHealth } from "./resource-health.js";
 
@@ -60,7 +60,7 @@ function ResourceLabel({ row, folded, changeFold, config, selectScope, open }) {
   return <div className={`resource resource-${level} ${worker.toLowerCase()}`} style={{ height }}>
     {level === "group"
       ? <button className="tree-leaf" onClick={() => open({ type: "resource", target: targetFor(node, group) })}>
-          设备组 {group} <span className="subtle">（8P）</span>
+          设备组 {group} <span className="subtle">（{node.groupCards?.[group] ?? 8}P）</span>
         </button>
       : <button className="tree-item" onClick={() => {
           changeFold(key);
@@ -116,12 +116,15 @@ function LeaseBar({ item, run, rows, config, nodes, selected, onClick }) {
 
 export function PoolsView({ nodes, cases, config, open, go, live }) {
   const [folded, setFolded] = useState({});
-  const [queueScope, selectScope] = useState("Blue/A3");
+  const [queueScope, selectScope] = useState("");
   const [selected, setSelected] = useState("1081-blue");
   const rows = resourceRows(nodes, folded);
+  const scopes = [...new Set([...nodes, ...cases].map((item) => poolId(item.worker, item.pool)))];
+  useEffect(() => {
+    if (!scopes.includes(queueScope)) selectScope(scopes[0] || "");
+  }, [queueScope, scopes.join("|")]);
   const queue = cases.filter((item) => item.status === "排队中" && queueScope === poolId(item.worker, item.pool))
     .sort((a, b) => a.position - b.position);
-  const scopes = [...new Set([...nodes, ...cases].map((item) => poolId(item.worker, item.pool)))];
   const showCase = (item) => {
     setSelected(item.id);
     open({ type: "case", caseId: item.id });
@@ -236,14 +239,14 @@ function ClusterRow({ target, status, nodes, config, canManage, open, node, grou
       {group ? `设备组 ${group}` : node ? node.id : `Pool ${target.pool}`} <CaretRight size={13} />
     </button></td>
     <td>{node ? <span className="mono">{node.ip}:{node.port}</span> : <span className="subtle">—</span>}</td>
-    <td>{group ? "8 卡" : node ? `${node.cards} 卡 · ${node.groups.length} 组` : `${nodes.length} 节点 · ${nodes.reduce((sum, member) => sum + member.cards, 0)} 卡`}</td>
+    <td>{group ? `${node.groupCards?.[group] ?? 8} 卡` : node ? `${node.cards} 卡 · ${node.groups.length} 组` : `${nodes.length} 节点 · ${nodes.reduce((sum, member) => sum + member.cards, 0)} 卡`}</td>
     <td><ResourceStatus health={health} configStatus={status} unknown={Boolean(group && node.unknown.includes(group))} /></td>
     <td className="subtle mono" title={group ? "该设备组上一次查到全部配置卡的时间" : "成员中最近一次查到配置卡的时间"}>{lastSeenDateTime(health.lastSeen)}</td>
     {canManage && <td><ClusterControls target={target} state={status} config={config} open={open} /></td>}
   </tr>;
 }
 
-export function ClusterView({ config, nodes, clusterPools = [], canManage, open, audit }) {
+export function ClusterView({ config, nodes, clusterPools = [], clusterHistory = [], rollbackCluster, canManage, open, audit }) {
   const [worker, setWorker] = useState("Blue");
   const scoped = nodes.filter((node) => node.worker === worker);
   const pools = [...new Set([...scoped.map((node) => node.pool), ...clusterPools.filter((entry) => entry.worker === worker).map((entry) => entry.pool)])];
@@ -259,11 +262,11 @@ export function ClusterView({ config, nodes, clusterPools = [], canManage, open,
       </button>)}
     </nav>
     <div className="revision-bar">
-      <strong>{worker}</strong><Tag tone="teal">在线</Tag>
+      <strong>{worker}</strong><Tag tone={config.workerStatus?.[worker]?.offline ? "red" : "teal"}>{config.workerStatus?.[worker]?.offline ? "离线" : "在线"}</Tag>
       <span>当前版本 <code>r{config.applied[worker]}</code></span>
       <span>期望版本 <code>r{config.desired}</code></span>
       <Tag tone={config.applied[worker] === config.desired ? "teal" : "amber"}>{config.applied[worker] === config.desired ? "已同步" : "等待 Worker 应用"}</Tag>
-      <span className="revision-updated">心跳 14:20:00</span>
+      <span className="revision-updated">{config.workerStatus?.[worker]?.status || "等待心跳"}</span>
     </div>
     <div className="table-scroll">
       <table className="data-table cluster-table">
@@ -277,6 +280,19 @@ export function ClusterView({ config, nodes, clusterPools = [], canManage, open,
         </tbody>
       </table>
     </div>
+    {canManage && <section className="audit-section" aria-label="历史配置版本">
+      <h2>历史配置版本</h2>
+      <div className="table-scroll"><table className="data-table">
+        <thead><tr><th>版本</th><th>创建时间</th><th>操作账号</th><th>来源</th><th>操作</th></tr></thead>
+        <tbody>{clusterHistory.map((revision) => <tr key={revision.revision}>
+          <td className="mono">r{revision.revision}</td>
+          <td className="mono">{revision.created_at ? new Date(revision.created_at * 1000).toLocaleString("zh-CN") : "—"}</td>
+          <td>{revision.created_by || "—"}</td><td>{revision.rollback_from_rev ? `回滚自 r${revision.rollback_from_rev}` : "发布"}</td>
+          <td><button className="button small" disabled={Boolean(config.pending) || revision.revision === config.desired} onClick={() => rollbackCluster?.(revision.revision)}>回滚</button></td>
+        </tr>)}
+        {!clusterHistory.length && <tr><td className="empty" colSpan={5}>暂无历史配置版本</td></tr>}</tbody>
+      </table></div>
+    </section>}
     {canManage && <AuditList entries={audit.filter((entry) => entry.area === "cluster")} />}
   </main>;
 }
@@ -321,8 +337,9 @@ export function UsersView({ accounts, open, audit }) {
       <thead><tr><th>用户名</th><th>角色</th><th>创建时间</th><th>登录密钥</th><th>操作</th></tr></thead>
       <tbody>{accounts.filter(({ role }) => role !== "Super").map((account) => <tr key={account.name}>
         <td className="mono"><strong>{account.name}</strong></td><td>管理员</td><td className="mono">{account.created}</td>
-        <td><button className="text-button" onClick={() => open({ type: "user-key", name: account.name })}>查看完整密钥 <ArrowRight size={15} /></button></td>
-        <td><button className="button small danger-subtle" onClick={() => open({ type: "delete-user", name: account.name })}><Trash size={15} />删除</button></td>
+        <td><span className="subtle">仅创建或重置时显示一次</span></td>
+        <td><div className="button-row"><button className="button small" onClick={() => open({ type: "reset-user", name: account.name })}>重置密钥</button>
+          <button className="button small danger-subtle" onClick={() => open({ type: "delete-user", name: account.name })}><Trash size={15} />删除</button></div></td>
       </tr>)}
       {accounts.every(({ role }) => role === "Super") && <tr><td className="empty" colSpan={5}>暂无普通管理员</td></tr>}</tbody>
     </table></div>

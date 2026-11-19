@@ -298,6 +298,8 @@ th[aria-sort] .column-sort, th[aria-sort] .column-sort svg, .column-sort:hover {
 .resource-link.group-link { margin-left: 38px; font-weight: 540; }
 .audit-section h2 { margin-bottom: 12px; }
 .audit-section table, .users-table { min-width: 620px; }
+.button-row, .form-inline-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.form-inline-actions { margin-top: -4px; }
 
 .dialog { border: 1px solid var(--line); border-radius: 9px; padding: 0; width: min(550px, calc(100vw - 24px)); max-height: calc(100dvh - 28px); background: var(--surface-raised); color: var(--text); box-shadow: var(--shadow); }
 .dialog::backdrop { background: #10191872; }

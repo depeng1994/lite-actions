@@ -87,16 +87,19 @@ export function CaseDialog({ item, nodes, config, close, go }) {
 }
 
 export function HistoryDialog({ run, item, close }) {
+  const elapsed = item.elapsed == null ? "—" : `${item.elapsed} 分钟`;
+  const start = item.start;
+  const end = item.end;
   return <Dialog drawer title={item.name} subtitle={`历史用例 · Workflow #${run.id}`} close={close}>
     <div className="drawer-body">
       <Status value={item.status} />
       <h3>Workflow</h3><RunDetails run={run} />
       <h3>执行明细</h3>
       <Details entries={[
-        ["开始时间", dateFormatter.format(item.start)], ["结束时间", dateFormatter.format(item.end)],
-        ["耗时", `${item.elapsed} 分钟`], ["数据来源", item.archived ? "控制面冷存储" : "控制面热存储"],
-        ["实际分配", `${item.worker} / ${item.pool} · ${item.node.id}`],
-        ["节点 IP / 端口", <code>{item.node.ip}:{item.node.port}</code>], ["设备 ID", item.groups.join("、")],
+        ["开始时间", start ? dateFormatter.format(start) : "—"], ["结束时间", end ? dateFormatter.format(end) : "—"],
+        ["耗时", elapsed], ["数据来源", item.archived ? "控制面冷存储" : "控制面热存储"],
+        ["实际分配", item.node ? `${item.worker} / ${item.pool} · ${item.node.id}` : "—"],
+        ["节点 IP / 端口", item.node && <code>{item.node.ip}:{item.node.port}</code>], ["设备 ID", item.groups.join("、") || "—"],
       ]} />
     </div>
   </Dialog>;
@@ -220,41 +223,46 @@ function exampleAddress(nodes) {
 }
 
 export function AddNodeDialog({ worker, nodes, close, save }) {
+  const [raw, setRaw] = useState("");
+  const [preview, setPreview] = useState(null);
   const [error, setError] = useState("");
   return <Dialog title="新增集群资产" subtitle="登记节点、设备拓扑和容器绑定。" close={close}>
     <form onSubmit={(event) => {
       event.preventDefault();
       const raw = Object.fromEntries(new FormData(event.currentTarget));
       const pool = raw.pool.trim().toUpperCase();
-      const id = raw.id.trim();
-      const ip = raw.ip.trim();
-      const binding = raw.binding.trim();
-      if (!/^[a-z][a-z0-9-]*$/.test(id) || !/^[A-Z][A-Z0-9-]*$/.test(pool) || !binding) {
-        setError("请输入有效的 Pool、节点名和容器绑定。");
+      if (!/^[A-Z][A-Z0-9_\.-]*$/.test(pool)) {
+        setError("请输入有效的 Pool 名称。");
         return;
       }
-      if (!/^(192\.0\.2|198\.51\.100|203\.0\.113)\.(?:[1-9][0-9]{0,2})$/.test(ip) || Number(ip.split(".").at(-1)) > 254) {
-        setError("请输入有效的节点 IP，例如 203.0.113.80。");
+      if (!preview) {
+        setError("请先解析 preflight.py --export-node-snippet JSON 片段。");
         return;
       }
-      if (nodes.some((node) => node.id === id || node.ip === ip)) {
-        setError("节点名称和 IP 必须唯一。");
+      const id = preview.host_id;
+      if (nodes.some((node) => node.ip === id || node.id === id)) {
+        setError("该节点已存在。");
         return;
       }
-      const cards = Number(raw.cards);
-      save({ worker: raw.worker, id, ip, port: Number(raw.port), pool, binding, cards, groups: cards === 16 ? ["0–7", "8–15"] : ["0–7"], unknown: [] });
+      save({worker: raw.worker, pool, value: preview, label: id});
     }}>
       <div className="form-fields form-grid">
         <label>Worker<select name="worker" defaultValue={worker}><option>Blue</option><option>Yellow</option></select></label>
         <label>Pool<input name="pool" required defaultValue={worker === "Blue" ? "A3" : "A5"} /></label>
-        <label>节点名<input name="id" required placeholder="blue-a3-02" /></label>
-        <label>设备拓扑<select name="cards"><option value="8">8P · 0–7</option><option value="16">16P · 0–7、8–15</option></select></label>
-        <label>节点 IP<input name="ip" required defaultValue={exampleAddress(nodes)} /></label>
-        <label>端口<input name="port" required type="number" min="1" max="65535" defaultValue="22" /></label>
-        <label className="span-two">容器绑定<input name="binding" required placeholder="blue-a3-runner-02" /></label>
+        <label className="span-two">preflight.py 导出片段<textarea name="snippet" required rows="9" value={raw} onChange={(event) => {
+          setRaw(event.target.value); setPreview(null); setError("");
+        }} placeholder="粘贴 --export-node-snippet 输出的 JSON" /></label>
+        <div className="span-two form-inline-actions"><button className="button" type="button" onClick={() => {
+          try {
+            const parsed = JSON.parse(raw);
+            const value = parsed.node || parsed;
+            if (!value || typeof value !== "object" || !value.host_id || !value.ssh || !value.device_ids || !value.allocation_groups) throw new Error();
+            setPreview(value); setError("");
+          } catch { setPreview(null); setError("JSON 无法解析，或缺少 host_id、ssh、device_ids、allocation_groups 字段。"); }
+        }}>解析片段</button>{preview && <span className="subtle">已解析 {preview.host_id} · {preview.device_ids.length} 卡</span>}</div>
         {error && <p role="alert" className="form-error span-two">{error}</p>}
       </div>
-      <DialogActions close={close}><button className="button primary" type="submit">发布配置</button></DialogActions>
+      <DialogActions close={close}><button className="button primary" type="submit" disabled={!preview}>发布配置</button></DialogActions>
     </form>
   </Dialog>;
 }
@@ -282,7 +290,7 @@ export function NewUserDialog({ close, accounts, create }) {
 export function UserKeyDialog({ account, close }) {
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState(false);
-  return <Dialog title="管理员登录密钥" subtitle={`${account.name} · 普通管理员`} close={close}>
+  return <Dialog title="一次性管理员登录密钥" subtitle={`${account.name} · 普通管理员`} close={close}>
     <div className="dialog-body">
       <div className="key-box"><code>{account.key}</code><button className="button small" onClick={async () => {
         try { await navigator.clipboard.writeText(account.key); setCopied(true); } catch { setCopyError(true); }
@@ -290,6 +298,13 @@ export function UserKeyDialog({ account, close }) {
       {copyError && <p role="status" className="subtle">可选中密钥后手动复制。</p>}
     </div>
     <DialogActions close={close} />
+  </Dialog>;
+}
+
+export function ResetUserKeyDialog({ account, close, confirm }) {
+  return <Dialog title="重置管理员密钥" subtitle={account.name} close={close}>
+    <div className="dialog-body"><div className="callout warning"><Warning size={20} /><p>旧密钥和旧会话会立即失效。新密钥只在确认后显示一次。</p></div></div>
+    <DialogActions close={close}><button className="button danger" onClick={confirm}>确认重置</button></DialogActions>
   </Dialog>;
 }
 

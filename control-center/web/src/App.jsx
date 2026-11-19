@@ -4,11 +4,11 @@ import { ClusterView, PoolsView, UsersView } from "./Views.jsx";
 import { ModelsView } from "./ModelsView.jsx";
 import {
   AddNodeDialog, CancelDialog, CancellationReceipt, CaseDialog, ConfigDialog, DeleteUserDialog, ExpediteDialog,
-  HistoryDialog, LoginForm, NewUserDialog, PriorityReceipt, ResourceDialog, UserKeyDialog,
+  HistoryDialog, LoginForm, NewUserDialog, PriorityReceipt, ResourceDialog, ResetUserKeyDialog, UserKeyDialog,
 } from "./Dialogs.jsx";
 import { history, impactOf, initialCases, initialNodes, initialQueueOrder, poolId, repositories, runs, workflowKey } from "./formal-data.js";
 import { currentWorkflowQueue, moveWorkflow, queuedChildren } from "./workflows.js";
-import { cancelWorkflow as apiCancelWorkflow, clusterPreview, clusterPublish, createUser as apiCreateUser, deleteUser as apiDeleteUser, getSession, listUsers, loadControlCenter, loadMoreHistory as apiLoadMoreHistory, login as apiLogin, logout as apiLogout, moveWorkflowUp as apiMoveWorkflowUp } from "./control-api.js";
+import { cancelWorkflow as apiCancelWorkflow, clusterPreview, clusterPublish, clusterRollback, createUser as apiCreateUser, deleteUser as apiDeleteUser, getSession, listUsers, loadControlCenter, loadMoreHistory as apiLoadMoreHistory, login as apiLogin, logout as apiLogout, moveWorkflowUp as apiMoveWorkflowUp, resetUserKey as apiResetUserKey } from "./control-api.js";
 
 const pages = [["pools", "Pools 时间轴"], ["models", "模型仓"], ["cluster", "集群管理"]];
 const defaultModel = repositories[0].name;
@@ -59,6 +59,7 @@ export function App() {
   const [theme, setTheme] = useTheme();
   const [nodes, setNodes] = useState(initialNodes);
   const [clusterPools, setClusterPools] = useState([]);
+  const [clusterHistory, setClusterHistory] = useState([]);
   const [cases, setCases] = useState(initialCases);
   const [workflowOrder, setWorkflowOrder] = useState(initialQueueOrder);
   const [queueVersion, setQueueVersion] = useState(0);
@@ -89,6 +90,7 @@ export function App() {
       if (!snapshot) { setDataMode("offline"); return; }
       setNodes(snapshot.nodes);
       setClusterPools(snapshot.clusterPools || []);
+      setClusterHistory(snapshot.clusterHistory || []);
       setCases(snapshot.cases);
       setWorkflowOrder(snapshot.workflowOrder);
       setQueueVersion(snapshot.queueVersion || 0);
@@ -233,10 +235,11 @@ export function App() {
 
   const publishConfig = async (target, action, addedNode) => {
     if (!canManage || dataMode !== "live" || config.pending) return;
-    if (addedNode) { notify("新增节点需要粘贴并校验 preflight.py 片段"); return; }
     const devices = target.group?.match(/\d+/g)?.map(Number);
     const scope = target.group ? "device_group" : target.node ? "node" : "pool";
-    const operation = action === "暂停" || action === "恢复"
+    const operation = addedNode
+      ? {op: "ADD_NODE", pool: addedNode.pool, value: addedNode.value}
+      : action === "暂停" || action === "恢复"
       ? {op: action === "暂停" ? "PAUSE" : "RESUME", scope, pool: target.pool, ...(target.node ? {host_id: target.node} : {}), ...(devices ? {devices} : {})}
       : action === "排空"
         ? {op: "DRAIN", scope, pool: target.pool, ...(target.node ? {host_id: target.node} : {}), ...(devices ? {devices} : {})}
@@ -254,6 +257,20 @@ export function App() {
       setConfig((previous) => ({...previous, desired: sync.revision, pending: null}));
       log("cluster", action, target.label, "控制面已发布配置");
       notify(`配置 r${sync.revision} 已提交，等待 Worker 应用`);
+    } catch (error) {
+      setConfig((previous) => ({...previous, pending: null}));
+      notify(error.message);
+    }
+  };
+
+  const rollbackCluster = async (targetRevision) => {
+    if (!canManage || dataMode !== "live" || config.pending || targetRevision === config.desired) return;
+    setConfig((previous) => ({...previous, pending: "rollback"}));
+    try {
+      const sync = await clusterRollback(config.desired, targetRevision);
+      setConfig((previous) => ({...previous, desired: sync.revision, pending: null}));
+      log("cluster", "回滚配置", `r${targetRevision}`, "控制面已发布新版本");
+      notify(`已基于 r${targetRevision} 发布配置 r${sync.revision}`);
     } catch (error) {
       setConfig((previous) => ({...previous, pending: null}));
       notify(error.message);
@@ -285,7 +302,19 @@ export function App() {
     notify(`管理员 ${name} 已删除`);
   };
 
-  const viewProps = { nodes, clusterPools, cases, config, queueVersion, historyHasMore, loadMoreHistory, canManage, open, go, audit, live: dataMode === "live" };
+  const resetUserKey = async (name) => {
+    if (!isSuper || dataMode !== "live") return;
+    const account = accounts.find((item) => item.name === name);
+    if (!account?.userId) return;
+    try {
+      const issued = await apiResetUserKey(account.userId);
+      setAccounts((previous) => previous.map((item) => item.name === name ? {...item, key: issued.secret_once} : item));
+      log("users", "重置管理员密钥", name, "旧会话已撤销");
+      open({type: "user-key", name});
+    } catch (error) { notify(error.message); }
+  };
+
+  const viewProps = { nodes, clusterPools, clusterHistory, cases, config, queueVersion, historyHasMore, loadMoreHistory, rollbackCluster, canManage, open, go, audit, live: dataMode === "live" };
   const item = modal?.caseId && cases.find(({ id }) => id === modal.caseId);
   const run = modal?.runKey && runs.find((run) => workflowKey(run) === modal.runKey);
   const historicalRun = modal?.historyId && history.find((run) => workflowKey(run) === modal.runKey);
@@ -317,7 +346,8 @@ export function App() {
     {modal?.type === "add-node" && canManage && <AddNodeDialog worker={modal.worker} nodes={nodes} close={close}
       save={(node) => publishConfig({ id: poolId(node.worker, node.pool), worker: node.worker, label: node.id }, "新增", node)} />}
     {modal?.type === "new-user" && isSuper && <NewUserDialog accounts={accounts} create={createUser} close={close} />}
-    {modal?.type === "user-key" && isSuper && user && <UserKeyDialog account={user} close={close} />}
+    {modal?.type === "user-key" && isSuper && user && user.key && <UserKeyDialog account={user} close={close} />}
+    {modal?.type === "reset-user" && isSuper && user && <ResetUserKeyDialog account={user} close={close} confirm={() => resetUserKey(user.name)} />}
     {modal?.type === "delete-user" && isSuper && user && <DeleteUserDialog name={user.name} close={close} confirm={() => deleteUser(user.name)} />}
     <div className="toast-container" aria-live="polite" aria-atomic="true">{message && <div className="toast">{message}</div>}</div>
   </>;
