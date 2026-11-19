@@ -61,6 +61,7 @@
 - [ ] **`REQ-16` 统一 Workflow 表格接口（`/workflows`）、50 Workflow 游标分页、汇总口径（调度结果 / 运行总卡时）与 `/timeline` 零 N+1 增强**
   - 依赖：`REQ-06`, `REQ-08`, `REQ-09`, `REQ-14`, `REQ-15` ｜ 门禁：`python3 -m unittest tests/test_control_client.py tests/test_queue_telemetry.py tests/test_upload_intercept.py -v`、`npm test -- workflows-board.test.ts board-read.test.ts retention-storage.test.ts` 全绿
 - [ ] **`REQ-17` Workflow 级版本化跨区插队（`POST /admin/workflows/move-up` + `SWAP_WORKFLOW` 命令 + 晚发现/回队沿用顺位 + 多端分池回执）**
+  - 可验证子集已实现：`3865335`/`4cc227f` 新增 `workflow_queue_meta`、`workflow_priority_ops`、`SWAP_WORKFLOW` 管理命令、幂等键、队列版本冲突、队首 NOOP 和操作回执查询，相关 2 个 Vitest 场景已通过。Worker 原子应用、晚发现/回队顺位、多端分池回执和完整跨区实机联调仍未完成，故本条保持未勾选。
   - 依赖：`REQ-05`, `REQ-11`, `REQ-16` ｜ 门禁：`python3 -m unittest tests/test_workflow_priority.py tests/test_smoke_queue.py tests/test_upload_intercept.py -v`、`npm test -- workflow-priority.test.ts` 全绿
 - [ ] **`REQ-18` 集群两步「先排空再删除」状态机与统一 `enabled`/`paused` 暂停调度语义**
   - 可验证子集已实现：新增 `0003_v15_cluster_drain.sql` 的 `cluster_drain_targets`，服务端支持 Pool `DRAIN`/`RESUME`、删除前 `RESOURCE_NOT_DRAINED` / 活动租约 / 排队引用 / 隔离四项门禁、Pool `enabled: false` 暂停语义及 `/cluster` 的 `draining` 状态。完整 Worker 侧排空取消、双端回执、实机重启与自动更新联调仍未完成，故本条保持未勾选。
