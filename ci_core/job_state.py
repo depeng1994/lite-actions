@@ -4,10 +4,19 @@ import fcntl
 import json
 import os
 import threading
+import time
 from pathlib import Path
 
 _MUTEX = threading.RLock()
 _META = "__lite_actions_metadata__"
+
+
+def _apply_fields(record, fields):
+    phase = fields.get("phase")
+    if phase and phase != record.get("phase") and phase != "REPORTED":
+        stamp = "FINISHED" if phase == "PENDING_REPORT" else phase
+        record.setdefault("phase_timestamps", {})[stamp] = int(time.time())
+    record.update(fields)
 
 
 class JobState:
@@ -47,7 +56,7 @@ class JobState:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
                 current = self._read_raw()
                 item = current.get(key, {})
-                item.update(fields)
+                _apply_fields(item, fields)
                 current[key] = item
                 self._write(current)
 
@@ -143,7 +152,8 @@ class JobState:
                         ) != values(fields, ("item", "defaults")):
                             raise ValueError("conflicting previously admitted case")
                         continue
-                    current[key] = {**fields, "admission_seq": seq}
+                    current[key] = {"admission_seq": seq}
+                    _apply_fields(current[key], fields)
                     inserted.append(key)
                     seq += 1
                 meta["next_sequence"] = seq
@@ -160,5 +170,5 @@ class JobState:
                 for key in keys:
                     if key not in current:
                         raise ValueError("missing admitted case")
-                    current[key].update(fields)
+                    _apply_fields(current[key], fields)
                 self._write(current)

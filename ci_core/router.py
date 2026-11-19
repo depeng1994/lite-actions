@@ -71,6 +71,7 @@ def run_key(run):
 
 class Router:
     def __init__(self, root, worker, client, author, *, deployment_config=None):
+        self.control = None
         self.deployment = deployment_config
         self.release_logs = None
         self.next_expiry = 0.0
@@ -188,6 +189,16 @@ class Router:
                     quarantined=bool(r.get("allocation"))
                     and (self.quarantine_enabled or r["item"].get("worker") != worker),
                     report=result,
+                )
+
+    def control_view(self):
+        return {"records": self.state.read(), "sha": self.self_sha}
+
+    def consume_control(self):
+        if self.control:
+            for entry in self.control.commands():
+                self.control.complete(
+                    entry["cmd_id"], "FAILED", err="UNSUPPORTED_COMMAND"
                 )
 
     def client_for(self, run):
@@ -1120,6 +1131,7 @@ class Router:
                 )
             ):
                 self.maybe_ack(key, r)
+        self.consume_control()
         # Limit only discovery. Cancellation, queue progress and outbox keep ticking.
         now = time.monotonic()
         if self.worker != "yellow" or now >= self.next_discovery:
