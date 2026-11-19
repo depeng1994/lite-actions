@@ -25,6 +25,8 @@ workerRoutes(router);
 const publicCache = new PublicCache();
 const publicHeaders = {"Cache-Control": "public, max-age=10", "Content-Type": "application/json"};
 let nextCapacityProbe = 0;
+let nextLazyCancelTick = 0;
+let nextLazyRetentionTick = 0;
 const privateCache = "private, no-store";
 
 export default {
@@ -78,6 +80,17 @@ export default {
       const mutating = !isPublic && ["POST","DELETE","PATCH","PUT"].includes(request.method);
       if (mutating) await requireWriteQuota(context);
       const response = await router.dispatch(context);
+      if (execution && response.ok) {
+        const lazyCancelRoute = url.pathname === "/api/v1/worker/heartbeat" || url.pathname.startsWith("/api/v1/admin/cancellations");
+        if (lazyCancelRoute && context.now >= nextLazyCancelTick) {
+          nextLazyCancelTick = context.now + 30;
+          execution.waitUntil(trackCancellations(context).catch(() => undefined));
+        }
+        if (mutating && context.now >= nextLazyRetentionTick) {
+          nextLazyRetentionTick = context.now + 3600;
+          execution.waitUntil(requireWriteQuota(context).then(() => retention(context)).catch(() => undefined));
+        }
+      }
       // Sample write traffic at most once per isolate per minute. The daily
       // trigger is the fallback when no writes reach this isolate.
       if (mutating && execution && response.ok && context.now >= nextCapacityProbe) {
