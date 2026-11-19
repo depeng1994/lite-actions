@@ -97,7 +97,7 @@
 
 ### Phase 7：端到端联调、最终集成验证与生产上线签收
 
-> **2026-11-20 正式上线记录**：Cloudflare Worker 使用线上 D1 `lite-actions-control-center`，正式 Site **版本 15** 通过同源 Server-backed API 访问控制面。前端构建已移除所有 Demo/fixture 数据回退，正式 D1 无活动任务时页面显示空队列。Blue 已配置线上 URL、机器密钥和控制面客户端，`/api/v1/public/overview` 实测 `offline=false`、`applied_rev=1`，四个设备组持续 `ONLINE`。个人仓 `depeng1994/lite-actions` 的 `lite-ci-self-smoke` CPU-only run `44579098108` 已在 Blue 最新部署 SHA `fdee24b5201b0dc098f15871bd036a3e0ec50257` 上通过。Site 版本 15 还通过了 API 代理环境变量、完整静态资源、SPA 路由回退、正式 cluster 状态映射（包含 `enabled: false` Pool 的暂停态）和无 Worker 错误日志核验。
+> **2026-11-20 正式上线记录**：Cloudflare Worker 使用线上 D1 `lite-actions-control-center`，正式 Site **版本 15** 通过同源 Server-backed API 访问控制面。前端构建已移除所有 Demo/fixture 数据回退，正式 D1 无活动任务时页面显示空队列。Blue 已配置线上 URL、机器密钥和控制面客户端，`/api/v1/public/overview` 实测 `offline=false`、`applied_rev=1`，四个设备组持续 `ONLINE`。个人仓 `depeng1994/lite-actions` 的 `lite-ci-self-smoke` CPU-only run `44580600438` 已在 Blue 最新部署 SHA `eb94ab2cf6471ce877283fd320e1c86d31d0dca1` 上通过，远端 `workflow_runs` 已有该 run 的 `PASS` 物化汇总、提交时间和 Workflow 名称。Site 版本 15 还通过了 API 代理环境变量、完整静态资源、SPA 路由回退、正式 cluster 状态映射（包含 `enabled: false` Pool 的暂停态）和无 Worker 错误日志核验。
 
 > v1.1 隔离联调实测通过：公开/管理员权限与掩码、双 Worker 90s 离线与恢复、连续三次插队、集群发布/重启应用、20+ 条事件补发、双平台写回；TLS 抓包 86 个请求，最大 1,761 字节。完整 NPU smoke、Yellow 主机、v1.5 Phase 5.5 及双平台取消仍按下方未勾选门槛记录。
 
