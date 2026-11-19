@@ -32,6 +32,14 @@ test("Workflow totals count measured allocations and exclude unleased cases", ()
   assert.equal(summary.cardHours > 0, true);
 });
 
+test("historical Workflow totals fall back to case identity without allocation", () => {
+  const summary = summarizeRun({cases: [
+    {historyId: "history-1", status: "成功", worker: "Blue", pool: "a3_shared_blue", cards: 8, allocatedCards: 0},
+  ]});
+  assert.deepEqual(summary.pools, ["Blue/a3_shared_blue"]);
+  assert.equal(summary.result, "成功");
+});
+
 test("a queued Workflow swaps with its predecessor without mutating source cases", () => {
   const cases = queuedCases();
   const order = [keyA, keyB, keyC];
