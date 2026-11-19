@@ -1,6 +1,7 @@
 """Independent Pull workers sharing one schedule/execute implementation."""
 
 import hashlib
+import json
 import logging
 import os
 import subprocess
@@ -297,6 +298,8 @@ class Router:
         probe, probe_time, sampled_pools = (
             self.idle_probe.sample if self.idle_probe else ({}, None, None)
         )
+        visibility = self.idle_probe.health if self.idle_probe else {}
+        probe_round = self.idle_probe.probe_round if self.idle_probe else 0
         if sampled_pools is not pools:
             probe, probe_time = {}, None
         blocked = {}
@@ -315,6 +318,10 @@ class Router:
                     ids = sorted(group["devices"])
                     resources = resource_keys([{"host_id": host, "devices": ids}])
                     state, ts = probe.get(group_id(pool_name, host, ids), (None, None))
+                    health = visibility.get(
+                        json.dumps([pool_name, host, ids], separators=(",", ":")),
+                        {"v": 2, "mc": 0, "lo": None, "pr": probe_round},
+                    )
                     keys = sorted(
                         {
                             blocked[resource]
@@ -334,6 +341,10 @@ class Router:
                             "d": ids,
                             "st": state,
                             "ts": ts,
+                            "pr": health.get("pr", probe_round),
+                            "v": health.get("v", 2),
+                            "mc": health.get("mc", 0),
+                            "lo": health.get("lo"),
                             "qu": int(bool(keys)),
                             "qid": qid,
                         }
@@ -344,6 +355,7 @@ class Router:
             "healthy": self.control_healthy,
             "revision": revision,
             "idle_ts": probe_time,
+            "probe_ts": probe_time,
             "devices": devices,
             "queues": queue_telemetry(
                 self.worker, pools, records, self.quarantine_enabled

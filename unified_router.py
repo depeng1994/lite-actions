@@ -95,6 +95,7 @@ def main():
                 router.idle_probe = IdleProbe(
                     a.worker_id,
                     lambda: (router.pools, router.state.read()),
+                    state_dir=cfg["state_dir"],
                 )
                 router.idle_probe.start()
                 control.start()

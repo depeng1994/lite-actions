@@ -13,13 +13,14 @@ export function workerRoutes(router: Router) {
     const now = context.now;
     const stats = await db.prepare(`
       INSERT INTO workers(worker_id,instance_id,applied_rev,code_sha,health_ok,active_count,queued_count,
-        last_heartbeat_at,last_idle_probe_at,last_egress_used,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        last_heartbeat_at,last_idle_probe_at,last_visibility_probe_at,last_egress_used,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(worker_id) DO UPDATE SET
         need_snapshot=CASE WHEN workers.instance_id<>excluded.instance_id THEN 1 ELSE workers.need_snapshot END,
         instance_id=excluded.instance_id,applied_rev=excluded.applied_rev,code_sha=excluded.code_sha,
         health_ok=excluded.health_ok,active_count=excluded.active_count,queued_count=excluded.queued_count,
         last_heartbeat_at=excluded.last_heartbeat_at,last_idle_probe_at=excluded.last_idle_probe_at,
+        last_visibility_probe_at=excluded.last_visibility_probe_at,
         last_egress_used=excluded.last_egress_used,updated_at=excluded.updated_at
       RETURNING need_snapshot,
         (SELECT COUNT(*) FROM commands WHERE worker_id=workers.worker_id AND status='PENDING') AS pending_commands,
@@ -27,6 +28,7 @@ export function workerRoutes(router: Router) {
     `).bind(context.workerId, instance, integer(input.rev, "revision"), sha, integer(input.ok, "health", 0, 1),
       integer(input.act, "active count", 0, 100000), integer(input.q, "queued count", 0, 100000),
       now, input.idle_ts == null ? null : Math.min(now, integer(input.idle_ts, "last idle probe")),
+      input.probe_ts == null ? null : Math.min(now, integer(input.probe_ts, "last visibility probe")),
       integer(input.eu ?? 0, "egress used"), now).first<{need_snapshot: number; pending_commands: number; latest_revision: number}>();
     return Response.json({ok: true, ...stats, need_snapshot: Boolean(stats?.need_snapshot)});
   });

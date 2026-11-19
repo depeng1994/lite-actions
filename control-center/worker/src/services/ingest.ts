@@ -115,6 +115,10 @@ function finish(context: Context, selection: string, parameters: unknown[], fiel
 
 function device(context: Context, input: Input) {
   const ts = nullableInt(input.ts, "probe time");
+  const round = input.pr == null ? null : integer(input.pr, "probe round", 0);
+  const visibility = input.v == null ? null : integer(input.v, "visibility", 0, 2);
+  const failures = input.mc == null ? null : integer(input.mc, "probe failures", 0, 5);
+  const online = nullableInt(input.lo, "last online probe");
   return {
     worker_id: context.workerId,
     pool_name: string(input.pool, "pool", 64, POOL),
@@ -124,6 +128,10 @@ function device(context: Context, input: Input) {
     probe_at: ts === null ? null : Math.min(ts, context.now),
     quarantined: nullableInt(input.qu, "quarantined"),
     quarantine_task_uid: nullableString(input.qid, "quarantine task", 40, /^t_[a-f0-9]{32}$/),
+    visibility_state: visibility == null ? null : (["online", "warn", "offline"] as const)[visibility],
+    consecutive_failures: failures,
+    last_online_at: online === null ? null : Math.min(online, context.now),
+    last_probe_round: round,
     updated_at: context.now,
   };
 }
@@ -131,11 +139,14 @@ type DeviceWrite = ReturnType<typeof device>;
 
 function deviceUpsert(db: D1Database, rows: DeviceWrite[]): Statement {
   const columns = ["worker_id", "pool_name", "host_id", "devices_json", "occupancy_state", "probe_at",
-    "quarantined", "quarantine_task_uid", "updated_at"];
+    "quarantined", "quarantine_task_uid", "visibility_state", "consecutive_failures", "last_online_at", "last_probe_round", "updated_at"];
   return db.prepare(`
     INSERT INTO device_group_states(${columns.join(",")})
     SELECT ${columns.map(column => column === "quarantined"
-      ? "COALESCE(json_extract(value,'$.quarantined'),0)" : `json_extract(value,'$.${column}')`).join(",")}
+      ? "COALESCE(json_extract(value,'$.quarantined'),0)"
+      : column === "visibility_state" ? "COALESCE(json_extract(value,'$.visibility_state'),'pending')"
+      : column === "consecutive_failures" || column === "last_probe_round" ? `COALESCE(json_extract(value,'$.'||'${column}'),0)`
+      : `json_extract(value,'$.${column}')`).join(",")}
     FROM json_each(?) WHERE 1
     ON CONFLICT(worker_id,pool_name,host_id,devices_json) DO UPDATE SET
       occupancy_state=COALESCE(excluded.occupancy_state,device_group_states.occupancy_state),
@@ -144,6 +155,14 @@ function deviceUpsert(db: D1Database, rows: DeviceWrite[]): Statement {
         json_extract(value,'$.pool_name')=excluded.pool_name AND json_extract(value,'$.host_id')=excluded.host_id
         AND json_extract(value,'$.devices_json')=excluded.devices_json),device_group_states.quarantined),
       quarantine_task_uid=COALESCE(excluded.quarantine_task_uid,device_group_states.quarantine_task_uid),
+      visibility_state=CASE WHEN COALESCE(excluded.last_probe_round,0)>device_group_states.last_probe_round
+        THEN excluded.visibility_state ELSE device_group_states.visibility_state END,
+      consecutive_failures=CASE WHEN COALESCE(excluded.last_probe_round,0)>device_group_states.last_probe_round
+        THEN COALESCE(excluded.consecutive_failures,0) ELSE device_group_states.consecutive_failures END,
+      last_online_at=CASE WHEN COALESCE(excluded.last_probe_round,0)>device_group_states.last_probe_round
+        AND excluded.visibility_state='online' THEN MAX(COALESCE(device_group_states.last_online_at,0),COALESCE(excluded.last_online_at,0))
+        ELSE device_group_states.last_online_at END,
+      last_probe_round=MAX(device_group_states.last_probe_round,COALESCE(excluded.last_probe_round,0)),
       updated_at=excluded.updated_at
   `).bind(JSON.stringify(rows), JSON.stringify(rows));
 }

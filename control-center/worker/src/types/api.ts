@@ -61,6 +61,7 @@ export interface DeviceGroup {
   paused: boolean;
   paused_scopes: ("pool" | "node" | "device_group")[];
   updated_at: number | null;
+  health: {status: DeviceHealthStatus; missed_count: number; last_online_at: number | null};
   solid_blocks: SolidBlock[];
   dashed_blocks: Projection[];
 }

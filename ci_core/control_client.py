@@ -386,7 +386,10 @@ class ControlClient:
             seen = data.setdefault("devices", {})
             for group in devices:
                 key = json.dumps([group["pool"], group["h"], group["d"]])
-                state = [group["st"], group["qu"], group["qid"]]
+                state = [
+                    group.get("st"), group.get("qu"), group.get("qid"),
+                    group.get("pr", 0), group.get("v", 2), group.get("mc", 0), group.get("lo"),
+                ]
                 # A skipped group has no fresh reading. A quarantine change still
                 # needs reporting independently of whether there is a reading.
                 previous = seen.get(key)
@@ -397,7 +400,7 @@ class ControlClient:
                     {
                         **group,
                         "t": "IP",
-                        "ts": group["ts"],
+                        "ts": group.get("ts"),
                     },
                 ):
                     seen[key] = state
@@ -573,6 +576,7 @@ class ControlClient:
                         record.get("phase") == "QUEUED" for record in records.values()
                     ),
                     "idle_ts": view.get("idle_ts"),
+                    "probe_ts": view.get("probe_ts"),
                     "eu": egress_used,
                 },
             )

@@ -5,6 +5,7 @@ export interface WorkerRow {
   health_ok: number;
   last_heartbeat_at: number;
   last_idle_probe_at: number | null;
+  last_visibility_probe_at?: number | null;
   applied_rev: number;
   active_count: number;
   queued_count: number;
@@ -17,6 +18,10 @@ export interface GroupRow {
   occupancy_state: "idle" | "busy" | "probe_error" | null;
   probe_at: number | null;
   quarantined: number;
+  visibility_state?: "pending" | "online" | "warn" | "offline";
+  consecutive_failures?: number;
+  last_online_at?: number | null;
+  last_probe_round?: number;
   updated_at: number;
 }
 export interface RawAllocation {
@@ -83,9 +88,15 @@ export function projectDevice(now: number, input: {
   if (pool.paused) scopes.push("pool");
   if (node.paused) scopes.push("node");
   if (group.paused) scopes.push("device_group");
+  const visibility = observation?.visibility_state ?? "pending";
   return {
     devices: group.devices.slice().sort((a, b) => a - b), state, offline: offline(now, worker),
     quarantined: observation?.quarantined === 1, paused: scopes.length > 0, paused_scopes: scopes,
+    health: {
+      status: visibility === "online" ? "ONLINE" : visibility === "warn" ? "PROBE_WARN" : visibility === "offline" ? "OFFLINE" : "PENDING_PROBE",
+      missed_count: observation?.consecutive_failures ?? 0,
+      last_online_at: observation?.last_online_at ?? null,
+    },
     updated_at: Math.max(fresh, observation?.updated_at ?? 0, worker?.last_heartbeat_at ?? 0) || null,
     solid_blocks: [], dashed_blocks: [],
   };
