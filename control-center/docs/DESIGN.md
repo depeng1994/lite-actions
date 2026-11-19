@@ -106,6 +106,8 @@
   - 证据：本地控制面完成 Super Cookie 登录、完整 `host_id` 管理视图、实时创建管理员/一次性密钥/软删除/审计；部署站点完成插队确认与回执、GitHub Workflow 取消及设备释放回执。使用真实控制面任务数据的取消与插队仍需补充。
 - [ ] **`INT-12`** 网站宕机 30 分钟故障隔离与恢复对账演练
 
+> 当前未勾选的 `INT-04`、`INT-06`～`INT-09`、`INT-12` 与 `REL-01`～`REL-03` 仍需要真实双平台/双 Worker、故障演练或线上 Cloudflare D1/Yellow 配置。Blue 当前运行配置未声明控制面 URL/Token，线上 Site 也未设置 `CONTROL_CENTER_API_ORIGIN`，因此本轮只记录本地 Wrangler + D1 与已部署站点的可复核证据。
+
 #### 7.3 生产上线前置实机签收（对应 PRD §12）
 - [ ] **`REL-01`** 真实 Yellow 节点访问线上域名完成心跳、取令、拉配置、回执并验证出口策略与每日字节预算
 - [ ] **`REL-02`** 已安装 GitHub App 的测试仓与已配置 Token 的 GitCode 测试仓各完成一次含原生作业和 Worker 用例的真实整次取消
