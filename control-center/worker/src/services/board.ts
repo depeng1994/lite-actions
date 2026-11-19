@@ -6,7 +6,7 @@ import {pepper} from "./auth";
 import {type GroupRow, offline, overlaps, type Pools, projectDevice, type RawAllocation, type WorkerRow, workerStatus} from "./deviceState";
 import {durationKey, estimate, estimates, projectSchedule, type ProjectionRow, type QueueTask} from "./schedule";
 import {base64url} from "../utils/crypto";
-import {gunzip} from "../utils/gzip";
+import {blobBuffer, gunzip} from "../utils/gzip";
 import {nodeIdentity} from "../utils/mask";
 import {runUrl} from "../utils/taskIdentity";
 
@@ -168,9 +168,9 @@ export async function taskDetail(context: Context): Promise<TaskDetail> {
       detail = hot ? JSON.parse(hot) : {};
     } else {
       const blob = await db.prepare("SELECT gzip_blob FROM task_details_cold WHERE chunk_id=?")
-        .bind(row.cold_chunk_id).first<number[]>("gzip_blob");
+        .bind(row.cold_chunk_id).first<ArrayBuffer | ArrayBufferView | number[]>("gzip_blob");
       if (!blob) throw new HttpError(503, "TASK_DETAIL_UNAVAILABLE");
-      detail = JSON.parse(await gunzip(Uint8Array.from(blob).buffer))[uid];
+      detail = JSON.parse(await gunzip(blobBuffer(blob)))[uid];
       if (!detail) throw new HttpError(503, "TASK_DETAIL_UNAVAILABLE");
     }
     for (const field of ["queued_at","reserved_at","staging_at","running_at","cleaning_at"] as const) {
