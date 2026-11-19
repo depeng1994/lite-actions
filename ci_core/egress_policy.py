@@ -249,7 +249,7 @@ def control_origin(url):
         parsed.scheme != "https"
         or not parsed.hostname
         or not re.fullmatch(r"[a-z0-9.-]{1,80}(?::[0-9]{1,5})?", parsed.netloc)
-        or parsed.port not in (None, 443)
+        or parsed.port == 0
         or parsed.path not in ("", "/")
         or parsed.query
         or parsed.fragment

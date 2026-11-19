@@ -388,7 +388,8 @@ class ModelOwnedVllmTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as tmp,
             patch(
-                "ci_core.router.load", return_value=({"blue": {"enabled": True}}, {})
+                "ci_core.router.load_active_pools",
+                return_value=({"blue": {"enabled": True}}, {}, 0),
             ),
             patch("ci_core.github_source.read_source_artifact", return_value=source),
             patch.object(Router, "eligible", return_value=True),
@@ -477,7 +478,8 @@ class ModelOwnedVllmTests(unittest.TestCase):
                 clear=True,
             ),
             patch(
-                "ci_core.router.load", return_value=({"blue": {"enabled": True}}, {})
+                "ci_core.router.load_active_pools",
+                return_value=({"blue": {"enabled": True}}, {}, 0),
             ),
             patch("ci_core.github_source.read_source_artifact", return_value=source),
             patch.object(Router, "transition"),
@@ -517,7 +519,8 @@ class ModelOwnedVllmTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as tmp,
             patch(
-                "ci_core.router.load", return_value=({"blue": {"enabled": True}}, {})
+                "ci_core.router.load_active_pools",
+                return_value=({"blue": {"enabled": True}}, {}, 0),
             ),
             patch("ci_core.github_source.check_current", side_effect=verify),
             patch.object(Router, "flush"),
@@ -550,8 +553,8 @@ class ModelOwnedVllmTests(unittest.TestCase):
                     self.base = "f" * 40
                 with (
                     patch(
-                        "ci_core.router.load",
-                        return_value=({"blue": {"enabled": True}}, {}),
+                        "ci_core.router.load_active_pools",
+                        return_value=({"blue": {"enabled": True}}, {}, 0),
                     ),
                     patch.object(Router, "flush"),
                     patch.object(Router, "pump"),

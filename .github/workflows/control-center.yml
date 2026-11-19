@@ -1,0 +1,44 @@
+name: Control Center validation
+on:
+  pull_request:
+    paths:
+      - 'control-center/**'
+      - 'ci_core/**'
+      - 'config/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - 'unified_router.py'
+      - '.github/workflows/control-center.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install backend and lint dependencies
+        run: |
+          npm ci --prefix control-center/worker
+          python -m pip install -r requirements-dev.txt
+      - name: Worker tests and wire upload gate
+        run: |
+          python scripts/lint.py
+          python -m unittest tests/test_upload_intercept.py -v
+          python -m unittest discover -s tests
+      - name: Control Center SDK and D1 tests
+        working-directory: control-center/worker
+        run: |
+          npm run lint
+          npx wrangler d1 migrations apply DB --local
+          npm test
+      - name: Dual Worker API integration
+        run: python control-center/tests/integration/run.py

@@ -12,16 +12,15 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
-import test_control_client as control_tests
-from test_control_client import record
-from test_egress_client_headers import _WireCapture
-
 from ci_core.control_client import ControlClient, task_descriptor
 from ci_core.egress_policy import Egress, estimate_http1_request_bytes
 from ci_core.gitcode import GitCodeClient
 from ci_core.github import GitHubClient, ReleaseLogs
 from ci_core.logs import BLUE_BYTES
 from ci_core.reporting import body_for, progress, report
+from tests import test_control_client as control_tests
+from tests.test_control_client import record
+from tests.test_egress_client_headers import _WireCapture
 
 ROOT = Path(__file__).resolve().parents[1]
 WRITES = {"POST", "PUT", "PATCH"}
