@@ -35,7 +35,10 @@ export function summarizeRun(run) {
     start: starts.length ? Math.min(...starts) : null,
     end: !active && ends.length ? Math.max(...ends) : null,
     pools: [...new Set(cases.map((item) => {
-      const resource = item.allocation ?? (item.historyId ? item.node : item);
+      // Historical cases may finish without an allocation snapshot. In that
+      // case the case's own formal worker/pool identity still defines its
+      // resource column.
+      const resource = item.allocation ?? (item.historyId && item.node ? item.node : item);
       return poolId(resource.worker, resource.pool);
     }))].sort(),
     maxCards: Math.max(0, ...cases.map(({ cards, allocatedCards }) => allocatedCards || cards)),
