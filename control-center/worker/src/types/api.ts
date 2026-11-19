@@ -138,6 +138,7 @@ export interface TaskSummary extends RunIdentity {
   cancel_supported: boolean;
   can_move_up: boolean;
   queue_pos: number | null;
+  duration_sec?: number | null;
   submitted_at: number | null;
   workflow_name: string | null;
   started_at: number | null;

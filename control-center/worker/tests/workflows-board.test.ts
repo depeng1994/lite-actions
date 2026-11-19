@@ -73,3 +73,19 @@ test("workflow history paginates complete Workflow rows in 50/50/3 pages", async
   expect(new Set(pages).size).toBe(103);
   expect(cursor).toBe("");
 });
+
+test("workflow card-hours use finished duration and allocated devices", async () => {
+  const allocation = JSON.stringify([{host_id: "198.51.100.88:22", devices: Array.from({length: 16}, (_, index) => index)}]);
+  await db.prepare(`INSERT INTO task_index(task_uid,finished_at,worker_id,provider,repo,logical_model,run_id,attempt,
+    case_id,test_id,label,kind,target_pool,req_nodes,req_devices,actual_allocation_json,status,timing_reliable,duration_sec,submitted_at,workflow_name)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
+    "card-hours", now - 500, "blue", "github", "org/card", "card", "card-hours", 1,
+    "case-card", "npu_smoke", "16P", "npu_smoke", "pool", 1, 16, allocation, "PASS", 1, 2280,
+    now - 3000, "Card Hours",
+  ).run();
+  const page = await (await request("/public/workflows?history_limit=50&repo=org%2Fcard&status=history")).json<{
+    history: Array<{card_hours: number | null; result: string; workflow_name: string | null}>;
+  }>();
+  expect(page.history).toHaveLength(1);
+  expect(page.history[0]).toMatchObject({card_hours: 10.13, result: "PASS", workflow_name: "Card Hours"});
+});
