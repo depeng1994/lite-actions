@@ -8,7 +8,7 @@ import {
 } from "./Dialogs.jsx";
 import { history, impactOf, initialCases, initialNodes, initialQueueOrder, poolId, repositories, runs, workflowKey } from "./formal-data.js";
 import { currentWorkflowQueue, moveWorkflow, queuedChildren } from "./workflows.js";
-import { cancelWorkflow as apiCancelWorkflow, clusterPreview, clusterPublish, createUser as apiCreateUser, deleteUser as apiDeleteUser, getSession, listUsers, loadControlCenter, login as apiLogin, logout as apiLogout, moveUp as apiMoveUp } from "./control-api.js";
+import { cancelWorkflow as apiCancelWorkflow, clusterPreview, clusterPublish, createUser as apiCreateUser, deleteUser as apiDeleteUser, getSession, listUsers, loadControlCenter, login as apiLogin, logout as apiLogout, moveWorkflowUp as apiMoveWorkflowUp } from "./control-api.js";
 
 const pages = [["pools", "Pools 时间轴"], ["models", "模型仓"], ["cluster", "集群管理"]];
 const defaultModel = repositories[0].name;
@@ -61,6 +61,7 @@ export function App() {
   const [clusterPools, setClusterPools] = useState([]);
   const [cases, setCases] = useState(initialCases);
   const [workflowOrder, setWorkflowOrder] = useState(initialQueueOrder);
+  const [queueVersion, setQueueVersion] = useState(0);
   const [accounts, setAccounts] = useState([]);
   const [signedIn, setSignedIn] = useState(null);
   const [audit, setAudit] = useState([]);
@@ -87,6 +88,7 @@ export function App() {
       setClusterPools(snapshot.clusterPools || []);
       setCases(snapshot.cases);
       setWorkflowOrder(snapshot.workflowOrder);
+      setQueueVersion(snapshot.queueVersion || 0);
       if (snapshot.clusterConfig) setConfig(snapshot.clusterConfig);
       setDataMode("live");
     };
@@ -185,10 +187,8 @@ export function App() {
     if (!canManage || dataMode !== "live" || cancellations[key]) return;
     const updated = moveWorkflow(cases, workflowOrder, key);
     if (!updated) return;
-    const task = children[0];
-    if (!task?.id) return;
     let response;
-    try { response = await apiMoveUp(task.id); } catch (error) { notify(error.message); return; }
+    try { response = await apiMoveWorkflowUp(run, queueVersion); } catch (error) { notify(error.message); return; }
     if (response?.status !== "PENDING" && response?.status !== "APPLIED") {
       notify(`控制面返回 ${response?.status || "未知状态"}`);
       return;
@@ -197,13 +197,14 @@ export function App() {
     const receipt = { from: updated.from, to: updated.to, entries: children.map((item) => ({ ...item, newPosition: positions.get(item.id) })) };
     setCases(updated.cases);
     setWorkflowOrder(updated.order);
+    if (response.queue_version_after != null) setQueueVersion(response.queue_version_after);
     setPriorities((previous) => ({ ...previous, [key]: receipt }));
     log("workflow", "Workflow 插队", `${run.repo} #${run.id} · 尝试 ${run.attempt}`, "控制面已受理 MOVE_UP");
     open({ type: "priority-receipt", runKey: workflowKey(run) });
   };
 
   const cancelRun = async (run) => {
-    if (!canManage || dataMode !== "live" || run.platform !== "GitHub" || cancellations[workflowKey(run)]) return;
+    if (!canManage || dataMode !== "live" || cancellations[workflowKey(run)]) return;
     const affected = cases.filter((item) => item.run === workflowKey(run) && ["排队中", "运行中", "准备中", "清理中"].includes(item.status));
     if (!affected.length) return;
     try {
@@ -269,7 +270,7 @@ export function App() {
     notify(`管理员 ${name} 已删除`);
   };
 
-  const viewProps = { nodes, clusterPools, cases, config, canManage, open, go, audit, live: dataMode === "live" };
+  const viewProps = { nodes, clusterPools, cases, config, queueVersion, canManage, open, go, audit, live: dataMode === "live" };
   const item = modal?.caseId && cases.find(({ id }) => id === modal.caseId);
   const run = modal?.runKey && runs.find((run) => workflowKey(run) === modal.runKey);
   const historicalRun = modal?.historyId && history.find((run) => workflowKey(run) === modal.runKey);
@@ -291,7 +292,7 @@ export function App() {
     {modal?.type === "case" && item && <CaseDialog item={item} {...dialogProps} />}
     {modal?.type === "history" && historicalCase && <HistoryDialog run={historicalRun} item={historicalCase} close={close} />}
     {modal?.type === "resource" && <ResourceDialog target={modal.target} {...dialogProps} />}
-    {modal?.type === "cancel" && canManage && run?.platform === "GitHub" && <CancelDialog run={run} cases={cases} close={close} confirm={() => cancelRun(run)} />}
+    {modal?.type === "cancel" && canManage && <CancelDialog run={run} cases={cases} close={close} confirm={() => cancelRun(run)} />}
     {modal?.type === "cancel-receipt" && run && cancellations[workflowKey(run)] && <CancellationReceipt run={run} receipt={cancellations[workflowKey(run)]} close={close} />}
     {modal?.type === "expedite" && canManage && run && <ExpediteDialog run={run} cases={queuedChildren(cases, run)} position={queue.indexOf(workflowKey(run)) + 1} close={close} confirm={() => expedite(run)} />}
     {modal?.type === "priority-receipt" && run && priorities[workflowKey(run)] && <PriorityReceipt run={run}

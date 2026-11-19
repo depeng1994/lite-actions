@@ -58,7 +58,7 @@ function WorkflowActions({ run, summary, sequence, canManage, open, cancellation
     {priority && <button className="text-button small-text" onClick={() => open({ type: "priority-receipt", runKey: workflowKey(run) })}>插队回执</button>}
     {cancellation
       ? <button className="button small" onClick={() => open({ type: "cancel-receipt", runKey: workflowKey(run) })}>取消进度</button>
-      : summary.active && run.platform === "GitHub" && <button className="button small danger-subtle" onClick={() => prompt("cancel")}>{canManage ? "取消 Workflow" : "登录后取消"}</button>}
+      : summary.active && run.cancelSupported && <button className="button small danger-subtle" onClick={() => prompt("cancel")}>{canManage ? "取消 Workflow" : "登录后取消"}</button>}
   </div>;
 }
 

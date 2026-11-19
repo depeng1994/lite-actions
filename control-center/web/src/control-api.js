@@ -142,6 +142,7 @@ function runFromWorkflow(row, nodesByRef, archived = false) {
     trigger: row.event_type === "pull_request" ? "PR" : row.event_type === "workflow_dispatch" ? "手动" : "事件",
     action: row.workflow_name || row.workflow_file?.replace(/^.*\//, "").replace(/\.ya?ml$/, "") || "Workflow",
     commit: "—", submitted: minuteOfDay(row.submitted_at) ?? 0,
+    cancelSupported: Boolean(row.cancel_supported),
   };
   run.cases = (row.cases || []).map((task, index) => taskToCase(task, nodesByRef, workflowKey(run), archived, index));
   return run;
@@ -172,7 +173,8 @@ export async function loadControlCenter(access = "public") {
     const repositories = modelTabs.map((model) => ({name: model.slug, sources: (model.repos || []).map((repo) => repo.repo)}));
     const workflowOrder = activeRuns.filter((run) => run.cases.some((item) => item.status === "排队中"))
       .sort((a, b) => a.submitted - b.submitted).map(workflowKey);
-    const snapshot = {overview, timeline, cluster, clusterConfig: clusterViewConfig(cluster), clusterPools: clusterPoolNames(cluster), nodes, cases, workflowOrder, repositories, runs: activeRuns, history: historyRuns};
+    const snapshot = {overview, timeline, cluster, queueVersion: workflowSnapshot?.queue_version || 0,
+      clusterConfig: clusterViewConfig(cluster), clusterPools: clusterPoolNames(cluster), nodes, cases, workflowOrder, repositories, runs: activeRuns, history: historyRuns};
     applyLiveArrays(snapshot);
     return snapshot;
   } catch (error) {
@@ -188,6 +190,13 @@ export async function cancelWorkflow(run) {
   return request("/admin/cancellations", {method: "POST", body: {provider: run.platform === "GitCode" ? "gitcode" : "github", repo: run.repo, run_id: String(run.id), attempt: run.attempt}});
 }
 export async function moveUp(taskUid) { return request(`/admin/tasks/${encodeURIComponent(taskUid)}/move-up`, {method: "POST", body: {}}); }
+export async function moveWorkflowUp(run, queueVersion) {
+  return request("/admin/workflows/move-up", {method: "POST", body: {
+    provider: run.platform === "GitCode" ? "gitcode" : "github", repo: run.repo,
+    run_id: String(run.id), attempt: run.attempt, queue_version: queueVersion,
+    idempotency_key: crypto.randomUUID(),
+  }});
+}
 export async function clusterPreview(baseRevision, operation) { return request("/admin/cluster/preview", {method: "POST", body: {base_revision: baseRevision, operation}}); }
 export async function clusterPublish(baseRevision, operation, previewHash) { return request("/admin/cluster/publish", {method: "POST", body: {base_revision: baseRevision, operation, preview_hash: previewHash}}); }
 export async function listUsers() { return request("/admin/users"); }
@@ -195,4 +204,4 @@ export async function createUser(username) { return request("/admin/users", {met
 export async function resetUserKey(userId) { return request(`/admin/users/${encodeURIComponent(userId)}/reset-key`, {method: "POST"}); }
 export async function deleteUser(userId) { return request(`/admin/users/${encodeURIComponent(userId)}`, {method: "DELETE"}); }
 
-export const controlApi = {request, getSession, login, logout, cancelWorkflow, moveUp, clusterPreview, clusterPublish, listUsers, createUser, resetUserKey, deleteUser};
+export const controlApi = {request, getSession, login, logout, cancelWorkflow, moveUp, moveWorkflowUp, clusterPreview, clusterPublish, listUsers, createUser, resetUserKey, deleteUser};
