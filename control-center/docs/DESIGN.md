@@ -18,45 +18,45 @@
 > 4. **Phase 7 分两段验证**：Phase 5 完成后即可跑绿无前端依赖的 `INT-01` ~ `INT-09`；待前端 Agent 将 `FE-01` ~ `FE-05` 标绿后，再执行全栈端到端 `INT-10` ~ `INT-12` 与实机上线门槛 `REL-01` ~ `REL-03`。
 
 ### Phase 0：控制面工程底座、账号权限与契约冻结
-- [ ] **`REQ-01` 控制面骨架与 D1 Schema**：初始化 `control-center/worker/`（Wrangler + TypeScript + Vitest/Miniflare）、编写 `migrations/0001_init.sql`、配置 `model_repos.json`（逻辑模型页签映射，默认 `vllm-ascend`）。
+- [x] **`REQ-01` 控制面骨架与 D1 Schema**：初始化 `control-center/worker/`（Wrangler + TypeScript + Vitest/Miniflare）、编写 `migrations/0001_init.sql`、配置 `model_repos.json`（逻辑模型页签映射，默认 `vllm-ascend`）。
   - 依赖：无 ｜ 门禁：`npx wrangler d1 migrations apply DB --local` & `npm test -- schema.test.ts` 全绿
-- [ ] **`REQ-02` 账号、会话、防爆破与审计**：实现 Super/普通管理员认证、HMAC-SHA256 密钥哈希、密钥仅展示一次、7 天 Cookie 会话、10 分钟 5 次失败锁定 10 分钟、操作审计写入与查询。
+- [x] **`REQ-02` 账号、会话、防爆破与审计**：实现 Super/普通管理员认证、HMAC-SHA256 密钥哈希、密钥仅展示一次、7 天 Cookie 会话、10 分钟 5 次失败锁定 10 分钟、操作审计写入与查询。
   - 依赖：`REQ-01` ｜ 门禁：`npm test -- auth.test.ts` 全绿
-- [ ] **`REQ-03` 权限矩阵、服务端 IP 掩码与缓存隔离**：实现四类鉴权中间件（公开/管理员/Super/Worker）、服务端 IPv4 中间两段掩码 + 非可逆 `node_ref`、敏感字段过滤、`/api/v1/public/*`（`public, max-age=10`）与 `/api/v1/admin/*`（`private, no-store`）路由分离。
+- [x] **`REQ-03` 权限矩阵、服务端 IP 掩码与缓存隔离**：实现四类鉴权中间件（公开/管理员/Super/Worker）、服务端 IPv4 中间两段掩码 + 非可逆 `node_ref`、敏感字段过滤、`/api/v1/public/*`（`public, max-age=10`）与 `/api/v1/admin/*`（`private, no-store`）路由分离。
   - 依赖：`REQ-02` ｜ 门禁：`npm test -- access-matrix.test.ts masking.test.ts` 全绿
-- [ ] **`[里程碑 · 契约冻结]` 交付前后端 API 契约**：冻结 `control-center/worker/src/types/api.ts` 与 `control-center/docs/api-contract.md`，通知前端 Agent 启动 `FE-01` ~ `FE-05`。
+- [x] **`[里程碑 · 契约冻结]` 交付前后端 API 契约**：冻结 `control-center/worker/src/types/api.ts` 与 `control-center/docs/api-contract.md`，通知前端 Agent 启动 `FE-01` ~ `FE-05`。
   - 依赖：`REQ-01`, `REQ-02`, `REQ-03`
 
 ### Phase 1：Worker 通信协议底座与 `< 2KB` 拦截门禁
-- [ ] **`REQ-04` Worker 控制面客户端与磁盘 Outbox**：新增 `ci_core/control_client.py`；扩展 `ci_core/egress_policy.py` 支持 `provider="control"`（`< 2,000` B + CI 每日额度保底预留钩子）；改造 `unified_router.py` 支持控制线程唤醒（30s 心跳独立于 60s 平台轮询）；实现事件落盘 Outbox、首包完整 + 短 `tid` 增量、分片快照与命令回执。
+- [x] **`REQ-04` Worker 控制面客户端与磁盘 Outbox**：新增 `ci_core/control_client.py`；扩展 `ci_core/egress_policy.py` 支持 `provider="control"`（`< 2,000` B + CI 每日额度保底预留钩子）；改造 `unified_router.py` 支持控制线程唤醒（30s 心跳独立于 60s 平台轮询）；实现事件落盘 Outbox、首包完整 + 短 `tid` 增量、分片快照与命令回执。
   - 依赖：`REQ-01`, `REQ-03` ｜ 门禁：`python3 -m unittest tests/test_control_client.py` & 现有全部测试无回归
-- [ ] **`REQ-05` 全路径上传 `< 2KB` 拦截单测（`upload_intercept` UT）**：新增 `tests/test_upload_intercept.py`，在底层 `urllib`/`http.client` 发送层真实线序拦截所有一次性 `POST`/`PUT`/`PATCH` 请求；覆盖网站全接口（Blue/Yellow）与 Yellow 平台全接口的最大长度边界及拆包；AST + 注册表自检，未登记的新增上传路径直接失败。
+- [x] **`REQ-05` 全路径上传 `< 2KB` 拦截单测（`upload_intercept` UT）**：新增 `tests/test_upload_intercept.py`，在底层 `urllib`/`http.client` 发送层真实线序拦截所有一次性 `POST`/`PUT`/`PATCH` 请求；覆盖网站全接口（Blue/Yellow）与 Yellow 平台全接口的最大长度边界及拆包；AST + 注册表自检，未登记的新增上传路径直接失败。
   - 依赖：`REQ-04` ｜ 门禁：`python3 -m unittest tests/test_upload_intercept.py -v` & `python3 scripts/lint.py` 全绿
 
 ### Phase 2：服务端采集对账、设备巡检、排期估算与看板读接口
-- [ ] **`REQ-06` 服务端 Worker 接入网关与快照对账**：实现 `/api/v1/worker/{heartbeat,commands,command-receipts,events,snapshots,configs/:rev}`；按 `(worker_id, instance_id, seq)` 去重；缺口自动下发 `need_snapshot: true`；分片快照事务原子对账；90s 离线判定；不导入上线前历史。
+- [x] **`REQ-06` 服务端 Worker 接入网关与快照对账**：实现 `/api/v1/worker/{heartbeat,commands,command-receipts,events,snapshots,configs/:rev}`；按 `(worker_id, instance_id, seq)` 去重；缺口自动下发 `need_snapshot: true`；分片快照事务原子对账；90s 离线判定；不导入上线前历史。
   - 依赖：`REQ-03`, `REQ-04` ｜ 门禁：`npm test -- worker-ingest.test.ts` 全绿
-- [ ] **`REQ-07` 2 分钟只读 `npu-smi` 巡检与设备三态投影**：Worker 侧新增 `ci_core/idle_probe.py`（每 2 分钟只读巡检未租用设备组，绝不杀进程/取锁/触发隔离，变化走事件、稳态由心跳刷新 `idle_ts`）；服务端实现 30 分钟新鲜度三态决策树（占用中/未知占用/已确认空闲）+ 离线/隔离/暂停叠加。
+- [x] **`REQ-07` 2 分钟只读 `npu-smi` 巡检与设备三态投影**：Worker 侧新增 `ci_core/idle_probe.py`（每 2 分钟只读巡检未租用设备组，绝不杀进程/取锁/触发隔离，变化走事件、稳态由心跳刷新 `idle_ts`）；服务端实现 30 分钟新鲜度三态决策树（占用中/未知占用/已确认空闲）+ 离线/隔离/暂停叠加。
   - 依赖：`REQ-05`, `REQ-06` ｜ 门禁：`python3 -m unittest tests/test_idle_probe.py tests/test_upload_intercept.py` & `npm test -- device-state.test.ts` 全绿
-- [ ] **`REQ-08` 零额外请求元数据采集、耗时中位数与排期虚线**：Worker 留存已获取响应中的 `pr_author`/`trigger_actor`/`event` 与各阶段时间戳，队列变化时上报 `(pool, kind)` 顺序及候选组索引；服务端维护最近 10 次可靠 `PASS` 样本算中位数，严格按 Worker 顺序贪心投影排期虚线（不写第二套选单算法）。
+- [x] **`REQ-08` 零额外请求元数据采集、耗时中位数与排期虚线**：Worker 留存已获取响应中的 `pr_author`/`trigger_actor`/`event` 与各阶段时间戳，队列变化时上报 `(pool, kind)` 顺序及候选组索引；服务端维护最近 10 次可靠 `PASS` 样本算中位数，严格按 Worker 顺序贪心投影排期虚线（不写第二套选单算法）。
   - 依赖：`REQ-05`, `REQ-06`, `REQ-07` ｜ 门禁：`python3 -m unittest tests/test_queue_telemetry.py tests/test_upload_intercept.py` & `npm test -- schedule-projection.test.ts` 全绿
-- [ ] **`REQ-09` 看板读接口（时间轴 / 模型仓 / 50 条分页历史 / 任务详情）**：实现 `/api/v1/{public,admin}/{overview,timeline,models,models/:slug/runs,tasks/:uid}`；多机跨行不重复计卡；零卡探针不占设备行；热冷统一游标分页（50 条/页）。
+- [x] **`REQ-09` 看板读接口（时间轴 / 模型仓 / 50 条分页历史 / 任务详情）**：实现 `/api/v1/{public,admin}/{overview,timeline,models,models/:slug/runs,tasks/:uid}`；多机跨行不重复计卡；零卡探针不占设备行；热冷统一游标分页（50 条/页）。
   - 依赖：`REQ-03`, `REQ-07`, `REQ-08` ｜ 门禁：`npm test -- board-read.test.ts` 全绿
 
 ### Phase 3：调度控制能力（取消 Workflow & 插队）
-- [ ] **`REQ-10` 整次 Workflow 取消（GitHub App + GitCode + Cron）**：实现 `/api/v1/admin/cancellations`、GitHub App Web Crypto RS256 鉴权与 `cancel` / 2 分钟 `force-cancel`、GitCode `/stop`、1 分钟 Cron 跟踪平台终态并关联 Worker 普通事件与清理状态；复核 Worker 侧 `ci_core/router.py` 对两平台取消及旧 attempt 终止逻辑。
+- [x] **`REQ-10` 整次 Workflow 取消（GitHub App + GitCode + Cron）**：实现 `/api/v1/admin/cancellations`、GitHub App Web Crypto RS256 鉴权与 `cancel` / 2 分钟 `force-cancel`、GitCode `/stop`、1 分钟 Cron 跟踪平台终态并关联 Worker 普通事件与清理状态；复核 Worker 侧 `ci_core/router.py` 对两平台取消及旧 attempt 终止逻辑。
   - 依赖：`REQ-02`, `REQ-06`, `REQ-09` ｜ 门禁：`npm test -- cancellations.test.ts` & `python3 -m unittest tests/test_workflow.py tests/test_gitcode_workflow.py` 全绿
-- [ ] **`REQ-11` 排队用例插队（`MOVE_UP`）与 train 72h 排队超时**：服务端实现 `POST /api/v1/admin/tasks/:uid/move-up` 下发 `MOVE_UP` 命令；Worker 侧在 `ci_core/job_state.py` + `ci_core/router.py` 引入持久化 `queue_rank`（不破坏既有 `admission_seq` 语义）实现相邻换位、队首 `NOOP`、已租约 `CONFLICT` 并立即上报新队序；调整 `train` 排队超时 `3600s → 259200s`（72h）。
+- [x] **`REQ-11` 排队用例插队（`MOVE_UP`）与 train 72h 排队超时**：服务端实现 `POST /api/v1/admin/tasks/:uid/move-up` 下发 `MOVE_UP` 命令；Worker 侧在 `ci_core/job_state.py` + `ci_core/router.py` 引入持久化 `queue_rank`（不破坏既有 `admission_seq` 语义）实现相邻换位、队首 `NOOP`、已租约 `CONFLICT` 并立即上报新队序；调整 `train` 排队超时 `3600s → 259200s`（72h）。
   - 依赖：`REQ-05`, `REQ-06`, `REQ-08` ｜ 门禁：`python3 -m unittest tests/test_move_up.py tests/test_smoke_queue.py tests/test_upload_intercept.py` & `npm test -- move-up.test.ts` 全绿
 
 ### Phase 4：集群配置唯一发布源与热加载
-- [ ] **`REQ-12` 集群管理服务端与 `preflight.py` 片段导出**：实现 `pools_configs` 乐观锁版本管理、影响范围预览（`/cluster/preview`）、发布（`/cluster/publish`）与回滚；支持 Pool/Node/DeviceGroup 三级可选 `paused: true`（恢复删键）；有隔离禁删；跨 Worker 先删后加校验；`scripts/preflight.py` 增加 `--export-node-snippet`。
+- [x] **`REQ-12` 集群管理服务端与 `preflight.py` 片段导出**：实现 `pools_configs` 乐观锁版本管理、影响范围预览（`/cluster/preview`）、发布（`/cluster/publish`）与回滚；支持 Pool/Node/DeviceGroup 三级可选 `paused: true`（恢复删键）；有隔离禁删；跨 Worker 先删后加校验；`scripts/preflight.py` 增加 `--export-node-snippet`。
   - 依赖：`REQ-02`, `REQ-06`, `REQ-07` ｜ 门禁：`npm test -- cluster-config.test.ts` & `python3 -m unittest tests/test_preflight_export.py` 全绿
-- [ ] **`REQ-13` Worker Pools 持久化、实机校验与调度间隙热加载**：改造 `ci_core/config.py`、`ci_core/scheduler.py`、`ci_core/router.py`、`ci_core/executor.py`、`ci_core/ssh_runner.py`、`scripts/reconcile.py`；优先加载 `${LITE_ACTIONS_STATE_DIR}/pools-active.json`；调度间隙原子切换；新增/变更节点实机复核指纹与容器绑定；删除排空取消并回报；**在途任务执行与清理全程使用分配时 `pools_snapshot`**；`paused` 只停新租约不报错失败。
+- [x] **`REQ-13` Worker Pools 持久化、实机校验与调度间隙热加载**：改造 `ci_core/config.py`、`ci_core/scheduler.py`、`ci_core/router.py`、`ci_core/executor.py`、`ci_core/ssh_runner.py`、`scripts/reconcile.py`；优先加载 `${LITE_ACTIONS_STATE_DIR}/pools-active.json`；调度间隙原子切换；新增/变更节点实机复核指纹与容器绑定；删除排空取消并回报；**在途任务执行与清理全程使用分配时 `pools_snapshot`**；`paused` 只停新租约不报错失败。
   - 依赖：`REQ-05`, `REQ-12` ｜ 门禁：`python3 -m unittest tests/test_pools_hot_reload.py tests/test_upload_intercept.py` & 全量 `python3 -m unittest discover -s tests` + `python3 scripts/lint.py` 全绿
 
 ### Phase 5：单 D1 热冷分层存储与容量自治
-- [ ] **`REQ-14` 单 D1 热转冷、1 年清理、80%→70% 滚删与写额度降级**：实现每日归档 Cron（满 30 天按 `(logical_model, finish_day)` gzip 压块入 `task_details_cold`，校验后删热表；满 1 年整天清理）、基于 D1 `meta.size_after` 的 80%→70% 最早历史滚删与尾部提示标记、10 万行日写额度耗尽拒绝管理写操作与 Worker 本地暂存补发。
+- [x] **`REQ-14` 单 D1 热转冷、1 年清理、80%→70% 滚删与写额度降级**：实现每日归档 Cron（满 30 天按 `(logical_model, finish_day)` gzip 压块入 `task_details_cold`，校验后删热表；满 1 年整天清理）、基于 D1 `meta.size_after` 的 80%→70% 最早历史滚删与尾部提示标记、10 万行日写额度耗尽拒绝管理写操作与 Worker 本地暂存补发。
   - 依赖：`REQ-06`, `REQ-09` ｜ 门禁：`npm test -- retention-storage.test.ts` 全绿
 
 ### Phase 6：`[外部依赖 · 前端 Agent]` 前端开发与静态集成

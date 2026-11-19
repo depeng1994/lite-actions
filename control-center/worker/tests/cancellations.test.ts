@@ -49,7 +49,7 @@ test("GitHub uses an installation token and sends force-cancel once after 120s",
     const token = new Headers(init.headers).get("Authorization");
     if (path.endsWith("/installation")) {
       expect(token?.split(".")).toHaveLength(3);
-      return path.includes("uninstalled") ? new Response(null, {status: 404}) : Response.json({id: 44});
+      return path.includes("/cann-framework/torchtitan-npu/") ? new Response(null, {status: 404}) : Response.json({id: 44});
     }
     if (path.endsWith("/access_tokens")) return Response.json({token: "app-installation", expires_at: new Date((now + 3600) * 1000).toISOString()});
     expect(token).toBe("Bearer app-installation");
@@ -62,6 +62,10 @@ test("GitHub uses an installation token and sends force-cancel once after 120s",
   });
   const cookie = sessionCookie(await signIn());
   const data = {provider: "github", repo: "depeng1994/lite-actions", run_id: "99", attempt: 1};
+  const absent = await request("/admin/cancellations", {cookie,
+    data: {...data, repo: "cann-framework/torchtitan-npu"}}, config);
+  expect(await absent.json()).toMatchObject({code: "APP_NOT_INSTALLED"});
+  expect(stops).toEqual([]);
   const result = await (await request("/admin/cancellations", {cookie, data}, config)).json<Cancellation>();
   const context = {request: new Request(base), url: new URL(base), env: config, params: {}};
   await trackCancellations({...context, now: result.submitted_at! + 119});
@@ -70,4 +74,58 @@ test("GitHub uses an installation token and sends force-cancel once after 120s",
   await trackCancellations({...context, now: result.submitted_at! + 121});
   expect(stops).toEqual(["cancel", "force-cancel"]);
   expect(await db.prepare("SELECT status FROM cancellations WHERE cancel_id=?").bind(result.cancel_id).first("status")).toBe("COMPLETED");
+});
+
+test("platform terminal state waits for both zones and preserves cleanup evidence", async () => {
+  let cancelled = false;
+  const native = {lint: "RUNNING", build: "RUNNING"};
+  vi.stubGlobal("fetch", async (url: string, opts: RequestInit) => {
+    if (opts.method === "POST") {
+      expect(url).toEqual("https://api.gitcode.com/api/v8/repos/cann/torchtitan-npu/actions/runs/gc-both/stop");
+      cancelled = true;
+      native.lint = native.build = "CANCELED";
+      return new Response(null, {status: 202});
+    }
+    return Response.json({workflow_run_id: "gc-both", attempt: 1, status: cancelled ? "CANCELED" : "RUNNING"});
+  });
+  await db.prepare(`INSERT INTO tasks_active(task_uid,short_tid,task_key,worker_id,provider,repo,logical_model,run_id,attempt,
+    case_id,test_id,label,kind,target_pool,req_nodes,req_devices,phase,timing_reliable,updated_at)
+    SELECT 'both_'||value,value,value,value,'gitcode','cann/torchtitan-npu','torchtitan-npu','gc-both',1,
+      'case_000_test','test','test','npu_smoke','pool',1,8,CASE value WHEN 'blue' THEN 'QUEUED' ELSE 'CLEANING' END,1,?
+      FROM json_each('["blue","yellow"]')`).bind(now).run();
+  const cookie = sessionCookie(await signIn());
+  const data = {provider: "gitcode", repo: "cann/torchtitan-npu", run_id: "gc-both", attempt: 1};
+  const result = await (await request("/admin/cancellations", {cookie, data}, gc)).json<Cancellation>();
+  expect(native).toEqual({lint: "CANCELED", build: "CANCELED"});
+  const ctx = {request: new Request(base), url: new URL(base), env: gc, params: {}, now: result.submitted_at! + 60};
+  await trackCancellations(ctx);
+  expect(await (await request("/admin/cancellations/" + result.cancel_id, {cookie}, gc)).json()).toMatchObject({
+    status: "PLATFORM_DONE", cases: [{worker_id: "blue", phase: "QUEUED"}, {worker_id: "yellow", phase: "CLEANING"}],
+  });
+  expect(await db.prepare("SELECT count(*) AS n FROM commands").first("n")).toBe(0);
+  // The platform remains done while Worker cancellation/cleanup events arrive independently.
+  await db.batch([
+    db.prepare(`INSERT INTO task_index(task_uid,worker_id,provider,repo,logical_model,run_id,attempt,case_id,test_id,label,
+      kind,target_pool,req_nodes,req_devices,actual_allocation_json,status,timing_reliable,finished_at,cleanup_verified)
+      SELECT task_uid,worker_id,provider,repo,logical_model,run_id,attempt,case_id,test_id,label,kind,target_pool,req_nodes,
+      req_devices,allocation_json,'CANCELLED',1,?,CASE worker_id WHEN 'blue' THEN 1 ELSE 0 END
+      FROM tasks_active WHERE run_id='gc-both'`).bind(ctx.now),
+    db.prepare("DELETE FROM tasks_active WHERE run_id='gc-both'"),
+  ]);
+  await trackCancellations({...ctx, now: ctx.now + 60});
+  expect(await (await request("/admin/cancellations/" + result.cancel_id, {cookie}, gc)).json()).toMatchObject({
+    status: "COMPLETED_WITH_QUARANTINE",
+    cases: [{worker_id: "blue", status: "CANCELLED", released: 1}, {worker_id: "yellow", status: "CANCELLED", released: 0}],
+  });
+});
+
+test("platform API errors persist a failed cancellation and leave tasks alone", async () => {
+  vi.stubGlobal("fetch", async (_url: string, opts: RequestInit) =>
+    opts.method === "POST" ? new Response(null, {status: 500})
+      : Response.json({workflow_run_id: "gc-fail", attempt: 1, status: "RUNNING"}));
+  const cookie = sessionCookie(await signIn());
+  const data = {provider: "gitcode", repo: "cann/torchtitan-npu", run_id: "gc-fail", attempt: 1};
+  const result = await (await request("/admin/cancellations", {cookie, data}, gc)).json<Cancellation>();
+  expect(result).toMatchObject({status: "FAILED", platform_error: "Platform returned HTTP 500"});
+  expect(await db.prepare("SELECT count(*) AS n FROM commands").first("n")).toBe(0);
 });

@@ -71,4 +71,3 @@ export async function login(context: Context, username: string, secret: string) 
   if (issued[0].meta.changes !== 1) throw new HttpError(401, "INVALID_CREDENTIALS");
   return Response.json({authenticated: true, username, role}, {headers: {"Set-Cookie": cookie(context, token, SESSION_SECONDS)}});
 }
-
