@@ -178,7 +178,7 @@ class ControlClient:
         self.stop = threading.Event()
         self.next_heartbeat = 0
         self.need_snapshot = True
-        self.require_baseline = False
+        self.rebase_before = None
         self.thread = threading.Thread(
             target=self.run, name="control-center", daemon=True
         )
@@ -204,7 +204,7 @@ class ControlClient:
             raise ValueError("CONTROL_RESPONSE_TOO_LARGE")
         return json.loads(data)
 
-    def packets(self, route, items, packet, *, max_items=100):
+    def packets(self, route, items, packet, *, max_items=100, budget=TARGET_BYTES):
         # Pack using conservative headers and the actual UTF-8 serialization.
         current = []
         for item in items:
@@ -212,7 +212,7 @@ class ControlClient:
             if (
                 len(trial) <= max_items
                 and estimate_http1_request_bytes(self._request(route, packet(trial)))
-                < TARGET_BYTES
+                < budget
             ):
                 current = trial
                 continue
@@ -220,7 +220,7 @@ class ControlClient:
                 yield current
             if (
                 estimate_http1_request_bytes(self._request(route, packet([item])))
-                >= TARGET_BYTES
+                >= budget
             ):
                 raise Rejected("CONTROL_ITEM_TOO_LARGE")
             current = [item]
@@ -283,7 +283,27 @@ class ControlClient:
                 )
             )
 
-    def _capture(self, records):
+    def _lease_parts(self, base, tid, now, allocation):
+        template = {"t": "TL", "tid": tid, "ts": now, "s": 999999999999, "ap": 999999}
+        parts = list(
+            self.packets(
+                "events",
+                allocation,
+                lambda nodes: {
+                    **base,
+                    "ev": [{**template, "a": nodes}],
+                },
+                max_items=16,
+            )
+        ) or [[]]
+        return [
+            {"t": "TL", "tid": tid, "ts": now, "ap": part, "a": nodes}
+            for part, nodes in enumerate(parts, 1)
+        ]
+
+    def _capture(self, records, base=None):
+        base = base or {"w": self.worker, "i": self.outbox.view()["instance"]}
+
         def observe(data):
             for key, record in records.items():
                 phase = record.get("phase")
@@ -306,6 +326,8 @@ class ControlClient:
                     events.append({"t": "TU", **task})
                     current = {}
                 if phase in TERMINAL:
+                    if alloc != current.get("allocation", []):
+                        events.extend(self._lease_parts(base, tid, now, alloc))
                     events.append(
                         {
                             "t": "TF",
@@ -316,7 +338,6 @@ class ControlClient:
                             "ec": report.get("exit_code"),
                             "cv": int(bool(report.get("cleanup_verified"))),
                             "qu": int(bool(record.get("quarantined"))),
-                            "a": alloc,
                         }
                     )
                 elif phase != current.get("phase") or task["tm"] != current.get(
@@ -332,7 +353,7 @@ class ControlClient:
                         }
                     )
                 if phase in ACTIVE and alloc != current.get("allocation", []):
-                    events.append({"t": "TL", "tid": tid, "ts": now, "a": alloc})
+                    events.extend(self._lease_parts(base, tid, now, alloc))
                 if len(data["events"]) + len(events) > OUTBOX_LIMIT:
                     break
                 for event in events:
@@ -397,15 +418,40 @@ class ControlClient:
                     "last": 1,
                     **definition,
                 }
+                wire_rows = []
+                for row in rows:
+                    # A shape can have many valid candidate combinations.
+                    # Chunk even a single case's options without truncating them.
+                    offset = 0
+                    for options in self.packets(
+                        "events",
+                        row["ix"],
+                        lambda options, row=row, template=template: {
+                            **base,
+                            "ev": [
+                                {
+                                    **template,
+                                    "items": [{**row, "ix": options, "off": 8192}],
+                                }
+                            ],
+                        },
+                        max_items=96,
+                        budget=1800,
+                    ):
+                        wire_rows.append({**row, "ix": options, "off": offset})
+                        offset += len(options)
+                    if not offset:
+                        wire_rows.append(row)
                 pages = list(
                     self.packets(
                         "events",
-                        rows,
+                        wire_rows,
                         lambda items, template=template: {
                             **base,
                             "ev": [{**template, "items": items}],
                         },
                         max_items=8,
+                        budget=1800,
                     )
                 ) or [[]]
                 if len(data["events"]) + len(pages) > OUTBOX_LIMIT:
@@ -484,15 +530,22 @@ class ControlClient:
     def cycle(self):
         view = self.view()
         records = view["records"]
-        self._capture(records)
-        self._capture_devices(view.get("devices", []))
         base = {"w": self.worker, "i": self.outbox.view()["instance"]}
+        self._capture(records, base)
+        self._capture_devices(view.get("devices", []))
         queues = self._queue_pages(
             view.get("queues", {}), view.get("revision", 0), base
         )
         journal = self.outbox.view()
         now = self.clock()
         if now >= self.next_heartbeat:
+            try:
+                ledger = json.loads(self.policy.path.read_bytes())
+                egress_used = (
+                    ledger["used"] if ledger["day"] == int(time.time() // 86400) else 0
+                )
+            except (OSError, ValueError, KeyError):
+                egress_used = 0
             result = self._send(
                 "heartbeat",
                 {
@@ -500,7 +553,7 @@ class ControlClient:
                     "ts": int(time.time()),
                     "rev": view.get("revision", 0),
                     "sha": (view.get("sha") or "")[:8],
-                    "ok": 1,
+                    "ok": int(view.get("healthy", True)),
                     "act": sum(
                         record.get("phase") in ACTIVE - {"QUEUED"}
                         for record in records.values()
@@ -509,7 +562,7 @@ class ControlClient:
                         record.get("phase") == "QUEUED" for record in records.values()
                     ),
                     "idle_ts": view.get("idle_ts"),
-                    "eu": view.get("egress_used", 0),
+                    "eu": egress_used,
                 },
             )
             self.need_snapshot |= result["need_snapshot"]
@@ -521,9 +574,15 @@ class ControlClient:
         def rebase(seq):
             contents = {
                 "task": [
-                    {**task_descriptor(key, record), "a": _allocation(record)}
+                    task_descriptor(key, record)
                     for key, record in records.items()
                     if record.get("phase") in ACTIVE
+                ],
+                "lease": [
+                    {"tid": hashlib.sha256(key.encode()).hexdigest()[:12], "a": [node]}
+                    for key, record in records.items()
+                    if record.get("phase") in ACTIVE
+                    for node in _allocation(record)
                 ],
                 "device": view.get("devices", []),
                 "queue": queues,
@@ -534,21 +593,24 @@ class ControlClient:
         if journal.get("snapshot"):
             self._send_snapshot()
             self.need_snapshot = False
-            self.require_baseline = False
-        if self.require_baseline:
-            rebase(journal["acked"])
-            self.require_baseline = False
-        for batch in self.packets(
-            "events",
-            journal["events"],
-            lambda items: {**base, "ev": items},
-            max_items=6,
-        ):
-            result = self._send("events", {**base, "ev": batch})
-            if result["need_snapshot"]:
-                self.require_baseline = True
-                return
-            self.outbox.acknowledge(batch[-1]["s"])
+            self.rebase_before = None
+        if self.rebase_before is not None:
+            rebase(self.rebase_before)
+            self.rebase_before = None
+        contiguous = []
+        for event in journal["events"]:
+            if not contiguous or event["s"] != contiguous[-1][-1]["s"] + 1:
+                contiguous.append([])
+            contiguous[-1].append(event)
+        for events in contiguous:
+            for batch in self.packets(
+                "events", events, lambda rows: {**base, "ev": rows}, max_items=6
+            ):
+                result = self._send("events", {**base, "ev": batch})
+                if result["need_snapshot"]:
+                    self.rebase_before = batch[0]["s"] - 1
+                    return
+                self.outbox.acknowledge(batch[-1]["s"])
         if self.need_snapshot:
             rebase(journal["seq"])
 

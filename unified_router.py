@@ -115,12 +115,14 @@ def main():
                     if time.monotonic() >= next_poll:
                         next_poll = time.monotonic() + poll_seconds
                         router.tick()
+                        router.control_healthy = True
                         tick_succeeded = True
                     elif control:
                         router.consume_control()
                         router.pump()
                         router.flush()
                 except Exception:
+                    router.control_healthy = False
                     logging.exception("worker poll failed")
                 # The optional marker is written only after a successful poll.
                 # A failed poll must never convince the updater to commit a release.

@@ -159,7 +159,7 @@ function queuePage(context: Context, input: Input) {
       array(option, "candidate groups", 16).map(idx => integer(idx, "group index", 0, 8191)));
     return {
       tid: string(row.tid, "tid", 12, TID), pos: integer(row.pos, "position"),
-      options: JSON.stringify({rev, options}),
+      options: JSON.stringify({rev, options, off: integer(row.off ?? 0, "candidate offset", 0, 8192)}),
     };
   });
   return {workerId: context.workerId, pool, kind, version, rows, now: context.now};
@@ -175,9 +175,20 @@ function queueUpsert(db: D1Database, pages: QueueWrite[]): Statement {
       ON t.short_tid=json_extract(r.value,'$.tid') AND t.worker_id=json_extract(p.value,'$.workerId')
     WHERE t.phase='QUEUED'
     ON CONFLICT(worker_id,pool_name,kind,task_uid) DO UPDATE SET
-      queue_pos=excluded.queue_pos,candidate_group_idxs_json=excluded.candidate_group_idxs_json,
+      queue_pos=excluded.queue_pos,
+      candidate_group_idxs_json=CASE WHEN json_extract(excluded.candidate_group_idxs_json,'$.off')=0
+        THEN excluded.candidate_group_idxs_json ELSE json_set(queue_orders.candidate_group_idxs_json,'$.options',(
+          SELECT json_group_array(json(value)) FROM (
+            SELECT value FROM json_each(queue_orders.candidate_group_idxs_json,'$.options')
+            UNION ALL SELECT value FROM json_each(excluded.candidate_group_idxs_json,'$.options')
+          )
+        )) END,
       queue_ver=excluded.queue_ver,updated_at=excluded.updated_at
-    WHERE excluded.queue_ver>=queue_orders.queue_ver
+    WHERE excluded.queue_ver>=queue_orders.queue_ver AND (
+      json_extract(excluded.candidate_group_idxs_json,'$.off')=0 OR
+      (excluded.queue_ver=queue_orders.queue_ver AND json_extract(excluded.candidate_group_idxs_json,'$.off')
+        =json_array_length(queue_orders.candidate_group_idxs_json,'$.options'))
+    )
   `).bind(JSON.stringify(pages));
 }
 
@@ -213,8 +224,15 @@ async function eventWrites(context: Context, event: Input): Promise<Statement[]>
     }
     case "TL": {
       const tid = string(event.tid, "tid", 12, TID);
-      return [db.prepare("UPDATE tasks_active SET allocation_json=?,updated_at=? WHERE worker_id=? AND short_tid=?")
-        .bind(JSON.stringify(allocation(event.a)), context.now, worker, tid)];
+      const alloc = JSON.stringify(allocation(event.a));
+      const part = integer(event.ap ?? 1, "allocation part", 1, 1024);
+      return [db.prepare(`
+        UPDATE tasks_active SET allocation_json=CASE WHEN ?=1 THEN ? ELSE (
+          SELECT json_group_array(json(value)) FROM (
+            SELECT value FROM json_each(allocation_json) UNION ALL SELECT value FROM json_each(?)
+          )
+        ) END,updated_at=? WHERE worker_id=? AND short_tid=?
+      `).bind(part, alloc, alloc, context.now, worker, tid)];
     }
     case "TF": {
       const tid = string(event.tid, "tid", 12, TID);
@@ -223,14 +241,14 @@ async function eventWrites(context: Context, event: Input): Promise<Statement[]>
       const clean = integer(event.cv, "cleanup verification", 0, 1);
       const quarantine = integer(event.qu ?? 0, "quarantine", 0, 1);
       return [
-        ...(quarantine && alloc?.length ? [db.prepare(`
+        ...(quarantine ? [db.prepare(`
           INSERT INTO device_group_states(worker_id,pool_name,host_id,devices_json,quarantined,quarantine_task_uid,updated_at)
           SELECT a.worker_id,a.target_pool,json_extract(value,'$.host_id'),json_extract(value,'$.devices'),
-            1,a.task_uid,? FROM tasks_active a JOIN json_each(?)
+            1,a.task_uid,? FROM tasks_active a JOIN json_each(COALESCE(?,a.allocation_json))
           WHERE a.worker_id=? AND a.short_tid=?
           ON CONFLICT(worker_id,pool_name,host_id,devices_json) DO UPDATE SET
             quarantined=1,quarantine_task_uid=excluded.quarantine_task_uid,updated_at=excluded.updated_at
-        `).bind(context.now, JSON.stringify(alloc), worker, tid)] : []),
+        `).bind(context.now, alloc ? JSON.stringify(alloc) : null, worker, tid)] : []),
         ...finish(context, "short_tid=?", [tid], {finished: ts, status, exit: nullableInt(event.ec, "exit code", -255),
           clean, alloc, timestamps: timings(event)}),
       ];
@@ -323,7 +341,7 @@ export async function ingestSnapshot(context: Context, input: Input) {
   const total = integer(input.n, "total parts", 1, 512);
   const part = integer(input.p, "part", 1, total);
   const seq = integer(input.seq, "sequence");
-  const kind = member(input.kind, "kind", ["task", "device", "queue"] as const);
+  const kind = member(input.kind, "kind", ["task", "device", "queue", "lease"] as const);
   const items = array(input.items, "items", 100);
   const db = context.env.DB;
   const previous = await cursor(context, instance);
@@ -346,14 +364,22 @@ export async function ingestSnapshot(context: Context, input: Input) {
   const tasks: Awaited<ReturnType<typeof task>>[] = [];
   const groups: DeviceWrite[] = [];
   const queues: QueueWrite[] = [];
+  const leases = new Map<string, ReturnType<typeof allocation>>();
   for (const row of rows) {
     const frame = JSON.parse(row.payload_json) as {kind: string; items: unknown[]};
     for (const entry of frame.items) {
       const value = object(entry, "snapshot item");
       if (frame.kind === "task") tasks.push(await task(context, value));
       if (frame.kind === "device") groups.push(device(context, value));
+      if (frame.kind === "lease") {
+        const tid = string(value.tid, "tid", 12, TID);
+        leases.set(tid, [...(leases.get(tid) ?? []), ...allocation(value.a)]);
+      }
       if (frame.kind === "queue") queues.push(queuePage(context, value));
     }
+  }
+  for (const item of tasks) {
+    if (leases.has(item.short_tid)) item.allocation_json = JSON.stringify(leases.get(item.short_tid));
   }
   const identities = JSON.stringify(tasks.map(item => item.task_uid));
   await guardedBatch(db, [

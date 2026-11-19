@@ -235,7 +235,7 @@ class ProxyRequest(socketserver.StreamRequestHandler):
         if not line:
             return
         method, path, protocol = line.decode("ascii").strip().split()
-        if protocol != "HTTP/1.1" or not path.startswith("/api/v1/worker/"):
+        if protocol != "HTTP/1.1":
             return
         length = len(line)
         headers = {}
@@ -252,10 +252,20 @@ class ProxyRequest(socketserver.StreamRequestHandler):
         zone = next(
             (zone for zone, value in TOKENS.items() if value == token), "unknown"
         )
+        host = headers.get("host")
+        platform = (host == "api.github.com" and path.startswith("/repos/")) or (
+            host == "api.gitcode.com" and path.startswith("/api/v5/repos/")
+        )
+        if platform:
+            zone = "yellow-platform"
+        elif not path.startswith("/api/v1/worker/"):
+            return
         self.server.frames.append((zone, method, path, length))
         if length >= 2000 or self.server.paused:
             status = 413 if length >= 2000 else 503
             data = b'{"ok":false}'
+        elif platform:
+            status, data = 201, b'{"id":1}'
         else:
             link = http.client.HTTPConnection(
                 "127.0.0.1", self.server.upstream, timeout=5
@@ -278,6 +288,64 @@ class ProxyRequest(socketserver.StreamRequestHandler):
             f"HTTP/1.1 {status} fixture\r\nContent-Length: {len(data)}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n".encode()
             + data
         )
+
+
+def platform_wire(root, proxy, cert):
+    from ci_core.egress_policy import Egress
+    from ci_core.gitcode import GitCodeClient
+    from ci_core.github import GitHubClient
+    from ci_core.reporting import body_for, progress
+
+    real_connect = socket.create_connection
+
+    def connect(address, *args, **kwargs):
+        if address[0] not in {"api.github.com", "api.gitcode.com"}:
+            raise AssertionError("Fixture attempted an unexpected connection")
+        return real_connect(proxy.server_address, *args, **kwargs)
+
+    clock = time.time()
+
+    def now():
+        nonlocal clock
+        clock += 6
+        return clock
+
+    policy = Egress(
+        "yellow", {"state_dir": str(root), "daily_upload_bytes": 1_000_000}, clock=now
+    )
+    with (
+        patch("socket.create_connection", side_effect=connect),
+        patch("urllib.request.getproxies", return_value={}),
+        patch.dict(os.environ, {"SSL_CERT_FILE": str(cert)}),
+    ):
+        clients = [
+            GitHubClient("g" * 64, REPO, policy=policy),
+            GitCodeClient("t" * 64, "depeng1994/torchtitan-npu", policy=policy),
+        ]
+        for client in clients:
+            run = {
+                "id": "r" * 128,
+                "_ci_dispatch_id": "d" * 128,
+                "_ci_repo": client.repo,
+                "head_sha": "a" * 40,
+                "path": ".github/workflows/fixture.yml",
+            }
+            item = normalize(
+                definition("a" * 80, kind="npu_smoke", worker="yellow"),
+                DEFAULTS | {"worker": "yellow", "target_pool": "pool_yellow"},
+                0,
+            )
+            digest = "b" * 64
+            for retry in [False, True]:
+                progress(client, run, item, digest, "QUEUED", retry=retry)
+                result = report(
+                    run, item, digest, "PASS", 0, ["synthetic line " + "x" * 165] * 10
+                )
+                client.send_result(
+                    run["head_sha"],
+                    body_for(run, item, result, local_worker="yellow"),
+                    category="terminal_retry" if retry else "terminal",
+                )
 
 
 def until(fn, timeout=35):
@@ -320,7 +388,7 @@ def integration(root):
             "-subj",
             "/CN=localhost",
             "-addext",
-            "subjectAltName=DNS:localhost",
+            "subjectAltName=DNS:localhost,DNS:api.github.com,DNS:api.gitcode.com",
         ],
         check=True,
         capture_output=True,
@@ -444,7 +512,14 @@ def integration(root):
         )
         assert status == 200 and "Secure" in headers["Set-Cookie"]
         cookie = headers["Set-Cookie"].split(";")[0]
-        active = until(lambda: rows if len(rows := tasks()) == 8 else None)
+        active = until(
+            lambda: (
+                rows
+                if len(rows := tasks()) == 8
+                and all(row["queue_pos"] is not None for row in rows)
+                else None
+            )
+        )
         status, pub, cache = http("/public/timeline")
         assert status == 200 and cache["Cache-Control"] == "public, max-age=10"
         assert "192.0.2." not in encode(pub) and "198.51.100." not in encode(pub)
@@ -564,10 +639,15 @@ def integration(root):
         }
         assert required <= {path for _, _, path, _ in proxy.frames}
         assert {zone for zone, _, _, _ in proxy.frames} == set(ZONES)
+        platform_wire(root, proxy, cert)
+        platform_posts = [
+            frame for frame in proxy.frames if frame[0] == "yellow-platform"
+        ]
+        assert len(platform_posts) == 8
         peak = max(length for *_, length in proxy.frames)
         assert peak < 2000, peak
         print(
-            f"INT-02/05  outbox replayed once after HTTP 503, {len(proxy.frames)} TLS requests, max {peak} bytes",
+            f"INT-02/05  outbox replayed once after HTTP 503, {len(proxy.frames)} TLS requests including {len(platform_posts)} Yellow platform writes, max {peak} bytes",
             flush=True,
         )
 

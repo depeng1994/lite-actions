@@ -162,6 +162,7 @@ class Router:
     def __init__(self, root, worker, client, author, *, deployment_config=None):
         self.control = None
         self.idle_probe = None
+        self.control_healthy = True
         self.deployment = deployment_config
         self.release_logs = None
         self.next_expiry = 0.0
@@ -339,7 +340,8 @@ class Router:
                     )
         return {
             "records": records,
-            "sha": self.self_sha,
+            "sha": self.self_sha or os.environ.get("LITE_ACTIONS_RELEASE_SHA", ""),
+            "healthy": self.control_healthy,
             "revision": revision,
             "idle_ts": probe_time,
             "devices": devices,

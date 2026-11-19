@@ -1,3 +1,4 @@
+import {modelMap} from "../modelMap";
 import {type Context, HttpError} from "../router";
 import type {Cancellation, RunIdentity} from "../types/api";
 import {auditStatement} from "./audit";
@@ -32,6 +33,16 @@ export async function requestCancellation(context: Context, input: Record<string
   const existing = await byRun(db, run);
   if (existing) return existing;
   const target = `${run.provider}:${run.repo}:${run.run_id}:${run.attempt}`;
+  const configured = modelMap.models.some(model => model.repos.some(
+    repo => repo.provider === run.provider && repo.repo.toLowerCase() === run.repo,
+  ));
+  if (!configured) {
+    const tracked = await db.prepare(`
+      SELECT 1 AS known FROM tasks_active WHERE provider=? AND repo=? COLLATE NOCASE
+      UNION ALL SELECT 1 AS known FROM task_index WHERE provider=? AND repo=? COLLATE NOCASE LIMIT 1
+    `).bind(run.provider, run.repo, run.provider, run.repo).first("known");
+    if (!tracked) throw new HttpError(404, "REPOSITORY_NOT_TRACKED");
+  }
   let platform: Awaited<ReturnType<typeof workflowPlatform>>;
   try {
     platform = await workflowPlatform(context.env, run, context.now);

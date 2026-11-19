@@ -1,4 +1,4 @@
-import {supportsCancel} from "./cancelPlatform";
+import {installation, supportsCancel} from "./cancelPlatform";
 import {modelMap} from "../modelMap";
 import {type Context, HttpError} from "../router";
 import type {CaseKind, DeviceGroup, ModelTab, Phase, Projection, Provider, RunGroup, TaskDetail, TaskSummary, Timeline, WorkerId} from "../types/api";
@@ -96,6 +96,11 @@ export async function models(context: Context) {
     if (!tab.repos.some(item => item.provider === provider && item.repo === repo)) {
       tab.repos.push({provider, repo, cancel_supported: canCancel(context, provider, repo)});
     }
+  }
+  if (context.principal && context.env.GITHUB_APP_ID) {
+    const repos = [...tabs.values()].flatMap(tab => tab.repos).filter(repo => repo.provider === "github");
+    await Promise.allSettled(repos.slice(0, 25).map(row => installation(context.env, row.repo, context.now)));
+    for (const row of repos) row.cancel_supported = canCancel(context, row.provider, row.repo);
   }
   return {models: [...tabs.values()]};
 }

@@ -77,3 +77,15 @@ test("quota rejection is read-safe, prevents managed writes and rolls over UTC",
   await putMeta(db, "quota_exhausted_day", String(Math.floor(now / day) - 1), now).run();
   expect((await request("/admin/users", {cookie, data: {username: "recovered"}})).status).toBe(201);
 });
+
+test("local D1 size_after crosses real storage watermarks", async () => {
+  await seed(440, "t_sized_", i => now - i);
+  await db.prepare(`UPDATE task_details_hot SET detail_json=json_object('padding',hex(randomblob(1800)))
+    WHERE task_uid LIKE 't_sized_%'`).run();
+  const before = await databaseSize(db);
+  const limit = Math.ceil(before / .82);
+  await capacity({...context, env: {...bindings, D1_LIMIT_BYTES: String(limit)}});
+  const after = await databaseSize(db);
+  expect(after).toBeLessThan(.7 * limit);
+  expect(await db.prepare("SELECT count(*) AS n FROM task_index WHERE task_uid LIKE 't_sized_%'").first("n")).toBeGreaterThan(0);
+});

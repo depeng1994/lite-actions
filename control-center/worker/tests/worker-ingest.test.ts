@@ -88,3 +88,31 @@ test("command lookup never acknowledges and receipts are worker-scoped and idemp
   expect((await worker("yellow", "command-receipts", {...receipt, status: "APPLIED", pos: 1})).status).toBe(200);
   expect(await (await heartbeat("yellow")).json()).toMatchObject({pending_commands: 0});
 });
+
+test("multipart queue options and leases preserve all parts through completion", async () => {
+  const i = "abcd1234";
+  const base = {w: "blue", i};
+  await worker("blue","heartbeat",{...base,rev:1,sha:"",ok:1,act:1,q:1});
+  const {ids, task} = await descriptor("case_002_gamma");
+  const queue = {t:"QP",ts:now,pool:"pool_blue",k:"npu_smoke",v:3,rev:1};
+  const first = {h:"198.51.100.2:22",d:[0,1]};
+  const second = {h:"198.51.100.3:22",d:[2,3]};
+  expect((await worker("blue","events",{...base,ev:[
+    {s:1,t:"TU",...task},
+    {...queue,s:2,items:[{tid:task.tid,pos:0,ix:[[0],[1]],off:0}]},
+    {...queue,s:3,last:1,items:[{tid:task.tid,pos:0,ix:[[2,3]],off:2}]},
+  ]})).status).toBe(200);
+  const options = await db.prepare("SELECT candidate_group_idxs_json FROM queue_orders WHERE task_uid=?")
+    .bind(ids.task_uid).first<string>("candidate_group_idxs_json");
+  expect(JSON.parse(options!).options).toEqual([[0],[1],[2,3]]);
+  expect((await worker("blue","events",{...base,ev:[
+    {s:4,t:"TL",ts:now,tid:task.tid,ap:1,a:[first]},
+    {s:5,t:"TL",ts:now,tid:task.tid,ap:2,a:[second]},
+    {s:6,t:"TF",ts:now,tid:task.tid,st:"CANCELLED",ec:130,cv:0,qu:1},
+  ]})).status).toBe(200);
+  const lease = await db.prepare("SELECT actual_allocation_json FROM task_index WHERE task_uid=?")
+    .bind(ids.task_uid).first<string>("actual_allocation_json");
+  expect(JSON.parse(lease!)).toEqual([first,second].map(node => ({host_id:node.h,devices:node.d})));
+  expect(await db.prepare("SELECT count(*) AS n FROM device_group_states WHERE quarantine_task_uid=? AND quarantined=1")
+    .bind(ids.task_uid).first("n")).toBe(2);
+});

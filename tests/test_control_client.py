@@ -140,3 +140,52 @@ class ControlTests(unittest.TestCase):
             (Path(self.cfg["state_dir"]) / "http-egress.json").read_text()
         )
         self.assertEqual(ledger["used"], 400)
+
+    def test_rebases_before_first_available_sequence_after_gap(self):
+        self.records.clear()
+        client = self.client()
+        client.outbox.enqueue({"t": "IP", "ts": 100})
+        client.outbox.enqueue({"t": "IP", "ts": 101})
+        client.outbox.change(lambda data: data["events"].pop(0))
+        remote = {"seq": 0}
+
+        def server(route, payload):
+            self.calls.append((route, payload))
+            if route == "snapshots":
+                remote["seq"] = payload["seq"]
+            if route == "events":
+                events = payload["ev"]
+                if events[0]["s"] != remote["seq"] + 1:
+                    return {"need_snapshot": True, "expected_seq": remote["seq"] + 1}
+                remote["seq"] = events[-1]["s"]
+            return self.responses[route]
+
+        with patch.object(client, "_send", side_effect=server):
+            client.cycle()
+            client.cycle()
+        self.assertEqual(remote["seq"], 2)
+        self.assertEqual(client.outbox.view()["events"], [])
+        self.assertIn(
+            ("snapshots", 1), [(route, body.get("seq")) for route, body in self.calls]
+        )
+
+    def test_large_single_allocation_and_queue_preserve_every_item_across_packets(self):
+        client = self.client()
+        base = {"w": "blue", "i": "0a0b0c0d"}
+        allocation = [
+            {"h": f"198.51.100.{i}:22", "d": list(range(256))} for i in range(1, 9)
+        ]
+        parts = client._lease_parts(base, "b" * 12, 450, allocation)
+        self.assertGreater(len(parts), 1)
+        self.assertEqual([host for part in parts for host in part["a"]], allocation)
+        options = [list(range(i, i + 16)) for i in range(350)]
+        queues = {("mypool", "npu_smoke"): [{"tid": "0" * 12, "pos": 0, "ix": options}]}
+        pages = client._queue_pages(queues, 3, base)
+        self.assertGreater(len(pages), 1)
+        self.assertEqual(
+            [option for page in pages for row in page["items"] for option in row["ix"]],
+            options,
+        )
+        with patch.object(client, "_send", side_effect=self.send):
+            client.snapshot(base, {"queue": pages}, 1)
+        self.assertGreater(len(self.calls), 1)
