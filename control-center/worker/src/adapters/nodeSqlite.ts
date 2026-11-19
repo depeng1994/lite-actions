@@ -37,10 +37,11 @@ export class NodeSqliteStatement implements SqlStatement {
 
   run<T = unknown>(): Promise<SqlRunResult & {results?: T[]}> {
     const statement = this.database.prepare(this.sql);
-    const returnsRows = /^\s*(SELECT|PRAGMA)\b/i.test(this.sql) || /\bRETURNING\b/i.test(this.sql);
+    const returning = /\bRETURNING\b/i.test(this.sql);
+    const returnsRows = /^\s*(SELECT|PRAGMA)\b/i.test(this.sql) || returning;
     if (returnsRows) {
       const results = statement.all(...(this.values as any[])).map(row => ({...row})) as T[];
-      return Promise.resolve({meta: {changes: 0}, results});
+      return Promise.resolve({meta: {changes: returning ? results.length : 0}, results});
     }
     const result = statement.run(...(this.values as any[]));
     return Promise.resolve({meta: {

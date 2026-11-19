@@ -13,6 +13,10 @@ try {
   ]);
   const row = await store.prepare("SELECT value FROM records WHERE id=?").bind(1).first("value");
   assert.equal(row, "formal");
+  const updated = await store.prepare("UPDATE records SET value=? WHERE id=? RETURNING id")
+    .bind("updated", 1).run();
+  assert.equal(updated.meta.changes, 1);
+  assert.deepEqual(updated.results, [{id: 1}]);
   assert.ok((await store.dbSizeBytes()) > 0);
   await assert.rejects(() => store.batch([
     store.prepare("INSERT INTO records(value) VALUES(?)").bind("rollback"),
