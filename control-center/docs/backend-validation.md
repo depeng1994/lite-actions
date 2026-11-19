@@ -4,7 +4,7 @@
 > - 本文档记录的是 **v1.1 基线**（`REQ-01` ~ `REQ-14`）在 YCY 隔离环境的后端回归验收证据与部署初始化方法。
 > - 前端 Demo（`codex/control-center-demo @ cd770ce`）与 [PRD.md](PRD.md) 已升级至 **v1.5**（统一 Workflow 表、Workflow 级插队、全量节点 5 次探测离线模型、两步先排空再删除、统一 `enabled`/`paused` 暂停调度语义，以及「初期 ChatGPT Sites 直出、代码全入 GitHub 仓、支持零业务改动迁至个人服务器」与 `portability_intercept` DT 门禁）。v1.5 后端/Worker 增量开发（`REQ-15` ~ `REQ-20`）、联调补齐（`INT-03/04/05/06/07/08/09/09B/10`）以及全栈端到端联调清单（含 8 条 `★ P0 关键必通` 标注）统一以 [DESIGN.md](DESIGN.md) 为准。
 
-> **正式环境证据（2026-11-19）**：线上控制面为 Cloudflare Worker + D1 `lite-actions-control-center`，正式 Site 版本 8 通过 server-backed API 访问线上数据。前端已移除 Demo/fixture 数据回退，正式库没有活动任务时只显示空队列。Blue 已配置控制面 URL、机器密钥和请求 User-Agent，线上 overview 实测 `offline=false`、`applied_rev=1`，四个 Blue 设备组实测 `ONLINE` 且包含 `last_online_at`。CPU-only self-smoke run `44549511435` 已在部署 SHA `b9b9f3db47b8a79ac258fabf7007d033e45242e4` 通过。REQ-15 的定向 Python/Vitest 门禁已通过，完整 5 次实机故障演练仍由 INT-03 跟踪。
+> **正式环境证据（2026-11-19）**：线上控制面为 Cloudflare Worker + D1 `lite-actions-control-center`，正式 Site 版本 10 通过 server-backed API 访问线上数据。前端已移除 Demo/fixture 数据回退，正式库没有活动任务时只显示空队列。Blue 已配置控制面 URL、机器密钥和请求 User-Agent，线上 overview 实测 `offline=false`、`applied_rev=1`，四个 Blue 设备组实测 `ONLINE` 且包含 `last_online_at`。CPU-only self-smoke run `44549511435` 已在部署 SHA `b9b9f3db47b8a79ac258fabf7007d033e45242e4` 通过。REQ-15 的定向 Python/Vitest 门禁已通过，完整 5 次实机故障演练仍由 INT-03 跟踪。
 
 v1.1 实现基线运行在 Cloudflare Worker + 单 D1 库；完成 `REQ-20` 托管解耦后，同一套核心业务与 `migrations/*.sql` 同时支持初期 **ChatGPT Sites** 直接部署、后期迁移 **个人服务器（Node.js 24 + 内置 `node:sqlite`）** 及备选 **Cloudflare Workers Free + D1 Free**。Blue 和 Yellow Worker 仅通过 HTTPS 出站接入，迁移时只改 `control_center.url`。
 
