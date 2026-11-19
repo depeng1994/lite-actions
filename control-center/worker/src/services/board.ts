@@ -1,7 +1,7 @@
 import {installation, supportsCancel} from "./cancelPlatform";
 import {modelMap} from "../modelMap";
 import {type Context, HttpError} from "../router";
-import type {CaseKind, DeviceGroup, ModelRepo, ModelTab, Phase, Projection, Provider, RunGroup, TaskDetail, TaskSummary, Timeline, WorkerId} from "../types/api";
+import type {CaseKind, DeviceGroup, ModelRepo, ModelTab, Phase, Projection, Provider, RunGroup, TaskDetail, TaskSummary, Timeline, WorkflowList, WorkflowRow, WorkerId} from "../types/api";
 import {pepper} from "./auth";
 import {type GroupRow, offline, overlaps, type Pools, projectDevice, type RawAllocation, type WorkerRow, workerStatus} from "./deviceState";
 import {durationKey, estimate, estimates, projectSchedule, type ProjectionRow, type QueueTask} from "./schedule";
@@ -115,6 +115,80 @@ function byRun(tasks: TaskSummary[]): RunGroup[] {
     bins.get(key)!.tasks.push(task);
   }
   return [...bins.values()];
+}
+
+function workflowIdentity(task: TaskSummary) {
+  return JSON.stringify([task.provider, task.repo, task.run_id, task.attempt]);
+}
+
+function workflowName(task: TaskSummary) {
+  return task.workflow_file?.split("/").at(-1)?.replace(/\.ya?ml$/, "") ?? null;
+}
+
+function workflowScope(task: TaskSummary) {
+  return task.repo.startsWith("depeng1994/") ? "个人仓" as const : "组织仓" as const;
+}
+
+function workflowRows(tasks: TaskSummary[], history: boolean): WorkflowRow[] {
+  const groups = new Map<string, TaskSummary[]>();
+  for (const task of tasks) {
+    const key = workflowIdentity(task);
+    groups.set(key, [...(groups.get(key) ?? []), task]);
+  }
+  return [...groups.values()].map((cases, index) => {
+    const first = cases[0];
+    const active = cases.some(item => item.phase != null);
+    const queued = cases.some(item => item.phase === "QUEUED");
+    const passed = cases.every(item => item.status === "PASS");
+    const failed = cases.some(item => item.status && item.status !== "PASS");
+    const finished = cases.map(item => item.finished_at ?? 0).filter(Boolean);
+    const started = cases.map(item => item.queued_at ?? 0).filter(Boolean);
+    const cards = cases.reduce((sum, item) => sum + item.allocation.reduce((n, allocation) => n + allocation.devices.length, 0), 0);
+    const durations = cases.reduce((sum, item) => sum + (item.finished_at && item.queued_at ? Math.max(0, item.finished_at - item.queued_at) : 0), 0);
+    return {
+      provider: first.provider, repo: first.repo, run_id: first.run_id, attempt: first.attempt,
+      sequence: history ? -(index + 1) : queued ? index + 1 : 0,
+      submitted_at: started.length ? Math.min(...started) : null,
+      repo_scope: workflowScope(first), logical_model: first.logical_model,
+      workflow_name: workflowName(first), workflow_file: first.workflow_file,
+      pools: [...new Set(cases.map(item => item.target_pool))], max_cards: cards,
+      result: history ? (passed ? "PASS" : "FAIL") : "QUEUED",
+      trigger_actor: first.trigger_actor, event_type: first.event_type,
+      pr_number: first.pr_number, pr_author: first.pr_author,
+      started_at: started.length ? Math.min(...started) : null,
+      finished_at: finished.length ? Math.max(...finished) : null,
+      card_hours: durations ? cards * durations / 3600 : null,
+      card_hours_as_of_now: !history && active,
+      card_hours_partial: !history && !cases.every(item => item.finished_at != null),
+      cancel_supported: cases.some(item => item.cancel_supported),
+      can_move_up: cases.some(item => item.can_move_up), cases,
+    };
+  });
+}
+
+export async function workflows(context: Context): Promise<WorkflowList> {
+  const limit = Number(context.url.searchParams.get("limit") ?? 50);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) throw new HttpError(400, "INVALID_LIMIT");
+  const {DB: db} = context.env;
+  const result = await db.batch<TaskRow>([
+    db.prepare(ACTIVE_SELECT + " ORDER BY a.queued_at,a.task_uid"),
+    db.prepare("SELECT * FROM task_index ORDER BY finished_at DESC,task_uid DESC LIMIT 500"),
+    db.prepare("SELECT COUNT(DISTINCT provider||'/'||repo||'/'||run_id||'/'||attempt) AS count FROM task_index"),
+    db.prepare("SELECT COALESCE(MAX(queue_ver),0) AS version FROM queue_orders"),
+  ]);
+  const active = await summaries(context, result[0].results as unknown as TaskRow[]);
+  const historical = await summaries(context, result[1].results.slice(0, 500) as unknown as TaskRow[]);
+  const activeRows = workflowRows(active, false);
+  const historyRows = workflowRows(historical, true);
+  const visibleHistory = historyRows.slice(0, limit);
+  return {
+    queue_version: Number((result[3].results[0] as {version?: number} | undefined)?.version ?? 0),
+    active: activeRows, history: visibleHistory,
+    history_total: Number((result[2].results[0] as {count?: number} | undefined)?.count ?? historyRows.length),
+    next_cursor: historyRows.length > limit ? base64url(new TextEncoder().encode(String(limit))) : null,
+    has_more: historyRows.length > limit, truncated_by_capacity: Boolean(await db.prepare("SELECT 1 FROM system_meta WHERE meta_key='capacity_purged_before_ts'").first()),
+    purged_notice: Boolean(await db.prepare("SELECT 1 FROM system_meta WHERE meta_key='capacity_purged_before_ts'").first()) ? "更早的记录已因容量清理" : null,
+  };
 }
 function readCursor(cursor: string | null, slug: string): [number, string] {
   if (!cursor) return [Number.MAX_SAFE_INTEGER, "~"];
