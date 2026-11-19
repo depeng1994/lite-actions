@@ -20,6 +20,65 @@ const TIMES = ["queued_at", "reserved_at", "staging_at", "running_at", "cleaning
 const INSTANCE = /^[a-f0-9]{8}$/;
 const SNAPSHOT_ID = /^[a-f0-9]{10}$/;
 
+/** Rebuild the compact Workflow identity projection inside the ingest transaction. */
+function refreshWorkflowRuns(db: D1Database, now: number): Statement[] {
+  return [
+    db.prepare("DELETE FROM workflow_runs"),
+    db.prepare(`
+    WITH all_cases AS (
+      SELECT provider,repo,run_id,attempt,logical_model,submitted_at,workflow_name,workflow_file,
+        pr_number,pr_author,trigger_actor,event_type,phase,NULL AS status,NULL AS queue_pos,queued_at,reserved_at,
+        running_at,NULL AS finished_at,NULL AS duration_sec,req_nodes,req_devices,timing_reliable,
+        allocation_json,kind,target_pool,1 AS active
+      FROM tasks_active
+      UNION ALL
+      SELECT provider,repo,run_id,attempt,logical_model,submitted_at,workflow_name,workflow_file,
+        pr_number,pr_author,trigger_actor,event_type,NULL AS phase,status,NULL AS queue_pos,NULL AS queued_at,
+        NULL AS reserved_at,NULL AS running_at,finished_at,duration_sec,req_nodes,req_devices,timing_reliable,
+        actual_allocation_json AS allocation_json,kind,target_pool,0 AS active
+      FROM task_index
+    ), grouped AS (
+      SELECT provider,repo,run_id,attempt,
+        MAX(logical_model) AS logical_model,
+        MIN(submitted_at) AS submitted_at,
+        MAX(workflow_name) AS workflow_name,
+        MAX(workflow_file) AS workflow_file,
+        MAX(pr_number) AS pr_number,
+        MAX(pr_author) AS pr_author,
+        MAX(trigger_actor) AS trigger_actor,
+        MAX(event_type) AS event_type,
+        MAX(active) AS is_active,
+        MAX(CASE WHEN active=1 AND phase IN ('RESERVED','STAGING','RUNNING','CLEANING') THEN 1 ELSE 0 END) AS has_in_flight,
+        MAX(CASE WHEN active=1 AND phase='QUEUED' AND kind!='worker_probe' THEN 1 ELSE 0 END) AS has_waiting_resource_case,
+        SUM(active) AS active_case_count,
+        COUNT(*) AS total_case_count,
+        MIN(CASE WHEN active=1 AND phase='QUEUED' AND kind!='worker_probe' THEN queue_pos END) AS queue_order_rank,
+        MIN(CASE WHEN active=1 THEN COALESCE(running_at,reserved_at) END) AS first_started_at,
+        MAX(finished_at) AS finished_at,
+        MAX(CASE WHEN active=0 AND status IS NOT NULL AND status!='PASS' THEN 1 ELSE 0 END) AS has_failed,
+        json_group_array(DISTINCT target_pool) AS pools_json,
+        MAX(req_nodes * req_devices) AS max_cards,
+        COALESCE(SUM(CASE WHEN active=0 THEN req_nodes * req_devices * COALESCE(duration_sec,0) ELSE 0 END),0) AS card_seconds_finished,
+        MAX(CASE WHEN active=1 AND json_array_length(COALESCE(allocation_json,'[]'))>0
+          AND (timing_reliable=0 OR COALESCE(running_at,reserved_at) IS NULL) THEN 1 ELSE 0 END) AS has_unmeasured_allocated
+      FROM all_cases
+      GROUP BY provider,repo,run_id,attempt
+    )
+    INSERT INTO workflow_runs(provider,repo,run_id,attempt,logical_model,submitted_at,workflow_name,workflow_file,
+      pr_number,pr_author,trigger_actor,event_type,is_active,has_in_flight,has_waiting_resource_case,
+      active_case_count,total_case_count,queue_order_rank,first_started_at,finished_at,result_state,pools_json,
+      max_cards,card_seconds_finished,has_unmeasured_allocated,updated_at)
+    SELECT provider,repo,run_id,attempt,logical_model,submitted_at,workflow_name,workflow_file,
+      pr_number,pr_author,trigger_actor,event_type,is_active,has_in_flight,has_waiting_resource_case,
+      active_case_count,total_case_count,queue_order_rank,first_started_at,
+      CASE WHEN is_active=1 THEN NULL ELSE finished_at END,
+      CASE WHEN is_active=1 THEN 'QUEUED' WHEN has_failed=1 THEN 'FAIL' ELSE 'PASS' END,
+      pools_json,COALESCE(max_cards,0),card_seconds_finished,has_unmeasured_allocated,?
+    FROM grouped
+  `).bind(now),
+  ];
+}
+
 function timings(input: Input) {
   const times = input.tm == null ? {} : object(input.tm, "tm");
   return PHASES.map(phase => nullableInt(times[phase], phase));
@@ -348,6 +407,7 @@ export async function ingestEvents(context: Context, input: Input) {
     await guardedBatch(db, [
       guard(context, instance, Number(fresh[0].s), previous),
       ...writes,
+      ...refreshWorkflowRuns(db, context.now),
       db.prepare(`INSERT INTO worker_event_dedup(worker_id,instance_id,seq,received_at)
         SELECT ?,?,value,? FROM json_each(?)`).bind(context.workerId, instance, context.now,
         JSON.stringify(fresh.slice(1).map(event => event.s))),
@@ -410,6 +470,7 @@ export async function ingestSnapshot(context: Context, input: Input) {
     ...finish(context, "task_uid NOT IN (SELECT value FROM json_each(?))", [identities],
       {finished: context.now, status: "INFRA_ERROR", exit: null, clean: null, alloc: null, reconciled: true}),
     taskUpsert(db, tasks, true),
+    ...refreshWorkflowRuns(db, context.now),
     db.prepare("DELETE FROM queue_orders WHERE worker_id=?").bind(context.workerId),
     queueUpsert(db, queues),
     db.prepare("DELETE FROM device_group_states WHERE worker_id=?").bind(context.workerId),

@@ -6,6 +6,7 @@ import healthMigration from "../migrations/0002_v15_health.sql?raw";
 import drainMigration from "../migrations/0003_v15_cluster_drain.sql?raw";
 import priorityMigration from "../migrations/0004_v15_workflow_priority.sql?raw";
 import metadataMigration from "../migrations/0005_v15_workflow_metadata.sql?raw";
+import workflowRunsMigration from "../migrations/0006_v15_workflow_runs.sql?raw";
 import { logicalModel, modelMap } from "../src/modelMap";
 import type { Env } from "../src/router";
 
@@ -18,9 +19,10 @@ test("migrations create all 19 project tables and history indexes", async () => 
     {name: "0003_v15_cluster_drain.sql", queries: drainMigration.split(";").filter(query => query.trim())},
     {name: "0004_v15_workflow_priority.sql", queries: priorityMigration.split(";").filter(query => query.trim())},
     {name: "0005_v15_workflow_metadata.sql", queries: metadataMigration.split(";").filter(query => query.trim())},
+    {name: "0006_v15_workflow_runs.sql", queries: workflowRunsMigration.split(";").filter(query => query.trim())},
   ], "d1_test_migrations");
   const {results} = await db.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all<{name: string}>();
-  expect(results.map(table => table.name).filter(name => !/^(d1_|sqlite_|_cf_)/.test(name))).toHaveLength(22);
+  expect(results.map(table => table.name).filter(name => !/^(d1_|sqlite_|_cf_)/.test(name))).toHaveLength(23);
   const index = await db.prepare("SELECT sql FROM sqlite_schema WHERE name='idx_task_index_model_page'").first<string>("sql");
   expect(index).toContain("finished_at DESC,task_uid DESC");
   const columns = await db.prepare("PRAGMA table_info(device_group_states)").all<{name: string}>();

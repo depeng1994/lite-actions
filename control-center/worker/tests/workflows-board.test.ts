@@ -23,7 +23,7 @@ test("workflow history honors the 50-row limit and cursor", async () => {
   expect(first.history).toHaveLength(1);
   expect(first.history[0].sequence).toBe(-1);
   expect(first.history[0].workflow_name).toBe("Dispatcher Smoke");
-  expect(first.history[0].submitted_at).toBe(now - 70);
+  expect(first.history[0].submitted_at).toBe(now - 40);
   expect(first.has_more).toBe(true);
   expect(first.next_cursor).toBeTruthy();
   const second = await (await request(`/public/workflows?history_limit=1&cursor=${first.next_cursor}`)).json<{
