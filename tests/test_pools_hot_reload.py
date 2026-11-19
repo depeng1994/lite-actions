@@ -117,6 +117,18 @@ class PoolReloadTests(unittest.TestCase):
         self.assertEqual(revision, 1)
         self.router.control.complete.assert_called_once_with("cmd-1", "APPLIED", rev=1)
 
+    def test_disabled_pool_keeps_cases_queued_without_pool_disabled_failure(self):
+        newer = copy.deepcopy(self.pools)
+        newer["test"]["enabled"] = False
+        command = self.request(newer)
+        self.verify(command)
+        self.assertTrue(self.router.sync_pools(command))
+        case = {"pool": "test", "resources": {"nodes": 1, "devices_per_node": 8},
+            "kind": "npu_smoke", "execution_timeout_seconds": 60, "docker": {}}
+        self.assertEqual(candidates(case, self.router.pools), [])
+        self.assertIsNone(self.router.claim(case))
+        self.assertTrue(self.router.pools["test"]["enabled"] is False)
+
     def test_failed_fingerprint_stays_at_last_valid_configuration(self):
         new = copy.deepcopy(self.pools)
         new["test"]["nodes"][0]["machine_fingerprint"] = "a" * 64
