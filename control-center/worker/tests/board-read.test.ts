@@ -41,7 +41,9 @@ test("public timeline and model views share allocations while admin can read rea
   const pool = {pool: {owner: "blue", enabled: true, type: "ascend-a3",
     nodes: hosts.map(host_id => ({host_id, allocation_groups: [{devices, verified: true}]}))}};
   await db.prepare("INSERT INTO pools_configs VALUES(1,'hash',?,'{}','test',?,NULL)").bind(JSON.stringify(pool), now).run();
-  await db.prepare("INSERT INTO workers VALUES('blue','01234567',1,'sha',1,2,0,?,NULL,0,0,?)").bind(now,now).run();
+  await db.prepare(`INSERT INTO workers(worker_id,instance_id,applied_rev,code_sha,health_ok,active_count,queued_count,
+    last_heartbeat_at,last_idle_probe_at,last_egress_used,updated_at)
+    VALUES('blue','01234567',1,'sha',1,2,0,?,NULL,0,?)`).bind(now,now).run();
   const tasks = [["t_active", "npu_smoke", 2, 8, hosts.map(host_id => ({host_id, devices}))],
     ["t_probe", "worker_probe", 0, 0, []]];
   await db.prepare(`INSERT INTO tasks_active(task_uid,short_tid,task_key,worker_id,provider,repo,logical_model,run_id,

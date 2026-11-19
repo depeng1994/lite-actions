@@ -1,6 +1,7 @@
 import {env} from "cloudflare:workers";
 import {applyD1Migrations} from "cloudflare:test";
 import migration from "../migrations/0001_init.sql?raw";
+import healthMigration from "../migrations/0002_v15_health.sql?raw";
 import type {Env} from "../src/router";
 import worker from "../src/index";
 
@@ -8,6 +9,8 @@ export const db = (env as unknown as Env).DB;
 export const bindings: Env = {DB: db, SUPER_SECRET: "test-super-secret", KEY_PEPPER: "test-pepper"};
 export const migrate = () => applyD1Migrations(db, [{
   name: "0001_init.sql", queries: migration.split(";").filter(query => query.trim()),
+}, {
+  name: "0002_v15_health.sql", queries: healthMigration.split(";").filter(query => query.trim()),
 }], "d1_test_migrations");
 export async function request(path: string, opts: {
   method?: string; data?: unknown; cookie?: string; headers?: HeadersInit;
