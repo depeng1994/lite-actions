@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ci_core.broadcast import broadcast_job
+from ci_core.config import execution_pools
 from ci_core.contract import (
     TORCHTITAN_REPO,
     VLLM_REPO,
@@ -822,10 +823,10 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
     environment = case["verified_env"]
     setup = environment["ASCEND_SET_ENV_PATH"]
     case = {**case, "ascend_set_env_path": setup}
-    pools = json.loads((root / "config/pools.json").read_text())
+    pools = execution_pools(root, case)
     from ci_core.scheduler import validate_allocation
 
-    validate_allocation(case, pools, case["allocation"])
+    validate_allocation(case, pools, case["allocation"], include_paused=True)
     run.get("_ci_runtime_callback", lambda value: None)(case)
     runtime_file = log_dir / "runtime-case.json"
     runtime_file.write_text(json.dumps(case) + "\n")

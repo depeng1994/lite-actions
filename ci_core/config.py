@@ -1,7 +1,10 @@
 """Trusted worker ownership, canonical nodes, and existing-container bindings."""
 
+import hashlib
 import json
+import os
 import re
+from pathlib import Path
 
 from ci_core.transport import run
 
@@ -61,15 +64,29 @@ def load(root, worker):
     pools = json.loads((root / "config/pools.json").read_text())
     if worker not in workers or not workers[worker].get("enabled"):
         raise ValueError("unknown/disabled worker")
+    validate_pools(pools, workers)
+    return workers, pools
+
+
+def validate_pools(pools, workers):
+    if not isinstance(pools, dict) or len(pools) > 32:
+        raise ValueError("invalid Pools document")
     seen = {}
     fingerprints = {}
-    for name, pool in pools.items():
+    for pool in pools.values():
+        if "paused" in pool and pool["paused"] is not True:
+            raise ValueError("paused must be true when specified")
         if pool.get("owner") not in workers:
             raise ValueError("unknown pool owner")
         reclaim = pool.get("force_reclaim", False)
         if type(reclaim) is not bool:
             raise ValueError("force_reclaim must be a boolean")
         for node in pool["nodes"]:
+            if "paused" in node and node["paused"] is not True:
+                raise ValueError("paused must be true when specified")
+            for group in node.get("allocation_groups", []):
+                if "paused" in group and group["paused"] is not True:
+                    raise ValueError("paused must be true when specified")
             node_preempts(pool, node)
             pythonpath = node.get("pythonpath")
             if pythonpath is not None and (
@@ -109,7 +126,45 @@ def load(root, worker):
                 if fp in fingerprints:
                     raise ValueError("duplicate physical fingerprint")
                 fingerprints[fp] = ident
-    return workers, pools
+
+
+def checked_pools(document, workers):
+    config_json = document.get("config_json")
+    pools = document["pools"]
+    if config_json is None:
+        config_json = json.dumps(pools, ensure_ascii=False, separators=(",", ":"))
+    if (
+        not isinstance(config_json, str)
+        or hashlib.sha256(config_json.encode()).hexdigest() != document.get("sha256")
+        or json.loads(config_json) != pools
+    ):
+        raise ValueError("POOLS_SHA256_MISMATCH")
+    validate_pools(pools, workers)
+    return pools
+
+
+def load_active_pools(root, worker, state_dir=None):
+    directory = Path(
+        state_dir or os.environ.get("LITE_ACTIONS_STATE_DIR") or (root / "state")
+    )
+    path = directory / "pools-active.json"
+    if not path.exists():
+        workers, pools = load(root, worker)
+        return workers, pools, 0
+    workers = json.loads((root / "config/workers.json").read_text())
+    if worker not in workers or not workers[worker].get("enabled"):
+        raise ValueError("unknown/disabled worker")
+    document = json.loads(path.read_text())
+    revision = document.get("revision")
+    if type(revision) is not int or revision < 1:
+        raise ValueError("INVALID_POOLS_REVISION")
+    return workers, checked_pools(document, workers), revision
+
+
+def execution_pools(root, case):
+    if "pools_snapshot" in case:
+        return case["pools_snapshot"]
+    return json.loads((root / "config/pools.json").read_text())
 
 
 def execution_node(node, environment):

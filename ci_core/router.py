@@ -11,9 +11,10 @@ from collections import Counter
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 from contextlib import ExitStack
+from copy import deepcopy
 from pathlib import Path
 
-from ci_core.config import load, runtime_case
+from ci_core.config import load_active_pools, runtime_case
 from ci_core.contract import (
     REPO,
     SELF_REPO,
@@ -70,8 +71,8 @@ def run_key(run):
     )
 
 
-def eligible_topologies(case, pools):
-    options = candidates(case, pools)
+def eligible_topologies(case, pools, *, include_paused=False):
+    options = candidates(case, pools, include_paused=include_paused)
     if not options:
         raise ValueError("NO_VERIFIED_TOPOLOGY")
     inventory = {n["host_id"]: n for n in pools[case["pool"]]["nodes"]}
@@ -184,7 +185,13 @@ class Router:
             client,
             author,
         )
-        self.workers, self.pools = load(self.root, worker)
+        self.workers, self.pools, self.pools_revision = load_active_pools(
+            self.root, worker
+        )
+        self.config_lock = threading.Lock()
+        self.config_verification = None
+        self.config_executor = None
+        self.draining = set()
         if deployment_config is not None:
             self.workers[worker]["case_environments"] = deployment_config[
                 "case_environments"
@@ -283,7 +290,9 @@ class Router:
     def control_view(self):
         from ci_core.idle_probe import group_id
 
-        pools, records = self.pools, self.state.read()
+        with self.config_lock:
+            pools, revision = self.pools, self.pools_revision
+        records = self.state.read()
         probe, probe_time, sampled_pools = (
             self.idle_probe.sample if self.idle_probe else ({}, None, None)
         )
@@ -331,6 +340,7 @@ class Router:
         return {
             "records": records,
             "sha": self.self_sha,
+            "revision": revision,
             "idle_ts": probe_time,
             "devices": devices,
             "queues": queue_telemetry(
@@ -339,14 +349,116 @@ class Router:
         }
 
     def consume_control(self):
-        if self.control:
-            for entry in self.control.commands():
-                command = entry["cmd_id"]
+        if not self.control:
+            return
+        for entry in self.control.commands():
+            command = entry["cmd_id"]
+            try:
                 if entry["cmd_type"] == "MOVE_UP":
-                    result = self.state.move_up(entry["payload"]["task_key"], command)
-                    self.control.complete(command, **result)
+                    self.control.complete(
+                        command,
+                        **self.state.move_up(entry["payload"]["task_key"], command),
+                    )
+                elif entry["cmd_type"] == "SYNC_CONFIG":
+                    if not self.sync_pools(entry):
+                        break
                 else:
                     self.control.complete(command, "FAILED", err="UNSUPPORTED_COMMAND")
+            except Exception as exc:
+                if entry["cmd_type"] == "SYNC_CONFIG":
+                    self.draining = set()
+                    self.config_verification = None
+                logging.warning("control command failed (%s)", type(exc).__name__)
+                self.control.complete(
+                    command,
+                    "FAILED",
+                    err=str(exc) if isinstance(exc, ValueError) else type(exc).__name__,
+                )
+
+    def sync_pools(self, entry):
+        from ci_core.control_client import ACTIVE, write_json
+        from ci_core.pools_sync import affected_resources, removed_groups, verify
+
+        payload = entry["payload"]
+        target = payload["revision"]
+        cmd = entry["cmd_id"]
+        path = self.state.path.parent / "pools-active.json"
+        if type(target) is not int or target < self.pools_revision:
+            raise ValueError("STALE_POOL_REVISION")
+        if target == self.pools_revision:
+            import json
+
+            saved = json.loads(path.read_text())
+            if saved["sha256"] != payload["sha256"]:
+                raise ValueError("POOL_REVISION_MISMATCH")
+            cancelled = saved.get("drain_pending", [])
+        else:
+            if not self.config_verification:
+                if not self.config_executor:
+                    self.config_executor = ThreadPoolExecutor(max_workers=1)
+                self.config_verification = self.config_executor.submit(
+                    verify,
+                    self.worker,
+                    self.workers,
+                    self.pools,
+                    entry["config"],
+                    payload,
+                )
+                self.config_verification.add_done_callback(
+                    lambda _: self.control.wake.set()
+                )
+                return False
+            if not self.config_verification.done():
+                return False
+            doc = self.config_verification.result()
+            next_pools = doc["pools"]
+            removed = removed_groups(self.worker, self.pools, next_pools)
+            self.draining = affected_resources(removed)
+            records = self.state.read()
+            for record in records.values():
+                resources = set(resource_keys(record.get("allocation") or []))
+                if resources.intersection(self.draining) and record.get("quarantined"):
+                    raise ValueError("QUARANTINED_RESOURCE_CANNOT_DELETE")
+            for record in records.values():
+                resources = set(resource_keys(record.get("allocation") or []))
+                if resources.intersection(self.draining) and record.get(
+                    "phase"
+                ) in ACTIVE - {"QUEUED"}:
+                    return False
+
+            cancelled = []
+            impacted = {name for name, _, _ in removed}
+            for key, record in ordered_queued(records):
+                item = record["item"]
+                if (
+                    item["target_pool"] not in impacted
+                    or item["kind"] == "worker_probe"
+                ):
+                    continue
+                try:
+                    old_case = runtime_case(item, self.pools, self.worker)
+                    eligible_topologies(old_case, self.pools, include_paused=True)
+                except ValueError:
+                    continue
+                try:
+                    new_case = runtime_case(item, next_pools, self.worker)
+                    eligible_topologies(new_case, next_pools, include_paused=True)
+                except ValueError:
+                    cancelled.append(key)
+            doc.update(applied_at=int(time.time()), drain_pending=cancelled)
+            write_json(path, doc)
+            with self.config_lock:
+                self.pools, self.pools_revision = next_pools, target
+            self.config_verification = None
+            self.draining = set()
+        current = self.state.read()
+        for key in cancelled:
+            if current.get(key, {}).get("phase") == "QUEUED":
+                self.finish(
+                    key, "CANCELLED", 130, ["Resource removed by cluster configuration"]
+                )
+        self.control.complete(cmd, "APPLIED", rev=target)
+        return True
 
     def client_for(self, run):
         repo = run.get("_ci_repo", REPO)
@@ -620,7 +732,15 @@ class Router:
             self.transition(key, "QUEUED")
 
     def claim(self, case):
-        options = eligible_topologies(case, self.pools)
+        all_options = eligible_topologies(case, self.pools, include_paused=True)
+        allowed = candidates(case, self.pools)
+        active = {resource_keys(option) for option in allowed}
+        options = [
+            option
+            for option in all_options
+            if resource_keys(option) in active
+            and not self.draining.intersection(resource_keys(option))
+        ]
         blocked = set()
         for r in self.state.read().values():
             if self.quarantine_enabled and r.get("quarantined"):
@@ -1060,6 +1180,7 @@ class Router:
                         blocked_pools.add(queue)
                         continue
                     lease, case = claim
+                    case["pools_snapshot"] = {pool: deepcopy(self.pools[pool])}
                 self.state.update(
                     key,
                     phase="RESERVED",
@@ -1245,6 +1366,8 @@ class Router:
         self.flush()
 
     def close(self):
+        if self.config_executor:
+            self.config_executor.shutdown(wait=False, cancel_futures=True)
         self._complete_active()
         for future, event, _ in self.active.values():
             if not future.done():

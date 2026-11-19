@@ -15,17 +15,23 @@ def _distinct_node_ips(nodes):
     return len(addresses) == len(nodes)
 
 
-def candidates(case: dict, pools: dict) -> list[list[dict]]:
+def candidates(case: dict, pools: dict, *, include_paused=False) -> list[list[dict]]:
     spec = case["resources"]
     nodes, ngpu = spec["nodes"], spec["devices_per_node"]
     if nodes < 1 or ngpu < 1:
         raise ValueError("invalid requested topology")
     pool = pools[case["pool"]]
+    if pool.get("paused") and not include_paused:
+        return []
     eligible = []
     for host in sorted(
         pool["nodes"], key=lambda node: (node.get("priority", 0), node["host_id"])
     ):
+        if host.get("paused") and not include_paused:
+            continue
         for group in host.get("allocation_groups", []):
+            if group.get("paused") and not include_paused:
+                continue
             devices = group["devices"]
             if group.get("verified") and len(devices) == ngpu:
                 eligible.append({"host_id": host["host_id"], "devices": list(devices)})
@@ -70,9 +76,12 @@ def candidates(case: dict, pools: dict) -> list[list[dict]]:
     return result
 
 
-def validate_allocation(case: dict, pools: dict, allocation: list[dict]) -> None:
+def validate_allocation(
+    case: dict, pools: dict, allocation: list[dict], *, include_paused=False
+) -> None:
     expected = resource_keys(allocation)
     if not expected or not any(
-        resource_keys(item) == expected for item in candidates(case, pools)
+        resource_keys(item) == expected
+        for item in candidates(case, pools, include_paused=include_paused)
     ):
         raise ValueError("allocation outside verified topology or pool")

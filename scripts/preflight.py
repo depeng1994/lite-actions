@@ -16,15 +16,22 @@ ENVIRONMENT = "cann_master_torchtitan_master_xyj"
 INSPECT = """docker inspect --format '{"Id":{{json .Id}},"Image":{{json .Image}},"ImageRef":{{json .Config.Image}},"State":{"Running":{{json .State.Running}}}}' """
 
 
-def probe_node(node, environment, *, container_ref=None):
-    host = node["ssh"]
+def probe_machine(node):
     identity = run(
-        host,
+        node["ssh"],
         "python3 -c 'import pathlib,hashlib; print(hashlib.sha256(pathlib.Path(\"/etc/machine-id\").read_bytes()).hexdigest())'",
         timeout=30,
     ).stdout.strip()
-    if node.get("machine_fingerprint") and node["machine_fingerprint"] != identity:
+    if not re.fullmatch(r"[a-f0-9]{64}", identity) or (
+        node.get("machine_fingerprint") and node["machine_fingerprint"] != identity
+    ):
         raise ValueError("PHYSICAL_NODE_IDENTITY_CHANGED")
+    return identity
+
+
+def probe_node(node, environment, *, container_ref=None):
+    host = node["ssh"]
+    identity = probe_machine(node)
     configured = node.get("environments", {}).get(environment)
     selected = container_ref or (configured or {}).get("container_id") or environment
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", selected):

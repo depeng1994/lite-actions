@@ -21,6 +21,7 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from ci_core.config import execution_pools
 from ci_core.contract import REPO as MODEL_REPO
 from ci_core.registry import SELECTOR
 from ci_core.scheduler import validate_allocation
@@ -479,8 +480,8 @@ def run(
         or not SELECTOR.fullmatch(test_case)
     ):
         raise ValueError("unsafe run identifier / commit / execution directory")
-    pools = json.loads((root / "config/pools.json").read_text())
-    validate_allocation(case, pools, case["allocation"])
+    pools = execution_pools(root, case)
+    validate_allocation(case, pools, case["allocation"], include_paused=True)
     nodes = allocations(case, pools)
     base = f"{DEST_ROOT}/{remote_dir}"
     with tempfile.TemporaryDirectory(prefix="lite-ci-stage-") as tmp:
@@ -649,7 +650,7 @@ def main() -> int:
     from ci_core.resources import port_profile
 
     validate_allocation(
-        case, json.loads((ROOT / "config/pools.json").read_text()), case["allocation"]
+        case, execution_pools(ROOT, case), case["allocation"], include_paused=True
     )
     approved = port_profile(case["port_slot"])
     if any(case.get(field) != value for field, value in approved.items()):

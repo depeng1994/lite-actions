@@ -9,7 +9,7 @@ import threading
 import time
 from pathlib import Path
 
-from ci_core.config import deployment, load
+from ci_core.config import deployment, load_active_pools
 from ci_core.contract import configured_repos
 from ci_core.egress_policy import Egress
 from ci_core.gitcode import GitCodeClient, MultiPlatformClient
@@ -30,7 +30,7 @@ def main():
     a.worker_id, cfg = deployment(a.worker_id)
     os.environ["LITE_ACTIONS_STATE_DIR"] = cfg["state_dir"]
     policy = Egress(a.worker_id, cfg)
-    load(ROOT, a.worker_id)
+    load_active_pools(ROOT, a.worker_id)
     repos = configured_repos()
     if a.validate:
         print(f"Validated worker {a.worker_id} repositories: {', '.join(repos)}")

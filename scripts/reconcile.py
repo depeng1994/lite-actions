@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from ci_core.config import execution_node, load
+from ci_core.config import execution_node, load_active_pools
 from ci_core.executor import remote_preflight, task_dir
 from ci_core.job_state import JobState
 from ci_core.transport import run
@@ -20,7 +20,6 @@ def main():
     p.add_argument("--task-key", required=True)
     a = p.parse_args()
     root = Path(__file__).resolve().parents[1]
-    _, pools = load(root, a.worker_id)
     state = JobState(root)
     record = state.read().get(a.task_key)
     if not record or not record.get("quarantined"):
@@ -30,6 +29,9 @@ def main():
     runtime = record.get("runtime")
     if not runtime or not record.get("allocation"):
         raise ValueError("allocation missing; manual reconciliation required")
+    pools = runtime.get("pools_snapshot")
+    if pools is None:
+        _, pools, _ = load_active_pools(root, a.worker_id, state.path.parent)
     subrun = {**record["run"], "_ci_test_id": record["item"]["test_id"]}
     if record.get("use_instance_id"):
         subrun["_ci_case_id"] = record["item"]["case_id"]
