@@ -250,6 +250,8 @@ export function ClusterView({ config, nodes, clusterPools = [], clusterHistory =
   const [worker, setWorker] = useState("Blue");
   const scoped = nodes.filter((node) => node.worker === worker);
   const pools = [...new Set([...scoped.map((node) => node.pool), ...clusterPools.filter((entry) => entry.worker === worker).map((entry) => entry.pool)])];
+  const appliedRevision = config.applied[worker];
+  const desiredRevision = config.desired;
   return <main className="standard-view">
     <div className="page-heading">
       <div><h1>集群管理</h1><p>查看 Worker、Pool、节点与设备组的配置及生效状态。</p></div>
@@ -263,9 +265,9 @@ export function ClusterView({ config, nodes, clusterPools = [], clusterHistory =
     </nav>
     <div className="revision-bar">
       <strong>{worker}</strong><Tag tone={config.workerStatus?.[worker]?.offline ? "red" : "teal"}>{config.workerStatus?.[worker]?.offline ? "离线" : "在线"}</Tag>
-      <span>当前版本 <code>r{config.applied[worker]}</code></span>
-      <span>期望版本 <code>r{config.desired}</code></span>
-      <Tag tone={config.applied[worker] === config.desired ? "teal" : "amber"}>{config.applied[worker] === config.desired ? "已同步" : "等待 Worker 应用"}</Tag>
+      <span>当前版本 <code>{appliedRevision == null ? "—" : `r${appliedRevision}`}</code></span>
+      <span>期望版本 <code>{desiredRevision == null ? "—" : `r${desiredRevision}`}</code></span>
+      <Tag tone={appliedRevision != null && appliedRevision === desiredRevision ? "teal" : "amber"}>{appliedRevision != null && appliedRevision === desiredRevision ? "已同步" : "等待 Worker 应用"}</Tag>
       <span className="revision-updated">{config.workerStatus?.[worker]?.status || "等待心跳"}</span>
     </div>
     <div className="table-scroll">
