@@ -170,6 +170,7 @@ export interface ClusterPreview {
   affected_groups: {worker_id: WorkerId; pool_name: string; host_id: string; devices: number[]}[];
   drain_cancel_tasks: string[];
   active_leases: string[];
+  blocking_reasons?: string[];
 }
 export interface ClusterSync {
   revision: number;

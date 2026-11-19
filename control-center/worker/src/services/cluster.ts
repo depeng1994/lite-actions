@@ -15,7 +15,8 @@ type Revision = {revision: number; config_json: string; sha256: string};
 type ImpactGroup = ClusterPreview["affected_groups"][number] & {paused: boolean};
 type Edit = Awaited<ReturnType<typeof plan>>;
 const GROUP_KEY = ["pool_name","worker_id","host_id","devices"] as const;
-const configTag = (pool: Pool, node: PoolNode, group: PoolGroup) => Boolean(pool.paused || node.paused || group.paused);
+const configTag = (pool: Pool, node: PoolNode, group: PoolGroup) =>
+  Boolean(pool.enabled === false || pool.paused || node.paused || group.paused);
 
 function groupKey(item: ImpactGroup) {
   return JSON.stringify(GROUP_KEY.map(key => item[key]));
@@ -26,6 +27,28 @@ function configGroups(pools: Pools): ImpactGroup[] {
     worker_id: pool.owner, pool_name, host_id: node.host_id, devices: [...group.devices].sort((a,b) => a-b),
     paused: configTag(pool, node, group),
   })));
+}
+
+type DrainTarget = {
+  worker_id: WorkerId;
+  scope: "pool" | "node" | "device_group";
+  pool_name: string;
+  host_id: string | null;
+  devices: number[] | null;
+  target_key: string;
+};
+
+function drainTarget(pools: Pools, input: Record<string, unknown>): DrainTarget {
+  const pool_name = string(input.pool, "pool", 64, POOL);
+  const pool = pools[pool_name];
+  if (!pool) throw new HttpError(404, "POOL_NOT_FOUND");
+  const op = member(input.op, "operation", ["DRAIN", "RESUME", "DELETE_POOL", "DELETE_NODE", "DELETE_DEVICE_GROUP"] as const);
+  const scope = op === "DELETE_POOL" ? "pool" : op === "DELETE_NODE" ? "node" :
+    op === "DELETE_DEVICE_GROUP" ? "device_group" : member(input.scope, "scope", ["pool", "node", "device_group"] as const);
+  const host_id = scope === "pool" ? null : hostId(input.host_id);
+  const devicesValue = scope === "device_group" ? devices(input.devices) : null;
+  const target_key = JSON.stringify([pool.owner, scope, pool_name, host_id, devicesValue]);
+  return {worker_id: pool.owner, scope, pool_name, host_id, devices: devicesValue, target_key};
 }
 
 function paused(value: Record<string, unknown>) {
@@ -128,10 +151,13 @@ function validatePools(pools: Pools) {
   }
 }
 
+type ClusterOp = "PAUSE" | "RESUME" | "DRAIN" | "ADD_POOL" | "ADD_NODE" | "ADD_DEVICE_GROUP" |
+  "DELETE_POOL" | "DELETE_NODE" | "DELETE_DEVICE_GROUP";
+
 function operate(old: Pools, input: Record<string, unknown>): Pools {
   const pools = structuredClone(old);
-  const op = member(input.op, "operation", ["PAUSE","RESUME","ADD_POOL","ADD_NODE","ADD_DEVICE_GROUP",
-    "DELETE_POOL","DELETE_NODE","DELETE_DEVICE_GROUP"] as const);
+  const op = member(input.op, "operation", ["PAUSE","RESUME","DRAIN","ADD_POOL","ADD_NODE","ADD_DEVICE_GROUP",
+    "DELETE_POOL","DELETE_NODE","DELETE_DEVICE_GROUP"] as const) as ClusterOp;
   const name = string(input.pool, "pool", 64, POOL);
   if (!name || ["__proto__","constructor","prototype"].includes(name)) invalid("pool");
   const pool = Object.hasOwn(pools, name) ? pools[name] : undefined;
@@ -152,7 +178,7 @@ function operate(old: Pools, input: Record<string, unknown>): Pools {
     return pools;
   }
 
-  const scope = op === "PAUSE" || op === "RESUME"
+  const scope = op === "PAUSE" || op === "RESUME" || op === "DRAIN"
     ? member(input.scope, "scope", ["pool","node","device_group"] as const)
     : op === "DELETE_NODE" ? "node" : "device_group";
   let target: Pool | PoolNode | PoolGroup = pool;
@@ -183,8 +209,21 @@ function operate(old: Pools, input: Record<string, unknown>): Pools {
       }
     }
   }
-  if (op === "PAUSE") target.paused = true;
-  else if (op === "RESUME") delete target.paused;
+  if (op === "PAUSE" || op === "DRAIN") {
+    if (scope === "pool") {
+      pool.enabled = false;
+      delete pool.paused;
+    } else {
+      target.paused = true;
+    }
+  } else if (op === "RESUME") {
+    if (scope === "pool") {
+      pool.enabled = true;
+      delete pool.paused;
+    } else {
+      delete target.paused;
+    }
+  }
   return pools;
 }
 
@@ -208,13 +247,17 @@ async function plan(context: Context, input: Record<string, unknown>, rollback =
   const old = JSON.parse(base.config_json) as Pools;
   let rollbackFrom: number | null = null;
   let next: Pools;
+  const operation = rollback ? null : object(input.operation, "operation");
+  const operationName = operation ? String(operation.op) : null;
+  const target = operation && ["DRAIN", "RESUME", "DELETE_POOL", "DELETE_NODE", "DELETE_DEVICE_GROUP"].includes(operationName ?? "")
+    ? drainTarget(old, operation) : null;
   if (rollback) {
     rollbackFrom = integer(input.target_revision, "target_revision", 1);
     const restored = await db.prepare("SELECT config_json FROM pools_configs WHERE revision=?").bind(rollbackFrom).first<string>("config_json");
     if (!restored) throw new HttpError(404, "CONFIG_NOT_FOUND");
     next = JSON.parse(restored);
   } else {
-    next = operate(old, object(input.operation, "operation"));
+    next = operate(old, operation!);
   }
   validatePools(next);
   assertMigration(old, next);
@@ -282,6 +325,52 @@ async function plan(context: Context, input: Record<string, unknown>, rollback =
       }
     }
   }
+  const blocking_reasons: string[] = [];
+  if (target && operationName?.startsWith("DELETE")) {
+    const drainRow = await db.prepare(`SELECT revision FROM cluster_drain_targets WHERE target_key=?`)
+      .bind(target.target_key).first<{revision: number}>();
+    const applied = await db.prepare("SELECT applied_rev FROM workers WHERE worker_id=?")
+      .bind(target.worker_id).first<number>("applied_rev");
+    if (!drainRow || (applied ?? 0) < drainRow.revision) blocking_reasons.push("RESOURCE_NOT_DRAINED");
+    if (active_leases.length) blocking_reasons.push("ACTIVE_LEASES_REMAINING");
+    const targetGroups = configGroups(old).filter(group => group.pool_name === target.pool_name);
+    const targetIndexes = target.scope === "pool" ? null : targetGroups.flatMap((group, index) => {
+      if (target.scope === "node" && group.host_id === target.host_id) return [index];
+      if (target.scope === "device_group" && group.host_id === target.host_id &&
+          JSON.stringify(group.devices) === JSON.stringify(target.devices)) return [index];
+      return [];
+    });
+    const queuedRows = await db.prepare(`SELECT q.candidate_group_idxs_json FROM tasks_active a
+      LEFT JOIN queue_orders q ON q.task_uid=a.task_uid AND q.worker_id=a.worker_id
+        AND q.pool_name=a.target_pool AND q.kind=a.kind
+      WHERE a.worker_id=? AND a.target_pool=? AND a.phase='QUEUED'`)
+      .bind(target.worker_id, target.pool_name).all<{candidate_group_idxs_json: string | null}>();
+    const queued = queuedRows.results.filter(row => {
+      if (targetIndexes === null) return true;
+      if (!row.candidate_group_idxs_json) return true;
+      try {
+        const options = JSON.parse(row.candidate_group_idxs_json).options as number[][];
+        return !options.length || options.some(bundle => bundle.some(index => targetIndexes.includes(index)));
+      } catch {
+        return true;
+      }
+    }).length;
+    if (queued > 0) blocking_reasons.push("QUEUED_TASKS_REMAINING");
+    if (!blocking_reasons.includes("NODE_QUARANTINED")) {
+      const quarantine = target.scope === "pool"
+        ? db.prepare(`SELECT COUNT(*) AS n FROM device_group_states
+          WHERE worker_id=? AND pool_name=? AND quarantined=1`).bind(target.worker_id, target.pool_name)
+        : target.scope === "node"
+          ? db.prepare(`SELECT COUNT(*) AS n FROM device_group_states
+            WHERE worker_id=? AND pool_name=? AND host_id=? AND quarantined=1`)
+            .bind(target.worker_id, target.pool_name, target.host_id)
+          : db.prepare(`SELECT COUNT(*) AS n FROM device_group_states
+            WHERE worker_id=? AND pool_name=? AND host_id=? AND devices_json=? AND quarantined=1`)
+            .bind(target.worker_id, target.pool_name, target.host_id, JSON.stringify(target.devices));
+      const quarantined = await quarantine.first<number>("n");
+      if ((quarantined ?? 0) > 0) blocking_reasons.push("NODE_QUARANTINED");
+    }
+  }
   const config_json = JSON.stringify(next);
   if (new TextEncoder().encode(config_json).length > 120000) invalid("configuration too large");
   const sha = await sha256(config_json);
@@ -291,7 +380,11 @@ async function plan(context: Context, input: Record<string, unknown>, rollback =
     const owned = (pools: Pools) => Object.entries(pools).filter(([, pool]) => pool.owner === zone);
     return JSON.stringify(owned(old)) !== JSON.stringify(owned(next));
   });
-  return {preview: {...edit, preview_hash}, config_json, sha, zones, drain, rollbackFrom};
+  return {
+    preview: {...edit, blocking_reasons, preview_hash}, config_json, sha, zones, drain, rollbackFrom,
+    drainTarget: target, drainAction: operationName === "DRAIN" ? "DRAIN" :
+      operationName === "RESUME" ? "RESUME" : operationName?.startsWith("DELETE") ? "DELETE" : null,
+  };
 }
 
 async function publish(context: Context, edit: Edit) {
@@ -299,6 +392,16 @@ async function publish(context: Context, edit: Edit) {
   const revision = edit.preview.base_revision + 1;
   const actor = context.principal!.username;
   const command_ids = edit.zones.map(() => "cmd_" + crypto.randomUUID());
+  const target = edit.drainTarget;
+  const drainMutation = target && edit.drainAction === "DRAIN"
+    ? db.prepare(`INSERT INTO cluster_drain_targets(target_key,worker_id,scope,pool_name,host_id,devices_json,revision,requested_by,created_at)
+      VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(target_key) DO UPDATE SET revision=excluded.revision,
+      requested_by=excluded.requested_by,created_at=excluded.created_at`)
+      .bind(target.target_key, target.worker_id, target.scope, target.pool_name, target.host_id,
+        target.devices ? JSON.stringify(target.devices) : null, revision, actor, context.now)
+    : target && (edit.drainAction === "RESUME" || edit.drainAction === "DELETE")
+      ? db.prepare("DELETE FROM cluster_drain_targets WHERE target_key=?").bind(target.target_key)
+      : null;
   const status = await db.batch([
     db.prepare(`INSERT INTO pools_configs(revision,sha256,config_json,diff_summary_json,created_by,created_at,rollback_from_rev)
       VALUES (?,?,?,?,?,?,?)`).bind(revision, edit.sha, edit.config_json, JSON.stringify(edit.preview),
@@ -306,7 +409,9 @@ async function publish(context: Context, edit: Edit) {
     ...edit.zones.map((zone, i) => db.prepare(`
       INSERT INTO commands(cmd_id,worker_id,cmd_type,payload_json,status,created_by,created_at)
       VALUES (?,?,'SYNC_CONFIG',?,'PENDING',?,?)`).bind(command_ids[i], zone,
-      JSON.stringify({revision, sha256: edit.sha, drain_cancel_keys: edit.drain.get(zone) ?? []}), actor, context.now)),
+      JSON.stringify({revision, sha256: edit.sha, drain_action: edit.drainAction,
+        drain_target: target?.target_key ?? null, drain_cancel_keys: edit.drain.get(zone) ?? []}), actor, context.now)),
+    ...(drainMutation ? [drainMutation] : []),
     await auditStatement(context, edit.rollbackFrom ? "ROLLBACK_CLUSTER" : "PUBLISH_CLUSTER", "configuration", String(revision),
       {summary: {sha256: edit.sha, affected_workers: edit.zones}}),
   ]).catch(error => {
@@ -320,6 +425,9 @@ async function publish(context: Context, edit: Edit) {
 export async function clusterEdit(context: Context, input: Record<string, unknown>, mode: "preview" | "publish" | "rollback") {
   const edit = await plan(context, input, mode === "rollback");
   if (mode === "preview") return edit.preview;
+  if (edit.preview.blocking_reasons?.length) {
+    throw new HttpError(409, edit.preview.blocking_reasons[0]);
+  }
   if (mode === "publish" && !safeHashEqual(edit.preview.preview_hash, typeof input.preview_hash === "string" ? input.preview_hash : undefined)) {
     throw new HttpError(409, "PREVIEW_CHANGED");
   }
@@ -334,13 +442,17 @@ export async function cluster(context: Context) {
     db.prepare(`SELECT c.worker_id,c.status,c.result_json,c.error_msg,c.payload_json FROM commands c
       WHERE c.cmd_type='SYNC_CONFIG' AND c.ordinal=(SELECT MAX(ordinal) FROM commands
         WHERE worker_id=c.worker_id AND cmd_type='SYNC_CONFIG')`),
+    db.prepare("SELECT target_key,worker_id,scope,pool_name,host_id,devices_json,revision FROM cluster_drain_targets"),
     ...(context.principal ? [db.prepare(`SELECT revision,sha256,created_at,created_by,rollback_from_rev
       FROM pools_configs ORDER BY revision DESC LIMIT 50`)] : []),
   ]);
   const revision = results[0].results[0] as Revision | undefined;
   const pools = JSON.parse(revision?.config_json ?? "{}") as Pools;
+  const drains = results[3].results as {target_key: string; worker_id: WorkerId; scope: string; pool_name: string;
+    host_id: string | null; devices_json: string | null; revision: number}[];
   const config = context.principal ? pools : Object.fromEntries(await Promise.all(Object.entries(pools).map(async ([pool, value]) => [pool, {
     owner: value.owner, type: value.type, enabled: value.enabled, paused: Boolean(value.paused),
+    draining: drains.some(row => row.pool_name === pool),
     nodes: await Promise.all(value.nodes.map(async node => ({
       ...await nodeIdentity(pepper(context), node.host_id, false), paused: Boolean(node.paused),
       environments: Object.keys(object(node.environments ?? {}, "environments")),
@@ -352,7 +464,11 @@ export async function cluster(context: Context) {
   }])));
   const workerRows = results[1].results as {worker_id: WorkerId; applied_rev: number; last_heartbeat_at: number}[];
   const commands = results[2].results as {worker_id: WorkerId; status: string; result_json: string; error_msg: string; payload_json: string}[];
-  return {revision: revision?.revision ?? 0, sha256: revision?.sha256 ?? null, config,
+  const configWithDrain = Object.fromEntries(Object.entries(config).map(([pool, value]) => [pool, {
+    ...(value as Record<string, unknown>),
+    draining: Boolean((value as {draining?: boolean}).draining) || drains.some(row => row.pool_name === pool),
+  }]));
+  return {revision: revision?.revision ?? 0, sha256: revision?.sha256 ?? null, config: configWithDrain,
     workers: ZONES.map(worker_id => {
       const worker = workerRows.find(row => row.worker_id === worker_id);
       const command = commands.find(row => row.worker_id === worker_id);
@@ -361,6 +477,6 @@ export async function cluster(context: Context) {
         offline: !worker || context.now - worker.last_heartbeat_at > 90, status: command?.status ?? null,
         ...(context.principal ? {error_msg: command?.error_msg ?? null} : {}),
       };
-    }), ...(context.principal ? {history: results[3].results} : {}),
+    }), ...(context.principal ? {history: results[4].results} : {}),
   };
 }

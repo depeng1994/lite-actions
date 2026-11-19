@@ -45,8 +45,44 @@ test("quarantine blocks deletion and unacknowledged removal blocks cross-zone mo
     VALUES('blue','alpha',?,'[0,1]',1,1)`).bind(host).run();
   expect(await (await request("/admin/cluster/preview", {cookie, data: payload})).json()).toMatchObject({code: "NODE_QUARANTINED"});
   await db.prepare("DELETE FROM device_group_states").run();
-  const pre = await (await request("/admin/cluster/preview", {cookie, data: payload})).json<ClusterPreview>();
-  const deletion = await (await request("/admin/cluster/publish", {cookie, data: {...payload, preview_hash: pre.preview_hash}})).json<ClusterSync>();
+  const blocked = await (await request("/admin/cluster/preview", {cookie, data: payload})).json<ClusterPreview>();
+  expect(blocked.blocking_reasons).toContain("RESOURCE_NOT_DRAINED");
+  const drain = {base_revision: rev, operation: {op: "DRAIN", scope: "node", pool: "alpha", host_id: host}};
+  const drainPreview = await (await request("/admin/cluster/preview", {cookie, data: drain})).json<ClusterPreview>();
+  const drained = await (await request("/admin/cluster/publish", {cookie,
+    data: {...drain, preview_hash: drainPreview.preview_hash}})).json<ClusterSync>();
+  await db.prepare(`INSERT INTO workers(worker_id,instance_id,applied_rev,code_sha,health_ok,active_count,queued_count,last_heartbeat_at,last_egress_used,updated_at)
+    VALUES('blue','drain001',?, '',1,0,0,?,?,?) ON CONFLICT(worker_id) DO UPDATE SET applied_rev=excluded.applied_rev`)
+    .bind(drained.revision, 1, 0, 1).run();
+  const pre = await (await request("/admin/cluster/preview", {cookie, data: {...payload, base_revision: drained.revision}})).json<ClusterPreview>();
+  expect(pre.blocking_reasons ?? []).not.toContain("RESOURCE_NOT_DRAINED");
+  const deletion = await (await request("/admin/cluster/publish", {cookie,
+    data: {...payload, base_revision: drained.revision, preview_hash: pre.preview_hash}})).json<ClusterSync>();
   const add = {base_revision: deletion.revision, operation: {op: "ADD_NODE", pool: "beta", value: node}};
   expect(await (await request("/admin/cluster/preview", {cookie, data: add})).json()).toMatchObject({code: "SOURCE_WORKER_NOT_DRAINED"});
+});
+
+test("pool drain uses enabled=false and resume clears the drain marker", async () => {
+  const cookie = sessionCookie(await signIn());
+  const baseRevision = await db.prepare("SELECT MAX(revision) AS r FROM pools_configs").first<number>("r");
+  const drain = {base_revision: baseRevision, operation: {op: "DRAIN", scope: "pool", pool: "beta"}};
+  const preview = await (await request("/admin/cluster/preview", {cookie, data: drain})).json<ClusterPreview>();
+  const published = await (await request("/admin/cluster/publish", {cookie,
+    data: {...drain, preview_hash: preview.preview_hash}})).json<ClusterSync>();
+  const stored = await db.prepare("SELECT config_json FROM pools_configs WHERE revision=?")
+    .bind(published.revision).first<string>("config_json");
+  expect(JSON.parse(stored!).beta).toMatchObject({enabled: false});
+  expect(await db.prepare("SELECT count(*) AS n FROM cluster_drain_targets WHERE pool_name='beta'").first("n")).toBe(1);
+  const publicView = await (await request("/public/cluster?drain_check=1"))
+    .json<{config: Record<string, {draining: boolean; enabled: boolean}>}>();
+  expect(publicView.config.beta).toMatchObject({draining: true, enabled: false});
+
+  const resume = {base_revision: published.revision, operation: {op: "RESUME", scope: "pool", pool: "beta"}};
+  const resumePreview = await (await request("/admin/cluster/preview", {cookie, data: resume})).json<ClusterPreview>();
+  const resumed = await (await request("/admin/cluster/publish", {cookie,
+    data: {...resume, preview_hash: resumePreview.preview_hash}})).json<ClusterSync>();
+  const resumedConfig = await db.prepare("SELECT config_json FROM pools_configs WHERE revision=?")
+    .bind(resumed.revision).first<string>("config_json");
+  expect(JSON.parse(resumedConfig!).beta).toMatchObject({enabled: true});
+  expect(await db.prepare("SELECT count(*) AS n FROM cluster_drain_targets WHERE pool_name='beta'").first("n")).toBe(0);
 });

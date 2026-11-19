@@ -37,7 +37,7 @@ python3 control-center/tests/integration/run.py
 | INT-05 | `test_upload_intercept.py` 实际 HTTP/1.1 序列化、静态路径注册门禁，以及 TLS 联调抓取两个 Worker 和两个平台客户端的请求（✅ v1.1 通过，最长 1,748 B；⏳ **`REQ-15/16/17` 新增协议字段后须重跑回归**） |
 | INT-06 | `cancellations.test.ts` 使用模拟平台核验 App 令牌、attempt 校验、幂等和强制取消（⏳ 待补齐双平台、双 Worker 在网站断连时的整次取消联调） |
 | INT-07 | `move-up.test.ts`、`test_move_up.py`、`test_smoke_queue.py`（⏳ **v1.5 需按 `REQ-17` 升级为 Workflow 级跨区插队联调，并补齐虚拟时钟 71h59m/72h01m 超时实测**） |
-| INT-08 | `cluster-config.test.ts`、`test_preflight_export.py`、`test_pools_hot_reload.py`（⏳ **v1.5 需按 `REQ-18` 补齐两步「先排空再删除」与统一 `enabled`/`paused` 语义联调，以及双 Worker 单端失败闭环**） |
+| INT-08 | `cluster-config.test.ts`（新增 DRAIN→RESUME、删除前四项门禁与 `enabled: false` 断言）、`test_preflight_export.py`、`test_pools_hot_reload.py`（⏳ **仍需补齐 Worker 侧排空取消、双 Worker 单端失败、实机重启与自动更新闭环**） |
 | INT-09 | `retention-storage.test.ts` 和 `board-read.test.ts`（⏳ 待补齐同一次配额熔断触发 Worker 暂存恢复，并按 `REQ-16` 升级为 50 Workflow 跨 30 天分页验证） |
 | INT-10 | `portability-intercept.test.ts`、`sites-parity.test.ts`、`build-sites.mjs` 与双运行时联调（⏳ **`REQ-20` 新增：静态防平台锁死扫描、ChatGPT Sites 产物包校验、Sites/D1 与个人服务器 Node 24/`node:sqlite` 双运行时对等及无 Cron 取消跟踪验证**） |
 
