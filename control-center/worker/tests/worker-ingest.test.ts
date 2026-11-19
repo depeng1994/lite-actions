@@ -47,6 +47,9 @@ test("binds zones, ingests transitions exactly once, and reconciles only a compl
   expect(await db.prepare("SELECT count(*) AS n FROM worker_event_dedup").first("n")).toBe(2);
   expect(await db.prepare("SELECT submitted_at,workflow_name FROM tasks_active WHERE task_uid=?")
     .bind(ids.task_uid).first()).toMatchObject({submitted_at: now - 30, workflow_name: "Dispatcher Smoke"});
+  expect(await db.prepare("SELECT is_active,total_case_count,result_state,submitted_at,workflow_name FROM workflow_runs WHERE run_id=?")
+    .bind(identity.run_id).first()).toMatchObject({is_active: 1, total_case_count: 1, result_state: "QUEUED",
+      submitted_at: now - 30, workflow_name: "Dispatcher Smoke"});
   const gap = await worker("blue", "events", {...base, ev: [{s: 4, t: "TF", tid: task.tid, ts: now, st: "PASS", cv: 1}]});
   expect(await gap.json()).toEqual({ok: true, need_snapshot: true, expected_seq: 3});
   const replacement = await descriptor("case_001_beta");
@@ -72,6 +75,8 @@ test("binds zones, ingests transitions exactly once, and reconciles only a compl
   expect((await worker("blue", "events", terminal)).status).toBe(200);
   expect(await db.prepare("SELECT duration_sec FROM duration_samples WHERE task_uid=?")
     .bind(replacement.ids.task_uid).first("duration_sec")).toBe(12);
+  expect(await db.prepare("SELECT is_active,total_case_count,result_state FROM workflow_runs WHERE run_id=?")
+    .bind(identity.run_id).first()).toMatchObject({is_active: 0, total_case_count: 2, result_state: "FAIL"});
 });
 
 test("command lookup never acknowledges and receipts are worker-scoped and idempotent", async () => {
