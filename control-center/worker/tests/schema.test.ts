@@ -12,7 +12,7 @@ import type { Env } from "../src/router";
 
 const db = (env as unknown as Env).DB;
 
-test("migrations create all 19 project tables and history indexes", async () => {
+test("migrations create project tables and history indexes", async () => {
   await applyD1Migrations(db, [
     {name: "0001_init.sql", queries: migrations.split(";").filter(query => query.trim())},
     {name: "0002_v15_health.sql", queries: healthMigration.split(";").filter(query => query.trim())},
