@@ -1,7 +1,7 @@
 import {type Context} from "../router";
 import {auditStatement} from "./audit";
 import {sha256} from "../utils/crypto";
-import {gunzip, gzip} from "../utils/gzip";
+import {blobBuffer, gunzip, gzip} from "../utils/gzip";
 
 const DAY = 86400;
 const DEFAULT_CAPACITY = 500 * 1024 * 1024;
@@ -49,7 +49,7 @@ async function coldGroup(db: D1Database, group: ArchiveGroup, now: number) {
   const stored = await db.prepare("SELECT sha256,gzip_blob,record_count FROM task_details_cold WHERE chunk_id=?")
     .bind(chunk).first<ColdBlock>();
   if (!stored || stored.sha256 !== sha || stored.record_count !== entries.length) throw new Error("COLD_CHUNK_NOT_VERIFIED");
-  const blob = stored.gzip_blob instanceof ArrayBuffer ? stored.gzip_blob : Uint8Array.from(stored.gzip_blob).buffer;
+  const blob = blobBuffer(stored.gzip_blob);
   if (await sha256(blob) !== sha || await gunzip(blob) !== text) throw new Error("COLD_CHUNK_NOT_VERIFIED");
   await db.batch([
     db.prepare(`UPDATE task_index SET storage_tier='cold',cold_chunk_id=? WHERE storage_tier='hot'
