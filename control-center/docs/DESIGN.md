@@ -85,7 +85,7 @@
 - [x] **`FE-02` 统一 Workflow 表格、上方 50 条历史分页/折叠与任务详情抽屉正式化**：Site v16 对接 `/api/v1/{public,admin}/workflows`、`/models`、`/tasks/:uid`，保留 12 列筛选/排序、固定负/零/正序号、表顶 50 条历史加载与折叠、容量清理提示、冷归档标签、北京时间（UTC+8）和仓库归属标签。正式 Site 构建、Workflow 交互测试和历史详情字段核对已通过。
   - 可验证子集已实现：`7968114` 正式前端通过 `history_limit=50` 与 cursor 追加加载历史 Workflow，保留本地列筛选/排序/折叠状态，Site v15 已部署。完整 12 列与冷热归档全量回归仍未完成，故本条保持未勾选。
   - 后端依赖：`REQ-16`, `REQ-19`
-- [ ] **`FE-03` `[依赖项 · ⏳ 待前端 Agent 标绿]` 认证会话、双平台取消 Workflow 与 Workflow 级插队正式化**：对接 `/auth/*`、`POST/GET /admin/cancellations*`（**已拍板：按后端 `cancel_supported` 同时开放 GitHub 与 GitCode 取消**）、`POST /admin/workflows/move-up` & `GET /admin/workflow-priority-ops/:opId`（携带 `queue_version`，409 冲突自动刷新，分 Worker/Pool/任务类型展示实时回执）。
+- [ ] **`FE-03` 认证会话、双平台取消 Workflow 与 Workflow 级插队正式化**：Site v17 已按后端 `cancel_supported` 同时支持 GitHub/GitCode 取消，轮询 `/admin/cancellations/:cancelId` 更新双 Worker 停止和设备释放进度，Workflow 插队 409 会刷新正式队列并展示回执。真实双平台取消、真实回执和完整跨区联调仍待 INT-06/INT-07，故本条保持未勾选。
   - 可验证子集已实现：`f265931` 正式前端已改用 Workflow `queue_version`/`op_id` 插队接口，并按后端 `cancel_supported` 处理 GitHub/GitCode 取消入口，Site v14 已部署。完整回执轮询、跨 Worker 实机取消和双平台生产闭环仍未完成，故本条保持未勾选。
   - 后端依赖：`REQ-02`, `REQ-03`, `REQ-10`, `REQ-17`
 - [ ] **`FE-04` `[依赖项 · ⏳ 待前端 Agent 标绿]` 集群管理与 Super 用户管理正式化**：对接 `/cluster`、`/cluster/{preview,publish,rollback}`、`/admin/users*`、`/admin/audits`；**按已拍板口径落实**：① Super 用户列表移除“重复查看密钥”，改为“重置密钥（旧会话即刻失效）”+ 创建/重置一次性弹窗复制；② 新增资产采用「粘贴 `preflight.py --export-node-snippet` JSON 片段 + 自动解析只读预览」；③ **删除沿用 Demo 两步「先排空、再删除」**（排空中可点恢复，活动租约/排队引用/隔离归零后才开放删除）；④ 补齐历史版本列表与回滚入口；⑤ 节点直接展示掩码/完整 `host_id`，无别名。
@@ -97,7 +97,7 @@
 
 ### Phase 7：端到端联调、最终集成验证与生产上线签收
 
-> **2026-11-20 正式上线记录**：Cloudflare Worker 使用线上 D1 `lite-actions-control-center`，正式 Site **版本 16** 通过同源 Server-backed API 访问控制面。前端构建已移除所有 Demo/fixture 数据回退，正式 D1 无活动任务时页面显示空队列。Blue 已配置线上 URL、机器密钥和控制面客户端，`/api/v1/public/overview` 实测 `offline=false`、`applied_rev=1`，四个设备组持续 `ONLINE`。个人仓 `depeng1994/lite-actions` 的 `lite-ci-self-smoke` CPU-only run `44580600438` 已在 Blue 最新部署 SHA `eb94ab2cf6471ce877283fd320e1c86d31d0dca1` 上通过，远端 `workflow_runs` 已有该 run 的 `PASS` 物化汇总、提交时间和 Workflow 名称。Site 版本 16 还通过了 API 代理环境变量、完整静态资源、SPA 路由回退、正式 cluster 状态映射（包含 `enabled: false` Pool 的暂停态）、动态资源范围、实际设备卡数、历史详情数据和无 Worker 错误日志核验。
+> **2026-11-20 正式上线记录**：Cloudflare Worker 使用线上 D1 `lite-actions-control-center`，正式 Site **版本 17** 通过同源 Server-backed API 访问控制面。前端构建已移除所有 Demo/fixture 数据回退，正式 D1 无活动任务时页面显示空队列。Blue 已配置线上 URL、机器密钥和控制面客户端，`/api/v1/public/overview` 实测 `offline=false`、`applied_rev=1`，四个设备组持续 `ONLINE`。个人仓 `depeng1994/lite-actions` 的 `lite-ci-self-smoke` CPU-only run `44580600438` 已在 Blue 最新部署 SHA `eb94ab2cf6471ce877283fd320e1c86d31d0dca1` 上通过，远端 `workflow_runs` 已有该 run 的 `PASS` 物化汇总、提交时间和 Workflow 名称。Site 版本 17 还通过了 API 代理环境变量、完整静态资源、SPA 路由回退、正式 cluster 状态映射（包含 `enabled: false` Pool 的暂停态）、动态资源范围、实际设备卡数、历史详情、双平台取消入口和无 Worker 错误日志核验。
 
 > v1.1 隔离联调实测通过：公开/管理员权限与掩码、双 Worker 90s 离线与恢复、连续三次插队、集群发布/重启应用、20+ 条事件补发、双平台写回；TLS 抓包 86 个请求，最大 1,761 字节。完整 NPU smoke、Yellow 主机、v1.5 Phase 5.5 及双平台取消仍按下方未勾选门槛记录。
 
