@@ -6,6 +6,8 @@
 
 > **正式环境证据（2026-11-20）**：线上控制面为 Cloudflare Worker + D1 `lite-actions-control-center`，正式 Site 版本 17 通过 server-backed API 访问线上数据。前端已移除 Demo/fixture 数据回退，正式库没有活动任务时只显示空队列。Cloudflare Worker 静态包已由 `17ed45f` 切换为同一正式前端构建，线上 `/`、`/api/v1/public/overview` 和 `/api/v1/public/workflows` 实测不含 Demo/fixture/模拟数据，部署版本为 `f332c4d0-131d-4783-8b7b-c0b4749ff811`。Blue 当前发布 SHA 为 `d9fcf5de649540d0e0f5ea0ab503727f7815ea7f`，D1 集群配置 `revision=4` 已应用，两个 A3 节点通过实机指纹与 TorchTitan 容器绑定校验，线上 overview 实测 `offline=false`、`applied_rev=4`。CPU-only self-smoke run `44594574859` 已通过。GitCode 源归档与隔离 profile 的真实 Blue NPU 联调也已通过：8P run `55b7bf72c6e541babc5977eef7f486a8`、16P run `5a7f8c3030a549bab4cadde3a6678ad9` 均 `COMPLETED`，结果为 `PASS`、`exit_code=0`、`cleanup_verified=true`，诊断分别含 `all_reduce_sum=28` 与 `all_reduce_sum=120`。
 
+> **YCY Linux 回归证据（2026-11-20）**：在 Blue 当前发布目录使用 `/usr/bin/python3` 执行 `python3 -m unittest discover -s tests`，`215 tests` 全部通过。macOS 本地运行的 Linux 专属 `/proc`、systemd 和 `/etc/os-release` 测试失败不作为生产回归结论。
+
 v1.1 实现基线运行在 Cloudflare Worker + 单 D1 库；完成 `REQ-20` 托管解耦后，同一套核心业务与 `migrations/*.sql` 同时支持初期 **ChatGPT Sites** 直接部署、后期迁移 **个人服务器（Node.js 24 + 内置 `node:sqlite`）** 及备选 **Cloudflare Workers Free + D1 Free**。Blue 和 Yellow Worker 仅通过 HTTPS 出站接入，迁移时只改 `control_center.url`。
 
 ## 验收命令
