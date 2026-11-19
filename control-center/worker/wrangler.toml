@@ -6,7 +6,7 @@ workers_dev = true
 [[d1_databases]]
 binding = "DB"
 database_name = "lite-actions-control-center"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "498b7766-6478-4ac6-9f39-844391d02d9a"
 
 [triggers]
 crons = ["* * * * *", "0 2 * * *"]

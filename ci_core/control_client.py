@@ -170,6 +170,10 @@ class ControlClient:
         self.headers = {
             "Authorization": "Bearer " + token,
             "Content-Type": "application/json",
+            # Cloudflare's edge rejects urllib's default Python-urllib
+            # fingerprint. Keep the client identity explicit for the
+            # production worker transport.
+            "User-Agent": "lite-actions-control-client/1.0",
         }
         self.policy = policy
         self.wake = wake
