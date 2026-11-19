@@ -80,6 +80,8 @@
 
 2026-11-19 在 YCY 隔离环境完成后端回归。27 项后端测试、209 项 Python 测试及 Lint 通过。勾选项由自动化测试和隔离联调共同支撑。运行方式及测试映射见 [后端验收与部署](backend-validation.md)。
 
+2026-11-19 已完成正式控制面上线。Cloudflare Worker 使用线上 D1 `lite-actions-control-center`，正式 Site 通过同源 Server-backed API 访问该控制面，前端不再注入或回退 Demo/fixture 数据。Blue 已配置线上 URL、机器密钥和控制面客户端，`/api/v1/public/overview` 实测 `offline=false`、`applied_rev=1`；个人仓 `depeng1994/lite-actions` 的 `lite-ci-self-smoke` CPU-only run `44549511435` 在部署 SHA `b9b9f3db47b8a79ac258fabf7007d033e45242e4` 上通过。
+
 - [x] **`INT-01`** 公网匿名读取、IP 掩码、缓存头与四级权限全矩阵验证
   - 权限和凭据回归测试通过，YCY 隔离实例确认公开掩码、缓存头及登录视图。
 - [x] **`INT-02`** 双 Worker 心跳、90s 离线、事件去重/缺口检测、分片快照对账与断网 30 分钟恢复验证
@@ -101,12 +103,12 @@
 
 #### 7.2 全栈端到端集成验证（`⏳ 依赖前端 Agent 标绿 FE-01 ~ FE-05`）
 - [x] **`INT-10`** 公开看板全栈浏览器端到端验证（Pools 时间轴 + 模型仓页签 + 30s 刷新 + 零敏感信息泄露）
-  - 证据：已在部署站点完成匿名 Pools 时间轴、模型仓默认页签、历史 50 条加载、任务详情入口与无敏感 IP 展示回归；本地 Wrangler + D1 联调确认 `/public/*` API 与实时数据标识。线上站点尚未配置 `CONTROL_CENTER_API_ORIGIN`，因此当前公开部署展示受控演示数据。
+  - 证据：已在正式 Site 完成匿名 Pools 时间轴、模型仓默认页签、实时 API 访问与无敏感 IP 展示回归。Site 版本 7 的 `/api/v1/public/{overview,models,timeline}` 均返回线上 D1 数据；正式 D1 当前无活动任务时页面显示空队列，不填充演示记录。
 - [x] **`INT-11`** 管理员 & Super 全栈浏览器操作闭环验证（登录看完整 IP、取消/插队/集群管理/用户管理与审计）
-  - 证据：本地控制面完成 Super Cookie 登录、完整 `host_id` 管理视图、实时创建管理员/一次性密钥/软删除/审计；部署站点完成插队确认与回执、GitHub Workflow 取消及设备释放回执。使用真实控制面任务数据的取消与插队仍需补充。
+  - 证据：本地控制面完成 Super Cookie 登录、完整 `host_id` 管理视图、实时创建管理员/一次性密钥/软删除/审计；正式 API 登录返回 Secure、HttpOnly、SameSite=Strict Cookie，正式 Site 的管理请求同源转发到线上 Worker。GitHub Workflow 取消与设备释放仍受 `REL-02` 双平台实机门槛约束。
 - [ ] **`INT-12`** 网站宕机 30 分钟故障隔离与恢复对账演练
 
-> 当前未勾选的 `INT-04`、`INT-06`～`INT-09`、`INT-12` 与 `REL-01`～`REL-03` 仍需要真实双平台/双 Worker、故障演练或线上 Cloudflare D1/Yellow 配置。Blue 当前运行配置未声明控制面 URL/Token，线上 Site 也未设置 `CONTROL_CENTER_API_ORIGIN`，因此本轮只记录本地 Wrangler + D1 与已部署站点的可复核证据。
+> 当前未勾选的 `INT-04`、`INT-06`～`INT-09`、`INT-12` 与 `REL-01`～`REL-03` 仍需要真实双平台/双 Worker、故障演练或线上 Cloudflare 配额验证。Blue 已接入线上控制面并完成 CPU-only GitHub self-smoke，Yellow 主机尚未接入，完整 NPU smoke、双平台取消和 Cloudflare Free 配额门槛继续保持未勾选。
 
 #### 7.3 生产上线前置实机签收（对应 PRD §12）
 - [ ] **`REL-01`** 真实 Yellow 节点访问线上域名完成心跳、取令、拉配置、回执并验证出口策略与每日字节预算
