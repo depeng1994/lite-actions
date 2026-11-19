@@ -85,7 +85,7 @@
 - [x] **`FE-02` 统一 Workflow 表格、上方 50 条历史分页/折叠与任务详情抽屉正式化**：Site v21 对接 `/api/v1/{public,admin}/workflows`、`/models`、`/tasks/:uid`，保留 12 列筛选/排序、固定负/零/正序号、表顶 50 条历史加载与折叠、容量清理提示、冷归档标签、北京时间（UTC+8）和仓库归属标签。正式 Site 构建、Workflow 交互测试、历史详情字段核对以及无节点分配历史 Workflow 的浏览器回归已通过。
   - 可验证子集已实现：`7968114` 正式前端通过 `history_limit=50` 与 cursor 追加加载历史 Workflow，保留本地列筛选/排序/折叠状态。完整冷热分层容量回归仍由 `INT-09`/`E2E-04` 跟踪。
   - 后端依赖：`REQ-16`, `REQ-19`
-- [ ] **`FE-03` 认证会话、双平台取消 Workflow 与 Workflow 级插队正式化**：Site v17 已按后端 `cancel_supported` 同时支持 GitHub/GitCode 取消，轮询 `/admin/cancellations/:cancelId` 更新双 Worker 停止和设备释放进度，Workflow 插队 409 会刷新正式队列并展示回执。真实双平台取消、真实回执和完整跨区联调仍待 INT-06/INT-07，故本条保持未勾选。
+- [ ] **`FE-03` 认证会话、双平台取消 Workflow 与 Workflow 级插队正式化**：Site v21 已按后端 `cancel_supported` 同时支持 GitHub/GitCode 取消，轮询 `/admin/cancellations/:cancelId` 更新双 Worker 停止和设备释放进度，Workflow 插队 409 会刷新正式队列并展示回执。真实双平台取消、真实回执和完整跨区联调仍待 INT-06/INT-07，故本条保持未勾选。
   - 可验证子集已实现：`f265931` 正式前端已改用 Workflow `queue_version`/`op_id` 插队接口，并按后端 `cancel_supported` 处理 GitHub/GitCode 取消入口，Site v14 已部署。完整回执轮询、跨 Worker 实机取消和双平台生产闭环仍未完成，故本条保持未勾选。
   - 后端依赖：`REQ-02`, `REQ-03`, `REQ-10`, `REQ-17`
 - [x] **`FE-04` 集群管理与 Super 用户管理正式化**：正式前端已对接 `/cluster`、`/cluster/{preview,publish,rollback}`、`/admin/users*`、`/admin/audits`；Super 列表移除重复查看密钥，创建/重置只显示一次性密钥；新增资产支持粘贴 `preflight.py --export-node-snippet` JSON 并提供只读预览；集群删除遵循排空→删除两步状态机，历史版本和回滚入口已接入，节点直接展示掩码/完整 `host_id`。`cluster-config.test.ts`、认证/权限测试、Node control-center smoke、Sites 静态构建与正式 Site v21 资源回归均通过。真实生产管理员浏览器操作仍由 E2E-01/E2E-09 跟踪。
@@ -111,7 +111,7 @@
 
 - [x] **`INT-01`** `★ P0` 公网匿名读取、IP 掩码、缓存头与四级权限全矩阵验证（v1.1 已过；v1.5 需对新增 `/workflows` 与增强 `/cluster` 补跑脱敏回归）
 - [x] **`INT-02`** `★ P0` 双 Worker 心跳、90s 离线、事件去重/缺口检测、分片快照对账与断网 30 分钟恢复验证（v1.1 已过）
-- [ ] **`INT-03`** `★ P0` 全部节点 2 分钟 `npu-smi` 可见性探测（含暂停/`enabled: false` Pool；1–4 异常 / 5 次已离线 / 最近在线时间不改写 / 重放不重计）+ 空闲三态叠加验证（⚠ v1.1 空闲三态已过，待补 `REQ-15` 全量在线状态机）
+- [ ] **`INT-03`** `★ P0` 全部节点 2 分钟 `npu-smi` 可见性探测（含暂停/`enabled: false` Pool；1–4 异常 / 5 次已离线 / 最近在线时间不改写 / 重放不重计）+ 空闲三态叠加验证。`health-ingest.test.ts` 已通过 D1 Worker IP 事件、暂停 Pool、5 次离线、最近在线时间和重复轮次回放验证；全量生产节点 2 分钟实机演练仍待补。
 - [x] **`INT-04`** 耗时中位数与排期虚线投影 API 集成验证：`schedule-projection.test.ts` 覆盖 0、5、10+ 可靠样本、超时、无估算和未知外部占用，`schedule-api.test.ts` 通过真实 D1 Worker `/public/timeline` 验证 5 个可靠样本的中位数排期投影；FAIL 与 `timing_reliable=0` 样本不进入估算。
 - [x] **`INT-05`** `★ P0` 全链路上传报文 `< 2,000` 字节门禁验证：`control-center/tests/integration/run.py` 在当前 v1.5 协议上重跑通过，双 Worker 与两个平台客户端共 86 个 TLS 请求，最大 1,790 B，所有控制面路径和 Yellow 平台写路径均被捕获且低于门禁；`test_upload_intercept.py` 亦保持全绿。
 - [ ] **`INT-06`** `★ P0` GitHub & GitCode 整次 Workflow 取消端到端闭环（含原生作业、2 分钟 `force-cancel`、**双 Worker 断连网站但通平台仍停机**、清理失败进隔离）
