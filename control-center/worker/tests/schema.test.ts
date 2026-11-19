@@ -5,6 +5,7 @@ import migrations from "../migrations/0001_init.sql?raw";
 import healthMigration from "../migrations/0002_v15_health.sql?raw";
 import drainMigration from "../migrations/0003_v15_cluster_drain.sql?raw";
 import priorityMigration from "../migrations/0004_v15_workflow_priority.sql?raw";
+import metadataMigration from "../migrations/0005_v15_workflow_metadata.sql?raw";
 import { logicalModel, modelMap } from "../src/modelMap";
 import type { Env } from "../src/router";
 
@@ -16,6 +17,7 @@ test("migrations create all 19 project tables and history indexes", async () => 
     {name: "0002_v15_health.sql", queries: healthMigration.split(";").filter(query => query.trim())},
     {name: "0003_v15_cluster_drain.sql", queries: drainMigration.split(";").filter(query => query.trim())},
     {name: "0004_v15_workflow_priority.sql", queries: priorityMigration.split(";").filter(query => query.trim())},
+    {name: "0005_v15_workflow_metadata.sql", queries: metadataMigration.split(";").filter(query => query.trim())},
   ], "d1_test_migrations");
   const {results} = await db.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all<{name: string}>();
   expect(results.map(table => table.name).filter(name => !/^(d1_|sqlite_|_cf_)/.test(name))).toHaveLength(22);
@@ -25,6 +27,10 @@ test("migrations create all 19 project tables and history indexes", async () => 
   expect(columns.results.map(column => column.name)).toEqual(expect.arrayContaining([
     "visibility_state", "consecutive_failures", "last_online_at", "last_probe_round",
   ]));
+  const activeColumns = await db.prepare("PRAGMA table_info(tasks_active)").all<{name: string}>();
+  const historyColumns = await db.prepare("PRAGMA table_info(task_index)").all<{name: string}>();
+  expect(activeColumns.results.map(column => column.name)).toEqual(expect.arrayContaining(["submitted_at", "workflow_name"]));
+  expect(historyColumns.results.map(column => column.name)).toEqual(expect.arrayContaining(["submitted_at", "workflow_name"]));
 });
 
 test("configured repositories form logical model tabs with a default", () => {

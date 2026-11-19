@@ -12,7 +12,7 @@ type Cursor = {instance_id: string; last_seq: number; last_snapshot_id: string |
 export const TASK_META = [
   "task_uid", "worker_id", "provider", "repo", "logical_model", "run_id", "attempt", "dispatch_id",
   "case_id", "test_id", "label", "kind", "target_pool", "req_nodes", "req_devices", "pr_number",
-  "pr_author", "trigger_actor", "event_type", "workflow_file",
+  "pr_author", "trigger_actor", "event_type", "workflow_file", "submitted_at", "workflow_name",
 ] as const;
 const TASK_ACTIVE = [...TASK_META, "short_tid", "task_key", "phase", "allocation_json", "queued_at",
   "reserved_at", "staging_at", "running_at", "cleaning_at", "timing_reliable", "updated_at"];
@@ -52,6 +52,8 @@ async function task(context: Context, input: Input) {
     pr_author: nullableString(input.pa, "pr_author", 40, /^[A-Za-z0-9_\[\]-]+$/),
     trigger_actor: nullableString(input.tr, "trigger_actor", 40, /^[A-Za-z0-9_\[\]-]+$/),
     event_type: nullableString(input.et, "event_type", 40), workflow_file: nullableString(input.wf, "workflow_file", 100),
+    submitted_at: input.sub == null ? (times[0] ?? integer(input.ts, "ts")) : nullableInt(input.sub, "submitted_at"),
+    workflow_name: nullableString(input.wn, "workflow_name", 64),
     phase: member(input.ph, "phase", PHASES), allocation_json: JSON.stringify(allocation(input.a)),
     queued_at: times[0] ?? integer(input.ts, "ts"), reserved_at: times[1], staging_at: times[2],
     running_at: times[3], cleaning_at: times[4], timing_reliable: integer(input.reliable ?? 0, "reliable", 0, 1),
@@ -68,7 +70,9 @@ function taskUpsert(db: D1Database, tasks: Awaited<ReturnType<typeof task>>[], s
     ON CONFLICT(task_uid) DO ${snapshot ? `UPDATE SET
       phase=excluded.phase,allocation_json=excluded.allocation_json,updated_at=excluded.updated_at,
       ${TIMES.map(column => `${column}=COALESCE(excluded.${column},tasks_active.${column})`).join(",")},
-      timing_reliable=MAX(excluded.timing_reliable,tasks_active.timing_reliable)
+      timing_reliable=MAX(excluded.timing_reliable,tasks_active.timing_reliable),
+      submitted_at=COALESCE(excluded.submitted_at,tasks_active.submitted_at),
+      workflow_name=COALESCE(excluded.workflow_name,tasks_active.workflow_name)
       WHERE tasks_active.worker_id=excluded.worker_id` : "NOTHING"}
   `).bind(JSON.stringify(tasks));
 }
