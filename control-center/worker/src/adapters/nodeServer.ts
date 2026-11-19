@@ -30,7 +30,7 @@ async function assetResponse(root: string, pathname: string, method: string): Pr
   }});
 }
 
-async function toRequest(request: IncomingMessage, body: Buffer, clientIp: string): Promise<Request> {
+async function toRequest(request: IncomingMessage, body: Buffer): Promise<Request> {
   const protocol = request.headers["x-forwarded-proto"] === "https" ? "https" : "http";
   const url = `${protocol}://${request.headers.host ?? "127.0.0.1"}${request.url ?? "/"}`;
   const headers = new Headers();
@@ -38,7 +38,6 @@ async function toRequest(request: IncomingMessage, body: Buffer, clientIp: strin
     if (Array.isArray(value)) value.forEach(item => headers.append(key, item));
     else if (value != null) headers.set(key, value);
   }
-  headers.set("CF-Connecting-IP", clientIp);
   return new Request(url, {method: request.method, headers,
     body: ["GET", "HEAD"].includes(request.method ?? "GET") ? undefined : body});
 }
@@ -63,14 +62,14 @@ export function startNodeServer(options: {
     try {
       const chunks: Buffer[] = [];
       for await (const chunk of incoming) chunks.push(Buffer.from(chunk));
-      const request = await toRequest(incoming, Buffer.concat(chunks), incoming.socket.remoteAddress ?? "unknown");
+      const request = await toRequest(incoming, Buffer.concat(chunks));
       const url = new URL(request.url);
       let response: Response | null = null;
       if (staticDir && !url.pathname.startsWith("/api/") && ["GET", "HEAD"].includes(request.method)) {
         response = await assetResponse(staticDir, url.pathname, request.method);
         if (!response && request.headers.get("accept")?.includes("text/html")) response = await assetResponse(staticDir, "/index.html", request.method);
       }
-      response ??= await options.handler(request, {...options.env, DB: store});
+      response ??= await options.handler(request, {...options.env, DB: store, __clientIp: incoming.socket.remoteAddress ?? "unknown"});
       await writeResponse(response, output);
     } catch (error) {
       output.statusCode = 500;

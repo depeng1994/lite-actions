@@ -2,6 +2,8 @@ import type { WorkerId, Role } from "./types/api";
 
 export interface Env {
   DB: D1Database;
+  /** Optional per-request address injected by the Node/server adapter. */
+  __clientIp?: string;
   ASSETS?: Fetcher;
   SUPER_SECRET?: string;
   SUPER_USERNAME?: string;

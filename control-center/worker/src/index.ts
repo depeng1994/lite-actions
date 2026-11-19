@@ -67,7 +67,7 @@ export default {
       // Header parsing belongs to the Cloudflare adapter. A Node/server
       // adapter can inject its trusted socket address without changing the
       // authentication and audit services.
-      clientIp: request.headers.get("CF-Connecting-IP") ?? "unknown",
+      clientIp: env.__clientIp ?? request.headers.get("CF-Connecting-IP") ?? "unknown",
       now: Math.floor(Date.now() / 1000),
     };
     try {
