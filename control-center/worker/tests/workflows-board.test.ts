@@ -46,3 +46,30 @@ test("workflow filters and timeline metadata are live API fields", async () => {
   expect(timeline.tasks_by_uid).toEqual({});
   expect(timeline.queued_by_pool).toEqual({});
 });
+
+test("workflow history paginates complete Workflow rows in 50/50/3 pages", async () => {
+  for (let offset = 0; offset < 103; offset += 1) {
+    await db.prepare(`INSERT INTO task_index(task_uid,finished_at,worker_id,provider,repo,logical_model,run_id,attempt,
+      case_id,test_id,label,kind,target_pool,req_nodes,req_devices,actual_allocation_json,status,timing_reliable,submitted_at,workflow_name)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
+      `large-${offset}`, now - offset, "blue", "github", "org/large", "large", `history-${String(offset).padStart(3, "0")}`, 1,
+      `case-${offset}`, "worker_os_blue", "OS probe", "worker_probe", "pool", 0, 0, "[]", "PASS", 1,
+      now - offset - 10, "Large History",
+    ).run();
+  }
+  const pages: string[] = [];
+  let cursor = "";
+  for (const expected of [50, 50, 3]) {
+    const suffix = cursor ? `&cursor=${cursor}` : "";
+    const page = await (await request(`/public/workflows?history_limit=50&repo=org%2Flarge&status=history${suffix}`)).json<{
+      history: Array<{run_id: string; sequence: number}>; next_cursor: string | null; history_total: number; has_more: boolean;
+    }>();
+    expect(page.history).toHaveLength(expected);
+    expect(page.history_total).toBe(103);
+    pages.push(...page.history.map(row => row.run_id));
+    expect(page.history.map(row => row.sequence)).toEqual([...page.history].sort((left, right) => right.sequence - left.sequence).map(row => row.sequence));
+    cursor = page.next_cursor ?? "";
+  }
+  expect(new Set(pages).size).toBe(103);
+  expect(cursor).toBe("");
+});
