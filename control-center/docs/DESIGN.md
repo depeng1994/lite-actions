@@ -76,7 +76,7 @@
 
 ---
 
-### Phase 6：`[外部依赖 · 前端 Agent]` 正式前端工程化、GitHub 仓合入与 Sites/自建统一产物构建
+### Phase 6：`[外部依赖 · 前端 Agent]` 正式前端工程化、GitHub 仓合入与 Sites/自建统一产物构建（FE-03 的真实取消/跨区闭环仍待联调）
 > **可立即并行启动**：前端 Agent 直接以已确认的 `control-center/demo`（`cd770ce`）为 UI/交互基线，**将完整前端源码合入 GitHub 仓 `control-center/web/`**，按 [api-contract.md](api-contract.md) v1.5 对接真实 API，完成后由项目负责人在此标绿。
 
 - [x] **`FE-00` 交互原型 Demo 定稿与确认**：`codex/control-center-demo @ cd770ce`（Pools 时间轴双框渲染 + 下方排队表、统一 Workflow 表 + 列筛选排序 + 上方历史折叠展开、集群健康与两步排空删除展示、浅/深色主题）。
@@ -378,7 +378,7 @@ lite-actions/
 | **REQ-19** | **v1.5 增量**：TypeScript 契约冻结（`types/api.ts` + `model_repos.json` 含 `repo_scope`）与正式前端基线对齐 | §3, §7–§10 | 服务端 + 契约 | ✅ **已完成**（`cb58ecd`） | 0 新增 + 3 修改 | ~150 行 | **Phase 5.5** |
 | **REQ-20** | **v1.5 增量**：托管解耦（`SqlStore`/去锁死/无 Cron 兜底）、ChatGPT Sites 打包、个人服务器 Node 24 运行时与 `portability_intercept` DT | §1, §2, §6, §11, §12 | 服务端 + 工程/QA | ⏳ **待开发** | 12 新增 + 13 修改 | ~1,230 行 | **Phase 5.5** |
 | **INT / E2E** | 集成测试夹具升级（补齐 `INT-03/04/05/06/07/08/09/09B/10` 双运行时）与全栈 E2E 脚本 | §11, §12 | 联调/QA | ⏳ 部分已过，待补齐 | 2 新增 + 1 修改 | ~720 行（增量） | Phase 7 |
-| **FE-00 ~ 05** | Demo（`cd770ce` 已确认）全量源码合入 GitHub `control-center/web/` 对接真实 API + 统一构建 `dist/client/` | §1–§3, §7–§10 | **正式前端** | `FE-00`、`FE-05` ✅ / `FE-01~04` ⏳ | 前端独立估算 | 前端独立估算 | Phase 6 |
+| **FE-00 ~ 05** | Demo（`cd770ce` 已确认）全量源码合入 GitHub `control-center/web/` 对接真实 API + 统一构建 `dist/client/` | §1–§3, §7–§10 | **正式前端** | `FE-00/01/02/04/05` ✅ / `FE-03` ⏳ | 前端独立估算 | 前端独立估算 | Phase 6 |
 | **v1.5 增量合计（不含前端）** | — | — | — | — | **20 新增 / 47 修改次** | **~4,740 行（后端/Worker ~4,020 + 联调 ~720）** | **Phase 5.5 + 7** |
 
 ---
