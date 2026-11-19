@@ -150,6 +150,7 @@ function workflowRows(tasks: TaskSummary[], history: boolean): WorkflowRow[] {
     const passed = cases.every(item => item.status === "PASS");
     const failed = cases.some(item => item.status && item.status !== "PASS");
     const finished = cases.map(item => item.finished_at ?? 0).filter(Boolean);
+    const submitted = cases.map(item => item.submitted_at ?? item.queued_at ?? 0).filter(Boolean);
     const started = cases.map(item => item.queued_at ?? 0).filter(Boolean);
     const cards = Math.max(0, ...cases.map(item => item.allocated_cards));
     const measured = cases.filter(item => item.allocated_cards > 0 && item.started_at != null &&
@@ -159,7 +160,7 @@ function workflowRows(tasks: TaskSummary[], history: boolean): WorkflowRow[] {
     return {
       provider: first.provider, repo: first.repo, run_id: first.run_id, attempt: first.attempt,
       sequence: history ? 0 : queued ? 0 : 0,
-      submitted_at: started.length ? Math.min(...started) : null,
+      submitted_at: submitted.length ? Math.min(...submitted) : null,
       repo_scope: workflowScope(first), logical_model: first.logical_model,
       workflow_name: workflowName(first), workflow_file: first.workflow_file,
       pools: [...new Set(cases.map(item => item.target_pool))], max_cards: cards,
