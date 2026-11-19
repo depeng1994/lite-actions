@@ -21,6 +21,8 @@ def candidates(case: dict, pools: dict, *, include_paused=False) -> list[list[di
     if nodes < 1 or ngpu < 1:
         raise ValueError("invalid requested topology")
     pool = pools[case["pool"]]
+    if not pool.get("enabled", True) and not include_paused:
+        return []
     if pool.get("paused") and not include_paused:
         return []
     eligible = []

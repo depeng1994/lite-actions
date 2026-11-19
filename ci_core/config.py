@@ -204,8 +204,6 @@ def runtime_case(item, pools, worker):
         raise ValueError("UNKNOWN_POOL")
     if pool["owner"] != worker:
         raise ValueError("POOL_OWNER_MISMATCH")
-    if not pool.get("enabled"):
-        raise ValueError("POOL_DISABLED")
     return dict(
         name=item["case_id"],
         pool=item["target_pool"],
