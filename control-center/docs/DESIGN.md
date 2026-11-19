@@ -86,7 +86,7 @@
   - 后端依赖：`REQ-02`, `REQ-03`, `REQ-10`, `REQ-17`
 - [ ] **`FE-04` `[依赖项 · ⏳ 待前端 Agent 标绿]` 集群管理与 Super 用户管理正式化**：对接 `/cluster`、`/cluster/{preview,publish,rollback}`、`/admin/users*`、`/admin/audits`；**按已拍板口径落实**：① Super 用户列表移除“重复查看密钥”，改为“重置密钥（旧会话即刻失效）”+ 创建/重置一次性弹窗复制；② 新增资产采用「粘贴 `preflight.py --export-node-snippet` JSON 片段 + 自动解析只读预览」；③ **删除沿用 Demo 两步「先排空、再删除」**（排空中可点恢复，活动租约/排队引用/隔离归零后才开放删除）；④ 补齐历史版本列表与回滚入口；⑤ 节点直接展示掩码/完整 `host_id`，无别名。
   - 后端依赖：`REQ-02`, `REQ-12`, `REQ-15`, `REQ-18`
-- [ ] **`FE-05` `[依赖项 · ⏳ 待前端 Agent 标绿]` 源码全入 GitHub 仓与统一产物构建（ChatGPT Sites / 个人服务器 / CF Workers 共用）**：全量前端源码合入 `control-center/web/`（零仓外私有路径引用）；构建产物统一输出至 `control-center/dist/client/`，由 `control-center/scripts/build-sites.mjs` 同步产出 Sites 完整包并被个人服务器 `nodeServer.ts` 与 `wrangler.toml` 直接复用；严格仅使用相对路径 `/api/v1/*`（零硬编码绝对后端域名），移除“模拟数据”徽章与演示快捷登录按钮，确保 `HttpOnly; Secure; SameSite=Strict` Cookie 正常生效。
+- [x] **`FE-05` 源码全入 GitHub 仓与统一产物构建（ChatGPT Sites / 个人服务器 / CF Workers 共用）**：全量前端源码已合入 `control-center/web/`（零仓外私有路径引用）；`control-center/scripts/build-sites.mjs` 已统一产出 `control-center/dist/{client,server,.openai/hosting.json}`，Site 版本 13 已部署并实测静态资源、同源 API 代理、SPA 回退和正式集群状态映射。客户端仅使用相对 `/api/v1/*`，正式数据源为空数组且无 Demo 回退。
   - 后端依赖：`REQ-01`, `REQ-20`, `FE-01` ~ `FE-04`
 
 ---
@@ -369,10 +369,10 @@ lite-actions/
 | **REQ-16** | **v1.5 增量**：统一 Workflow 表（`/workflows`）、50 Workflow 游标分页、汇总口径与 `/timeline` 零 N+1 增强 | §1, §3, §6, §11 | Worker + 服务端 | ⏳ **待开发** | 2 新增 + 7 修改 | ~840 行 | **Phase 5.5** |
 | **REQ-17** | **v1.5 升级**：Workflow 级版本化跨区插队（`SWAP_WORKFLOW`）+ 晚发现/回队沿用顺位 + 多端回执 | §1, §8, §11, §12 | Worker + 服务端 | ⏳ **待开发** | 3 新增 + 7 修改 | ~760 行 | **Phase 5.5** |
 | **REQ-18** | **v1.5 增量**：集群两步「先排空再删除」状态机与统一 `enabled`/`paused` 暂停调度语义 | §1, §9.4, §9.5, §11 | Worker + 服务端 | ⏳ **待开发** | 0 新增 + 8 修改 | ~420 行 | **Phase 5.5** |
-| **REQ-19** | **v1.5 增量**：TypeScript 契约冻结（`types/api.ts` + `model_repos.json` 含 `repo_scope`）与正式前端基线对齐 | §3, §7–§10 | 服务端 + 契约 | ⏳ **待开发** | 0 新增 + 3 修改 | ~150 行 | **Phase 5.5** |
+| **REQ-19** | **v1.5 增量**：TypeScript 契约冻结（`types/api.ts` + `model_repos.json` 含 `repo_scope`）与正式前端基线对齐 | §3, §7–§10 | 服务端 + 契约 | ✅ **已完成**（`cb58ecd`） | 0 新增 + 3 修改 | ~150 行 | **Phase 5.5** |
 | **REQ-20** | **v1.5 增量**：托管解耦（`SqlStore`/去锁死/无 Cron 兜底）、ChatGPT Sites 打包、个人服务器 Node 24 运行时与 `portability_intercept` DT | §1, §2, §6, §11, §12 | 服务端 + 工程/QA | ⏳ **待开发** | 12 新增 + 13 修改 | ~1,230 行 | **Phase 5.5** |
 | **INT / E2E** | 集成测试夹具升级（补齐 `INT-03/04/05/06/07/08/09/09B/10` 双运行时）与全栈 E2E 脚本 | §11, §12 | 联调/QA | ⏳ 部分已过，待补齐 | 2 新增 + 1 修改 | ~720 行（增量） | Phase 7 |
-| **FE-00 ~ 05** | Demo（`cd770ce` 已确认）全量源码合入 GitHub `control-center/web/` 对接真实 API + 统一构建 `dist/client/` | §1–§3, §7–§10 | **外部依赖（前端 Agent）** | `FE-00` ✅ / `FE-01~05` ⏳ | 前端独立估算 | 前端独立估算 | Phase 6 |
+| **FE-00 ~ 05** | Demo（`cd770ce` 已确认）全量源码合入 GitHub `control-center/web/` 对接真实 API + 统一构建 `dist/client/` | §1–§3, §7–§10 | **正式前端** | `FE-00`、`FE-05` ✅ / `FE-01~04` ⏳ | 前端独立估算 | 前端独立估算 | Phase 6 |
 | **v1.5 增量合计（不含前端）** | — | — | — | — | **20 新增 / 47 修改次** | **~4,740 行（后端/Worker ~4,020 + 联调 ~720）** | **Phase 5.5 + 7** |
 
 ---
@@ -1363,7 +1363,7 @@ lite-actions/
 ### REQ-19（v1.5 增量）：v1.5 契约冻结与正式前端接入基线对齐
 
 - **对应 PRD**：§3、§7–§10
-- **状态**：⏳ 待开发（`api-contract.md` 已随本文同步冻结，待同步更新 `types/api.ts` 与 `model_repos.json`）
+- **状态**：✅ 已完成（`cb58ecd`；`types/api.ts`、`model_repos.json` 与正式前端接入基线已同步）
 
 #### 1. 详细技术方案
 1. 同步更新 `control-center/worker/src/types/api.ts`：
