@@ -28,11 +28,6 @@
             "container_id": "a59522f9fe617d4b133e8f9731058a4904a4e59c291476df7618af022c5f0839",
             "image_id": "sha256:97a99d4210c836975654445abcd28af89856eec83737e1ab4a50f09679531b89",
             "image_ref": "cann_900_torchtitan_master_zdp:latest"
-          },
-          "vllm_hccl_smoke": {
-            "container_id": "9128bc83d0e2314669597e9db63a327b0809860df617c0f8fe968559f63851fc",
-            "image_id": "sha256:f81de6249765738a06b5c187dcf0968dfd0ce828e8b6b16a2771de2b0e78217c",
-            "image_ref": "quay.io/ascend/vllm-ascend:v0.23.0-a3-openeuler"
           }
         },
         "machine_fingerprint": "37f7d0638b37d5d74b88af476451f53f6e1c5f326e858e385ec66b007606425b",
@@ -68,11 +63,6 @@
             "container_id": "f8c37203c91c0045bee48b80c84d4d2eda1d20b7910ead13bb3eb06c5e9775bc",
             "image_id": "sha256:4af1a99434aa47248bf2c5a7f2fc900cb159929b6030297cea3bf76d0be67207",
             "image_ref": "cann_master_torchtitan_master_xyj:mountfix-20260810"
-          },
-          "vllm_hccl_smoke": {
-            "container_id": "c33953f779ae16fdf46b5db195305cf0aed4febf30fd13bf2dfa0831c0301421",
-            "image_id": "sha256:f81de6249765738a06b5c187dcf0968dfd0ce828e8b6b16a2771de2b0e78217c",
-            "image_ref": "quay.io/ascend/vllm-ascend:v0.23.0-a3-openeuler"
           }
         },
         "machine_fingerprint": "43e4df8f792c4ebcda9738b7931df774adf92da798c55e86737f933e30a9820e",
