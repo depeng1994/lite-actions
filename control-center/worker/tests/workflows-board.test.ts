@@ -119,3 +119,27 @@ test("mixed active and finished cases stay in one active Workflow row", async ()
   expect(page.active[0].cases).toHaveLength(2);
   expect(page.history).toHaveLength(0);
 });
+
+test("Workflow summaries expose partial card-hours and three-state outcomes", async () => {
+  const allocation = JSON.stringify([{host_id: "198.51.100.8:22", devices: [0,1,2,3,4,5,6,7]}]);
+  await db.batch([
+    ...[
+      ["partial-measured", "partial-run", "PASS", 1, 60, allocation],
+      ["partial-unmeasured", "partial-run", "PASS", 0, null, allocation],
+      ["outcome-pass", "outcome-run", "PASS", 1, null, "[]"],
+      ["outcome-cancelled", "outcome-run", "CANCELLED", 0, null, "[]"],
+    ].map(([uid, run, status, reliable, duration, alloc]) => db.prepare(`INSERT INTO task_index(
+      task_uid,finished_at,worker_id,provider,repo,logical_model,run_id,attempt,case_id,test_id,label,kind,
+      target_pool,req_nodes,req_devices,actual_allocation_json,status,timing_reliable,duration_sec,submitted_at,workflow_name)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
+      uid, now - 200, "blue", "github", "org/summary", "summary", run, 1, `case_${uid.slice(0, 3)}_case`,
+      "npu_smoke", uid, "npu_smoke", "pool", 1, 8, alloc, status, reliable, duration, now - 300, "Summary Workflow",
+    )),
+  ]);
+  const page = await (await request("/public/workflows?history_limit=50&repo=org%2Fsummary")).json<{
+    history: Array<{run_id: string; card_hours: number | null; card_hours_partial: boolean; result: string}>;
+  }>();
+  expect(page.history).toHaveLength(2);
+  expect(page.history.find(row => row.run_id === "partial-run")).toMatchObject({card_hours: 0.13, card_hours_partial: true, result: "PASS"});
+  expect(page.history.find(row => row.run_id === "outcome-run")).toMatchObject({result: "FAIL"});
+});
