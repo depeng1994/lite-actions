@@ -69,6 +69,7 @@
   - 实现：`cb58ecd`，`/models` 已返回组织仓/个人仓 `repo_scope`，契约类型与定向测试已同步。REQ-16～REQ-18 的业务接口仍保持未标绿。
   - 依赖：`REQ-15` ~ `REQ-18`（契约文件 `types/api.ts` 与 `api-contract.md` 已冻结可并行放行前端） ｜ 门禁：`npm run lint --prefix control-center/worker` & 契约类型一致性检查全绿
 - [ ] **`REQ-20` 托管解耦、ChatGPT Sites 打包、个人服务器（Node 24 + `node:sqlite`）迁移适配与 `portability_intercept` DT 拦截门禁**
+  - 可验证子集已实现：`src/storage/sqlStore.ts` 提供运行时无关 `SqlStore`/`SqlStatement` 契约和统一 BLOB 解码，`npm run test:portability` 扫描业务源码并拦截运行时专有恒时比较、非适配器 Cloudflare 客户端 IP 头和硬编码 `workers.dev`。完整双运行时适配、SPA/无 Cron 兜底、Sites 打包与 Node 24 SQLite 联调仍未完成，故本条保持未勾选。
   - 依赖：`REQ-01` ~ `REQ-19`（消除 `timingSafeEqual` / `CF-Connecting-IP` / `D1Database` 直连 / 无 Cron 维护阻塞 / BLOB 形态假定，抽离 `app.ts` + `SqlStore` + `adapters/{d1,nodeSqlite,nodeServer}.ts` + `build-sites.mjs` + `deploy/{Dockerfile,systemd}` + 4 层 `portability-intercept.test.ts` 接入 CI） ｜ 门禁：`npm run test:portability --prefix control-center/worker`、`npm test --prefix control-center/worker` 与 `node control-center/scripts/build-sites.mjs` 全绿
 
 ---
