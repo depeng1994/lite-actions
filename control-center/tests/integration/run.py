@@ -159,8 +159,15 @@ def worker(zone, root, proxy):
     real_control = ControlClient.__init__
     real_egress = Egress.__init__
 
+    class FixtureWait(threading.Event):
+        def wait(self, timeout=None):
+            if timeout is not None and timeout >= 30:
+                timeout /= 10
+            return super().wait(timeout)
+
     def init_control(self, *args, **kwargs):
         real_control(self, *args, **kwargs, clock=lambda: 10 * time.monotonic())
+        self.stop = FixtureWait()
 
     def init_egress(self, *args):
         origin, epoch = time.monotonic(), time.time()
@@ -617,13 +624,26 @@ def integration(root):
             phase="PENDING_REPORT",
             report=report(row["run"], row["item"], row["digest"], "PASS", 0, []),
         )
+        for index in range(20, 30):
+            seed_case(states["blue"], "blue", index)
         outbox = root / "blue/state/control-outbox.json"
+        until(
+            lambda: (
+                sum(e["t"] == "TU" for e in json.loads(outbox.read_text())["events"])
+                >= 10
+            )
+        )
         until(
             lambda: any(
                 e["t"] == "TF" for e in json.loads(outbox.read_text())["events"]
-            ),
-            timeout=65,
+            )
         )
+
+        def offline():
+            status, data, _ = http("/admin/overview", session=cookie)
+            return status == 200 and all(zone["offline"] for zone in data["workers"])
+
+        until(offline, timeout=110)
         proxy.paused = False
         history = until(
             lambda: http("/admin/models/vllm-ascend/runs", session=cookie)[1].get(
@@ -633,6 +653,7 @@ def integration(root):
         )
         finished = [task for run in history for task in run["tasks"]]
         assert len(finished) == 1 and finished[0]["status"] == "PASS", finished
+        until(lambda: len(tasks()) == 17, timeout=55)
         required = {
             "/api/v1/worker/" + route
             for route in ("heartbeat", "events", "snapshots", "command-receipts")
@@ -647,7 +668,7 @@ def integration(root):
         peak = max(length for *_, length in proxy.frames)
         assert peak < 2000, peak
         print(
-            f"INT-02/05  outbox replayed once after HTTP 503, {len(proxy.frames)} TLS requests including {len(platform_posts)} Yellow platform writes, max {peak} bytes",
+            f"INT-02/05  90s offline and 20+ events recovered, {len(proxy.frames)} TLS requests including {len(platform_posts)} Yellow platform writes, max {peak} bytes",
             flush=True,
         )
 

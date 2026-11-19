@@ -48,6 +48,8 @@
 | `POST /worker/command-receipts` | `{cmd_id,status,rev?,pos?,err?,ts}`。 |
 | `POST /worker/events` | `{w,i,ev:[{s,t,ts,...}]}`，返回 `{ok,need_snapshot,expected_seq?}`。 |
 | `POST /worker/snapshots` | `{w,i,sid,p,n,seq,kind,items}`，返回 `{ok,complete}`。 |
-| `GET /worker/configs/:revision` | `{revision,sha256,config}`，其中 SHA-256 按响应中配置 JSON 的 UTF-8 字节计算，配置版本不可变。 |
+| `GET /worker/configs/:revision` | `{revision,sha256,config,config_json}`，其中 SHA-256 按 `config_json` 的 UTF-8 字节计算，配置版本不可变。 |
 
-事件代码 `TU` 新任务，`TP` 阶段，`TL` 租约，`TF` 终态，`IP` 巡检，`QP` 队序。快照以 `task`、`device`、`queue` 分类，同一快照使用统一序号。设备和队列项使用与对应事件相同的业务字段。
+事件代码 `TU` 新任务，`TP` 阶段，`TL` 租约，`TF` 终态，`IP` 巡检，`QP` 队序。每个事件包最多接受 6 个事件。长租约由 `TL.ap` 分片，同任务第 1 片替换租约，后续片追加。队列项可用 `off` 指明候选组合分片的偏移。
+
+快照分为 `task`、`lease`、`device` 和 `queue`，同一快照的所有分片共用序号。租约项使用 `{tid,a}`，设备和队列项沿用相应事件的业务字段。Worker 重启可沿用 Outbox 的实例与序号，保证未确认事件能继续重放。
