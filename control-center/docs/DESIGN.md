@@ -93,6 +93,8 @@
 
 > v1.1 隔离联调实测通过：公开/管理员权限与掩码、双 Worker 90s 离线与恢复、连续三次插队、集群发布/重启应用、20+ 条事件补发、双平台写回；TLS 抓包 86 个请求，最大 1,761 字节。完整 NPU smoke、Yellow 主机、v1.5 Phase 5.5 及双平台取消仍按下方未勾选门槛记录。
 
+> v1.5 可回溯增量 `cb58ecd` 已落地 `repo_scope` 元数据、相关 API 类型、运行时注入 `clientIp` 和纯 JavaScript 恒时比较，并通过 28 项 Worker 测试。REQ-15～REQ-18 以及完整 REQ-20 portability 仍保持未勾选，等待健康/Workflow/排空删除接口、新迁移、Node 24 SQLite 双运行时和真实基础设施证据。
+
 
 #### 7.1 后端 + Worker 集成验证（不依赖前端，Phase 5.5 完成后立即跑绿）
 > 说明：v1.1 回归证据见 [backend-validation.md](backend-validation.md)；下列为补齐 v1.1 遗留项并升级至 v1.5 全量口径后的最新状态。
