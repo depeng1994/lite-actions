@@ -7,6 +7,7 @@
     "lint": "tsc --noEmit",
     "test:portability": "vitest run tests/portability-intercept.test.ts",
     "test:node-sqlite": "node --experimental-strip-types scripts/node-sqlite-smoke.mjs",
+    "test:node-server": "node --experimental-strip-types scripts/node-server-smoke.mjs",
     "dev": "wrangler dev",
     "seed": "node scripts/seed.mjs",
     "sync:frontend": "node scripts/sync-frontend.mjs"
