@@ -1,6 +1,7 @@
 """Opt-in, pull-only telemetry and command transport for the control center."""
 
 import copy
+import datetime as dt
 import hashlib
 import json
 import logging
@@ -70,6 +71,22 @@ def _actor(raw):
     return _login(raw.get("login")) if isinstance(raw, dict) else None
 
 
+def _submitted_at(run, fallback):
+    """Return the platform creation time without making another API request."""
+    value = run.get("created_at")
+    if value is None:
+        return int(fallback or 0)
+    if isinstance(value, (int, float)):
+        return int(value)
+    try:
+        parsed = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.timezone.utc)
+        return int(parsed.timestamp())
+    except (TypeError, ValueError, OverflowError):
+        return int(fallback or 0)
+
+
 def _allocation(record):
     return [
         {"h": node["host_id"], "d": sorted(node["devices"])}
@@ -96,6 +113,8 @@ def task_descriptor(key, record):
         "tr": _actor(run.get("triggering_actor") or run.get("actor")),
         "et": _bounded(run.get("event"), 40),
         "wf": _bounded(run.get("path"), 100),
+        "sub": _submitted_at(run, record.get("queued_at")),
+        "wn": _bounded(run.get("name"), 64),
         "ph": record["phase"] if record["phase"] in ACTIVE else "QUEUED",
         "ts": int(record.get("queued_at", 0)),
         "tm": record.get("phase_timestamps", {}),

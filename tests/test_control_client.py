@@ -62,6 +62,24 @@ class ControlTests(unittest.TestCase):
         self.calls.append((route, body))
         return self.responses[route]
 
+    def test_task_descriptor_carries_workflow_metadata_without_extra_requests(self):
+        item = record()
+        item["run"].update(
+            {
+                "created_at": "2026-11-20T00:00:00Z",
+                "name": "lite-ci-per-pr-alltest",
+            }
+        )
+        task = task_descriptor("metadata", item)
+        self.assertEqual(task["sub"], 1795132800)
+        self.assertEqual(task["wn"], "lite-ci-per-pr-alltest")
+        self.assertEqual(self.calls, [])
+
+    def test_task_descriptor_falls_back_to_queue_time_for_invalid_creation_time(self):
+        item = record(now=321)
+        item["run"]["created_at"] = "invalid"
+        self.assertEqual(task_descriptor("fallback", item)["sub"], 321)
+
     def test_heartbeat_only_pulls_commands_when_needed_and_wakes_router(self):
         client = self.client()
         with patch.object(client, "_send", side_effect=self.send):
