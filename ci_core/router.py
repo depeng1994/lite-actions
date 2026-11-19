@@ -23,7 +23,7 @@ from ci_core.contract import (
 )
 from ci_core.executor import ExternalNpuOccupancy, execute
 from ci_core.gitcode import RunChanged
-from ci_core.job_state import JobState
+from ci_core.job_state import JobState, ordered_queued
 from ci_core.plan import verify_definition
 from ci_core.reporting import (
     body_for,
@@ -68,29 +68,6 @@ def run_key(run):
         run.get("run_attempt", 1),
         run.get("_ci_dispatch_id"),
     )
-
-
-def ordered_queued(records):
-    queued = sorted(
-        ((k, r) for k, r in records.items() if r.get("phase") == "QUEUED"),
-        key=lambda kv: (
-            kv[1]["run"].get("created_at", ""),
-            str(kv[1]["run"]["id"]),
-            kv[1]["item"]["order"],
-        ),
-    )
-    # Keep the legacy ordering and its positions relative to Smoke while
-    # ordering only the Smoke positions by durable admission sequence.
-    smoke = iter(
-        sorted(
-            (pair for pair in queued if pair[1]["item"]["kind"] == "npu_smoke"),
-            key=lambda pair: pair[1].get("admission_seq", 0),
-        )
-    )
-    return [
-        next(smoke) if r["item"]["kind"] == "npu_smoke" else (key, r)
-        for key, r in queued
-    ]
 
 
 def eligible_topologies(case, pools):
@@ -171,6 +148,13 @@ def queue_telemetry(worker, pools, records, quarantine):
             }
         )
     return rows
+
+
+TRAIN_QUEUE_TIMEOUT_SECONDS = 72 * 3600
+
+
+def queue_timeout(kind):
+    return {"train": TRAIN_QUEUE_TIMEOUT_SECONDS, "worker_probe": 3600}.get(kind)
 
 
 class Router:
@@ -357,9 +341,12 @@ class Router:
     def consume_control(self):
         if self.control:
             for entry in self.control.commands():
-                self.control.complete(
-                    entry["cmd_id"], "FAILED", err="UNSUPPORTED_COMMAND"
-                )
+                command = entry["cmd_id"]
+                if entry["cmd_type"] == "MOVE_UP":
+                    result = self.state.move_up(entry["payload"]["task_key"], command)
+                    self.control.complete(command, **result)
+                else:
+                    self.control.complete(command, "FAILED", err="UNSUPPORTED_COMMAND")
 
     def client_for(self, run):
         repo = run.get("_ci_repo", REPO)
@@ -1040,12 +1027,13 @@ class Router:
             if queue in blocked_pools:
                 continue
             # Smoke waits for capacity while its originating run remains active.
-            if not is_smoke and time.time() - r["queued_at"] > 3600:
+            timeout = queue_timeout(item["kind"])
+            if timeout is not None and time.time() - r["queued_at"] > timeout:
                 self.finish(
                     key,
                     "RESOURCE_TIMEOUT",
                     124,
-                    ["Resource wait exceeded 3600 seconds"],
+                    [f"Resource wait exceeded {timeout} seconds"],
                 )
                 continue
             light = item["kind"] == "worker_probe"
