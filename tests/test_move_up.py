@@ -134,10 +134,12 @@ class MoveUpTests(unittest.TestCase):
                     "run_id": "a",
                     "attempt": 1,
                 },
+                "op_id": "priority-1",
             }
             result = state.swap_workflow(payload, "op-1")
             self.assertEqual(result["status"], "APPLIED")
-            self.assertEqual(state.swap_workflow(payload, "op-1"), result)
+            self.assertEqual(state.swap_workflow(payload, "cmd-retry"), result)
+            self.assertEqual(state.swap_workflow(payload, "cmd-retry-2"), result)
             ordered = [
                 key
                 for key, _ in ordered_queued(state.read())

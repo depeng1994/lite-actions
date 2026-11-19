@@ -281,8 +281,9 @@ class JobState:
                     _META, {"phase": "REPORTED", "next_sequence": 1}
                 )
                 applied = meta.setdefault("applied_priority_ops", {})
-                if command in applied:
-                    return applied[command]
+                operation = str(payload.get("op_id") or command)
+                if operation in applied:
+                    return applied[operation]
                 target = workflow_order_key(payload.get("a", {}))
                 predecessor = workflow_order_key(payload.get("b", {}))
                 queues = {}
@@ -350,6 +351,7 @@ class JobState:
                 order.insert(index + 1, predecessor)
                 meta["workflow_order"] = order
                 result = {"status": "APPLIED" if changed else "NOOP", "pools": receipts}
+                applied[operation] = result
                 applied[command] = result
                 self._write(current)
                 return result
