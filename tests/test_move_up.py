@@ -73,3 +73,75 @@ class MoveUpTests(unittest.TestCase):
         self.assertGreater(72 * 3600 + 60, TRAIN_QUEUE_TIMEOUT_SECONDS)
         self.assertIsNone(queue_timeout("npu_smoke"))
         self.assertEqual(queue_timeout("worker_probe"), 3600)
+
+    def test_workflow_swap_is_durable_idempotent_and_preserves_unshared_queues(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = JobState(root)
+            for workflow in ("a", "b"):
+                state.admit(
+                    [
+                        (
+                            f"{workflow}-case",
+                            {
+                                "phase": "QUEUED",
+                                "run": {
+                                    "id": workflow,
+                                    "_ci_provider": "github",
+                                    "_ci_repo": "depeng1994/lite-actions",
+                                    "run_attempt": 1,
+                                },
+                                "item": {
+                                    "target_pool": "shared",
+                                    "kind": "npu_smoke",
+                                    "order": 0,
+                                },
+                            },
+                        )
+                    ]
+                )
+            state.admit(
+                [
+                    (
+                        "other-case",
+                        {
+                            "phase": "QUEUED",
+                            "run": {
+                                "id": "other",
+                                "_ci_provider": "github",
+                                "_ci_repo": "depeng1994/lite-actions",
+                                "run_attempt": 1,
+                            },
+                            "item": {
+                                "target_pool": "isolated",
+                                "kind": "npu_smoke",
+                                "order": 0,
+                            },
+                        },
+                    )
+                ]
+            )
+            payload = {
+                "a": {
+                    "provider": "github",
+                    "repo": "depeng1994/lite-actions",
+                    "run_id": "b",
+                    "attempt": 1,
+                },
+                "b": {
+                    "provider": "github",
+                    "repo": "depeng1994/lite-actions",
+                    "run_id": "a",
+                    "attempt": 1,
+                },
+            }
+            result = state.swap_workflow(payload, "op-1")
+            self.assertEqual(result["status"], "APPLIED")
+            self.assertEqual(state.swap_workflow(payload, "op-1"), result)
+            ordered = [
+                key
+                for key, _ in ordered_queued(state.read())
+                if key in {"a-case", "b-case"}
+            ]
+            self.assertEqual(ordered, ["b-case", "a-case"])
+            self.assertEqual(state.read()["other-case"]["queue_rank"], 1)

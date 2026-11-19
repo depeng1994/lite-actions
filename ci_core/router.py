@@ -373,6 +373,11 @@ class Router:
                         command,
                         **self.state.move_up(entry["payload"]["task_key"], command),
                     )
+                elif entry["cmd_type"] == "SWAP_WORKFLOW":
+                    self.control.complete(
+                        command,
+                        **self.state.swap_workflow(entry["payload"], command),
+                    )
                 elif entry["cmd_type"] == "SYNC_CONFIG":
                     if not self.sync_pools(entry):
                         break

@@ -24,6 +24,56 @@ def queue_identity(record):
     return item.get("target_pool"), item.get("kind")
 
 
+def workflow_identity(record):
+    run = record.get("run", {})
+    return ":".join(
+        (
+            str(run.get("_ci_provider", "github")),
+            str(run.get("_ci_repo", "")),
+            str(run.get("id", "")),
+            str(run.get("run_attempt", 1)),
+        )
+    )
+
+
+def workflow_order_key(identity):
+    if isinstance(identity, str):
+        return identity
+    return ":".join(
+        (
+            str(identity.get("provider", "github")),
+            str(identity.get("repo", "")),
+            str(identity.get("run_id", "")),
+            str(identity.get("attempt", 1)),
+        )
+    )
+
+
+def apply_workflow_order(current, meta):
+    order = {key: index for index, key in enumerate(meta.get("workflow_order", []))}
+    if not order:
+        return
+    queues = {}
+    for key, record in current.items():
+        if (
+            key == _META
+            or record.get("phase") != "QUEUED"
+            or record.get("item", {}).get("kind") == "worker_probe"
+        ):
+            continue
+        queues.setdefault(queue_identity(record), []).append((key, record))
+    for members in queues.values():
+        members.sort(
+            key=lambda pair: (
+                order.get(workflow_identity(pair[1]), 10**9),
+                pair[1].get("queue_rank", 10**9),
+                pair[1].get("admission_seq", 10**9),
+            )
+        )
+        for rank, (_, record) in enumerate(members, 1):
+            record["queue_rank"] = rank
+
+
 def ordered_queued(records):
     queued = sorted(
         ((k, r) for k, r in records.items() if r.get("phase") == "QUEUED"),
@@ -100,6 +150,13 @@ class JobState:
                 item = current.get(key, {})
                 _apply_fields(item, fields)
                 current[key] = item
+                if fields.get("phase") == "QUEUED":
+                    apply_workflow_order(
+                        current,
+                        current.setdefault(
+                            _META, {"phase": "REPORTED", "next_sequence": 1}
+                        ),
+                    )
                 self._write(current)
 
     def admit(self, entries: list[tuple[str, dict]]) -> list[str]:
@@ -208,9 +265,94 @@ class JobState:
                     inserted.append(key)
                     seq += 1
                 meta["next_sequence"] = seq
+                apply_workflow_order(current, meta)
                 if inserted or legacy or not had_meta:
                     self._write(current)
                 return inserted
+
+    def swap_workflow(self, payload: dict, command: str) -> dict:
+        """Apply one durable Workflow-level exchange exactly once."""
+        with _MUTEX:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.with_suffix(".lock").open("a+b") as lock:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+                current = self._read_raw()
+                meta = current.setdefault(
+                    _META, {"phase": "REPORTED", "next_sequence": 1}
+                )
+                applied = meta.setdefault("applied_priority_ops", {})
+                if command in applied:
+                    return applied[command]
+                target = workflow_order_key(payload.get("a", {}))
+                predecessor = workflow_order_key(payload.get("b", {}))
+                queues = {}
+                for key, record in current.items():
+                    if (
+                        key == _META
+                        or record.get("phase") != "QUEUED"
+                        or record.get("item", {}).get("kind") == "worker_probe"
+                    ):
+                        continue
+                    queues.setdefault(queue_identity(record), []).append((key, record))
+                receipts = []
+                changed = False
+                for (pool, kind), members in queues.items():
+                    members.sort(
+                        key=lambda pair: pair[1].get(
+                            "queue_rank", pair[1].get("admission_seq", 0)
+                        )
+                    )
+                    for rank, (_, row) in enumerate(members, 1):
+                        row["queue_rank"] = rank
+                    target_rows = [
+                        pair for pair in members if workflow_identity(pair[1]) == target
+                    ]
+                    predecessor_rows = [
+                        pair
+                        for pair in members
+                        if workflow_identity(pair[1]) == predecessor
+                    ]
+                    if not target_rows or not predecessor_rows:
+                        receipts.append({"p": pool, "k": kind, "st": "NOOP", "c": 0})
+                        continue
+                    target_rank = min(
+                        row.get("queue_rank", 0) for _, row in target_rows
+                    )
+                    predecessor_rank = min(
+                        row.get("queue_rank", 0) for _, row in predecessor_rows
+                    )
+                    if target_rank < predecessor_rank:
+                        receipts.append({"p": pool, "k": kind, "st": "NOOP", "c": 0})
+                        continue
+                    for _, row in target_rows:
+                        row["queue_rank"] = predecessor_rank
+                    for _, row in predecessor_rows:
+                        row["queue_rank"] = target_rank
+                    changed = True
+                    receipts.append(
+                        {
+                            "p": pool,
+                            "k": kind,
+                            "st": "APPLIED",
+                            "c": len(target_rows) + len(predecessor_rows),
+                        }
+                    )
+                order = [
+                    item
+                    for item in meta.setdefault("workflow_order", [])
+                    if item not in {target, predecessor}
+                ]
+                try:
+                    index = order.index(predecessor)
+                except ValueError:
+                    index = len(order)
+                order.insert(index, target)
+                order.insert(index + 1, predecessor)
+                meta["workflow_order"] = order
+                result = {"status": "APPLIED" if changed else "NOOP", "pools": receipts}
+                applied[command] = result
+                self._write(current)
+                return result
 
     def move_up(self, key: str, command: str) -> dict:
         """Commit adjacent swap and command outcome in the same generation."""
