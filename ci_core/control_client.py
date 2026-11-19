@@ -387,8 +387,13 @@ class ControlClient:
             for group in devices:
                 key = json.dumps([group["pool"], group["h"], group["d"]])
                 state = [
-                    group.get("st"), group.get("qu"), group.get("qid"),
-                    group.get("pr", 0), group.get("v", 2), group.get("mc", 0), group.get("lo"),
+                    group.get("st"),
+                    group.get("qu"),
+                    group.get("qid"),
+                    group.get("pr", 0),
+                    group.get("v", 2),
+                    group.get("mc", 0),
+                    group.get("lo"),
                 ]
                 # A skipped group has no fresh reading. A quarantine change still
                 # needs reporting independently of whether there is a reading.

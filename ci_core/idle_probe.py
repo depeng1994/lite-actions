@@ -72,7 +72,9 @@ def _health_key(pool, host, devices):
     return json.dumps([pool, host, sorted(devices)], separators=(",", ":"))
 
 
-def observe_health(worker, pools, records, *, execute=run, previous=None, probe_round=1):
+def observe_health(
+    worker, pools, records, *, execute=run, previous=None, probe_round=1
+):
     """Probe every configured node and return occupancy plus visibility state.
 
     Visibility is checked for leased and paused groups as well. Occupancy is
@@ -120,7 +122,12 @@ def observe_health(worker, pools, records, *, execute=run, previous=None, probe_
                 failures = 0 if visible else min(int(old.get("mc", 0)) + 1, 5)
                 visibility = 0 if visible else (2 if failures >= 5 else 1)
                 last_online = now if visible else old.get("lo")
-                health[key] = {"v": visibility, "mc": failures, "lo": last_online, "pr": probe_round}
+                health[key] = {
+                    "v": visibility,
+                    "mc": failures,
+                    "lo": last_online,
+                    "pr": probe_round,
+                }
                 resources = resource_keys([{"host_id": host, "devices": devices}])
                 if set(resources).intersection(leased):
                     continue
@@ -140,7 +147,9 @@ class IdleProbe:
         self.worker = worker
         self.view = view
         self.interval = interval
-        self.state_path = Path(state_dir) / "visibility-probe.json" if state_dir else None
+        self.state_path = (
+            Path(state_dir) / "visibility-probe.json" if state_dir else None
+        )
         self.stop = threading.Event()
         self.thread = threading.Thread(
             target=self.run, name="npu-idle-probe", daemon=True
@@ -160,7 +169,11 @@ class IdleProbe:
         pools, records = self.view()
         self.probe_round += 1
         states, complete_time, health = observe_health(
-            self.worker, pools, records, previous=self.health, probe_round=self.probe_round
+            self.worker,
+            pools,
+            records,
+            previous=self.health,
+            probe_round=self.probe_round,
         )
         self.sample = (states, complete_time, pools)
         self.health = health
@@ -169,7 +182,11 @@ class IdleProbe:
             fd, name = tempfile.mkstemp(dir=self.state_path.parent)
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as file:
-                    json.dump({"round": self.probe_round, "groups": self.health}, file, separators=(",", ":"))
+                    json.dump(
+                        {"round": self.probe_round, "groups": self.health},
+                        file,
+                        separators=(",", ":"),
+                    )
                     file.flush()
                     os.fsync(file.fileno())
                 os.replace(name, self.state_path)

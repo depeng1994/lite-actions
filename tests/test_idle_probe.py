@@ -56,17 +56,25 @@ class IdleProbeTests(unittest.TestCase):
     def test_visibility_health_counts_failures_without_resetting_last_online(self):
         self.pools["test"]["enabled"] = False
         with patch("ci_core.idle_probe._process_rows", return_value=[]):
-            _, completed, health = observe_health("blue", self.pools, {}, execute=self.execute, probe_round=1)
+            _, completed, health = observe_health(
+                "blue", self.pools, {}, execute=self.execute, probe_round=1
+            )
         self.assertIsNotNone(completed)
         key = '["test","198.51.100.1:22",[0,1]]'
-        self.assertEqual(health[key], {"v": 0, "mc": 0, "lo": health[key]["lo"], "pr": 1})
+        self.assertEqual(
+            health[key], {"v": 0, "mc": 0, "lo": health[key]["lo"], "pr": 1}
+        )
 
         previous = health
         with patch("ci_core.idle_probe._process_rows", side_effect=TimeoutError):
             for round_no in range(2, 7):
                 _, completed, previous = observe_health(
-                    "blue", self.pools, {}, previous=previous, probe_round=round_no
-                    , execute=self.execute
+                    "blue",
+                    self.pools,
+                    {},
+                    previous=previous,
+                    probe_round=round_no,
+                    execute=self.execute,
                 )
         self.assertIsNone(completed)
         self.assertEqual(previous[key]["v"], 2)
