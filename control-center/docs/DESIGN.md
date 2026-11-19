@@ -80,17 +80,17 @@
 > **可立即并行启动**：前端 Agent 直接以已确认的 `control-center/demo`（`cd770ce`）为 UI/交互基线，**将完整前端源码合入 GitHub 仓 `control-center/web/`**，按 [api-contract.md](api-contract.md) v1.5 对接真实 API，完成后由项目负责人在此标绿。
 
 - [x] **`FE-00` 交互原型 Demo 定稿与确认**：`codex/control-center-demo @ cd770ce`（Pools 时间轴双框渲染 + 下方排队表、统一 Workflow 表 + 列筛选排序 + 上方历史折叠展开、集群健康与两步排空删除展示、浅/深色主题）。
-- [x] **`FE-01` Pools 时间轴与排队面板正式化**：Site v19 已对接 `/api/v1/{public,admin}/timeline`，读取 `tasks_by_uid` 与 `queued_by_pool`，同租约多组独立画框、零卡探针不占设备行、设备在线/未知占用/暂停/排空中叠加、30s 静默轮询、直接以 `host_id ?? display_host_id` 呈现节点并按实际 `devices.length` 显示卡数。正式 Site 浏览器已核对 Blue 真实设备组、Yellow 暂停态和空排队面板。
+- [x] **`FE-01` Pools 时间轴与排队面板正式化**：Site v21 已对接 `/api/v1/{public,admin}/timeline`，读取 `tasks_by_uid` 与 `queued_by_pool`，同租约多组独立画框、零卡探针不占设备行、设备在线/未知占用/暂停/排空中叠加、30s 静默轮询、直接以 `host_id ?? display_host_id` 呈现节点并按实际 `devices.length` 显示卡数。正式 Site 浏览器已核对 Blue 真实设备组、Yellow 暂停态和空排队面板。
   - 后端依赖：`REQ-15`, `REQ-16`, `REQ-18`
-- [x] **`FE-02` 统一 Workflow 表格、上方 50 条历史分页/折叠与任务详情抽屉正式化**：Site v19 对接 `/api/v1/{public,admin}/workflows`、`/models`、`/tasks/:uid`，保留 12 列筛选/排序、固定负/零/正序号、表顶 50 条历史加载与折叠、容量清理提示、冷归档标签、北京时间（UTC+8）和仓库归属标签。正式 Site 构建、Workflow 交互测试、历史详情字段核对以及无节点分配历史 Workflow 的浏览器回归已通过。
+- [x] **`FE-02` 统一 Workflow 表格、上方 50 条历史分页/折叠与任务详情抽屉正式化**：Site v21 对接 `/api/v1/{public,admin}/workflows`、`/models`、`/tasks/:uid`，保留 12 列筛选/排序、固定负/零/正序号、表顶 50 条历史加载与折叠、容量清理提示、冷归档标签、北京时间（UTC+8）和仓库归属标签。正式 Site 构建、Workflow 交互测试、历史详情字段核对以及无节点分配历史 Workflow 的浏览器回归已通过。
   - 可验证子集已实现：`7968114` 正式前端通过 `history_limit=50` 与 cursor 追加加载历史 Workflow，保留本地列筛选/排序/折叠状态。完整冷热分层容量回归仍由 `INT-09`/`E2E-04` 跟踪。
   - 后端依赖：`REQ-16`, `REQ-19`
 - [ ] **`FE-03` 认证会话、双平台取消 Workflow 与 Workflow 级插队正式化**：Site v17 已按后端 `cancel_supported` 同时支持 GitHub/GitCode 取消，轮询 `/admin/cancellations/:cancelId` 更新双 Worker 停止和设备释放进度，Workflow 插队 409 会刷新正式队列并展示回执。真实双平台取消、真实回执和完整跨区联调仍待 INT-06/INT-07，故本条保持未勾选。
   - 可验证子集已实现：`f265931` 正式前端已改用 Workflow `queue_version`/`op_id` 插队接口，并按后端 `cancel_supported` 处理 GitHub/GitCode 取消入口，Site v14 已部署。完整回执轮询、跨 Worker 实机取消和双平台生产闭环仍未完成，故本条保持未勾选。
   - 后端依赖：`REQ-02`, `REQ-03`, `REQ-10`, `REQ-17`
-- [x] **`FE-04` 集群管理与 Super 用户管理正式化**：正式前端已对接 `/cluster`、`/cluster/{preview,publish,rollback}`、`/admin/users*`、`/admin/audits`；Super 列表移除重复查看密钥，创建/重置只显示一次性密钥；新增资产支持粘贴 `preflight.py --export-node-snippet` JSON 并提供只读预览；集群删除遵循排空→删除两步状态机，历史版本和回滚入口已接入，节点直接展示掩码/完整 `host_id`。`cluster-config.test.ts`、认证/权限测试、Node control-center smoke、Sites 静态构建与正式 Site v19 资源回归均通过。真实生产管理员浏览器操作仍由 E2E-01/E2E-09 跟踪。
+- [x] **`FE-04` 集群管理与 Super 用户管理正式化**：正式前端已对接 `/cluster`、`/cluster/{preview,publish,rollback}`、`/admin/users*`、`/admin/audits`；Super 列表移除重复查看密钥，创建/重置只显示一次性密钥；新增资产支持粘贴 `preflight.py --export-node-snippet` JSON 并提供只读预览；集群删除遵循排空→删除两步状态机，历史版本和回滚入口已接入，节点直接展示掩码/完整 `host_id`。`cluster-config.test.ts`、认证/权限测试、Node control-center smoke、Sites 静态构建与正式 Site v21 资源回归均通过。真实生产管理员浏览器操作仍由 E2E-01/E2E-09 跟踪。
   - 后端依赖：`REQ-02`, `REQ-12`, `REQ-15`, `REQ-18`
-- [x] **`FE-05` 源码全入 GitHub 仓与统一产物构建（ChatGPT Sites / 个人服务器 / CF Workers 共用）**：全量前端源码已合入 `control-center/web/`（零仓外私有路径引用）；`control-center/scripts/build-sites.mjs` 已统一产出 `control-center/dist/{client,server,.openai/hosting.json}`，Site 版本 19 已部署并实测静态资源、同源 API 代理、SPA 回退和正式集群状态映射。客户端仅使用相对 `/api/v1/*`，正式数据源为空数组且无 Demo 回退。
+- [x] **`FE-05` 源码全入 GitHub 仓与统一产物构建（ChatGPT Sites / 个人服务器 / CF Workers 共用）**：全量前端源码已合入 `control-center/web/`（零仓外私有路径引用）；`control-center/scripts/build-sites.mjs` 已统一产出 `control-center/dist/{client,server,.openai/hosting.json}`，Site 版本 21 已部署并实测静态资源、同源 API 代理、SPA 回退和正式集群状态映射。客户端仅使用相对 `/api/v1/*`，正式数据源为空数组且无 Demo 回退。
   - 后端依赖：`REQ-01`, `REQ-20`, `FE-01` ~ `FE-04`
 
 ---
