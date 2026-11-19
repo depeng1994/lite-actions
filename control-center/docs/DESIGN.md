@@ -80,9 +80,9 @@
 > **可立即并行启动**：前端 Agent 直接以已确认的 `control-center/demo`（`cd770ce`）为 UI/交互基线，**将完整前端源码合入 GitHub 仓 `control-center/web/`**，按 [api-contract.md](api-contract.md) v1.5 对接真实 API，完成后由项目负责人在此标绿。
 
 - [x] **`FE-00` 交互原型 Demo 定稿与确认**：`codex/control-center-demo @ cd770ce`（Pools 时间轴双框渲染 + 下方排队表、统一 Workflow 表 + 列筛选排序 + 上方历史折叠展开、集群健康与两步排空删除展示、浅/深色主题）。
-- [ ] **`FE-01` `[依赖项 · ⏳ 待前端 Agent 标绿]` Pools 时间轴与排队面板正式化**：对接 `/api/v1/{public,admin}/timeline`（读取 `tasks_by_uid` 与 `queued_by_pool`，同租约多组独立画框、零卡探针不占行、设备在线/未知占用/暂停/排空中叠加、30s 静默轮询、**直接以 `host_id ?? display_host_id` 呈现节点不加别名**、按实际 `devices.length` 显示卡数）。
+- [x] **`FE-01` Pools 时间轴与排队面板正式化**：Site v16 已对接 `/api/v1/{public,admin}/timeline`，读取 `tasks_by_uid` 与 `queued_by_pool`，同租约多组独立画框、零卡探针不占设备行、设备在线/未知占用/暂停/排空中叠加、30s 静默轮询、直接以 `host_id ?? display_host_id` 呈现节点并按实际 `devices.length` 显示卡数。正式 Site 浏览器已核对 Blue 真实设备组、Yellow 暂停态和空排队面板。
   - 后端依赖：`REQ-15`, `REQ-16`, `REQ-18`
-- [ ] **`FE-02` `[依赖项 · ⏳ 待前端 Agent 标绿]` 统一 Workflow 表格、上方 50 条历史分页/折叠与任务详情抽屉正式化**：对接 `/api/v1/{public,admin}/workflows`、`/models`、`/tasks/:uid`；保留全部 12 列筛选/排序、`-3,-2,-1,0,1,2...` 序号、表顶加载/折叠历史、容量清理末尾提示、冷归档标签、北京时间（UTC+8）标注与 `repo_scope` 归属标签。
+- [x] **`FE-02` 统一 Workflow 表格、上方 50 条历史分页/折叠与任务详情抽屉正式化**：Site v16 对接 `/api/v1/{public,admin}/workflows`、`/models`、`/tasks/:uid`，保留 12 列筛选/排序、固定负/零/正序号、表顶 50 条历史加载与折叠、容量清理提示、冷归档标签、北京时间（UTC+8）和仓库归属标签。正式 Site 构建、Workflow 交互测试和历史详情字段核对已通过。
   - 可验证子集已实现：`7968114` 正式前端通过 `history_limit=50` 与 cursor 追加加载历史 Workflow，保留本地列筛选/排序/折叠状态，Site v15 已部署。完整 12 列与冷热归档全量回归仍未完成，故本条保持未勾选。
   - 后端依赖：`REQ-16`, `REQ-19`
 - [ ] **`FE-03` `[依赖项 · ⏳ 待前端 Agent 标绿]` 认证会话、双平台取消 Workflow 与 Workflow 级插队正式化**：对接 `/auth/*`、`POST/GET /admin/cancellations*`（**已拍板：按后端 `cancel_supported` 同时开放 GitHub 与 GitCode 取消**）、`POST /admin/workflows/move-up` & `GET /admin/workflow-priority-ops/:opId`（携带 `queue_version`，409 冲突自动刷新，分 Worker/Pool/任务类型展示实时回执）。
