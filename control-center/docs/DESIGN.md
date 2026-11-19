@@ -85,6 +85,7 @@
 - [ ] **`FE-02` `[依赖项 · ⏳ 待前端 Agent 标绿]` 统一 Workflow 表格、上方 50 条历史分页/折叠与任务详情抽屉正式化**：对接 `/api/v1/{public,admin}/workflows`、`/models`、`/tasks/:uid`；保留全部 12 列筛选/排序、`-3,-2,-1,0,1,2...` 序号、表顶加载/折叠历史、容量清理末尾提示、冷归档标签、北京时间（UTC+8）标注与 `repo_scope` 归属标签。
   - 后端依赖：`REQ-16`, `REQ-19`
 - [ ] **`FE-03` `[依赖项 · ⏳ 待前端 Agent 标绿]` 认证会话、双平台取消 Workflow 与 Workflow 级插队正式化**：对接 `/auth/*`、`POST/GET /admin/cancellations*`（**已拍板：按后端 `cancel_supported` 同时开放 GitHub 与 GitCode 取消**）、`POST /admin/workflows/move-up` & `GET /admin/workflow-priority-ops/:opId`（携带 `queue_version`，409 冲突自动刷新，分 Worker/Pool/任务类型展示实时回执）。
+  - 可验证子集已实现：`f265931` 正式前端已改用 Workflow `queue_version`/`op_id` 插队接口，并按后端 `cancel_supported` 处理 GitHub/GitCode 取消入口，Site v14 已部署。完整回执轮询、跨 Worker 实机取消和双平台生产闭环仍未完成，故本条保持未勾选。
   - 后端依赖：`REQ-02`, `REQ-03`, `REQ-10`, `REQ-17`
 - [ ] **`FE-04` `[依赖项 · ⏳ 待前端 Agent 标绿]` 集群管理与 Super 用户管理正式化**：对接 `/cluster`、`/cluster/{preview,publish,rollback}`、`/admin/users*`、`/admin/audits`；**按已拍板口径落实**：① Super 用户列表移除“重复查看密钥”，改为“重置密钥（旧会话即刻失效）”+ 创建/重置一次性弹窗复制；② 新增资产采用「粘贴 `preflight.py --export-node-snippet` JSON 片段 + 自动解析只读预览」；③ **删除沿用 Demo 两步「先排空、再删除」**（排空中可点恢复，活动租约/排队引用/隔离归零后才开放删除）；④ 补齐历史版本列表与回滚入口；⑤ 节点直接展示掩码/完整 `host_id`，无别名。
   - 后端依赖：`REQ-02`, `REQ-12`, `REQ-15`, `REQ-18`
