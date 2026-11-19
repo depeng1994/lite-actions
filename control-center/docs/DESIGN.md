@@ -99,7 +99,7 @@
 
 > v1.1 隔离联调实测通过：公开/管理员权限与掩码、双 Worker 90s 离线与恢复、连续三次插队、集群发布/重启应用、20+ 条事件补发、双平台写回；TLS 抓包 86 个请求，最大 1,761 字节。完整 NPU smoke、Yellow 主机、v1.5 Phase 5.5 及双平台取消仍按下方未勾选门槛记录。
 
-> v1.5 可回溯增量 `cb58ecd`、`449534a`、`7858c59` 已落地 `repo_scope` 元数据、运行时注入 `clientIp`、纯 JavaScript 恒时比较及 REQ-15 健康探测。`9ca58a6` 已提供统一 `/workflows` 只读基线，`c57850f` 已提供 Workflow move-up 管理入口，`d727a4c` 已提供 REQ-18 的 DRAIN/RESUME/DELETE 四项服务端门禁与统一 Pool 暂停语义，`0be1d65` 已提供 SqlStore/BLOB 解码和 portability 静态拦截子集。REQ-16～REQ-18 的完整分页汇总、跨区交换、Worker 排空回执及完整 REQ-20 portability 仍保持未勾选，等待 Node 24 SQLite 双运行时和真实基础设施证据。
+> v1.5 可回溯增量 `cb58ecd`、`449534a`、`7858c59` 已落地 `repo_scope` 元数据、运行时注入 `clientIp`、纯 JavaScript 恒时比较及 REQ-15 健康探测。`9ca58a6` 已提供统一 `/workflows` 只读基线，`c57850f` 已提供 Workflow move-up 管理入口，`d727a4c` 已提供 REQ-18 的 DRAIN/RESUME/DELETE 四项服务端门禁与统一 Pool 暂停语义，`0be1d65` 已提供 SqlStore/BLOB 解码和 portability 静态拦截子集，`7845e11` 已提供 Node 24 `node:sqlite` SqlStore 适配器与 smoke。REQ-16～REQ-18 的完整分页汇总、跨区交换、Worker 排空回执及完整 REQ-20 portability 仍保持未勾选，等待 Node 24 SQLite 双运行时和真实基础设施证据。
 
 
 #### 7.1 后端 + Worker 集成验证（不依赖前端，Phase 5.5 完成后立即跑绿）
