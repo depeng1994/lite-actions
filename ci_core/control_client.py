@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import ssl
 import tempfile
 import threading
 import time
@@ -199,9 +200,15 @@ class ControlClient:
         request = self.policy.before(
             self._request(route, payload), repo="", provider="control"
         )
-        opener = urllib.request.build_opener(
-            urllib.request.ProxyHandler({}), _NoRedirect
-        )
+        handlers = [urllib.request.ProxyHandler({}), _NoRedirect()]
+        ca_file = os.environ.get("LITE_ACTIONS_CONTROL_CA_FILE")
+        if ca_file:
+            handlers.append(
+                urllib.request.HTTPSHandler(
+                    context=ssl.create_default_context(cafile=ca_file)
+                )
+            )
+        opener = urllib.request.build_opener(*handlers)
         with opener.open(request, timeout=5) as response:
             data = response.read(RESPONSE_LIMIT + 1)
         if len(data) > RESPONSE_LIMIT:

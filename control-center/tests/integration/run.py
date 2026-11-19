@@ -398,6 +398,8 @@ def integration(root):
             "/CN=localhost",
             "-addext",
             "subjectAltName=DNS:localhost,DNS:api.github.com,DNS:api.gitcode.com",
+            "-addext",
+            "basicConstraints=critical,CA:TRUE",
         ],
         check=True,
         capture_output=True,
@@ -436,7 +438,10 @@ def integration(root):
             + hmac.new(PEPPER.encode(), token.encode(), hashlib.sha256).hexdigest(),
         ]
     ]
-    environment = os.environ | {"SSL_CERT_FILE": str(cert), "NODE_ENV": "test"}
+    environment = os.environ | {
+        "LITE_ACTIONS_CONTROL_CA_FILE": str(cert),
+        "NODE_ENV": "test",
+    }
     states = {zone: JobState(root / zone) for zone in ZONES}
     cases = {
         zone: [seed_case(states[zone], zone, i) for i in range(4)] for zone in ZONES
