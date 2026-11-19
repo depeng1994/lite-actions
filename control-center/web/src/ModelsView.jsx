@@ -133,7 +133,7 @@ function SortHeader({ column, sort, change }) {
   </th>;
 }
 
-export function ModelsView({ model, cases, nodes, config, cancellations, priorities, queue, canManage, open }) {
+export function ModelsView({ model, cases, nodes, config, cancellations, priorities, queue, historyHasMore, loadMoreHistory, canManage, open }) {
   const [filters, setFilters] = useState({ model, repo: "", platform: "", pool: "", status: "" });
   const [columnFilters, setColumnFilters] = useState({});
   const [showColumns, setShowColumns] = useState(false);
@@ -183,6 +183,7 @@ export function ModelsView({ model, cases, nodes, config, cancellations, priorit
   const boundary = windowedHistory[Math.min(1, windowedHistory.length - 1)];
   const loadHistory = () => {
     revealBoundary.current = limit === 0 && !sort && activeMatches.length > 0;
+    if (limit >= historicalMatches.length && historyHasMore) loadMoreHistory?.();
     setLimit((count) => count + pageSize);
   };
   const repos = [...new Set(repositories.filter(({ name }) => !filters.model || name === filters.model).flatMap(({ sources }) => sources))].sort();
@@ -218,7 +219,7 @@ export function ModelsView({ model, cases, nodes, config, cancellations, priorit
         <span role="status">{activeMatches.length} 个活动 Workflow · 已显示 {shownHistory.length} / {historicalMatches.length} 个历史 Workflow</span>
         {windowedHistory.length > 0 && <button className="button small" aria-expanded={!historyCollapsed}
           onClick={() => setHistoryCollapsed((collapsed) => !collapsed)}>{historyCollapsed ? "展开历史 Workflow" : "折叠历史 Workflow"}</button>}
-        {!historyCollapsed && limit < historicalMatches.length && <button className="button small" onClick={loadHistory}>{limit ? "再加载" : "加载"} 50 个历史 Workflow</button>}
+        {!historyCollapsed && (limit < historicalMatches.length || historyHasMore) && <button className="button small" onClick={loadHistory}>{limit ? "再加载" : "加载"} 50 个历史 Workflow</button>}
         {activeColumnFilters > 0 && <button className="text-button" onClick={() => { setColumnFilters({}); setLimit((loaded) => loaded ? pageSize : 0); }}>清除列筛选</button>}
       </div>
       <div className="workflow-count-main">{sort && <button className="text-button" onClick={() => setSort(null)}>恢复队列顺序</button>}<span>北京时间 (UTC+8)</span></div>

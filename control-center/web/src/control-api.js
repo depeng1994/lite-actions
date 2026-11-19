@@ -154,6 +154,11 @@ function applyLiveArrays(snapshot) {
   liveHistory.splice(0, liveHistory.length, ...snapshot.history);
 }
 
+function nodesFromTimeline(timeline) {
+  const nodes = timelineToNodes(timeline);
+  return {nodes, nodesByRef: new Map(nodes.map((node) => [node.id, node]))};
+}
+
 export async function loadControlCenter(access = "public") {
   try {
     const [overview, timeline, models, cluster, workflowSnapshot] = await Promise.all([
@@ -161,8 +166,7 @@ export async function loadControlCenter(access = "public") {
     ]);
     if (!timeline?.workers?.length && !models?.models?.length) return null;
     const modelTabs = models.models || [];
-    const nodes = timelineToNodes(timeline);
-    const nodesByRef = new Map(nodes.map((node) => [node.id, node]));
+    const {nodes, nodesByRef} = nodesFromTimeline(timeline);
     const activeRuns = workflowSnapshot?.active?.length
       ? workflowSnapshot.active.map((row) => runFromWorkflow(row, nodesByRef))
       : [];
@@ -174,6 +178,7 @@ export async function loadControlCenter(access = "public") {
     const workflowOrder = activeRuns.filter((run) => run.cases.some((item) => item.status === "排队中"))
       .sort((a, b) => a.submitted - b.submitted).map(workflowKey);
     const snapshot = {overview, timeline, cluster, queueVersion: workflowSnapshot?.queue_version || 0,
+      historyCursor: workflowSnapshot?.next_cursor || null, historyHasMore: Boolean(workflowSnapshot?.has_more),
       clusterConfig: clusterViewConfig(cluster), clusterPools: clusterPoolNames(cluster), nodes, cases, workflowOrder, repositories, runs: activeRuns, history: historyRuns};
     applyLiveArrays(snapshot);
     return snapshot;
@@ -181,6 +186,17 @@ export async function loadControlCenter(access = "public") {
     console.info("控制面 API 暂不可用", error);
     return null;
   }
+}
+
+export async function loadMoreHistory(access = "public", cursor = null) {
+  if (!cursor) return {runs: [], cursor: null, hasMore: false};
+  const [timeline, workflowSnapshot] = await Promise.all([
+    request(`/${access}/timeline`), request(`/${access}/workflows?history_limit=50&cursor=${encodeURIComponent(cursor)}`),
+  ]);
+  const {nodes, nodesByRef} = nodesFromTimeline(timeline);
+  const runs = (workflowSnapshot?.history || []).map((row) => runFromWorkflow(row, nodesByRef, true));
+  liveHistory.push(...runs);
+  return {runs, nodes, cursor: workflowSnapshot?.next_cursor || null, hasMore: Boolean(workflowSnapshot?.has_more)};
 }
 
 export async function getSession() { try { return await request("/auth/me"); } catch { return {authenticated: false}; } }
@@ -204,4 +220,4 @@ export async function createUser(username) { return request("/admin/users", {met
 export async function resetUserKey(userId) { return request(`/admin/users/${encodeURIComponent(userId)}/reset-key`, {method: "POST"}); }
 export async function deleteUser(userId) { return request(`/admin/users/${encodeURIComponent(userId)}`, {method: "DELETE"}); }
 
-export const controlApi = {request, getSession, login, logout, cancelWorkflow, moveUp, moveWorkflowUp, clusterPreview, clusterPublish, listUsers, createUser, resetUserKey, deleteUser};
+export const controlApi = {request, getSession, login, logout, cancelWorkflow, moveUp, moveWorkflowUp, clusterPreview, clusterPublish, listUsers, createUser, resetUserKey, deleteUser, loadMoreHistory};

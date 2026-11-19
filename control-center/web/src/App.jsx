@@ -8,7 +8,7 @@ import {
 } from "./Dialogs.jsx";
 import { history, impactOf, initialCases, initialNodes, initialQueueOrder, poolId, repositories, runs, workflowKey } from "./formal-data.js";
 import { currentWorkflowQueue, moveWorkflow, queuedChildren } from "./workflows.js";
-import { cancelWorkflow as apiCancelWorkflow, clusterPreview, clusterPublish, createUser as apiCreateUser, deleteUser as apiDeleteUser, getSession, listUsers, loadControlCenter, login as apiLogin, logout as apiLogout, moveWorkflowUp as apiMoveWorkflowUp } from "./control-api.js";
+import { cancelWorkflow as apiCancelWorkflow, clusterPreview, clusterPublish, createUser as apiCreateUser, deleteUser as apiDeleteUser, getSession, listUsers, loadControlCenter, loadMoreHistory as apiLoadMoreHistory, login as apiLogin, logout as apiLogout, moveWorkflowUp as apiMoveWorkflowUp } from "./control-api.js";
 
 const pages = [["pools", "Pools 时间轴"], ["models", "模型仓"], ["cluster", "集群管理"]];
 const defaultModel = repositories[0].name;
@@ -62,6 +62,9 @@ export function App() {
   const [cases, setCases] = useState(initialCases);
   const [workflowOrder, setWorkflowOrder] = useState(initialQueueOrder);
   const [queueVersion, setQueueVersion] = useState(0);
+  const [historyCursor, setHistoryCursor] = useState(null);
+  const [historyHasMore, setHistoryHasMore] = useState(false);
+  const [, setHistoryVersion] = useState(0);
   const [accounts, setAccounts] = useState([]);
   const [signedIn, setSignedIn] = useState(null);
   const [audit, setAudit] = useState([]);
@@ -89,6 +92,8 @@ export function App() {
       setCases(snapshot.cases);
       setWorkflowOrder(snapshot.workflowOrder);
       setQueueVersion(snapshot.queueVersion || 0);
+      setHistoryCursor(snapshot.historyCursor || null);
+      setHistoryHasMore(Boolean(snapshot.historyHasMore));
       if (snapshot.clusterConfig) setConfig(snapshot.clusterConfig);
       setDataMode("live");
     };
@@ -181,6 +186,16 @@ export function App() {
 
   const queue = currentWorkflowQueue(cases, workflowOrder);
 
+  const loadMoreHistory = async () => {
+    if (!historyHasMore || !historyCursor || dataMode !== "live") return;
+    try {
+      const page = await apiLoadMoreHistory(signedIn ? "admin" : "public", historyCursor);
+      setHistoryCursor(page.cursor);
+      setHistoryHasMore(page.hasMore);
+      setHistoryVersion((version) => version + 1);
+    } catch (error) { notify(error.message); }
+  };
+
   const expedite = async (run) => {
     const key = workflowKey(run);
     const children = queuedChildren(cases, run);
@@ -270,7 +285,7 @@ export function App() {
     notify(`管理员 ${name} 已删除`);
   };
 
-  const viewProps = { nodes, clusterPools, cases, config, queueVersion, canManage, open, go, audit, live: dataMode === "live" };
+  const viewProps = { nodes, clusterPools, cases, config, queueVersion, historyHasMore, loadMoreHistory, canManage, open, go, audit, live: dataMode === "live" };
   const item = modal?.caseId && cases.find(({ id }) => id === modal.caseId);
   const run = modal?.runKey && runs.find((run) => workflowKey(run) === modal.runKey);
   const historicalRun = modal?.historyId && history.find((run) => workflowKey(run) === modal.runKey);
