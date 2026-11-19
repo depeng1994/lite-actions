@@ -93,6 +93,8 @@ export interface Timeline {
   })[];
   zero_card_tasks: TaskSummary[];
   projections: Projection[];
+  tasks_by_uid: Record<string, TaskSummary>;
+  queued_by_pool: Record<string, TaskSummary[]>;
   now: number;
 }
 export interface ModelRepo {
@@ -136,6 +138,11 @@ export interface TaskSummary extends RunIdentity {
   cancel_supported: boolean;
   can_move_up: boolean;
   queue_pos: number | null;
+  submitted_at: number | null;
+  workflow_name: string | null;
+  started_at: number | null;
+  allocated_cards: number;
+  storage_tier?: "hot" | "cold" | null;
   run_url: string;
 }
 export interface TaskDetail extends TaskSummary {

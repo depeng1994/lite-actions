@@ -17,7 +17,7 @@ type TaskRow = Pick<TaskSummary, "task_uid" | "worker_id" | "provider" | "repo" 
   reserved_at?: number; staging_at?: number; running_at?: number; cleaning_at?: number;
   exit_code?: number; cleanup_verified?: number; duration_sec?: number; timing_reliable: number;
   allocation_json?: string; actual_allocation_json?: string; storage_tier?: "hot" | "cold"; cold_chunk_id?: string;
-  queue_pos?: number;
+  queue_pos?: number; submitted_at?: number; workflow_name?: string;
 };
 type QueueRow = {
   worker_id: WorkerId; pool_name: string; kind: CaseKind; task_uid: string; queue_pos: number;
@@ -50,12 +50,18 @@ async function summaries(context: Context, rows: TaskRow[]): Promise<TaskSummary
     const {task_uid, worker_id, provider, repo, logical_model, run_id, attempt, dispatch_id, case_id, test_id, label,
       kind, target_pool, req_nodes, req_devices, pr_number, pr_author, trigger_actor, event_type, workflow_file} = row;
     const shape = {logical_model, test_id, target_pool, req_nodes, req_devices};
+    const allocations = await Promise.all(allocation(row).map(async alloc => ({...await node(alloc.host_id), devices: alloc.devices})));
     return {
       task_uid, worker_id, provider, repo, run_id, attempt, dispatch_id, case_id, label, kind,
       pr_number, pr_author, trigger_actor, event_type, workflow_file, ...shape,
       phase: row.phase ?? null, status: row.status ?? null, queued_at: row.queued_at ?? null,
       finished_at: row.finished_at ?? null, queue_pos: row.queue_pos ?? null,
-      allocation: await Promise.all(allocation(row).map(async alloc => ({...await node(alloc.host_id), devices: alloc.devices}))),
+      submitted_at: row.submitted_at ?? row.queued_at ?? null,
+      workflow_name: row.workflow_name ?? (workflow_file?.split("/").at(-1)?.replace(/\.ya?ml$/, "") ?? null),
+      started_at: row.running_at ?? row.reserved_at ?? null,
+      allocated_cards: allocations.reduce((sum, item) => sum + item.devices.length, 0),
+      storage_tier: row.storage_tier ?? null,
+      allocation: allocations,
       ...estimate(samples.get(durationKey(shape)) ?? [], context.now, row.running_at ?? row.reserved_at),
       can_move_up: row.phase === "QUEUED" && kind !== "worker_probe" && (row.queue_pos ?? 0) > 0,
       cancel_supported: Boolean(row.phase) && canCancel(context, provider, repo), run_url: runUrl(row),
@@ -122,7 +128,7 @@ function workflowIdentity(task: TaskSummary) {
 }
 
 function workflowName(task: TaskSummary) {
-  return task.workflow_file?.split("/").at(-1)?.replace(/\.ya?ml$/, "") ?? null;
+  return task.workflow_name ?? task.workflow_file?.split("/").at(-1)?.replace(/\.ya?ml$/, "") ?? null;
 }
 
 function workflowScope(task: TaskSummary) {
@@ -135,58 +141,107 @@ function workflowRows(tasks: TaskSummary[], history: boolean): WorkflowRow[] {
     const key = workflowIdentity(task);
     groups.set(key, [...(groups.get(key) ?? []), task]);
   }
-  return [...groups.values()].map((cases, index) => {
+  const rows = [...groups.values()].map((cases) => {
     const first = cases[0];
     const active = cases.some(item => item.phase != null);
-    const queued = cases.some(item => item.phase === "QUEUED");
+    const inFlight = cases.some(item => item.phase != null && item.phase !== "QUEUED");
+    const queued = cases.some(item => item.phase === "QUEUED" && item.kind !== "worker_probe");
     const passed = cases.every(item => item.status === "PASS");
     const failed = cases.some(item => item.status && item.status !== "PASS");
     const finished = cases.map(item => item.finished_at ?? 0).filter(Boolean);
     const started = cases.map(item => item.queued_at ?? 0).filter(Boolean);
-    const cards = cases.reduce((sum, item) => sum + item.allocation.reduce((n, allocation) => n + allocation.devices.length, 0), 0);
-    const durations = cases.reduce((sum, item) => sum + (item.finished_at && item.queued_at ? Math.max(0, item.finished_at - item.queued_at) : 0), 0);
+    const cards = Math.max(0, ...cases.map(item => item.allocated_cards));
+    const measured = cases.filter(item => item.allocated_cards > 0 && item.started_at != null &&
+      (item.finished_at != null || inFlight) && item.estimate_status !== "NO_ESTIMATE");
+    const durations = measured.reduce((sum, item) => sum + Math.max(0,
+      (item.finished_at ?? (inFlight ? Date.now() / 1000 : item.started_at!)) - item.started_at!), 0);
     return {
       provider: first.provider, repo: first.repo, run_id: first.run_id, attempt: first.attempt,
-      sequence: history ? -(index + 1) : queued ? index + 1 : 0,
+      sequence: history ? 0 : queued ? 0 : 0,
       submitted_at: started.length ? Math.min(...started) : null,
       repo_scope: workflowScope(first), logical_model: first.logical_model,
       workflow_name: workflowName(first), workflow_file: first.workflow_file,
       pools: [...new Set(cases.map(item => item.target_pool))], max_cards: cards,
-      result: history ? (passed ? "PASS" : "FAIL") : "QUEUED",
+      result: (history ? (passed ? "PASS" : "FAIL") : "QUEUED") as WorkflowRow["result"],
       trigger_actor: first.trigger_actor, event_type: first.event_type,
       pr_number: first.pr_number, pr_author: first.pr_author,
       started_at: started.length ? Math.min(...started) : null,
       finished_at: finished.length ? Math.max(...finished) : null,
-      card_hours: durations ? cards * durations / 3600 : null,
-      card_hours_as_of_now: !history && active,
-      card_hours_partial: !history && !cases.every(item => item.finished_at != null),
+      card_hours: durations && measured.length ? Number((measured.reduce((sum, item) => sum + item.allocated_cards *
+        Math.max(0, (item.finished_at ?? (inFlight ? Date.now() / 1000 : item.started_at!)) - item.started_at!), 0) / 3600).toFixed(2)) : null,
+      card_hours_as_of_now: !history && inFlight,
+      card_hours_partial: measured.length > 0 && measured.length < cases.filter(item => item.allocated_cards > 0).length,
       cancel_supported: cases.some(item => item.cancel_supported),
       can_move_up: cases.some(item => item.can_move_up), cases,
     };
   });
+  if (history) {
+    rows.sort((left, right) => (right.finished_at ?? 0) - (left.finished_at ?? 0) ||
+      workflowIdentity(left.cases[0]).localeCompare(workflowIdentity(right.cases[0])));
+    rows.forEach((row, index) => { row.sequence = -(index + 1); });
+  } else {
+    const queue = rows.filter(row => row.cases.some(item => item.phase === "QUEUED" && item.kind !== "worker_probe"))
+      .sort((left, right) => (left.submitted_at ?? Number.MAX_SAFE_INTEGER) - (right.submitted_at ?? Number.MAX_SAFE_INTEGER) ||
+        workflowIdentity(left.cases[0]).localeCompare(workflowIdentity(right.cases[0])));
+    queue.forEach((row, index) => { row.sequence = index + 1; });
+    rows.forEach(row => { if (row.cases.some(item => item.phase != null && item.phase !== "QUEUED")) row.sequence = 0; });
+  }
+  return rows;
 }
 
 export async function workflows(context: Context): Promise<WorkflowList> {
-  const limit = Number(context.url.searchParams.get("limit") ?? 50);
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) throw new HttpError(400, "INVALID_LIMIT");
+  const legacyLimit = context.url.searchParams.get("limit");
+  const requestedHistory = context.url.searchParams.get("history_limit");
+  const historyLimit = Number(requestedHistory ?? legacyLimit ?? 0);
+  if (!Number.isSafeInteger(historyLimit) || historyLimit < 0 || historyLimit > 50) throw new HttpError(400, "INVALID_LIMIT");
+  const model = context.url.searchParams.get("model");
+  const repo = context.url.searchParams.get("repo");
+  const platform = context.url.searchParams.get("platform");
+  const pool = context.url.searchParams.get("pool");
+  const status = context.url.searchParams.get("status");
+  if (status && !["active", "history"].includes(status)) throw new HttpError(400, "INVALID_STATUS");
   const {DB: db} = context.env;
   const result = await db.batch<TaskRow>([
     db.prepare(ACTIVE_SELECT + " ORDER BY a.queued_at,a.task_uid"),
-    db.prepare("SELECT * FROM task_index ORDER BY finished_at DESC,task_uid DESC LIMIT 500"),
+    db.prepare("SELECT * FROM task_index ORDER BY finished_at DESC,provider,repo,run_id,attempt,task_uid LIMIT 2000"),
     db.prepare("SELECT COUNT(DISTINCT provider||'/'||repo||'/'||run_id||'/'||attempt) AS count FROM task_index"),
     db.prepare("SELECT COALESCE(MAX(queue_ver),0) AS version FROM queue_orders"),
   ]);
+  const filter = (row: WorkflowRow) => (!model || row.logical_model === model) && (!repo || row.repo === repo) &&
+    (!platform || row.provider === platform) && (!pool || row.pools.includes(pool));
   const active = await summaries(context, result[0].results as unknown as TaskRow[]);
-  const historical = await summaries(context, result[1].results.slice(0, 500) as unknown as TaskRow[]);
-  const activeRows = workflowRows(active, false);
-  const historyRows = workflowRows(historical, true);
-  const visibleHistory = historyRows.slice(0, limit);
+  const historical = historyLimit ? await summaries(context, result[1].results as unknown as TaskRow[]) : [];
+  const activeRows = workflowRows(active, false).filter(filter);
+  const allHistoryRows = workflowRows(historical, true).filter(filter);
+  const cursor = context.url.searchParams.get("cursor");
+  let historyRows = allHistoryRows;
+  if (cursor) {
+    try {
+      const decoded = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(cursor.replaceAll("-", "+").replaceAll("_", "/")), c => c.charCodeAt(0))));
+      if (!Array.isArray(decoded) || decoded.length !== 5) throw new Error();
+      const [cursorFinished, cursorProvider, cursorRepo, cursorRun, cursorAttempt] = decoded as [number, string, string, string, number];
+      if (!Number.isSafeInteger(cursorFinished) || typeof cursorProvider !== "string" || typeof cursorRepo !== "string" ||
+        typeof cursorRun !== "string" || !Number.isSafeInteger(cursorAttempt)) throw new Error();
+      const cursorWorkflow = JSON.stringify([cursorProvider, cursorRepo, cursorRun, cursorAttempt]);
+      historyRows = historyRows.filter(row => {
+        if ((row.finished_at ?? 0) !== cursorFinished) return (row.finished_at ?? 0) < cursorFinished;
+        return JSON.stringify([row.provider, row.repo, row.run_id, row.attempt]) > cursorWorkflow;
+      });
+    } catch { throw new HttpError(400, "INVALID_CURSOR"); }
+  }
+  const visibleHistory = historyRows.slice(0, historyLimit);
+  const last = visibleHistory.at(-1);
+  const next_cursor = last ? base64url(new TextEncoder().encode(JSON.stringify([
+    last.finished_at ?? 0, last.provider, last.repo, last.run_id, last.attempt,
+  ]))) : null;
+  const showActive = !status || status === "active";
+  const showHistory = !status || status === "history";
   return {
     queue_version: Number((result[3].results[0] as {version?: number} | undefined)?.version ?? 0),
-    active: activeRows, history: visibleHistory,
-    history_total: Number((result[2].results[0] as {count?: number} | undefined)?.count ?? historyRows.length),
-    next_cursor: historyRows.length > limit ? base64url(new TextEncoder().encode(String(limit))) : null,
-    has_more: historyRows.length > limit, truncated_by_capacity: Boolean(await db.prepare("SELECT 1 FROM system_meta WHERE meta_key='capacity_purged_before_ts'").first()),
+    active: showActive ? activeRows : [], history: showHistory ? visibleHistory : [],
+    history_total: showHistory ? allHistoryRows.length : 0,
+    next_cursor: showHistory && historyRows.length > historyLimit ? next_cursor : null,
+    has_more: showHistory && historyRows.length > historyLimit, truncated_by_capacity: Boolean(await db.prepare("SELECT 1 FROM system_meta WHERE meta_key='capacity_purged_before_ts'").first()),
     purged_notice: Boolean(await db.prepare("SELECT 1 FROM system_meta WHERE meta_key='capacity_purged_before_ts'").first()) ? "更早的记录已因容量清理" : null,
   };
 }
@@ -352,5 +407,14 @@ export async function timeline(context: Context): Promise<Timeline> {
       if (block) block.group_count = rows.length;
     }
   }
-  return {workers, now: context.now, zero_card_tasks: details.filter(task => task.kind === "worker_probe"), projections};
+  const tasks_by_uid = Object.fromEntries(details.map(task => [task.task_uid, task]));
+  const queued_by_pool: Record<string, TaskSummary[]> = {};
+  for (const task of details.filter(item => item.phase === "QUEUED")) {
+    const key = `${task.worker_id}/${task.target_pool}`;
+    (queued_by_pool[key] ??= []).push(task);
+  }
+  for (const tasksForPool of Object.values(queued_by_pool)) tasksForPool.sort((left, right) =>
+    (left.queue_pos ?? Number.MAX_SAFE_INTEGER) - (right.queue_pos ?? Number.MAX_SAFE_INTEGER));
+  return {workers, now: context.now, zero_card_tasks: details.filter(task => task.kind === "worker_probe"), projections,
+    tasks_by_uid, queued_by_pool};
 }
