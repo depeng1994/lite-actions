@@ -211,10 +211,10 @@ export function PoolsView({ nodes, cases, config, open, go, live }) {
 function ClusterControls({ target, state, config, open }) {
   const own = config.flags[target.id];
   const pending = config.pending;
-  const action = own === "暂停" ? "恢复" : "暂停";
+  const action = own === "暂停" || own === "排空中" ? "恢复" : "暂停";
   const Icon = action === "暂停" ? Pause : Play;
   return <div className="cluster-actions">
-    {own !== "排空中" && <button className="button small" disabled={Boolean(pending) || (!own && state != null)} onClick={() => open({ type: "config", target, action })}><Icon size={14} />{action}</button>}
+    <button className="button small" disabled={Boolean(pending) || (!own && state != null)} onClick={() => open({ type: "config", target, action })}><Icon size={14} />{action}</button>
     <button className={`button small ${own === "排空中" ? "danger-subtle" : ""}`} disabled={Boolean(pending) || (!own && state != null)} onClick={() => open({ type: "config", target, action: own === "排空中" ? "删除" : "排空" })}>
       <Trash size={14} />{own === "排空中" ? "删除" : "排空删除"}
     </button>
@@ -243,10 +243,10 @@ function ClusterRow({ target, status, nodes, config, canManage, open, node, grou
   </tr>;
 }
 
-export function ClusterView({ config, nodes, canManage, open, audit }) {
+export function ClusterView({ config, nodes, clusterPools = [], canManage, open, audit }) {
   const [worker, setWorker] = useState("Blue");
   const scoped = nodes.filter((node) => node.worker === worker);
-  const pools = [...new Set(scoped.map((node) => node.pool))];
+  const pools = [...new Set([...scoped.map((node) => node.pool), ...clusterPools.filter((entry) => entry.worker === worker).map((entry) => entry.pool)])];
   return <main className="standard-view">
     <div className="page-heading">
       <div><h1>集群管理</h1><p>查看 Worker、Pool、节点与设备组的配置及生效状态。</p></div>

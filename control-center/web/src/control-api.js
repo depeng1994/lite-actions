@@ -70,6 +70,32 @@ function timelineToNodes(timeline) {
   return nodes;
 }
 
+function clusterViewConfig(cluster) {
+  const flags = {};
+  for (const [poolName, pool] of Object.entries(cluster?.config || {})) {
+    const worker = workerLabel(pool.owner);
+    const poolKey = `${worker}/${poolName}`;
+    const poolFlag = pool.draining ? "排空中" : (pool.enabled === false || pool.paused ? "暂停" : null);
+    if (poolFlag) flags[poolKey] = poolFlag;
+    for (const node of pool.nodes || []) {
+      const nodeKey = node.node_ref || node.host_id || node.display_host_id;
+      const nodeFlag = pool.draining ? "排空中" : (node.paused ? "暂停" : poolFlag);
+      if (nodeFlag) flags[nodeKey] = nodeFlag;
+      for (const group of node.allocation_groups || []) {
+        const groupKey = rangeLabel(group.devices);
+        const groupFlag = pool.draining ? "排空中" : (group.paused ? "暂停" : nodeFlag);
+        if (groupFlag) flags[`${nodeKey}/${groupKey}`] = groupFlag;
+      }
+    }
+  }
+  const applied = Object.fromEntries((cluster?.workers || []).map((worker) => [workerLabel(worker.worker_id), worker.applied_rev || 0]));
+  return {desired: cluster?.revision || 0, applied, flags, pending: null};
+}
+
+function clusterPoolNames(cluster) {
+  return Object.entries(cluster?.config || {}).map(([pool, value]) => ({pool, worker: workerLabel(value.owner)}));
+}
+
 function taskToCase(task, nodesByRef, runKey, isHistory = false, index = 0) {
   const allocation = task.allocation?.[0];
   const node = allocation ? nodesByRef.get(allocation.node_ref) : null;
@@ -146,7 +172,7 @@ export async function loadControlCenter(access = "public") {
     const repositories = modelTabs.map((model) => ({name: model.slug, sources: (model.repos || []).map((repo) => repo.repo)}));
     const workflowOrder = activeRuns.filter((run) => run.cases.some((item) => item.status === "排队中"))
       .sort((a, b) => a.submitted - b.submitted).map(workflowKey);
-    const snapshot = {overview, timeline, cluster, nodes, cases, workflowOrder, repositories, runs: activeRuns, history: historyRuns};
+    const snapshot = {overview, timeline, cluster, clusterConfig: clusterViewConfig(cluster), clusterPools: clusterPoolNames(cluster), nodes, cases, workflowOrder, repositories, runs: activeRuns, history: historyRuns};
     applyLiveArrays(snapshot);
     return snapshot;
   } catch (error) {

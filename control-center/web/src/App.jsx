@@ -58,6 +58,7 @@ export function App() {
   const [route, setRoute] = useState(readRoute);
   const [theme, setTheme] = useTheme();
   const [nodes, setNodes] = useState(initialNodes);
+  const [clusterPools, setClusterPools] = useState([]);
   const [cases, setCases] = useState(initialCases);
   const [workflowOrder, setWorkflowOrder] = useState(initialQueueOrder);
   const [accounts, setAccounts] = useState([]);
@@ -83,9 +84,10 @@ export function App() {
       if (cancelled) return;
       if (!snapshot) { setDataMode("offline"); return; }
       setNodes(snapshot.nodes);
+      setClusterPools(snapshot.clusterPools || []);
       setCases(snapshot.cases);
       setWorkflowOrder(snapshot.workflowOrder);
-      if (snapshot.cluster?.revision) setConfig((previous) => ({...previous, desired: snapshot.cluster.revision}));
+      if (snapshot.clusterConfig) setConfig(snapshot.clusterConfig);
       setDataMode("live");
     };
     refresh();
@@ -216,21 +218,20 @@ export function App() {
   const publishConfig = async (target, action, addedNode) => {
     if (!canManage || dataMode !== "live" || config.pending) return;
     if (addedNode) { notify("新增节点需要粘贴并校验 preflight.py 片段"); return; }
-    const impact = addedNode ? null : impactOf(target, cases, nodes);
-    if (action === "删除" && (impact.leases.length || impact.queue.length || impact.affectedNodes.some((node) =>
-      node.unknown.some((group) => !target.group || target.group === group)))) return;
     const devices = target.group?.match(/\d+/g)?.map(Number);
     const scope = target.group ? "device_group" : target.node ? "node" : "pool";
     const operation = action === "暂停" || action === "恢复"
       ? {op: action === "暂停" ? "PAUSE" : "RESUME", scope, pool: target.pool, ...(target.node ? {host_id: target.node} : {}), ...(devices ? {devices} : {})}
-      : {op: target.group ? "DELETE_DEVICE_GROUP" : target.node ? "DELETE_NODE" : "DELETE_POOL", pool: target.pool, ...(target.node ? {host_id: target.node} : {}), ...(devices ? {devices} : {})};
+      : action === "排空"
+        ? {op: "DRAIN", scope, pool: target.pool, ...(target.node ? {host_id: target.node} : {}), ...(devices ? {devices} : {})}
+        : {op: target.group ? "DELETE_DEVICE_GROUP" : target.node ? "DELETE_NODE" : "DELETE_POOL", pool: target.pool, ...(target.node ? {host_id: target.node} : {}), ...(devices ? {devices} : {})};
     setConfig((previous) => ({...previous, pending: target.worker}));
     close();
     try {
       const preview = await clusterPreview(config.desired, operation);
-      if (action === "删除" && (preview.active_leases?.length || preview.drain_cancel_tasks?.length)) {
+      if (preview.blocking_reasons?.length) {
         setConfig((previous) => ({...previous, pending: null}));
-        notify("控制面要求先完成影响范围确认");
+        notify(`控制面拒绝${action}：${preview.blocking_reasons.join("、")}`);
         return;
       }
       const sync = await clusterPublish(config.desired, operation, preview.preview_hash);
@@ -268,7 +269,7 @@ export function App() {
     notify(`管理员 ${name} 已删除`);
   };
 
-  const viewProps = { nodes, cases, config, canManage, open, go, audit, live: dataMode === "live" };
+  const viewProps = { nodes, clusterPools, cases, config, canManage, open, go, audit, live: dataMode === "live" };
   const item = modal?.caseId && cases.find(({ id }) => id === modal.caseId);
   const run = modal?.runKey && runs.find((run) => workflowKey(run) === modal.runKey);
   const historicalRun = modal?.historyId && history.find((run) => workflowKey(run) === modal.runKey);

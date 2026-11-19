@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {test} from "node:test";
-import {workflowKey} from "../src/formal-data.js";
+import {now, workflowKey} from "../src/formal-data.js";
 import {currentWorkflowQueue, groupActiveRuns, moveWorkflow, summarizeRun} from "../src/workflows.js";
 import {resourceHealth} from "../src/resource-health.js";
 
@@ -21,7 +21,7 @@ function queuedCases() {
 
 test("Workflow totals count measured allocations and exclude unleased cases", () => {
   const cases = [
-    {id: "a", run: keyA, status: "运行中", worker: "Blue", pool: "A3", cards: 8, groups: ["0–7"], node: "node-a", started: 100, node: "node-a"},
+    {id: "a", run: keyA, status: "运行中", worker: "Blue", pool: "A3", cards: 8, groups: ["0–7"], node: "node-a", started: Math.max(0, now - 100), node: "node-a"},
     {id: "b", run: keyA, status: "排队中", worker: "Yellow", pool: "A5", cards: 16, groups: [], started: null},
   ];
   const active = groupActiveRuns(cases, [{id: "node-a", worker: "Blue", pool: "A3"}], [runA]);
