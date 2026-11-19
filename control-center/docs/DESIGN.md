@@ -83,6 +83,7 @@
 - [ ] **`FE-01` `[依赖项 · ⏳ 待前端 Agent 标绿]` Pools 时间轴与排队面板正式化**：对接 `/api/v1/{public,admin}/timeline`（读取 `tasks_by_uid` 与 `queued_by_pool`，同租约多组独立画框、零卡探针不占行、设备在线/未知占用/暂停/排空中叠加、30s 静默轮询、**直接以 `host_id ?? display_host_id` 呈现节点不加别名**、按实际 `devices.length` 显示卡数）。
   - 后端依赖：`REQ-15`, `REQ-16`, `REQ-18`
 - [ ] **`FE-02` `[依赖项 · ⏳ 待前端 Agent 标绿]` 统一 Workflow 表格、上方 50 条历史分页/折叠与任务详情抽屉正式化**：对接 `/api/v1/{public,admin}/workflows`、`/models`、`/tasks/:uid`；保留全部 12 列筛选/排序、`-3,-2,-1,0,1,2...` 序号、表顶加载/折叠历史、容量清理末尾提示、冷归档标签、北京时间（UTC+8）标注与 `repo_scope` 归属标签。
+  - 可验证子集已实现：`7968114` 正式前端通过 `history_limit=50` 与 cursor 追加加载历史 Workflow，保留本地列筛选/排序/折叠状态，Site v15 已部署。完整 12 列与冷热归档全量回归仍未完成，故本条保持未勾选。
   - 后端依赖：`REQ-16`, `REQ-19`
 - [ ] **`FE-03` `[依赖项 · ⏳ 待前端 Agent 标绿]` 认证会话、双平台取消 Workflow 与 Workflow 级插队正式化**：对接 `/auth/*`、`POST/GET /admin/cancellations*`（**已拍板：按后端 `cancel_supported` 同时开放 GitHub 与 GitCode 取消**）、`POST /admin/workflows/move-up` & `GET /admin/workflow-priority-ops/:opId`（携带 `queue_version`，409 冲突自动刷新，分 Worker/Pool/任务类型展示实时回执）。
   - 可验证子集已实现：`f265931` 正式前端已改用 Workflow `queue_version`/`op_id` 插队接口，并按后端 `cancel_supported` 处理 GitHub/GitCode 取消入口，Site v14 已部署。完整回执轮询、跨 Worker 实机取消和双平台生产闭环仍未完成，故本条保持未勾选。
