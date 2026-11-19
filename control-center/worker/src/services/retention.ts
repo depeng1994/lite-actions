@@ -75,12 +75,49 @@ function deleteOrphanWorkflowRuns(db: D1Database) {
       AND a.repo=workflow_runs.repo AND a.run_id=workflow_runs.run_id AND a.attempt=workflow_runs.attempt)`);
 }
 
+function deleteExpiredWorkflows(db: D1Database, cutoff: number) {
+  // Retention is keyed by the complete Workflow. A mixed or partially finished
+  // Workflow remains available until every child case has passed the cutoff.
+  return db.prepare(`DELETE FROM task_index
+    WHERE NOT EXISTS (SELECT 1 FROM tasks_active a WHERE a.provider=task_index.provider
+      AND a.repo=task_index.repo AND a.run_id=task_index.run_id AND a.attempt=task_index.attempt)
+      AND EXISTS (
+        SELECT 1 FROM (
+          SELECT provider,repo,run_id,attempt FROM task_index
+          WHERE finished_at<? GROUP BY provider,repo,run_id,attempt
+          HAVING MAX(finished_at)<?
+        ) expired
+        WHERE expired.provider=task_index.provider AND expired.repo=task_index.repo
+          AND expired.run_id=task_index.run_id AND expired.attempt=task_index.attempt
+      )`).bind(cutoff, cutoff);
+}
+
+function deleteOldestWorkflow(db: D1Database) {
+  // Select a bounded batch of whole historical Workflows per capacity round.
+  // This keeps multi-case runs intact while allowing a 200-row-sized
+  // maintenance step when most runs contain one or two cases.
+  return db.prepare(`DELETE FROM task_index
+    WHERE NOT EXISTS (SELECT 1 FROM tasks_active a WHERE a.provider=task_index.provider
+      AND a.repo=task_index.repo AND a.run_id=task_index.run_id AND a.attempt=task_index.attempt)
+      AND EXISTS (
+        SELECT 1 FROM (
+          SELECT provider,repo,run_id,attempt FROM task_index
+          WHERE NOT EXISTS (SELECT 1 FROM tasks_active a2 WHERE a2.provider=task_index.provider
+            AND a2.repo=task_index.repo AND a2.run_id=task_index.run_id AND a2.attempt=task_index.attempt)
+          GROUP BY provider,repo,run_id,attempt
+          ORDER BY MAX(finished_at),provider,repo,run_id,attempt LIMIT 200
+        ) oldest
+        WHERE oldest.provider=task_index.provider AND oldest.repo=task_index.repo
+          AND oldest.run_id=task_index.run_id AND oldest.attempt=task_index.attempt
+      ) RETURNING finished_at`);
+}
+
 export async function archive(context: Context) {
   const {DB: db} = context.env;
   const now = context.now;
   const cutoff = Math.floor((now - 365 * DAY) / DAY) * DAY;
   await db.batch([
-    db.prepare("DELETE FROM task_index WHERE finished_at<?").bind(cutoff),
+    deleteExpiredWorkflows(db, cutoff),
     deleteOrphanWorkflowRuns(db),
     deleteEmptyChunks(db, now),
     db.prepare("DELETE FROM worker_event_dedup WHERE received_at<?").bind(now - 7*DAY),
@@ -129,8 +166,7 @@ export async function capacity(context: Context, probe: SizeProbe = databaseSize
     // Select oldest first, cascade to hot detail and sample rows, and
     // reclaim cold blocks only when the last referenced summary is gone.
     const results = await db.batch<{finished_at: number}>([
-      db.prepare(`DELETE FROM task_index WHERE task_uid IN
-        (SELECT task_uid FROM task_index ORDER BY finished_at,task_uid LIMIT 200) RETURNING finished_at`),
+      deleteOldestWorkflow(db),
       deleteOrphanWorkflowRuns(db),
       deleteEmptyChunks(db, context.now),
       db.prepare(`INSERT INTO system_meta(meta_key,meta_value,updated_at)

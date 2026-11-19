@@ -27,7 +27,10 @@ function refreshWorkflowRuns(db: D1Database, now: number): Statement[] {
     db.prepare(`
     WITH all_cases AS (
       SELECT provider,repo,run_id,attempt,logical_model,submitted_at,workflow_name,workflow_file,
-        pr_number,pr_author,trigger_actor,event_type,phase,NULL AS status,NULL AS queue_pos,queued_at,reserved_at,
+        pr_number,pr_author,trigger_actor,event_type,phase,NULL AS status,
+        (SELECT q.queue_pos FROM queue_orders q WHERE q.task_uid=tasks_active.task_uid
+          AND q.worker_id=tasks_active.worker_id AND q.pool_name=tasks_active.target_pool AND q.kind=tasks_active.kind) AS queue_pos,
+        queued_at,reserved_at,
         running_at,NULL AS finished_at,NULL AS duration_sec,req_nodes,req_devices,timing_reliable,
         allocation_json,kind,target_pool,1 AS active
       FROM tasks_active

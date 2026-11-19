@@ -89,3 +89,33 @@ test("workflow card-hours use finished duration and allocated devices", async ()
   expect(page.history).toHaveLength(1);
   expect(page.history[0]).toMatchObject({card_hours: 10.13, result: "PASS", workflow_name: "Card Hours"});
 });
+
+test("mixed active and finished cases stay in one active Workflow row", async () => {
+  const run = "mixed-workflow";
+  await db.batch([
+    db.prepare(`INSERT INTO task_index(task_uid,finished_at,worker_id,provider,repo,logical_model,run_id,attempt,
+      case_id,test_id,label,kind,target_pool,req_nodes,req_devices,actual_allocation_json,status,timing_reliable,
+      submitted_at,workflow_name)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
+      "mixed-finished", now - 40, "blue", "github", "org/mixed", "mixed", run, 1,
+      "case-finished", "npu_smoke", "Finished case", "npu_smoke", "pool", 1, 8, "[]", "PASS", 1,
+      now - 100, "Mixed Workflow",
+    ),
+    db.prepare(`INSERT INTO tasks_active(task_uid,short_tid,task_key,worker_id,provider,repo,logical_model,run_id,
+      attempt,case_id,test_id,label,kind,target_pool,req_nodes,req_devices,phase,allocation_json,running_at,
+      timing_reliable,updated_at,submitted_at,workflow_name)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
+      "mixed-active", "mixed-active", "mixed-active-key", "blue", "github", "org/mixed", "mixed", run, 1,
+      "case-active", "npu_smoke", "Active case", "npu_smoke", "pool", 1, 8, "RUNNING",
+      JSON.stringify([{host_id: "198.51.100.7:22", devices: [0,1,2,3,4,5,6,7]}]), now - 20, 1, now,
+      now - 100, "Mixed Workflow",
+    ),
+  ]);
+  const page = await (await request("/public/workflows?history_limit=50&repo=org%2Fmixed")).json<{
+    active: Array<{sequence: number; cases: unknown[]}>; history: unknown[];
+  }>();
+  expect(page.active).toHaveLength(1);
+  expect(page.active[0].sequence).toBe(0);
+  expect(page.active[0].cases).toHaveLength(2);
+  expect(page.history).toHaveLength(0);
+});

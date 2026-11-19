@@ -221,9 +221,15 @@ export async function workflows(context: Context): Promise<WorkflowList> {
   const filter = (row: WorkflowRow) => (!model || row.logical_model === model) && (!repo || row.repo === repo) &&
     (!platform || row.provider === platform) && (!pool || row.pools.includes(pool));
   const active = await summaries(context, result[0].results as unknown as TaskRow[]);
-  const historical = historyLimit ? await summaries(context, result[1].results as unknown as TaskRow[]) : [];
-  const activeRows = workflowRows(active, false).filter(filter);
-  const allHistoryRows = workflowRows(historical, true).filter(filter);
+  // A Workflow can have completed child cases while another child is still
+  // active. Merge those historical cases into the active row so one Workflow
+  // never appears in both tables.
+  const historical = await summaries(context, result[1].results as unknown as TaskRow[]);
+  const activeKeys = new Set(active.map(workflowIdentity));
+  const mixedHistory = historical.filter(task => activeKeys.has(workflowIdentity(task)));
+  const activeRows = workflowRows([...active, ...mixedHistory], false).filter(filter);
+  const historicalOnly = historical.filter(task => !activeKeys.has(workflowIdentity(task)));
+  const allHistoryRows = workflowRows(historicalOnly, true).filter(filter);
   const cursor = context.url.searchParams.get("cursor");
   let historyRows = allHistoryRows;
   if (cursor) {

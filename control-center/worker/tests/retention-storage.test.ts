@@ -15,8 +15,8 @@ async function seed(count: number, prefix: string, finish: (index: number) => nu
   await db.batch([
     db.prepare(`INSERT INTO task_index(task_uid,finished_at,worker_id,provider,repo,logical_model,run_id,attempt,case_id,
       test_id,label,kind,target_pool,req_nodes,req_devices,actual_allocation_json,status,timing_reliable)
-      SELECT json_extract(value,'$[0]'),json_extract(value,'$[1]'),'blue','github','depeng1994/lite-actions','lite-actions',
-      '123',1,'case_000_test','test','test','npu_smoke','pool',1,8,'[]','PASS',1 FROM json_each(?)`).bind(payload),
+    SELECT json_extract(value,'$[0]'),json_extract(value,'$[1]'),'blue','github','depeng1994/lite-actions','lite-actions',
+      json_extract(value,'$[0]'),1,'case_000_test','test','test','npu_smoke','pool',1,8,'[]','PASS',1 FROM json_each(?)`).bind(payload),
     db.prepare(`INSERT INTO task_details_hot(task_uid,finished_at,detail_json)
       SELECT json_extract(value,'$[0]'),json_extract(value,'$[1]'),json_object('running_at',json_extract(value,'$[1]')-17)
       FROM json_each(?)`).bind(payload),
