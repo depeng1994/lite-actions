@@ -20,6 +20,7 @@ python3 -m unittest discover -s tests
 npm ci --prefix control-center/worker
 npm run lint --prefix control-center/worker
 npm test --prefix control-center/worker
+node --experimental-strip-types control-center/worker/scripts/node-control-center-smoke.mjs
 # REQ-20 落地后必跑的托管防锁死 DT 拦截门禁与 Sites 打包校验：
 # npm run test:portability --prefix control-center/worker
 # node control-center/scripts/build-sites.mjs
