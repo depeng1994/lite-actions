@@ -22,7 +22,7 @@ const server = startNodeServer({
   dbPath,
   staticDir,
   port: 8790,
-  env: {SUPER_SECRET: "test-super-secret", KEY_PEPPER: "test-pepper", DEV_INSECURE_COOKIE: "1"},
+  env: {SUPER_SECRET: "test-super-secret", KEY_PEPPER: "test-pepper", DEV_INSECURE_COOKIE: "1", TRUST_PROXY_HEADERS: "1"},
   handler: (request, env) => app.fetch(request, env),
 });
 try {
@@ -35,6 +35,23 @@ try {
   const overviewBody = await overview.text();
   assert.equal(overview.status, 200, overviewBody);
   assert.equal(JSON.parse(overviewBody).page_refresh_sec, 30);
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const failed = await fetch(`${base}/api/v1/auth/login`, {
+      method: "POST", headers: {"content-type": "application/json", "x-forwarded-for": "198.51.100.10"},
+      body: JSON.stringify({username: "super", secret: "wrong-secret"}),
+    });
+    assert.equal(failed.status, 401);
+  }
+  const locked = await fetch(`${base}/api/v1/auth/login`, {
+    method: "POST", headers: {"content-type": "application/json", "x-forwarded-for": "198.51.100.10"},
+    body: JSON.stringify({username: "super", secret: "wrong-secret"}),
+  });
+  assert.equal(locked.status, 429);
+  const separateIp = await fetch(`${base}/api/v1/auth/login`, {
+    method: "POST", headers: {"content-type": "application/json", "x-forwarded-for": "198.51.100.11"},
+    body: JSON.stringify({username: "super", secret: "wrong-secret"}),
+  });
+  assert.equal(separateIp.status, 401);
   const login = await fetch(`${base}/api/v1/auth/login`, {
     method: "POST", headers: {"content-type": "application/json"},
     body: JSON.stringify({username: "super", secret: "test-super-secret"}),

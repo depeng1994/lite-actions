@@ -48,6 +48,17 @@ async function writeResponse(response: Response, output: ServerResponse) {
   output.end(response.body ? Buffer.from(await response.arrayBuffer()) : undefined);
 }
 
+function clientIp(request: IncomingMessage, env: Record<string, unknown>): string {
+  if (env.TRUST_PROXY_HEADERS === "1") {
+    const forwarded = request.headers["x-forwarded-for"];
+    const candidate = Array.isArray(forwarded) ? forwarded[0] : forwarded?.split(",")[0]?.trim();
+    if (candidate && /^[0-9a-f:.]+$/i.test(candidate)) return candidate;
+    const real = request.headers["x-real-ip"];
+    if (typeof real === "string" && /^[0-9a-f:.]+$/i.test(real.trim())) return real.trim();
+  }
+  return request.socket.remoteAddress ?? "unknown";
+}
+
 export function startNodeServer(options: {
   handler: NodeFetchHandler;
   dbPath: string;
@@ -69,7 +80,7 @@ export function startNodeServer(options: {
         response = await assetResponse(staticDir, url.pathname, request.method);
         if (!response && request.headers.get("accept")?.includes("text/html")) response = await assetResponse(staticDir, "/index.html", request.method);
       }
-      response ??= await options.handler(request, {...options.env, DB: store, __clientIp: incoming.socket.remoteAddress ?? "unknown"});
+      response ??= await options.handler(request, {...options.env, DB: store, __clientIp: clientIp(incoming, options.env ?? {})});
       await writeResponse(response, output);
     } catch (error) {
       output.statusCode = 500;
