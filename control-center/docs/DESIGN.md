@@ -65,7 +65,7 @@
   - 可验证子集已实现：`3865335`/`4cc227f` 新增 `workflow_queue_meta`、`workflow_priority_ops`、`SWAP_WORKFLOW` 管理命令、幂等键、队列版本冲突、队首 NOOP 和操作回执查询，相关 Vitest 场景已通过；`b38fbf5` 覆盖同 attempt 晚发现和回队后沿用交换顺位。Worker 原子应用、多端分池回执和完整跨区实机联调仍未完成，故本条保持未勾选。
   - 依赖：`REQ-05`, `REQ-11`, `REQ-16` ｜ 门禁：`python3 -m unittest tests/test_workflow_priority.py tests/test_smoke_queue.py tests/test_upload_intercept.py -v`、`npm test -- workflow-priority.test.ts` 全绿
 - [ ] **`REQ-18` 集群两步「先排空再删除」状态机与统一 `enabled`/`paused` 暂停调度语义**
-  - 可验证子集已实现：新增 `0003_v15_cluster_drain.sql` 的 `cluster_drain_targets`，服务端支持 Pool `DRAIN`/`RESUME`、删除前 `RESOURCE_NOT_DRAINED` / 活动租约 / 排队引用 / 隔离四项门禁、Pool `enabled: false` 暂停语义及 `/cluster` 的 `draining` 状态。完整 Worker 侧排空取消、双端回执、实机重启与自动更新联调仍未完成，故本条保持未勾选。
+  - 可验证子集已实现：新增 `0003_v15_cluster_drain.sql` 的 `cluster_drain_targets`，服务端支持 Pool `DRAIN`/`RESUME`、删除前 `RESOURCE_NOT_DRAINED` / 活动租约 / 排队引用 / 隔离四项门禁、Pool `enabled: false` 暂停语义及 `/cluster` 的 `draining` 状态；`424f624` 增加 Worker 侧 disabled Pool 保持排队且不报 `POOL_DISABLED` 的回归。完整 Worker 侧排空取消、双端回执、实机重启与自动更新联调仍未完成，故本条保持未勾选。
   - 依赖：`REQ-12`, `REQ-13`, `REQ-15` ｜ 门禁：`python3 -m unittest tests/test_pools_hot_reload.py tests/test_upload_intercept.py -v`、`npm test -- cluster-config.test.ts` 全绿
 - [x] **`REQ-19` v1.5 TypeScript 契约冻结（`types/api.ts` + `model_repos.json` 含 `repo_scope`）与正式前端接入基线同步**
   - 实现：`cb58ecd`，`/models` 已返回组织仓/个人仓 `repo_scope`，契约类型与定向测试已同步。REQ-16～REQ-18 的业务接口仍保持未标绿。
