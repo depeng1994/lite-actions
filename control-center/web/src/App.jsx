@@ -106,9 +106,15 @@ export function App() {
       if (!snapshot) { setDataMode("offline"); return; }
       applySnapshot(snapshot);
     };
-    refresh();
-    const timer = setInterval(refresh, 30_000);
-    return () => { cancelled = true; clearInterval(timer); };
+    const refreshWhenVisible = () => { if (!document.hidden) refresh(); };
+    refreshWhenVisible();
+    const timer = setInterval(refreshWhenVisible, 30_000);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
   }, [signedIn]);
 
   useEffect(() => {
