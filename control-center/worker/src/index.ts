@@ -31,7 +31,7 @@ export default {
   async scheduled(controller: ScheduledController, env: Env): Promise<void> {
     const context: Context = {
       request: new Request("https://internal.invalid/"), url: new URL("https://internal.invalid/"),
-      env, params: {}, now: Math.floor(controller.scheduledTime / 1000),
+      env, params: {}, clientIp: "system", now: Math.floor(controller.scheduledTime / 1000),
     };
     try {
       if (controller.cron === "* * * * *") {
@@ -60,7 +60,14 @@ export default {
     }
     const isPublic = url.pathname.startsWith("/api/v1/public/");
     const key = url.href;
-    const context: Context = {request, env, url, params: {}, now: Math.floor(Date.now() / 1000)};
+    const context: Context = {
+      request, env, url, params: {},
+      // Header parsing belongs to the Cloudflare adapter. A Node/server
+      // adapter can inject its trusted socket address without changing the
+      // authentication and audit services.
+      clientIp: request.headers.get("CF-Connecting-IP") ?? "unknown",
+      now: Math.floor(Date.now() / 1000),
+    };
     try {
       if (isPublic) {
         if (request.method !== "GET") throw new HttpError(405, "READ_ONLY", "Public API is read-only", {Allow: "GET"});

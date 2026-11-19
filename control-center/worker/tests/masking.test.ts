@@ -1,5 +1,6 @@
 import {expect, test} from "vitest";
 import {maskHostId, nodeIdentity, sanitizePublic} from "../src/utils/mask";
+import {safeHashEqual} from "../src/utils/crypto";
 
 test("masks IPv4 ports and gives nodes with equal display addresses distinct keyed identities", async () => {
   expect(maskHostId("113.46.17.205:153")).toBe("113.xxx.xxx.205:153");
@@ -17,4 +18,12 @@ test("removes nested sensitive fields and masks address strings", () => {
     container_id: "c", diagnostics: "blocked", detail: "host=203.0.113.1:22"}]})).toEqual({
     rows: [{detail: "host=203.xxx.xxx.1:22"}],
   });
+});
+
+test("compares HMAC strings without runtime-specific crypto extensions", () => {
+  const digest = "a".repeat(64);
+  expect(safeHashEqual(digest, digest)).toBe(true);
+  expect(safeHashEqual(digest, "b".repeat(64))).toBe(false);
+  expect(safeHashEqual(digest, undefined)).toBe(false);
+  expect(safeHashEqual(digest, "short")).toBe(false);
 });

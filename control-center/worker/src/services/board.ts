@@ -1,7 +1,7 @@
 import {installation, supportsCancel} from "./cancelPlatform";
 import {modelMap} from "../modelMap";
 import {type Context, HttpError} from "../router";
-import type {CaseKind, DeviceGroup, ModelTab, Phase, Projection, Provider, RunGroup, TaskDetail, TaskSummary, Timeline, WorkerId} from "../types/api";
+import type {CaseKind, DeviceGroup, ModelRepo, ModelTab, Phase, Projection, Provider, RunGroup, TaskDetail, TaskSummary, Timeline, WorkerId} from "../types/api";
 import {pepper} from "./auth";
 import {type GroupRow, offline, overlaps, type Pools, projectDevice, type RawAllocation, type WorkerRow, workerStatus} from "./deviceState";
 import {durationKey, estimate, estimates, projectSchedule, type ProjectionRow, type QueueTask} from "./schedule";
@@ -86,6 +86,7 @@ export async function models(context: Context) {
     slug: model.slug, display_name: model.display_name,
     default: model.slug === modelMap.default_model, active_count: 0,
     repos: model.repos.map(repo => ({provider: repo.provider as Provider, repo: repo.repo,
+      repo_scope: repo.repo_scope as ModelRepo["repo_scope"],
       cancel_supported: canCancel(context, repo.provider as Provider, repo.repo)})),
   }]));
   for (const row of results) {

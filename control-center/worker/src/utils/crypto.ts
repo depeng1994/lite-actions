@@ -21,5 +21,15 @@ export async function hmac(pepper: string, message: string): Promise<string> {
 export function safeHashEqual(left: string, right: string | undefined): boolean {
   const valid = typeof right === "string" && /^[a-f0-9]{64}$/.test(right);
   const compare = valid ? right : "0".repeat(64);
-  return crypto.subtle.timingSafeEqual(encoder.encode(left), encoder.encode(compare)) && valid;
+  // Keep authentication independent from runtime-specific constant-time
+  // helpers. The inputs are fixed-width hexadecimal HMACs, so a byte-wise
+  // XOR comparison is sufficient here.
+  const a = encoder.encode(left);
+  const b = encoder.encode(compare);
+  let diff = a.length ^ b.length;
+  const length = Math.max(a.length, b.length);
+  for (let index = 0; index < length; index++) {
+    diff |= (a[index] ?? 0) ^ (b[index] ?? 0);
+  }
+  return diff === 0 && valid;
 }

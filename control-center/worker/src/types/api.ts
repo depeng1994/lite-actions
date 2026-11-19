@@ -98,6 +98,7 @@ export interface ModelRepo {
   provider: Provider;
   repo: string;
   cancel_supported: boolean;
+  repo_scope?: "组织仓" | "个人仓";
 }
 export interface ModelTab {
   slug: string;
@@ -184,4 +185,60 @@ export interface Cancellation extends RunIdentity {
   force_cancel_sent_at: number | null;
   platform_conclusion: string | null;
   platform_error: string | null;
+}
+
+export type DeviceHealthStatus = "PENDING_PROBE" | "ONLINE" | "PROBE_WARN" | "OFFLINE" | "PARTIAL_OFFLINE";
+export interface DeviceHealth {
+  status: DeviceHealthStatus;
+  missed_count: number;
+  last_online_at: number | null;
+}
+
+export type WorkflowResult = "QUEUED" | "PASS" | "FAIL";
+export interface WorkflowRow extends RunIdentity {
+  sequence: number;
+  submitted_at: number | null;
+  repo_scope?: "组织仓" | "个人仓";
+  logical_model: string;
+  workflow_name: string | null;
+  workflow_file: string | null;
+  pools: string[];
+  max_cards: number;
+  result: WorkflowResult;
+  trigger_actor: string | null;
+  event_type: string | null;
+  pr_number: number | null;
+  pr_author: string | null;
+  started_at: number | null;
+  finished_at: number | null;
+  card_hours: number | null;
+  card_hours_as_of_now: boolean;
+  card_hours_partial: boolean;
+  cancel_supported: boolean;
+  can_move_up: boolean;
+  active_cancel_id?: string;
+  cases: TaskSummary[];
+}
+export interface WorkflowList {
+  queue_version: number;
+  active: WorkflowRow[];
+  history: WorkflowRow[];
+  history_total: number;
+  next_cursor: string | null;
+  has_more: boolean;
+  truncated_by_capacity: boolean;
+  purged_notice: string | null;
+}
+export interface WorkflowMoveUpRequest {
+  provider: Provider;
+  repo: string;
+  run_id: string;
+  attempt: number;
+  queue_version: number;
+  idempotency_key?: string;
+}
+export interface WorkflowPriorityOp {
+  op_id: string;
+  queue_version: number;
+  status: "PENDING" | "NOOP" | "APPLIED" | "CONFLICT" | "FAILED";
 }

@@ -21,4 +21,6 @@ test("configured repositories form logical model tabs with a default", () => {
   expect(logicalModel("github", "depeng1994/lite-actions")).toBe("lite-actions");
   expect(logicalModel("github", "new/Project")).toBe("project");
   expect(modelMap.default_model).toBe("vllm-ascend");
+  expect(modelMap.models.find(model => model.slug === "lite-actions")?.repos[0].repo_scope).toBe("个人仓");
+  expect(modelMap.models.find(model => model.slug === "vllm-ascend")?.repos[0].repo_scope).toBe("组织仓");
 });

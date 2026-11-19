@@ -7,7 +7,7 @@ export function superName(context: Context) {
   return (context.env.SUPER_USERNAME || "super").toLowerCase();
 }
 export function clientIp(context: Context) {
-  return context.request.headers.get("CF-Connecting-IP") ?? "unknown";
+  return context.clientIp ?? "unknown";
 }
 export function pepper(context: Context) {
   if (!context.env.KEY_PEPPER) throw new HttpError(503, "AUTH_UNAVAILABLE");

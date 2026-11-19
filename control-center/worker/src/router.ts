@@ -26,6 +26,8 @@ export interface Context {
   params: Record<string, string>;
   url: URL;
   now: number;
+  /** Resolved by the runtime adapter. Core services never trust proxy headers. */
+  clientIp?: string;
   principal?: Principal;
   workerId?: WorkerId;
 }
