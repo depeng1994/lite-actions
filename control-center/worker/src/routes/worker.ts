@@ -1,6 +1,6 @@
 import {body, type Router, HttpError} from "../router";
 import {ingestEvents, ingestSnapshot} from "../services/ingest";
-import {integer, member, nullableInt, nullableString, string} from "../utils/validate";
+import {array, integer, member, nullableInt, nullableString, object, POOL, string} from "../utils/validate";
 
 export function workerRoutes(router: Router) {
   const prefix = "/api/v1/worker";
@@ -44,11 +44,21 @@ export function workerRoutes(router: Router) {
     const data = await body(context);
     const id = string(data.cmd_id, "command", 64, /^[a-zA-Z0-9_-]+$/);
     const status = member(data.status, "status", ["ACKED", "APPLIED", "NOOP", "CONFLICT", "FAILED"] as const);
-    const result = {rev: nullableInt(data.rev, "revision"), pos: nullableInt(data.pos, "position")};
+    const pools = data.pools == null ? null : array(data.pools, "pools", 32).map(value => {
+      const row = object(value, "pool receipt");
+      return {
+        p: string(row.p, "pool", 64, POOL),
+        k: member(row.k, "kind", ["train", "npu_smoke"] as const),
+        st: member(row.st, "pool status", ["APPLIED", "NOOP", "CONFLICT", "FAILED"] as const),
+        c: integer(row.c, "pool count", 0, 100000),
+      };
+    });
+    const result = {rev: nullableInt(data.rev, "revision"), pos: nullableInt(data.pos, "position"),
+      ...(pools ? {pools} : {})};
     const error = nullableString(data.err, "error", 200);
     const {DB: db} = context.env;
-    const command = await db.prepare("SELECT status,cmd_type,payload_json FROM commands WHERE cmd_id=? AND worker_id=?")
-      .bind(id, context.workerId).first<{status: string; cmd_type: string; payload_json: string}>();
+    const command = await db.prepare("SELECT status,cmd_type,op_id,payload_json FROM commands WHERE cmd_id=? AND worker_id=?")
+      .bind(id, context.workerId).first<{status: string; cmd_type: string; op_id: string | null; payload_json: string}>();
     if (!command) throw new HttpError(404, "COMMAND_NOT_FOUND");
     if (command.status === status) return Response.json({ok: true});
     if (command.status !== (status === "ACKED" ? "PENDING" : "ACKED")) {
@@ -65,6 +75,14 @@ export function workerRoutes(router: Router) {
           id, context.workerId, command.status),
       ...(sync ? [db.prepare(`UPDATE workers SET applied_rev=MAX(applied_rev,?),updated_at=?
         WHERE worker_id=? AND changes()=1`).bind(result.rev, context.now, context.workerId)] : []),
+      ...(status !== "ACKED" && command.op_id ? [db.prepare(`UPDATE workflow_priority_ops SET status=(
+        CASE
+          WHEN EXISTS (SELECT 1 FROM commands WHERE op_id=? AND status IN ('PENDING','ACKED')) THEN 'PENDING'
+          WHEN EXISTS (SELECT 1 FROM commands WHERE op_id=? AND status='FAILED') THEN 'FAILED'
+          WHEN EXISTS (SELECT 1 FROM commands WHERE op_id=? AND status='CONFLICT') THEN 'CONFLICT'
+          WHEN EXISTS (SELECT 1 FROM commands WHERE op_id=? AND status='APPLIED') THEN 'APPLIED'
+          ELSE 'NOOP'
+        END) WHERE op_id=?`).bind(command.op_id, command.op_id, command.op_id, command.op_id, command.op_id)] : []),
     ]);
     if (changed[0].meta.changes !== 1) throw new HttpError(409, "COMMAND_STATE_CONFLICT");
     return Response.json({ok: true});

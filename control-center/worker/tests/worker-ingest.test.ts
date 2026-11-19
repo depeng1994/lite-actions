@@ -123,3 +123,24 @@ test("multipart queue options and leases preserve all parts through completion",
   expect(await db.prepare("SELECT count(*) AS n FROM device_group_states WHERE quarantine_task_uid=? AND quarantined=1")
     .bind(ids.task_uid).first("n")).toBe(2);
 });
+
+test("workflow priority receipts preserve pool outcomes and close the operation", async () => {
+  await db.batch([
+    db.prepare(`INSERT INTO workflow_priority_ops(op_id,idempotency_key,queue_version_before,queue_version_after,
+      target_wf_json,swapped_wf_json,from_seq,to_seq,status,requested_by,created_at)
+      VALUES('op_receipt',NULL,1,2,'{}','{}',2,1,'PENDING','test',?)`).bind(now),
+    db.prepare(`INSERT INTO commands(cmd_id,worker_id,cmd_type,op_id,payload_json,status,created_by,created_at)
+      VALUES('cmd_receipt','yellow','SWAP_WORKFLOW','op_receipt','{}','PENDING','test',?)`).bind(now),
+  ]);
+  await heartbeat("yellow");
+  expect((await worker("yellow", "command-receipts", {cmd_id: "cmd_receipt", status: "ACKED"})).status).toBe(200);
+  const applied = await worker("yellow", "command-receipts", {
+    cmd_id: "cmd_receipt", status: "APPLIED",
+    pools: [{p: "pool_blue", k: "npu_smoke", st: "APPLIED", c: 2}],
+  });
+  expect(applied.status).toBe(200);
+  expect(await db.prepare("SELECT status,result_json FROM commands WHERE cmd_id='cmd_receipt'").first()).toMatchObject({status: "APPLIED"});
+  expect(JSON.parse(String(await db.prepare("SELECT result_json FROM commands WHERE cmd_id='cmd_receipt'").first<string>("result_json"))).pools)
+    .toEqual([{p: "pool_blue", k: "npu_smoke", st: "APPLIED", c: 2}]);
+  expect(await db.prepare("SELECT status FROM workflow_priority_ops WHERE op_id='op_receipt'").first("status")).toBe("APPLIED");
+});
