@@ -40,8 +40,8 @@
 #### Phase 2：服务端采集对账、设备巡检、排期估算与看板读接口（v1.1 基线）
 - [x] **`REQ-06` 服务端 Worker 接入网关与快照对账（v1.1 基线）**：`/api/v1/worker/*`、去重、缺口触发快照、分片原子对账、90s 心跳离线、不导入历史（v1.5 扩展 `IP/TU/SWAP_WORKFLOW` 见 `REQ-15/16/17`）。
 - [x] **`REQ-07` 设备只读空闲巡检与占用三态（v1.1 基线；⚠ v1.5 升级见 `REQ-15`）**：已实现未租用组 30 分钟空闲三态；**缺**全量设备 5 次失败离线、`last_online_at`、暂停后持续探测与 `/cluster` 状态输出。
-- [x] **`REQ-08` 元数据采集、耗时中位数与排期虚线（v1.1 基线；⚠ v1.5 升级见 `REQ-16`）**：已实现 10 次 PASS 中位数与贪心虚线；**缺**平台提交时间 `submitted_at` 与 Workflow 名称 `workflow_name`。
-- [x] **`REQ-09` 看板读接口（v1.1 基线；⚠ v1.5 升级见 `REQ-16`）**：已实现旧版 `/models/:slug/runs` 与基础 `/timeline`；**缺**统一 Workflow 表 `/workflows`（50 Workflow 分页、全局负/零/正序号、调度结果、运行总卡时）及 `/timeline` 内嵌 `tasks_by_uid`。
+- [x] **`REQ-08` 元数据采集、耗时中位数与排期虚线（v1.1 基线；⚠ v1.5 升级见 `REQ-16`）**：已实现 10 次 PASS 中位数与贪心虚线；`TU.sub/wn` 已由控制客户端从已有平台 Run 响应采集并入库，仍待完整 Workflow 汇总口径验收。
+- [x] **`REQ-09` 看板读接口（v1.1 基线；⚠ v1.5 升级见 `REQ-16`）**：已实现旧版 `/models/:slug/runs`、统一 `/workflows` 读接口和增强 `/timeline`；完整 103 条冷热分页、Workflow 物化汇总与容量粒度验收仍见 `REQ-16`。
 
 #### Phase 3：调度控制能力（v1.1 基线）
 - [x] **`REQ-10` 整次 Workflow 取消（GitHub App + GitCode + Cron）**：`/api/v1/admin/cancellations`、GitHub cancel / 2 分钟 force-cancel、GitCode `/stop`、1 分钟 Cron 跟踪与 Worker 轮询闭环。
@@ -59,7 +59,7 @@
   - 实现：`449534a` + `7858c59`，包含 D1 健康迁移、全量节点探测、轮次持久化、0～5 次失败状态、最近在线时间、IP/heartbeat 扩展和时间轴健康投影。Blue 线上已实测四个设备组 `ONLINE`。
   - 依赖：`REQ-04` ~ `REQ-07`, `REQ-12` ｜ 门禁：`npx wrangler d1 migrations apply DB --local`、`python3 -m unittest tests/test_idle_probe.py tests/test_upload_intercept.py -v`、`npm test -- device-state.test.ts cluster-config.test.ts` 全绿
 - [ ] **`REQ-16` 统一 Workflow 表格接口（`/workflows`）、50 Workflow 游标分页、汇总口径（调度结果 / 运行总卡时）与 `/timeline` 零 N+1 增强**
-  - 可验证子集已实现：`252d7a8` 增加 `history_limit`、model/repo/platform/pool/status 过滤、固定负/零/正序号、历史游标、卡时/分配字段以及 `/timeline` 的 `tasks_by_uid`/`queued_by_pool`；线上接口已返回 4 条真实历史 Workflow，`history_limit=1` 可续页。完整 103 条冷热分页、混合 Workflow 汇总和容量滚删仍未完成，故本条保持未勾选。
+  - 可验证子集已实现：`252d7a8` 增加 `history_limit`、model/repo/platform/pool/status 过滤、固定负/零/正序号、历史游标、卡时/分配字段以及 `/timeline` 的 `tasks_by_uid`/`queued_by_pool`；`d2b4f9e` 移除按任务数截断，避免多 case Workflow 被固定 2000 行误截断；`6149522` 与 `9e63671` 贯通 `TU.sub/wn` 到 `tasks_active/task_index`；线上接口已返回真实历史 Workflow，`history_limit=1` 可续页。完整 `workflow_runs` 物化汇总、103 条冷热分页、混合 Workflow 汇总和容量滚删仍未完成，故本条保持未勾选。
   - 依赖：`REQ-06`, `REQ-08`, `REQ-09`, `REQ-14`, `REQ-15` ｜ 门禁：`python3 -m unittest tests/test_control_client.py tests/test_queue_telemetry.py tests/test_upload_intercept.py -v`、`npm test -- workflows-board.test.ts board-read.test.ts retention-storage.test.ts` 全绿
 - [ ] **`REQ-17` Workflow 级版本化跨区插队（`POST /admin/workflows/move-up` + `SWAP_WORKFLOW` 命令 + 晚发现/回队沿用顺位 + 多端分池回执）**
   - 可验证子集已实现：`3865335`/`4cc227f` 新增 `workflow_queue_meta`、`workflow_priority_ops`、`SWAP_WORKFLOW` 管理命令、幂等键、队列版本冲突、队首 NOOP 和操作回执查询，相关 2 个 Vitest 场景已通过。Worker 原子应用、晚发现/回队顺位、多端分池回执和完整跨区实机联调仍未完成，故本条保持未勾选。

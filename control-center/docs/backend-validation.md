@@ -1,10 +1,10 @@
 # 后端验收与部署
 
-> **版本状态说明（2026-11-19）**
+> **版本状态说明（2026-11-20）**
 > - 本文档记录的是 **v1.1 基线**（`REQ-01` ~ `REQ-14`）在 YCY 隔离环境的后端回归验收证据与部署初始化方法。
 > - 前端 Demo（`codex/control-center-demo @ cd770ce`）与 [PRD.md](PRD.md) 已升级至 **v1.5**（统一 Workflow 表、Workflow 级插队、全量节点 5 次探测离线模型、两步先排空再删除、统一 `enabled`/`paused` 暂停调度语义，以及「初期 ChatGPT Sites 直出、代码全入 GitHub 仓、支持零业务改动迁至个人服务器」与 `portability_intercept` DT 门禁）。v1.5 后端/Worker 增量开发（`REQ-15` ~ `REQ-20`）、联调补齐（`INT-03/04/05/06/07/08/09/09B/10`）以及全栈端到端联调清单（含 8 条 `★ P0 关键必通` 标注）统一以 [DESIGN.md](DESIGN.md) 为准。
 
-> **正式环境证据（2026-11-20）**：线上控制面为 Cloudflare Worker + D1 `lite-actions-control-center`，正式 Site 版本 15 通过 server-backed API 访问线上数据。前端已移除 Demo/fixture 数据回退，正式库没有活动任务时只显示空队列。Blue 已配置线上 URL、机器密钥和请求 User-Agent，线上 overview 实测 `offline=false`、`applied_rev=1`，四个 Blue 设备组实测 `ONLINE` 且包含 `last_online_at`。CPU-only self-smoke run `44575519545` 已在部署 SHA `61879569f2201d2d6585e65030a333a7b8587154` 上通过。YCY Linux 全量 Python 回归为 `211 tests OK`，Worker lint 与 `15 files / 36 tests` 全绿。正式前端站点版本 15 与 Sites 静态资源、SPA 回退、正式集群暂停态和无错误日志核验全绿。REQ-15 定向门禁、REQ-16 读模型子集、REQ-17 服务端插队子集（含 Worker 原子交换/幂等单测）、REQ-18 服务端状态机和 REQ-20 portability 静态/BLOB 子集与 Node 24 `node:sqlite` 与 Node server adapter smoke 已通过，完整 103 条冷热分页/滚删、5 次实机故障演练、Worker 排空回执、Workflow Worker 原子回执、双运行时迁移和 Yellow 生产运行仍由 INT-03/INT-07/INT-08/INT-09/INT-10/REL-01 跟踪。
+> **正式环境证据（2026-11-20）**：线上控制面为 Cloudflare Worker + D1 `lite-actions-control-center`，正式 Site 版本 15 通过 server-backed API 访问线上数据。前端已移除 Demo/fixture 数据回退，正式库没有活动任务时只显示空队列。Blue 已配置线上 URL、机器密钥和请求 User-Agent，线上 overview 实测 `offline=false`、`applied_rev=1`，四个 Blue 设备组实测 `ONLINE` 且包含 `last_online_at`。CPU-only self-smoke run `44575519545` 已在部署 SHA `61879569f2201d2d6585e65030a333a7b8587154` 上通过。YCY Linux 全量 Python 回归为 `211 tests OK`，Worker lint 与 `15 files / 36 tests` 全绿。`6149522`、`9e63671` 已将 `TU.sub/wn` 从已有平台 Run 响应贯通至 `tasks_active/task_index`，控制客户端单测与 Worker ingest/schema 定向测试通过。正式前端站点版本 15 与 Sites 静态资源、SPA 回退、正式集群暂停态和无错误日志核验全绿。REQ-15 定向门禁、REQ-16 读模型子集、REQ-17 服务端插队子集（含 Worker 原子交换/幂等单测）、REQ-18 服务端状态机和 REQ-20 portability 静态/BLOB 子集与 Node 24 `node:sqlite` 与 Node server adapter smoke 已通过，完整 103 条冷热分页/滚删、`workflow_runs` 物化汇总、5 次实机故障演练、Worker 排空回执、Workflow Worker 原子回执、双运行时迁移和 Yellow 生产运行仍由 INT-03/INT-07/INT-08/INT-09/INT-10/REL-01 跟踪。
 
 v1.1 实现基线运行在 Cloudflare Worker + 单 D1 库；完成 `REQ-20` 托管解耦后，同一套核心业务与 `migrations/*.sql` 同时支持初期 **ChatGPT Sites** 直接部署、后期迁移 **个人服务器（Node.js 24 + 内置 `node:sqlite`）** 及备选 **Cloudflare Workers Free + D1 Free**。Blue 和 Yellow Worker 仅通过 HTTPS 出站接入，迁移时只改 `control_center.url`。
 

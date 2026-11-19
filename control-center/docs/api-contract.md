@@ -4,7 +4,7 @@
 
 > **实现状态说明**
 > - **已落地（v1.1 基线）**：认证与用户管理、公开/管理员脱敏与缓存隔离、Worker 接入协议底座、取消 Workflow、集群配置发布与热加载、D1 热冷归档与滚删、旧版 `/models/:slug/runs` 与 case 级 `/tasks/:taskUid/move-up`。
-> - **v1.5 增量/升级（`REQ-15` ~ `REQ-20`，待后端实施）**：全部节点 2 分钟在线探测与 5 次离线健康模型（`/timeline` & `/cluster`）、统一 Workflow 表 `GET /workflows`、Workflow 级插队 `POST /workflows/move-up` & `GET /workflow-priority-ops/:opId`、集群两步「先排空再删除」与统一 `enabled`/`paused` 暂停调度语义、`/timeline` 内嵌 `tasks_by_uid` 与 `queued_by_pool`、Worker `TU.sub/wn` 与 `IP.pr/v/mc/lo` 字段及 `SWAP_WORKFLOW` 命令，以及托管解耦（ChatGPT Sites 打包、个人服务器 Node 24 + `node:sqlite` 运行时与 `portability_intercept` DT 门禁）。
+> - **v1.5 增量/升级（`REQ-15` ~ `REQ-20`，部分已落地）**：全部节点 2 分钟在线探测与 5 次离线健康模型（`/timeline` & `/cluster`）、统一 Workflow 表 `GET /workflows`、Workflow 级插队 `POST /workflows/move-up` & `GET /workflow-priority-ops/:opId`、集群两步「先排空再删除」与统一 `enabled`/`paused` 暂停调度语义、`/timeline` 内嵌 `tasks_by_uid` 与 `queued_by_pool`、Worker `TU.sub/wn` 与 `IP.pr/v/mc/lo` 字段及 `SWAP_WORKFLOW` 命令，以及托管解耦（ChatGPT Sites 打包、个人服务器 Node 24 + `node:sqlite` 运行时与 `portability_intercept` DT 门禁）。完整 `workflow_runs` 物化汇总、冷热分页/滚删、真实双 Worker 与双运行时证据仍按 `DESIGN.md` 的未勾选门禁跟踪。
 > - **托管与迁移契约（`REQ-20`）**：全部页面统一通过同源相对路径 `/api/v1/*` 访问后端（零硬编码托管域名），静态 SPA 路由刷新回退 `/index.html`，`/api/*` 404 始终返回 JSON 错误体（绝不返回 HTML）；Blue/Yellow Worker 仅通过配置中的 `control_center.url` 指向当前托管域名（初期 ChatGPT Sites，后期可零代码修改迁至个人服务器或 Cloudflare Workers Free）。
 > - 类型定义基准：[types/api.ts](../worker/src/types/api.ts)（`REQ-19` 同步更新为 v1.5 冻结类型）。
 
