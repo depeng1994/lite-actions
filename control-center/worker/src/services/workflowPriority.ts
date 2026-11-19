@@ -81,6 +81,7 @@ async function operationView(context: Context, opId: string) {
     commands: commands.results.map(command => ({...command,
       result: command.result_json ? JSON.parse(String(command.result_json)) : null,
     })),
+    ...(op.status === "NOOP" ? {reason: "ALREADY_AT_HEAD"} : {}),
   };
 }
 
@@ -128,10 +129,9 @@ export async function moveWorkflowUp(context: Context, input: Record<string, unk
   const commandRows = [...workers].map(worker => {
     const cmd = commandId(worker);
     return {worker, cmd, statement: context.env.DB.prepare(`INSERT INTO commands(cmd_id,worker_id,cmd_type,op_id,payload_json,status,created_by,created_at)
-      SELECT ?,?,'SWAP_WORKFLOW',?,?,'PENDING',?,? WHERE EXISTS
-      (SELECT 1 FROM workflow_queue_meta WHERE id=1 AND queue_version=?)`).bind(cmd, worker, opId,
+      VALUES (?,?,'SWAP_WORKFLOW',?,?,'PENDING',?,?)`).bind(cmd, worker, opId,
         JSON.stringify({op_id: opId, queue_version: after, a: identity(parsed), b: identity(predecessor)}),
-        context.principal!.username, context.now, before)};
+        context.principal!.username, context.now)};
   });
   const created = await context.env.DB.batch([
     ...updates,
