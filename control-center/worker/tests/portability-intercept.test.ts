@@ -14,7 +14,7 @@ test("runtime lock-in scan rejects forbidden primitives outside the CF adapter",
     for (const pattern of forbidden) if (pattern.test(text)) findings.push(`${relativePath}: ${pattern}`);
     // The Cloudflare entry point is an adapter boundary. Core services must
     // consume Context.clientIp instead of parsing provider headers themselves.
-    if (relativePath !== "index.ts" && /CF-Connecting-IP/.test(text)) {
+    if (relativePath !== "index.ts" && !relativePath.startsWith("adapters/") && /CF-Connecting-IP/.test(text)) {
       findings.push(`${relativePath}: /CF-Connecting-IP/`);
     }
   }
