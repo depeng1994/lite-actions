@@ -117,7 +117,7 @@ function LeaseBar({ item, run, rows, config, nodes, selected, onClick }) {
 export function PoolsView({ nodes, cases, config, open, go, live }) {
   const [folded, setFolded] = useState({});
   const [queueScope, selectScope] = useState("");
-  const [selected, setSelected] = useState("1081-blue");
+  const [selected, setSelected] = useState(null);
   const rows = resourceRows(nodes, folded);
   const scopes = [...new Set([...nodes, ...cases].map((item) => poolId(item.worker, item.pool)))];
   useEffect(() => {

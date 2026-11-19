@@ -218,10 +218,6 @@ export function ResourceDialog({ target, cases, nodes, config, close, go }) {
   </Dialog>;
 }
 
-function exampleAddress(nodes) {
-  return Array.from({ length: 140 }, (_, index) => `203.0.113.${index + 80}`).find((ip) => !nodes.some((node) => node.ip === ip));
-}
-
 export function AddNodeDialog({ worker, nodes, close, save }) {
   const [raw, setRaw] = useState("");
   const [preview, setPreview] = useState(null);
@@ -248,7 +244,7 @@ export function AddNodeDialog({ worker, nodes, close, save }) {
     }}>
       <div className="form-fields form-grid">
         <label>Worker<select name="worker" defaultValue={worker}><option>Blue</option><option>Yellow</option></select></label>
-        <label>Pool<input name="pool" required defaultValue={worker === "Blue" ? "A3" : "A5"} /></label>
+        <label>Pool<input name="pool" required defaultValue={nodes.find((node) => node.worker === worker)?.pool || ""} /></label>
         <label className="span-two">preflight.py 导出片段<textarea name="snippet" required rows="9" value={raw} onChange={(event) => {
           setRaw(event.target.value); setPreview(null); setError("");
         }} placeholder="粘贴 --export-node-snippet 输出的 JSON" /></label>

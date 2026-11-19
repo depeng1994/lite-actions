@@ -12,7 +12,9 @@ import { cancelWorkflow as apiCancelWorkflow, cancellationDetail as apiCancellat
 
 const pages = [["pools", "Pools 时间轴"], ["models", "模型仓"], ["cluster", "集群管理"]];
 const defaultModel = repositories[0].name;
-const initialConfig = { desired: 24, applied: { Blue: 24, Yellow: 24 }, flags: {}, pending: null };
+// Until the first control-center snapshot arrives, show an empty configuration
+// instead of carrying over values from the interactive prototype.
+const initialConfig = { desired: 0, applied: {}, flags: {}, pending: null };
 
 function readRoute() {
   const [, page, model] = window.location.hash.split("/");
