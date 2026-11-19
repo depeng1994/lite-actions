@@ -306,6 +306,8 @@ def platform_wire(root, proxy, cert):
     real_connect = socket.create_connection
 
     def connect(address, *args, **kwargs):
+        if address == ("127.0.0.1", proxy.upstream):
+            return real_connect(address, *args, **kwargs)
         if address[0] not in {"api.github.com", "api.gitcode.com"}:
             raise AssertionError("Fixture attempted an unexpected connection")
         return real_connect(proxy.server_address, *args, **kwargs)
