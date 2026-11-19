@@ -35,6 +35,7 @@
             "image_ref": "quay.io/ascend/vllm-ascend:v0.23.0-a3-openeuler"
           }
         },
+        "machine_fingerprint": "37f7d0638b37d5d74b88af476451f53f6e1c5f326e858e385ec66b007606425b",
         "host_ssh": "113.46.17.205:153",
         "capabilities": [
           "train",
@@ -74,6 +75,7 @@
             "image_ref": "quay.io/ascend/vllm-ascend:v0.23.0-a3-openeuler"
           }
         },
+        "machine_fingerprint": "43e4df8f792c4ebcda9738b7931df774adf92da798c55e86737f933e30a9820e",
         "host_ssh": "113.46.17.205:154",
         "capabilities": [
           "train",
