@@ -58,17 +58,17 @@
 - [x] **`REQ-15` 全量节点 2 分钟 `npu-smi` 在线探测（含暂停/`enabled: false` Pool）、5 次离线状态机与 `/cluster` / `/timeline` 健康融合**
   - 实现：`449534a` + `7858c59`，包含 D1 健康迁移、全量节点探测、轮次持久化、0～5 次失败状态、最近在线时间、IP/heartbeat 扩展和时间轴健康投影。Blue 线上已实测四个设备组 `ONLINE`。
   - 依赖：`REQ-04` ~ `REQ-07`, `REQ-12` ｜ 门禁：`npx wrangler d1 migrations apply DB --local`、`python3 -m unittest tests/test_idle_probe.py tests/test_upload_intercept.py -v`、`npm test -- device-state.test.ts cluster-config.test.ts` 全绿
-- [ ] **`REQ-16` 统一 Workflow 表格接口（`/workflows`）、50 Workflow 游标分页、汇总口径（调度结果 / 运行总卡时）与 `/timeline` 零 N+1 增强**
-  - 可验证子集已实现：`252d7a8` 增加 `history_limit`、model/repo/platform/pool/status 过滤、固定负/零/正序号、历史游标、卡时/分配字段以及 `/timeline` 的 `tasks_by_uid`/`queued_by_pool`；`d2b4f9e` 移除按任务数截断，避免多 case Workflow 被固定 2000 行误截断；`6149522` 与 `9e63671` 贯通 `TU.sub/wn` 到 `tasks_active/task_index`；`eb94ab2` 新增 `workflow_runs` 物化汇总表并在 ingest 事务中刷新；`915c7ae` 增加 103 个 Workflow 的 50/50/3 游标分页单测；`dca3257` 让历史 `duration_sec` 参与精确卡时汇总并覆盖 16 卡 38 分钟 = `10.13` 卡·小时；线上接口已返回真实历史 Workflow，`history_limit=1` 可续页，真实 smoke 已查到 `PASS` 汇总。完整冷热分层、混合 Workflow 精确汇总和容量滚删仍未完成，故本条保持未勾选。
+- [x] **`REQ-16` 统一 Workflow 表格接口（`/workflows`）、50 Workflow 游标分页、汇总口径（调度结果 / 运行总卡时）与 `/timeline` 零 N+1 增强**
+  - 实现与验证：`252d7a8`、`d2b4f9e`、`6149522`、`9e63671`、`eb94ab2`、`915c7ae`、`dca3257` 已落地过滤、固定负/零/正序号、游标分页、`TU.sub/wn`、物化 `workflow_runs`、完整 Workflow 粒度冷热归档与容量滚删。`e62f12f` 将混合 Workflow 的已结束子用例合并到活动行并补齐物化队列顺序，`de1c0b1` 覆盖 103 条 50/50/3 分页、混合 Workflow、16 卡 38 分钟 `10.13` 卡·小时、统计不完整和 PASS+CANCELLED 结果。正式线上接口已返回真实历史 Workflow。
   - 依赖：`REQ-06`, `REQ-08`, `REQ-09`, `REQ-14`, `REQ-15` ｜ 门禁：`python3 -m unittest tests/test_control_client.py tests/test_queue_telemetry.py tests/test_upload_intercept.py -v`、`npm test -- workflows-board.test.ts board-read.test.ts retention-storage.test.ts` 全绿
 - [ ] **`REQ-17` Workflow 级版本化跨区插队（`POST /admin/workflows/move-up` + `SWAP_WORKFLOW` 命令 + 晚发现/回队沿用顺位 + 多端分池回执）**
-  - 可验证子集已实现：`3865335`/`4cc227f` 新增 `workflow_queue_meta`、`workflow_priority_ops`、`SWAP_WORKFLOW` 管理命令、幂等键、队列版本冲突、队首 NOOP 和操作回执查询，相关 Vitest 场景已通过；`b38fbf5` 覆盖同 attempt 晚发现和回队后沿用交换顺位。Worker 原子应用、多端分池回执和完整跨区实机联调仍未完成，故本条保持未勾选。
+  - 可验证子集已实现：`3865335`/`4cc227f` 新增 `workflow_queue_meta`、`workflow_priority_ops`、`SWAP_WORKFLOW` 管理命令、幂等键、队列版本冲突、队首 NOOP 和操作回执查询，`b38fbf5` 覆盖同 attempt 晚发现和回队后沿用顺位，`00d5fba` 补齐 Worker 紧凑 `pools[]` 回执和操作状态收敛。Worker 原子应用、多端回执单测已通过，完整 Blue/Yellow 跨区实机联调仍待补。
   - 依赖：`REQ-05`, `REQ-11`, `REQ-16` ｜ 门禁：`python3 -m unittest tests/test_workflow_priority.py tests/test_smoke_queue.py tests/test_upload_intercept.py -v`、`npm test -- workflow-priority.test.ts` 全绿
 - [ ] **`REQ-18` 集群两步「先排空再删除」状态机与统一 `enabled`/`paused` 暂停调度语义**
-  - 可验证子集已实现：新增 `0003_v15_cluster_drain.sql` 的 `cluster_drain_targets`，服务端支持 Pool `DRAIN`/`RESUME`、删除前 `RESOURCE_NOT_DRAINED` / 活动租约 / 排队引用 / 隔离四项门禁、Pool `enabled: false` 暂停语义及 `/cluster` 的 `draining` 状态；`424f624` 增加 Worker 侧 disabled Pool 保持排队且不报 `POOL_DISABLED` 的回归。完整 Worker 侧排空取消、双端回执、实机重启与自动更新联调仍未完成，故本条保持未勾选。
+  - 可验证子集已实现：新增 `0003_v15_cluster_drain.sql` 的 `cluster_drain_targets`，服务端支持 Pool `DRAIN`/`RESUME`、删除前 `RESOURCE_NOT_DRAINED` / 活动租约 / 排队引用 / 隔离四项门禁、Pool `enabled: false` 暂停语义及 `/cluster` 的 `draining` 状态；`424f624` 增加 Worker 侧 disabled Pool 保持排队不报 `POOL_DISABLED`，Router 还会对排空后唯一依赖资源的排队用例执行取消并保留 `drain_pending`。服务端/Worker 单测已通过，双端部分生效、实机重启与自动更新联调仍待补。
   - 依赖：`REQ-12`, `REQ-13`, `REQ-15` ｜ 门禁：`python3 -m unittest tests/test_pools_hot_reload.py tests/test_upload_intercept.py -v`、`npm test -- cluster-config.test.ts` 全绿
 - [x] **`REQ-19` v1.5 TypeScript 契约冻结（`types/api.ts` + `model_repos.json` 含 `repo_scope`）与正式前端接入基线同步**
-  - 实现：`cb58ecd`，`/models` 已返回组织仓/个人仓 `repo_scope`，契约类型与定向测试已同步。REQ-16～REQ-18 的业务接口仍保持未标绿。
+  - 实现：`cb58ecd`，`/models` 已返回组织仓/个人仓 `repo_scope`，契约类型与定向测试已同步。REQ-17/REQ-18 的真实双 Worker 门禁仍保持未标绿。
   - 依赖：`REQ-15` ~ `REQ-18`（契约文件 `types/api.ts` 与 `api-contract.md` 已冻结可并行放行前端） ｜ 门禁：`npm run lint --prefix control-center/worker` & 契约类型一致性检查全绿
 - [ ] **`REQ-20` 托管解耦、ChatGPT Sites 打包、个人服务器（Node 24 + `node:sqlite`）迁移适配与 `portability_intercept` DT 拦截门禁**
   - 可验证子集已实现：`src/storage/sqlStore.ts` 提供运行时无关 `SqlStore`/`SqlStatement` 契约和统一 BLOB 解码，`npm run test:portability` 扫描业务源码并拦截运行时专有恒时比较、非适配器 Cloudflare 客户端 IP 头和硬编码 `workers.dev`；`dba61ba` 新增完整 `index.ts` 在 Node SQLite + Node Server adapter 上的鉴权、公开看板、管理集群和 SPA 回退 smoke，`ec045c8` 修正批量查询/写入结果形态，`5781d52` 让 Node SQLite 的 retention 使用 `dbSizeBytes()`，`010697d` 保持 DML `RETURNING` 的 `meta.changes` 与 D1 语义一致，Node control-center smoke 已实际跑过夜间 retention。完整双运行时所有场景对等、Sites/D1 与 Node 的无 Cron 取消和冷块联调仍未完成，故本条保持未勾选。
@@ -103,7 +103,7 @@
 
 > v1.1 隔离联调实测通过：公开/管理员权限与掩码、双 Worker 90s 离线与恢复、连续三次插队、集群发布/重启应用、20+ 条事件补发、双平台写回；TLS 抓包 86 个请求，最大 1,761 字节。Blue 真实 GitCode 8P/16P 隔离 Smoke 已通过，Yellow 主机、三用例整包在平台等待窗口内的完整回写、v1.5 Phase 5.5 及双平台取消仍按下方未勾选门槛记录。
 
-> v1.5 可回溯增量 `cb58ecd`、`449534a`、`7858c59` 已落地 `repo_scope` 元数据、运行时注入 `clientIp`、纯 JavaScript 恒时比较及 REQ-15 健康探测。`9ca58a6` 已提供统一 `/workflows` 只读基线，`c57850f` 已提供 Workflow move-up 管理入口，`d727a4c` 已提供 REQ-18 的 DRAIN/RESUME/DELETE 四项服务端门禁与统一 Pool 暂停语义，`0be1d65` 已提供 SqlStore/BLOB 解码和 portability 静态拦截子集，`7845e11` 已提供 Node 24 `node:sqlite` SqlStore 适配器与 smoke，`d7f2ae0` 已提供标准 Web Fetch/静态 SPA 回退的 Node server adapter 与 smoke，`f0a1a6e` 已支持 `seed.mjs --sqlite <path>` 初始化本地迁移与配置，`ad6bc0e` 已增加无 Cron 时由心跳/管理流量触发的取消与归档惰性维护。REQ-16～REQ-18 的完整分页汇总、跨区交换、Worker 排空回执及完整 REQ-20 portability 仍保持未勾选，等待 Node 24 SQLite 双运行时和真实基础设施证据。
+> v1.5 可回溯增量 `cb58ecd`、`449534a`、`7858c59` 已落地 `repo_scope` 元数据、运行时注入 `clientIp`、纯 JavaScript 恒时比较及 REQ-15 健康探测。`9ca58a6` 已提供统一 `/workflows` 只读基线，`c57850f` 已提供 Workflow move-up 管理入口，`d727a4c` 已提供 REQ-18 的 DRAIN/RESUME/DELETE 四项服务端门禁与统一 Pool 暂停语义，`0be1d65` 已提供 SqlStore/BLOB 解码和 portability 静态拦截子集，`7845e11` 已提供 Node 24 `node:sqlite` SqlStore 适配器与 smoke，`d7f2ae0` 已提供标准 Web Fetch/静态 SPA 回退的 Node server adapter 与 smoke，`f0a1a6e` 已支持 `seed.mjs --sqlite <path>` 初始化本地迁移与配置，`ad6bc0e` 已增加无 Cron 时由心跳/管理流量触发的取消与归档惰性维护。REQ-16 已完成本地 D1 门禁；REQ-17/REQ-18 的真实双 Worker 闭环和 REQ-20 的完整双运行时/无 Cron portability 仍等待真实基础设施证据。
 
 
 #### 7.1 后端 + Worker 集成验证（不依赖前端，Phase 5.5 完成后立即跑绿）
@@ -118,7 +118,7 @@
 - [ ] **`INT-07`** `★ P0` Workflow 级跨区（Blue/Yellow）版本化插队联调（`3→2→1`、队首/在途、共享/不共享队列、晚发现/回队沿用顺位、并发/过期冲突、单端离线）+ 虚拟时钟验证 `train` 72h 排队超时（71h59m vs 72h01m）
 - [ ] **`INT-08`** `★ P0` 集群配置热加载全场景（Pool `enabled: false` 与节点/组 `paused: true` 统一暂停语义不报错、16P 半节点暂停、在途快照隔离、`preflight.py` 实机校验、**两步先排空再删除（排空中可恢复，活动/排队/隔离未清零拒删）**、双 Worker 单端失败状态展示、回滚、重启/自动更新保留）
 - [ ] **`INT-09`** `★ P0` 单 SQLite/D1 热冷分层（103 个历史 Workflow 按 50/50/3 跨 30 天翻页、第 31 天冷解压、1 年过期、80%→70% 按完整 Workflow 滚删与提示、同一次写额度熔断触发管理写 503 + Worker 暂存恢复）
-- [ ] **`INT-09B`** `★ P0` 统一 Workflow 表汇总口径专项验证（混合活动/已结束子用例保留在活动表标 `0`、全结束归历史标 `-1`、调度结果三态、运行总卡时 16 卡 38 分钟 = `10.13 卡·小时`、截至当前/统计不完整标记）
+- [x] **`INT-09B`** `★ P0` 统一 Workflow 表汇总口径专项验证：`workflows-board.test.ts` 已验证混合活动/已结束子用例只保留活动表并标 `0`、全结束历史固定负序号、调度结果三态、运行总卡时 16 卡 38 分钟 = `10.13` 卡·小时、截至当前和统计不完整标记；线上 `/public/workflows` 已返回真实历史数据。
 - [ ] **`INT-10`** `★ P0` 可迁移性 DT 拦截与双运行时对等联调（`portability-intercept.test.ts` + `sites-parity.test.ts` + `build-sites.mjs` 产物包校验 + 同一份代码与 SQLite 迁移分别在 Sites/D1 与个人服务器 Node 24/`node:sqlite` 上跑通双 Worker 心跳、无 Cron 取消推进、冷块 BLOB 读写与防爆破 IP 识别）
 
 #### 7.2 全栈端到端联调（浏览器 + 正式前端 + 控制面 + 双 Worker，`⏳ 依赖 Phase 5.5 + FE-01~05 标绿`）
@@ -372,11 +372,11 @@ lite-actions/
 | **REQ-13** | Worker Pools 持久化、实机校验与调度间隙热加载 | §9, §11 | Worker | ⚠ v1.1 已落地，统一暂停见 `REQ-18` | 1 新增 + 6 修改 | ~790 行 | Phase 4 |
 | **REQ-14** | 单库热转冷（30d）、1 年清理、80%→70% 滚删与写额度降级 | §1, §6, §11 | 服务端 | ✅ 已落地（Workflow 滚删见 `REQ-16`，抽象见 `REQ-20`） | 4 新增 + 3 修改 | ~820 行 | Phase 5 |
 | **REQ-15** | **v1.5 增量**：全部节点 2 分钟 `npu-smi` 5 次离线探测（含暂停/`enabled: false`）与 `/cluster`/`/timeline` 健康融合 | §1, §3, §4.1, §5, §11 | Worker + 服务端 | ✅ 已实现；INT-03 的完整 5 次实机故障演练待补 | 1 新增 + 8 修改 | ~620 行 | **Phase 5.5** |
-| **REQ-16** | **v1.5 增量**：统一 Workflow 表（`/workflows`）、50 Workflow 游标分页、汇总口径与 `/timeline` 零 N+1 增强 | §1, §3, §6, §11 | Worker + 服务端 | ⏳ **待开发** | 2 新增 + 7 修改 | ~840 行 | **Phase 5.5** |
-| **REQ-17** | **v1.5 升级**：Workflow 级版本化跨区插队（`SWAP_WORKFLOW`）+ 晚发现/回队沿用顺位 + 多端回执 | §1, §8, §11, §12 | Worker + 服务端 | ⏳ **待开发** | 3 新增 + 7 修改 | ~760 行 | **Phase 5.5** |
-| **REQ-18** | **v1.5 增量**：集群两步「先排空再删除」状态机与统一 `enabled`/`paused` 暂停调度语义 | §1, §9.4, §9.5, §11 | Worker + 服务端 | ⏳ **待开发** | 0 新增 + 8 修改 | ~420 行 | **Phase 5.5** |
+| **REQ-16** | **v1.5 增量**：统一 Workflow 表（`/workflows`）、50 Workflow 游标分页、汇总口径与 `/timeline` 零 N+1 增强 | §1, §3, §6, §11 | Worker + 服务端 | ✅ **已实现并通过本地 D1 门禁** | 2 新增 + 7 修改 | ~840 行 | **Phase 5.5** |
+| **REQ-17** | **v1.5 升级**：Workflow 级版本化跨区插队（`SWAP_WORKFLOW`）+ 晚发现/回队沿用顺位 + 多端回执 | §1, §8, §11, §12 | Worker + 服务端 | ⚠ **实现与单测通过，待真实双 Worker 跨区闭环** | 3 新增 + 7 修改 | ~760 行 | **Phase 5.5** |
+| **REQ-18** | **v1.5 增量**：集群两步「先排空再删除」状态机与统一 `enabled`/`paused` 暂停调度语义 | §1, §9.4, §9.5, §11 | Worker + 服务端 | ⚠ **实现与单测通过，待双端实机闭环** | 0 新增 + 8 修改 | ~420 行 | **Phase 5.5** |
 | **REQ-19** | **v1.5 增量**：TypeScript 契约冻结（`types/api.ts` + `model_repos.json` 含 `repo_scope`）与正式前端基线对齐 | §3, §7–§10 | 服务端 + 契约 | ✅ **已完成**（`cb58ecd`） | 0 新增 + 3 修改 | ~150 行 | **Phase 5.5** |
-| **REQ-20** | **v1.5 增量**：托管解耦（`SqlStore`/去锁死/无 Cron 兜底）、ChatGPT Sites 打包、个人服务器 Node 24 运行时与 `portability_intercept` DT | §1, §2, §6, §11, §12 | 服务端 + 工程/QA | ⏳ **待开发** | 12 新增 + 13 修改 | ~1,230 行 | **Phase 5.5** |
+| **REQ-20** | **v1.5 增量**：托管解耦（`SqlStore`/去锁死/无 Cron 兜底）、ChatGPT Sites 打包、个人服务器 Node 24 运行时与 `portability_intercept` DT | §1, §2, §6, §11, §12 | 服务端 + 工程/QA | ⚠ **Sites/Node 子集实现并通过 smoke，完整双运行时门禁待补** | 12 新增 + 13 修改 | ~1,230 行 | **Phase 5.5** |
 | **INT / E2E** | 集成测试夹具升级（补齐 `INT-03/04/05/06/07/08/09/09B/10` 双运行时）与全栈 E2E 脚本 | §11, §12 | 联调/QA | ⏳ 部分已过，待补齐 | 2 新增 + 1 修改 | ~720 行（增量） | Phase 7 |
 | **FE-00 ~ 05** | Demo（`cd770ce` 已确认）全量源码合入 GitHub `control-center/web/` 对接真实 API + 统一构建 `dist/client/` | §1–§3, §7–§10 | **正式前端** | `FE-00/01/02/04/05` ✅ / `FE-03` ⏳ | 前端独立估算 | 前端独立估算 | Phase 6 |
 | **v1.5 增量合计（不含前端）** | — | — | — | — | **20 新增 / 47 修改次** | **~4,740 行（后端/Worker ~4,020 + 联调 ~720）** | **Phase 5.5 + 7** |
