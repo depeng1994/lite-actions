@@ -63,6 +63,8 @@ test("binds zones, ingests transitions exactly once, and reconciles only a compl
   const complete = await worker("blue", "snapshots", middle);
   expect(await complete.json()).toEqual({ok: true, complete: true});
   expect(await (await worker("blue", "snapshots", middle)).json()).toEqual({ok: true, complete: true});
+  expect(await db.prepare("SELECT queue_order_rank FROM workflow_runs WHERE run_id=?")
+    .bind(identity.run_id).first("queue_order_rank")).toBe(0);
   expect(await db.prepare("SELECT status FROM task_index WHERE task_uid=?").bind(ids.task_uid).first("status")).toBe("INFRA_ERROR");
   expect(await db.prepare("SELECT phase FROM tasks_active WHERE task_uid=?").bind(replacement.ids.task_uid).first("phase")).toBe("QUEUED");
   expect(await db.prepare("SELECT count(*) AS n FROM queue_orders").first("n")).toBe(1);
