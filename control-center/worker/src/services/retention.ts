@@ -9,7 +9,11 @@ const MB = 1024 * 1024;
 
 type ArchiveGroup = {logical_model: string; finish_day: number};
 type Detail = {task_uid: string; finished_at: number; detail_json: string};
-type SizeProbe = (db: D1Database) => Promise<number>;
+type SizeSource = {
+  prepare(query: string): {all<T = unknown>(): Promise<{meta?: {size_after?: number}}>};
+  dbSizeBytes?: () => Promise<number>;
+};
+type SizeProbe = (db: SizeSource) => Promise<number>;
 type ColdBlock = {gzip_blob: number[] | ArrayBuffer; sha256: string; record_count: number};
 
 export function putMeta(db: D1Database, key: string, value: string, now: number) {
@@ -92,9 +96,10 @@ export async function archive(context: Context) {
   for (const group of results) await coldGroup(db, group, now);
 }
 
-export async function databaseSize(db: D1Database): Promise<number> {
+export async function databaseSize(db: SizeSource): Promise<number> {
+  if (db.dbSizeBytes) return db.dbSizeBytes();
   const response = await db.prepare("SELECT 1").all();
-  return response.meta.size_after;
+  return response.meta?.size_after ?? Number.NaN;
 }
 
 export async function capacity(context: Context, probe: SizeProbe = databaseSize) {

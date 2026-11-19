@@ -6,6 +6,7 @@ import path from "node:path";
 import {fileURLToPath} from "node:url";
 import {buildSync} from "esbuild";
 import {startNodeServer} from "../src/adapters/nodeServer.ts";
+import {NodeSqliteStore} from "../src/adapters/nodeSqlite.ts";
 
 const root = mkdtempSync(path.join(tmpdir(), "lite-actions-node-control-center-"));
 const dbPath = path.join(root, "control.sqlite");
@@ -47,6 +48,15 @@ try {
   const workflows = await fetch(`${base}/api/v1/public/workflows?history_limit=50`);
   assert.equal(workflows.status, 200);
   assert.equal((await workflows.json()).active.length, 0);
+  const maintenanceStore = new NodeSqliteStore(dbPath);
+  try {
+    await app.scheduled({cron: "0 2 * * *", scheduledTime: Date.now()}, {
+      DB: maintenanceStore, SUPER_SECRET: "test-super-secret", KEY_PEPPER: "test-pepper",
+      DEV_INSECURE_COOKIE: "1",
+    });
+  } finally {
+    maintenanceStore.close();
+  }
 } finally {
   await server.close();
   rmSync(root, {recursive: true, force: true});
