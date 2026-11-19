@@ -63,12 +63,21 @@ function deleteEmptyChunks(db: D1Database, now: number) {
       (SELECT 1 FROM task_index WHERE cold_chunk_id=task_details_cold.chunk_id) AND created_at<?`).bind(now - 60);
 }
 
+function deleteOrphanWorkflowRuns(db: D1Database) {
+  return db.prepare(`DELETE FROM workflow_runs
+    WHERE NOT EXISTS (SELECT 1 FROM task_index i WHERE i.provider=workflow_runs.provider
+      AND i.repo=workflow_runs.repo AND i.run_id=workflow_runs.run_id AND i.attempt=workflow_runs.attempt)
+      AND NOT EXISTS (SELECT 1 FROM tasks_active a WHERE a.provider=workflow_runs.provider
+      AND a.repo=workflow_runs.repo AND a.run_id=workflow_runs.run_id AND a.attempt=workflow_runs.attempt)`);
+}
+
 export async function archive(context: Context) {
   const {DB: db} = context.env;
   const now = context.now;
   const cutoff = Math.floor((now - 365 * DAY) / DAY) * DAY;
   await db.batch([
     db.prepare("DELETE FROM task_index WHERE finished_at<?").bind(cutoff),
+    deleteOrphanWorkflowRuns(db),
     deleteEmptyChunks(db, now),
     db.prepare("DELETE FROM worker_event_dedup WHERE received_at<?").bind(now - 7*DAY),
     db.prepare("DELETE FROM sessions WHERE expires_at<=? OR revoked_at<?").bind(now, now - 7*DAY),
@@ -117,6 +126,7 @@ export async function capacity(context: Context, probe: SizeProbe = databaseSize
     const results = await db.batch<{finished_at: number}>([
       db.prepare(`DELETE FROM task_index WHERE task_uid IN
         (SELECT task_uid FROM task_index ORDER BY finished_at,task_uid LIMIT 200) RETURNING finished_at`),
+      deleteOrphanWorkflowRuns(db),
       deleteEmptyChunks(db, context.now),
       db.prepare(`INSERT INTO system_meta(meta_key,meta_value,updated_at)
         SELECT 'capacity_cleanup_pending','1',? WHERE changes()>0
