@@ -35,7 +35,7 @@ python3 control-center/tests/integration/run.py
 | INT-02 | `worker-ingest.test.ts`、`test_control_client.py` 和双进程联调，覆盖去重、跳号重建、分片重试、本地日志与 503 后补发（✅ v1.1 通过） |
 | INT-03 | `test_idle_probe.py`、`device-state.test.ts` 和 Blue 线上设备组状态（✅ REQ-15 全量探测、轮次持久化、健康投影与 `last_online_at` 已实现；⏳ 完整 5 次实机失败/恢复演练待补） |
 | INT-04 | `schedule-projection.test.ts` 和 `test_queue_telemetry.py`（⏳ 待从同一 D1 数据集核验排除失败及不可靠样本后的 API 响应） |
-| INT-05 | `test_upload_intercept.py` 实际 HTTP/1.1 序列化、静态路径注册门禁，以及 TLS 联调抓取两个 Worker 和两个平台客户端的请求（✅ v1.1 通过，最长 1,748 B；⏳ **`REQ-15/16/17` 新增协议字段后须重跑回归**） |
+| INT-05 | `test_upload_intercept.py` 实际 HTTP/1.1 序列化、静态路径注册门禁，以及当前 v1.5 TLS 联调抓取两个 Worker 和两个平台客户端的请求（✅ 2026-11-20 重跑通过，86 个请求，最长 1,790 B） |
 | INT-06 | `cancellations.test.ts` 使用模拟平台核验 App 令牌、attempt 校验、幂等和强制取消（⏳ 待补齐双平台、双 Worker 在网站断连时的整次取消联调） |
 | INT-07 | `move-up.test.ts`、`test_move_up.py`、`test_smoke_queue.py`（⏳ **v1.5 需按 `REQ-17` 升级为 Workflow 级跨区插队联调，并补齐虚拟时钟 71h59m/72h01m 超时实测**） |
 | INT-08 | `cluster-config.test.ts`（新增 DRAIN→RESUME、删除前四项门禁与 `enabled: false` 断言）、`test_preflight_export.py`、`test_pools_hot_reload.py`（⏳ **仍需补齐 Worker 侧排空取消、双 Worker 单端失败、实机重启与自动更新闭环**） |

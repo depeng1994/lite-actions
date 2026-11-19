@@ -149,6 +149,21 @@ def worker(zone, root, proxy):
             now,
         )
 
+    def observe_health(
+        owner, pools, records, *, execute=None, previous=None, probe_round=1
+    ):
+        states, sampled_at = observe(owner, pools, records)
+        health = {
+            json.dumps([pool, host, sorted(devices)], separators=(",", ":")): {
+                "v": 0,
+                "mc": 0,
+                "lo": sampled_at,
+                "pr": probe_round,
+            }
+            for pool, host, devices in states
+        }
+        return states, sampled_at, health
+
     cfg = {
         "state_dir": str(state),
         "address": "192.0.2.254",
@@ -207,7 +222,9 @@ def worker(zone, root, proxy):
             patch.object(unified_router, "GitHubClient", return_value=Platform())
         )
         stack.enter_context(patch("ci_core.router.Router.claim", return_value=None))
-        stack.enter_context(patch("ci_core.idle_probe.observe", side_effect=observe))
+        stack.enter_context(
+            patch("ci_core.idle_probe.observe_health", side_effect=observe_health)
+        )
         stack.enter_context(patch.object(ControlClient, "__init__", init_control))
         stack.enter_context(patch.object(Egress, "__init__", init_egress))
         unified_router.main()
