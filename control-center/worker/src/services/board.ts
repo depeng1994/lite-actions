@@ -9,6 +9,7 @@ import {base64url} from "../utils/crypto";
 import {blobBuffer, gunzip} from "../utils/gzip";
 import {nodeIdentity} from "../utils/mask";
 import {runUrl} from "../utils/taskIdentity";
+import {POOL, REPO} from "../utils/validate";
 
 type TaskRow = Pick<TaskSummary, "task_uid" | "worker_id" | "provider" | "repo" | "logical_model" | "run_id" |
   "attempt" | "dispatch_id" | "case_id" | "test_id" | "label" | "kind" | "target_pool" | "req_nodes" | "req_devices" |
@@ -199,11 +200,17 @@ export async function workflows(context: Context): Promise<WorkflowList> {
   const platform = context.url.searchParams.get("platform");
   const pool = context.url.searchParams.get("pool");
   const status = context.url.searchParams.get("status");
+  if (model && !/^[A-Za-z0-9_.-]{1,128}$/.test(model)) throw new HttpError(400, "INVALID_MODEL");
+  if (repo && !REPO.test(repo)) throw new HttpError(400, "INVALID_REPO");
+  if (platform && platform !== "github" && platform !== "gitcode") throw new HttpError(400, "INVALID_PLATFORM");
+  if (pool && !POOL.test(pool)) throw new HttpError(400, "INVALID_POOL");
   if (status && !["active", "history"].includes(status)) throw new HttpError(400, "INVALID_STATUS");
   const {DB: db} = context.env;
   const result = await db.batch<TaskRow>([
     db.prepare(ACTIVE_SELECT + " ORDER BY a.queued_at,a.task_uid"),
-    db.prepare("SELECT * FROM task_index ORDER BY finished_at DESC,provider,repo,run_id,attempt,task_uid LIMIT 2000"),
+    // The requested history_limit is a Workflow count. Fetching a fixed task
+    // cap can silently truncate a Workflow when one run has many cases.
+    db.prepare("SELECT * FROM task_index ORDER BY finished_at DESC,provider,repo,run_id,attempt,task_uid"),
     db.prepare("SELECT COUNT(DISTINCT provider||'/'||repo||'/'||run_id||'/'||attempt) AS count FROM task_index"),
     db.prepare("SELECT COALESCE(MAX(queue_ver),0) AS version FROM queue_orders"),
   ]);
