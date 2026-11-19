@@ -14,6 +14,11 @@ try {
   const row = await store.prepare("SELECT value FROM records WHERE id=?").bind(1).first("value");
   assert.equal(row, "formal");
   assert.ok((await store.dbSizeBytes()) > 0);
+  await assert.rejects(() => store.batch([
+    store.prepare("INSERT INTO records(value) VALUES(?)").bind("rollback"),
+    store.prepare("INSERT INTO missing(value) VALUES(?)").bind("rollback"),
+  ]));
+  assert.equal(await store.prepare("SELECT COUNT(*) AS count FROM records").first("count"), 1);
   store.close();
 } finally {
   rmSync(directory, {recursive: true, force: true});

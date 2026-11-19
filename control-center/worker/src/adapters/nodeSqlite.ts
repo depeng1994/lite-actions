@@ -1,49 +1,46 @@
-import {DatabaseSync, type StatementSync} from "node:sqlite";
+import {DatabaseSync} from "node:sqlite";
 import type {SqlRunResult, SqlRows, SqlStatement, SqlStore} from "../storage/sqlStore";
 
-type Row = Record<string, unknown>;
-
-class NodeSqlStatement implements SqlStatement {
+/**
+ * Node 24 adapter for the runtime-neutral SqlStore boundary.
+ *
+ * The adapter deliberately keeps the same async surface as D1. SQLite calls
+ * are synchronous inside a request, while callers can continue to await the
+ * boundary without changing business services.
+ */
+export class NodeSqliteStatement implements SqlStatement {
+  private values: unknown[] = [];
   private readonly database: DatabaseSync;
-  private readonly query: string;
-  private readonly values: unknown[];
+  private readonly sql: string;
 
-  constructor(database: DatabaseSync, query: string, values: unknown[] = []) {
+  constructor(database: DatabaseSync, sql: string) {
     this.database = database;
-    this.query = query;
-    this.values = values;
+    this.sql = sql;
   }
 
   bind(...values: unknown[]): SqlStatement {
-    return new NodeSqlStatement(this.database, this.query, values);
-  }
-
-  private statement(): StatementSync {
-    return this.database.prepare(this.query);
-  }
-
-  private execute<T>(action: (statement: StatementSync, values: any[]) => T): T {
-    return action(this.statement(), this.values as any[]);
+    this.values = values;
+    return this;
   }
 
   first<T = unknown>(column?: string): Promise<T | null> {
-    const row = this.execute((statement, values) => statement.get(...values) as Row | undefined);
+    const raw = this.database.prepare(this.sql).get(...(this.values as any[])) as Record<string, unknown> | undefined;
+    const row = raw ? {...raw} : undefined;
     if (!row) return Promise.resolve(null);
     return Promise.resolve((column ? row[column] : row) as T);
   }
 
-  all<T = Row>(): Promise<SqlRows<T>> {
-    const results = this.execute((statement, values) => statement.all(...values) as T[]);
-    return Promise.resolve({results});
+  all<T = Record<string, unknown>>(): Promise<SqlRows<T>> {
+    const rows = this.database.prepare(this.sql).all(...(this.values as any[])).map(row => ({...row})) as T[];
+    return Promise.resolve({results: rows});
   }
 
   run<T = unknown>(): Promise<SqlRunResult & {results?: T[]}> {
-    const result = this.execute((statement, values) => statement.run(...values));
-    return Promise.resolve({meta: {changes: Number(result.changes), last_row_id: Number(result.lastInsertRowid)}});
-  }
-
-  runSync() {
-    return this.execute((statement, values) => statement.run(...values));
+    const result = this.database.prepare(this.sql).run(...(this.values as any[]));
+    return Promise.resolve({meta: {
+      changes: Number(result.changes),
+      last_row_id: Number(result.lastInsertRowid),
+    }});
   }
 }
 
@@ -52,21 +49,18 @@ export class NodeSqliteStore implements SqlStore {
 
   constructor(path: string) {
     this.database = new DatabaseSync(path);
-    this.database.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;");
+    this.database.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;");
   }
 
   prepare(query: string): SqlStatement {
-    return new NodeSqlStatement(this.database, query);
+    return new NodeSqliteStatement(this.database, query);
   }
 
-  async batch(statements: readonly SqlStatement[]) {
+  async batch<T = unknown>(statements: readonly SqlStatement[]): Promise<Array<SqlRunResult & {results?: T[]}>> {
     this.database.exec("BEGIN IMMEDIATE");
     try {
-      const results = statements.map(statement => {
-        if (!(statement instanceof NodeSqlStatement)) throw new TypeError("NodeSqliteStore.batch received another runtime statement");
-        const result = statement.runSync();
-        return {meta: {changes: Number(result.changes), last_row_id: Number(result.lastInsertRowid)}};
-      });
+      const results: Array<SqlRunResult & {results?: T[]}> = [];
+      for (const statement of statements) results.push(await statement.run<T>());
       this.database.exec("COMMIT");
       return results;
     } catch (error) {
@@ -75,13 +69,13 @@ export class NodeSqliteStore implements SqlStore {
     }
   }
 
-  async dbSizeBytes() {
-    const pageCount = this.database.prepare("PRAGMA page_count").get() as {page_count: number};
-    const pageSize = this.database.prepare("PRAGMA page_size").get() as {page_size: number};
-    return Number(pageCount.page_count) * Number(pageSize.page_size);
+  async dbSizeBytes(): Promise<number> {
+    const pageCount = Number((this.database.prepare("PRAGMA page_count").get() as {page_count: number}).page_count);
+    const pageSize = Number((this.database.prepare("PRAGMA page_size").get() as {page_size: number}).page_size);
+    return pageCount * pageSize;
   }
 
-  close() {
+  close(): void {
     this.database.close();
   }
 }
