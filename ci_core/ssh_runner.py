@@ -89,6 +89,14 @@ def model_archive(
     cache_dir.mkdir(parents=True, exist_ok=True)
     cached = cache_dir / f"{sha}.tar.gz"
     lock_path = cache_dir / f"{sha}.lock"
+    git_env = os.environ.copy()
+    if provider == "gitcode":
+        token = git_env.get("LITE_ACTIONS_GITCODE_TOKEN")
+        if token:
+            config_count = int(git_env.get("GIT_CONFIG_COUNT", "0"))
+            git_env["GIT_CONFIG_COUNT"] = str(config_count + 1)
+            git_env[f"GIT_CONFIG_KEY_{config_count}"] = "http.extraheader"
+            git_env[f"GIT_CONFIG_VALUE_{config_count}"] = f"PRIVATE-TOKEN: {token}"
     with lock_path.open("a+") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         if verified(cached, source_repo, sha):
@@ -114,6 +122,7 @@ def model_archive(
                 check=True,
                 timeout=180,
                 capture_output=True,
+                env=git_env,
             )
         except subprocess.CalledProcessError:
             if source_pr is not None:
@@ -140,6 +149,7 @@ def model_archive(
                 check=True,
                 timeout=180,
                 capture_output=True,
+                env=git_env,
             )
         actual = subprocess.check_output(
             ["git", "-C", str(repo), "rev-parse", "FETCH_HEAD"], text=True
