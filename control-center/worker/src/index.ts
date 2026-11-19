@@ -1,23 +1,34 @@
+import {cancellationRoutes} from "./routes/cancellations";
+import {trackCancellations} from "./services/cancellations";
 import {authorize} from "./middleware/access";
 import {authRoutes} from "./routes/auth";
 import {userRoutes} from "./routes/users";
-import {modelMap} from "./modelMap";
+import {workerRoutes} from "./routes/worker";
+import {boardRoutes} from "./routes/board";
 import {type Context, type Env, HttpError, Router} from "./router";
 import {sanitizePublic} from "./utils/mask";
 import {PublicCache} from "./utils/microCache";
 
 export const router = new Router();
-router.add("GET", "/api/v1/public/models", () => Response.json({
-  models: modelMap.models.map(model => ({...model, default: model.slug === modelMap.default_model})),
-}));
+boardRoutes(router);
+cancellationRoutes(router);
 authRoutes(router);
 userRoutes(router);
+workerRoutes(router);
 
 const publicCache = new PublicCache();
 const publicHeaders = {"Cache-Control": "public, max-age=10", "Content-Type": "application/json"};
 const privateCache = "private, no-store";
 
 export default {
+  async scheduled(controller: ScheduledController, env: Env): Promise<void> {
+    if (controller.cron === "* * * * *") {
+      await trackCancellations({
+        request: new Request("https://internal.invalid/"), url: new URL("https://internal.invalid/"),
+        env, params: {}, now: Math.floor(controller.scheduledTime / 1000),
+      });
+    }
+  },
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const isPublic = url.pathname.startsWith("/api/v1/public/");

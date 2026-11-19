@@ -1,5 +1,6 @@
 """Independent Pull workers sharing one schedule/execute implementation."""
 
+import hashlib
 import logging
 import os
 import subprocess
@@ -69,9 +70,113 @@ def run_key(run):
     )
 
 
+def ordered_queued(records):
+    queued = sorted(
+        ((k, r) for k, r in records.items() if r.get("phase") == "QUEUED"),
+        key=lambda kv: (
+            kv[1]["run"].get("created_at", ""),
+            str(kv[1]["run"]["id"]),
+            kv[1]["item"]["order"],
+        ),
+    )
+    # Keep the legacy ordering and its positions relative to Smoke while
+    # ordering only the Smoke positions by durable admission sequence.
+    smoke = iter(
+        sorted(
+            (pair for pair in queued if pair[1]["item"]["kind"] == "npu_smoke"),
+            key=lambda pair: pair[1].get("admission_seq", 0),
+        )
+    )
+    return [
+        next(smoke) if r["item"]["kind"] == "npu_smoke" else (key, r)
+        for key, r in queued
+    ]
+
+
+def eligible_topologies(case, pools):
+    options = candidates(case, pools)
+    if not options:
+        raise ValueError("NO_VERIFIED_TOPOLOGY")
+    inventory = {n["host_id"]: n for n in pools[case["pool"]]["nodes"]}
+    options = [
+        allocation
+        for allocation in options
+        if all(
+            case.get("kind", "train")
+            in inventory[n["host_id"]].get("capabilities", ["train", "npu_smoke"])
+            for n in allocation
+        )
+    ]
+    if not options:
+        raise ValueError("NO_CAPABLE_TOPOLOGY")
+    if case.get("docker"):
+        options = [
+            a
+            for a in options
+            if all(
+                inventory[n["host_id"]].get("environments", {}).get(case["docker"])
+                for n in a
+            )
+        ]
+        if not options:
+            raise ValueError("CONTAINER_BINDING_MISSING")
+    return options
+
+
+def queue_telemetry(worker, pools, records, quarantine):
+    from ci_core.idle_probe import group_id
+
+    blocked = set()
+    if quarantine:
+        for record in records.values():
+            if record.get("quarantined"):
+                blocked.update(resource_keys(record.get("allocation") or []))
+    rows = {}
+    indexes = {
+        name: {
+            group_id(name, node["host_id"], group["devices"]): idx
+            for idx, (node, group) in enumerate(
+                (node, group)
+                for node in pool["nodes"]
+                for group in node.get("allocation_groups", [])
+            )
+        }
+        for name, pool in pools.items()
+        if pool["owner"] == worker
+    }
+    for key, record in ordered_queued(records):
+        item = record["item"]
+        pool, kind = item["target_pool"], item["kind"]
+        if kind not in {"train", "npu_smoke"}:
+            continue
+        queue = rows.setdefault((pool, kind), [])
+        try:
+            case = runtime_case(item, pools, worker)
+            options = eligible_topologies(case, pools)
+        except ValueError:
+            options = []
+        indices = [
+            [
+                indexes[pool][group_id(pool, host["host_id"], host["devices"])]
+                for host in allocation
+            ]
+            for allocation in options
+            if not blocked.intersection(resource_keys(allocation))
+        ]
+        queue.append(
+            {
+                "tid": hashlib.sha256(key.encode()).hexdigest()[:12],
+                "pos": len(queue),
+                "ix": indices,
+            }
+        )
+    return rows
+
+
 class Router:
     def __init__(self, root, worker, client, author, *, deployment_config=None):
         self.control = None
+        self.idle_probe = None
         self.deployment = deployment_config
         self.release_logs = None
         self.next_expiry = 0.0
@@ -192,7 +297,62 @@ class Router:
                 )
 
     def control_view(self):
-        return {"records": self.state.read(), "sha": self.self_sha}
+        from ci_core.idle_probe import group_id
+
+        pools, records = self.pools, self.state.read()
+        probe, probe_time, sampled_pools = (
+            self.idle_probe.sample if self.idle_probe else ({}, None, None)
+        )
+        if sampled_pools is not pools:
+            probe, probe_time = {}, None
+        blocked = {}
+        if self.quarantine_enabled:
+            for key, record in records.items():
+                if record.get("quarantined"):
+                    for resource in resource_keys(record.get("allocation") or []):
+                        blocked[resource] = key
+        devices = []
+        for pool_name, pool in pools.items():
+            if pool["owner"] != self.worker:
+                continue
+            for node in pool["nodes"]:
+                host = node["host_id"]
+                for group in node.get("allocation_groups", []):
+                    ids = sorted(group["devices"])
+                    resources = resource_keys([{"host_id": host, "devices": ids}])
+                    state, ts = probe.get(group_id(pool_name, host, ids), (None, None))
+                    keys = sorted(
+                        {
+                            blocked[resource]
+                            for resource in resources
+                            if resource in blocked
+                        }
+                    )
+                    qid = (
+                        "t_" + hashlib.sha256(keys[0].encode()).hexdigest()[:32]
+                        if keys
+                        else None
+                    )
+                    devices.append(
+                        {
+                            "pool": pool_name,
+                            "h": host,
+                            "d": ids,
+                            "st": state,
+                            "ts": ts,
+                            "qu": int(bool(keys)),
+                            "qid": qid,
+                        }
+                    )
+        return {
+            "records": records,
+            "sha": self.self_sha,
+            "idle_ts": probe_time,
+            "devices": devices,
+            "queues": queue_telemetry(
+                self.worker, pools, records, self.quarantine_enabled
+            ),
+        }
 
     def consume_control(self):
         if self.control:
@@ -473,32 +633,7 @@ class Router:
             self.transition(key, "QUEUED")
 
     def claim(self, case):
-        options = candidates(case, self.pools)
-        if not options:
-            raise ValueError("NO_VERIFIED_TOPOLOGY")
-        inventory = {n["host_id"]: n for n in self.pools[case["pool"]]["nodes"]}
-        options = [
-            allocation
-            for allocation in options
-            if all(
-                case.get("kind", "train")
-                in inventory[n["host_id"]].get("capabilities", ["train", "npu_smoke"])
-                for n in allocation
-            )
-        ]
-        if not options:
-            raise ValueError("NO_CAPABLE_TOPOLOGY")
-        if case.get("docker"):
-            options = [
-                a
-                for a in options
-                if all(
-                    inventory[n["host_id"]].get("environments", {}).get(case["docker"])
-                    for n in a
-                )
-            ]
-            if not options:
-                raise ValueError("CONTAINER_BINDING_MISSING")
+        options = eligible_topologies(case, self.pools)
         blocked = set()
         for r in self.state.read().values():
             if self.quarantine_enabled and r.get("quarantined"):
@@ -889,26 +1024,7 @@ class Router:
                 and not self.preflight[key].is_set()
             ):
                 blocked_pools.add((item["target_pool"], True))
-        queued = sorted(
-            ((k, r) for k, r in records.items() if r.get("phase") == "QUEUED"),
-            key=lambda kv: (
-                kv[1]["run"].get("created_at", ""),
-                str(kv[1]["run"]["id"]),
-                kv[1]["item"]["order"],
-            ),
-        )
-        # Keep the legacy ordering and its positions relative to Smoke while
-        # ordering only the Smoke positions by durable admission sequence.
-        smoke = iter(
-            sorted(
-                (pair for pair in queued if pair[1]["item"]["kind"] == "npu_smoke"),
-                key=lambda pair: pair[1].get("admission_seq", 0),
-            )
-        )
-        queued = [
-            next(smoke) if r["item"]["kind"] == "npu_smoke" else (key, r)
-            for key, r in queued
-        ]
+        queued = ordered_queued(records)
         for key, r in queued:
             item = r["item"]
             pool = item["target_pool"]

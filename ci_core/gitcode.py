@@ -110,6 +110,14 @@ def _unique_object(pairs):
     return obj
 
 
+def _attempt_number(raw):
+    if type(raw) is str and raw.isascii() and raw.isdecimal():
+        raw = int(raw)
+    if type(raw) is not int or not 1 <= raw < 2**31:
+        raise ValueError("invalid GitCode run attempt")
+    return raw
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -181,9 +189,10 @@ class GitCodeClient:
         )
         return {
             "status": "completed"
-            if result.get("status") in {"COMPLETED", "FAILED", "CANCELED", "IGNORED"}
+            if str(result.get("status")).upper()
+            in {"COMPLETED", "FAILED", "CANCELED", "CANCELLED", "IGNORED", "STOPPED"}
             else "in_progress",
-            "run_attempt": result.get("attempt", 1),
+            "run_attempt": _attempt_number(result.get("attempt", 1)),
         }
 
     def pr_source(self, details):
@@ -236,6 +245,7 @@ class GitCodeClient:
                 raise RunChanged(
                     "run does not match the current PR merge ref and parents"
                 )
+        details["_ci_pr_author"] = (pr.get("user") or {}).get("login")
         return int(number), source, head["sha"]
 
     def running_workflows(self):
@@ -325,18 +335,23 @@ class GitCodeClient:
                         continue
                     pr_fields = {
                         "_ci_pr_number": number,
+                        "_ci_pr_author": details.get("_ci_pr_author"),
                         "_ci_source_repo": source,
                         "_ci_execution_sha": execution_sha,
                     }
+                try:
+                    attempt = _attempt_number(details.get("attempt", 1))
+                except ValueError:
+                    continue
                 runs.append(
                     {
                         "_ci_provider": "gitcode",
                         "_ci_repo": self.repo,
                         "id": run_id,
-                        "run_attempt": details.get("attempt", 1),
+                        "run_attempt": attempt,
                         "head_sha": row.get("head_sha"),
                         "head_branch": row.get("head_branch"),
-                        "actor": row.get("actor") or {},
+                        "actor": details.get("actor") or row.get("actor") or {},
                         "path": row.get("file_path"),
                         "name": row.get("workflow_name"),
                         "run_number": row.get("run_number"),
@@ -355,6 +370,7 @@ class GitCodeClient:
 
     def validate_current(self, run):
         details = self.request("GET", f"/actions/runs/{run['id']}", api=8)
+        details["attempt"] = _attempt_number(details.get("attempt", 1))
         expected = {
             "workflow_run_id": run["id"],
             "attempt": run["run_attempt"],

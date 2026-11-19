@@ -60,8 +60,13 @@ def _bounded(value, size):
     )
 
 
+def _login(value):
+    value = _bounded(value, 40)
+    return value if value and re.fullmatch(r"[A-Za-z0-9_\[\]-]+", value) else None
+
+
 def _actor(raw):
-    return _bounded(raw.get("login"), 40) if isinstance(raw, dict) else None
+    return _login(raw.get("login")) if isinstance(raw, dict) else None
 
 
 def _allocation(record):
@@ -86,7 +91,7 @@ def task_descriptor(key, record):
         "pool": item.get("target_pool") or "",
         "req": [item["resources"]["nodes"], item["resources"]["devices_per_node"]],
         "pr": run.get("_ci_pr_number"),
-        "pa": _bounded(run.get("_ci_pr_author"), 40),
+        "pa": _login(run.get("_ci_pr_author")),
         "tr": _actor(run.get("triggering_actor") or run.get("actor")),
         "et": _bounded(run.get("event"), 40),
         "wf": _bounded(run.get("path"), 100),
@@ -344,6 +349,90 @@ class ControlClient:
 
         self.outbox.change(observe)
 
+    def _capture_devices(self, devices):
+        def observe(data):
+            seen = data.setdefault("devices", {})
+            for group in devices:
+                key = json.dumps([group["pool"], group["h"], group["d"]])
+                state = [group["st"], group["qu"], group["qid"]]
+                # A skipped group has no fresh reading. A quarantine change still
+                # needs reporting independently of whether there is a reading.
+                previous = seen.get(key)
+                if group["st"] is None and previous:
+                    state[0] = previous[0]
+                if state != previous and self.outbox.append(
+                    data,
+                    {
+                        **group,
+                        "t": "IP",
+                        "ts": group["ts"],
+                    },
+                ):
+                    seen[key] = state
+
+        self.outbox.change(observe)
+
+    def _queue_pages(self, queues, revision, base):
+        def observe(data):
+            old = data.setdefault("queues", {})
+            version = data.setdefault("queue_version", 0)
+            current = {}
+            for pool, kind in sorted(
+                set(queues) | {tuple(json.loads(name)) for name in old}
+            ):
+                key = json.dumps([pool, kind])
+                rows = queues.get((pool, kind), [])
+                definition = {"pool": pool, "k": kind, "rev": revision}
+                fingerprint = hashlib.sha256(_encode((definition, rows))).hexdigest()
+                previous = old.get(key)
+                if previous and previous["fingerprint"] == fingerprint:
+                    current[key] = previous
+                    continue
+                version += 1
+                template = {
+                    "t": "QP",
+                    "ts": int(time.time()),
+                    "s": data["seq"] + OUTBOX_LIMIT,
+                    "v": version,
+                    "last": 1,
+                    **definition,
+                }
+                pages = list(
+                    self.packets(
+                        "events",
+                        rows,
+                        lambda items, template=template: {
+                            **base,
+                            "ev": [{**template, "items": items}],
+                        },
+                        max_items=8,
+                    )
+                ) or [[]]
+                if len(data["events"]) + len(pages) > OUTBOX_LIMIT:
+                    if previous:
+                        current[key] = previous
+                    continue
+                published = []
+                for index, items in enumerate(pages):
+                    page = {**definition, "v": version, "items": items}
+                    self.outbox.append(
+                        data,
+                        {
+                            **page,
+                            "t": "QP",
+                            "ts": template["ts"],
+                            "last": int(index == len(pages) - 1),
+                        },
+                    )
+                    published.append(page)
+                if rows:
+                    current[key] = {"fingerprint": fingerprint, "pages": published}
+            data["queues"] = current
+            data["queue_version"] = version
+            return [page for queue in current.values() for page in queue["pages"]]
+
+        return self.outbox.change(observe)
+
     def commands(self):
         return [
             cmd
@@ -396,8 +485,12 @@ class ControlClient:
         view = self.view()
         records = view["records"]
         self._capture(records)
+        self._capture_devices(view.get("devices", []))
+        base = {"w": self.worker, "i": self.outbox.view()["instance"]}
+        queues = self._queue_pages(
+            view.get("queues", {}), view.get("revision", 0), base
+        )
         journal = self.outbox.view()
-        base = {"w": self.worker, "i": journal["instance"]}
         now = self.clock()
         if now >= self.next_heartbeat:
             result = self._send(
@@ -433,7 +526,7 @@ class ControlClient:
                     if record.get("phase") in ACTIVE
                 ],
                 "device": view.get("devices", []),
-                "queue": view.get("queues", []),
+                "queue": queues,
             }
             self.snapshot(base, contents, seq)
             self.need_snapshot = False
@@ -446,7 +539,10 @@ class ControlClient:
             rebase(journal["acked"])
             self.require_baseline = False
         for batch in self.packets(
-            "events", journal["events"], lambda items: {**base, "ev": items}
+            "events",
+            journal["events"],
+            lambda items: {**base, "ev": items},
+            max_items=6,
         ):
             result = self._send("events", {**base, "ev": batch})
             if result["need_snapshot"]:

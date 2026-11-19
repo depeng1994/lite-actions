@@ -80,6 +80,7 @@ def main():
         wake = threading.Event()
         if cfg.get("control_center"):
             from ci_core.control_client import ControlClient
+            from ci_core.idle_probe import IdleProbe
 
             try:
                 control = ControlClient(
@@ -91,6 +92,11 @@ def main():
                     router.control_view,
                 )
                 router.control = control
+                router.idle_probe = IdleProbe(
+                    a.worker_id,
+                    lambda: (router.pools, router.state.read()),
+                )
+                router.idle_probe.start()
                 control.start()
             except Exception as exc:
                 control = None
@@ -141,6 +147,8 @@ def main():
             router.close()
             if control:
                 control.close()
+            if router.idle_probe:
+                router.idle_probe.close()
 
 
 if __name__ == "__main__":
