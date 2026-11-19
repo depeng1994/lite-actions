@@ -220,6 +220,7 @@ export async function logout() { return request("/auth/logout", {method: "POST"}
 export async function cancelWorkflow(run) {
   return request("/admin/cancellations", {method: "POST", body: {provider: run.platform === "GitCode" ? "gitcode" : "github", repo: run.repo, run_id: String(run.id), attempt: run.attempt}});
 }
+export async function cancellationDetail(cancelId) { return request(`/admin/cancellations/${encodeURIComponent(cancelId)}`); }
 export async function moveUp(taskUid) { return request(`/admin/tasks/${encodeURIComponent(taskUid)}/move-up`, {method: "POST", body: {}}); }
 export async function moveWorkflowUp(run, queueVersion) {
   return request("/admin/workflows/move-up", {method: "POST", body: {
@@ -236,4 +237,4 @@ export async function createUser(username) { return request("/admin/users", {met
 export async function resetUserKey(userId) { return request(`/admin/users/${encodeURIComponent(userId)}/reset-key`, {method: "POST"}); }
 export async function deleteUser(userId) { return request(`/admin/users/${encodeURIComponent(userId)}`, {method: "DELETE"}); }
 
-export const controlApi = {request, getSession, login, logout, cancelWorkflow, moveUp, moveWorkflowUp, clusterPreview, clusterPublish, clusterRollback, listUsers, createUser, resetUserKey, deleteUser, loadMoreHistory};
+export const controlApi = {request, getSession, login, logout, cancelWorkflow, cancellationDetail, moveUp, moveWorkflowUp, clusterPreview, clusterPublish, clusterRollback, listUsers, createUser, resetUserKey, deleteUser, loadMoreHistory};

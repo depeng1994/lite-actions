@@ -107,11 +107,11 @@ export function HistoryDialog({ run, item, close }) {
 
 export function CancelDialog({ run, cases, close, confirm }) {
   const active = cases.filter((item) => item.run === workflowKey(run) && ["运行中", "准备中", "排队中", "清理中"].includes(item.status));
-  return <Dialog title="取消 GitHub Workflow" subtitle={`${run.repo} · ${run.action} #${run.id} · 尝试 ${run.attempt}`} close={close}>
+  return <Dialog title={`取消 ${run.platform} Workflow`} subtitle={`${run.repo} · ${run.action} #${run.id} · 尝试 ${run.attempt}`} close={close}>
     <div className="dialog-body">
       <div className="callout warning"><Warning size={20} /><div><strong>取消整次运行</strong><p>影响 GitHub Actions 作业及这次运行在各 Worker 上的用例。运行中的用例会先清理，再释放设备。</p></div></div>
       <h3>影响范围</h3>
-      <ul className="impact-list"><li><span>GitHub Actions</span><strong>整次运行</strong></li>
+      <ul className="impact-list"><li><span>{run.platform} Actions</span><strong>整次运行</strong></li>
         {active.map((item) => <li key={item.id}><span>{item.worker} / {item.pool} · {item.name} · {item.cards}P</span><Status value={item.status} /></li>)}
       </ul>
     </div>

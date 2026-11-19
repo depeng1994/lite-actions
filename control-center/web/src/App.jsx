@@ -8,7 +8,7 @@ import {
 } from "./Dialogs.jsx";
 import { history, impactOf, initialCases, initialNodes, initialQueueOrder, poolId, repositories, runs, workflowKey } from "./formal-data.js";
 import { currentWorkflowQueue, moveWorkflow, queuedChildren } from "./workflows.js";
-import { cancelWorkflow as apiCancelWorkflow, clusterPreview, clusterPublish, clusterRollback, createUser as apiCreateUser, deleteUser as apiDeleteUser, getSession, listUsers, loadControlCenter, loadMoreHistory as apiLoadMoreHistory, login as apiLogin, logout as apiLogout, moveWorkflowUp as apiMoveWorkflowUp, resetUserKey as apiResetUserKey } from "./control-api.js";
+import { cancelWorkflow as apiCancelWorkflow, cancellationDetail as apiCancellationDetail, clusterPreview, clusterPublish, clusterRollback, createUser as apiCreateUser, deleteUser as apiDeleteUser, getSession, listUsers, loadControlCenter, loadMoreHistory as apiLoadMoreHistory, login as apiLogin, logout as apiLogout, moveWorkflowUp as apiMoveWorkflowUp, resetUserKey as apiResetUserKey } from "./control-api.js";
 
 const pages = [["pools", "Pools 时间轴"], ["models", "模型仓"], ["cluster", "集群管理"]];
 const defaultModel = repositories[0].name;
@@ -82,22 +82,27 @@ export function App() {
   const isSuper = session?.role === "Super";
   const canManage = Boolean(session);
 
+  const applySnapshot = (snapshot) => {
+    if (!snapshot) return;
+    setNodes(snapshot.nodes);
+    setClusterPools(snapshot.clusterPools || []);
+    setClusterHistory(snapshot.clusterHistory || []);
+    setCases(snapshot.cases);
+    setWorkflowOrder(snapshot.workflowOrder);
+    setQueueVersion(snapshot.queueVersion || 0);
+    setHistoryCursor(snapshot.historyCursor || null);
+    setHistoryHasMore(Boolean(snapshot.historyHasMore));
+    if (snapshot.clusterConfig) setConfig(snapshot.clusterConfig);
+    setDataMode("live");
+  };
+
   useEffect(() => {
     let cancelled = false;
     const refresh = async () => {
       const snapshot = await loadControlCenter(signedIn ? "admin" : "public");
       if (cancelled) return;
       if (!snapshot) { setDataMode("offline"); return; }
-      setNodes(snapshot.nodes);
-      setClusterPools(snapshot.clusterPools || []);
-      setClusterHistory(snapshot.clusterHistory || []);
-      setCases(snapshot.cases);
-      setWorkflowOrder(snapshot.workflowOrder);
-      setQueueVersion(snapshot.queueVersion || 0);
-      setHistoryCursor(snapshot.historyCursor || null);
-      setHistoryHasMore(Boolean(snapshot.historyHasMore));
-      if (snapshot.clusterConfig) setConfig(snapshot.clusterConfig);
-      setDataMode("live");
+      applySnapshot(snapshot);
     };
     refresh();
     const timer = setInterval(refresh, 30_000);
@@ -205,7 +210,14 @@ export function App() {
     const updated = moveWorkflow(cases, workflowOrder, key);
     if (!updated) return;
     let response;
-    try { response = await apiMoveWorkflowUp(run, queueVersion); } catch (error) { notify(error.message); return; }
+    try { response = await apiMoveWorkflowUp(run, queueVersion); } catch (error) {
+      if (error.status === 409) {
+        const snapshot = await loadControlCenter(signedIn ? "admin" : "public");
+        applySnapshot(snapshot);
+        notify("队列版本已更新，已刷新正式顺序");
+      } else notify(error.message);
+      return;
+    }
     if (response?.status !== "PENDING" && response?.status !== "APPLIED") {
       notify(`控制面返回 ${response?.status || "未知状态"}`);
       return;
@@ -227,10 +239,28 @@ export function App() {
     try {
       const cancellation = await apiCancelWorkflow(run);
       const update = (fields) => setCancellations((previous) => ({...previous, [workflowKey(run)]: {...previous[workflowKey(run)], ...fields}}));
-      update({platform: cancellation?.status || "已提交取消", done: ["COMPLETED", "FAILED"].includes(cancellation?.status), release: "等待控制面回执", workers: {Blue: "等待受理", Yellow: "等待受理"}});
+      update({cancelId: cancellation?.cancel_id, platform: cancellation?.status || "已提交取消", done: ["COMPLETED", "FAILED"].includes(cancellation?.status), release: "等待控制面回执", workers: {Blue: "等待受理", Yellow: "等待受理"}});
       open({type: "cancel-receipt", runKey: workflowKey(run)});
       notify("取消请求已提交到控制面");
+      if (cancellation?.cancel_id) pollCancellation(run, cancellation.cancel_id);
     } catch (error) { notify(error.message); }
+  };
+
+  const pollCancellation = async (run, cancelId) => {
+    try {
+      const detail = await apiCancellationDetail(cancelId);
+      const workers = {Blue: "已停止", Yellow: "已停止"};
+      for (const item of detail.cases || []) {
+        const worker = item.worker_id === "blue" ? "Blue" : "Yellow";
+        if (item.phase) workers[worker] = "等待清理";
+      }
+      const done = ["COMPLETED", "COMPLETED_WITH_QUARANTINE", "FAILED"].includes(detail.status);
+      setCancellations((previous) => ({...previous, [workflowKey(run)]: {
+        ...previous[workflowKey(run)], cancelId, platform: detail.status, done,
+        workers, release: detail.status === "COMPLETED_WITH_QUARANTINE" ? "清理失败，已隔离" : done ? "设备已释放" : "等待设备释放",
+      }}));
+      if (!done) later(() => pollCancellation(run, cancelId), 3000);
+    } catch { later(() => pollCancellation(run, cancelId), 5000); }
   };
 
   const publishConfig = async (target, action, addedNode) => {
