@@ -2,6 +2,7 @@ import type { WorkerId, Role } from "./types/api";
 
 export interface Env {
   DB: D1Database;
+  ASSETS?: Fetcher;
   SUPER_SECRET?: string;
   SUPER_USERNAME?: string;
   KEY_PEPPER?: string;

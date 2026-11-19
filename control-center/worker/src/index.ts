@@ -47,6 +47,17 @@ export default {
   },
   async fetch(request: Request, env: Env, execution?: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+    const isApi = url.pathname.startsWith("/api/");
+    if (!isApi && env.ASSETS) {
+      const asset = await env.ASSETS.fetch(request);
+      if (asset.status !== 404 || !request.headers.get("accept")?.includes("text/html") || !["GET", "HEAD"].includes(request.method)) {
+        return asset;
+      }
+      const indexUrl = new URL(request.url);
+      indexUrl.pathname = "/index.html";
+      indexUrl.search = "";
+      return env.ASSETS.fetch(new Request(indexUrl, request));
+    }
     const isPublic = url.pathname.startsWith("/api/v1/public/");
     const key = url.href;
     const context: Context = {request, env, url, params: {}, now: Math.floor(Date.now() / 1000)};

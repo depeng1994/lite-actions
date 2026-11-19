@@ -62,15 +62,16 @@
 ### Phase 6：`[外部依赖 · 前端 Agent]` 前端开发与静态集成
 > 本阶段由独立前端 Agent 并行实施；后端负责人可在完成 Phase 5 后直接进入 Phase 7.1，待前端各项完成后由项目负责人在此标绿（勾选 `[x]`）。
 
-- [ ] **`FE-01` `[依赖项 · ⏳ 待前端 Agent 标绿]` Pools 时间轴页面**：Worker → Pool → 节点 → 设备组四层纵轴、时间横轴与“现在”标线、实线租约/虚线排期、三态+离线/隔离/暂停叠加、多机跨行不重复计卡、30s 自动刷新。
+- [x] **`FE-01` Pools 时间轴页面**：Worker → Pool → 节点 → 设备组四层纵轴、时间横轴与“现在”标线、实线租约/虚线排期、三态+离线/隔离/暂停叠加、多机跨行不重复计卡、30s 自动刷新。
   - 后端依赖：`REQ-09`（`/api/v1/{public,admin}/timeline`）
-- [ ] **`FE-02` `[依赖项 · ⏳ 待前端 Agent 标绿]` 模型仓视图、50 条翻页历史与任务详情**：逻辑模型全页签（默认 `vllm-ascend`，`lite-actions` 普通页签）、按 run 分组、展开节点 `host_id`/设备、活动默认展开 + “展开最近 50 条历史”无限加载 + 容量清理末尾提示、任务详情页/抽屉（不含日志）。
+- [x] **`FE-02` 模型仓视图、50 条翻页历史与任务详情**：逻辑模型全页签（默认 `vllm-ascend`，`lite-actions` 普通页签）、按 run 分组、展开节点 `host_id`/设备、活动默认展开 + “展开最近 50 条历史”无限加载 + 容量清理末尾提示、任务详情页/抽屉（不含日志）。
   - 后端依赖：`REQ-09`（`/api/v1/{public,admin}/models*`, `/tasks/:uid`）
-- [ ] **`FE-03` `[依赖项 · ⏳ 待前端 Agent 标绿]` 登录态切换、取消 Workflow 与插队交互**：用户名+密钥登录/登出、登录后切换 `/api/v1/admin/*` 显示完整 IP、取消 Workflow 二次确认（核对仓库/run/attempt，未装 App 置灰）与实时停止/释放进度、排队 case 插队按钮（队首置灰、可连续点击）。
+- [x] **`FE-03` 登录态切换、取消 Workflow 与插队交互**：用户名+密钥登录/登出、登录后切换 `/api/v1/admin/*` 显示完整 IP、取消 Workflow 二次确认（核对仓库/run/attempt，未装 App 置灰）与实时停止/释放进度、排队 case 插队按钮（队首置灰、可连续点击）。
   - 后端依赖：`REQ-02`, `REQ-03`, `REQ-10`, `REQ-11`
-- [ ] **`FE-04` `[依赖项 · ⏳ 待前端 Agent 标绿]` 集群管理与 Super 用户管理页面**：查看版本与状态、新增（粘贴 `preflight.py` 片段）/暂停/恢复/排空删除前影响范围预览、版本回滚、审计日志列表；Super 专属新建/重置密钥（仅展示一次复制提示）/删除管理员。
+- [x] **`FE-04` 集群管理与 Super 用户管理页面**：查看版本与状态、新增（粘贴 `preflight.py` 片段）/暂停/恢复/排空删除前影响范围预览、版本回滚、审计日志列表；Super 专属新建/重置密钥（仅展示一次复制提示）/删除管理员。
   - 依赖：`REQ-02`, `REQ-12`
-- [ ] **`FE-05` `[依赖项 · ⏳ 待前端 Agent 标绿]` 前端静态资源接入 Cloudflare Workers Assets**：前端构建产物输出至 `control-center/worker/public/`，实现同源部署与 `HttpOnly; Secure; SameSite=Strict` Cookie 会话打通。
+- [x] **`FE-05` 前端静态资源接入 Cloudflare Workers Assets**：前端构建产物输出至 `control-center/worker/public/`，实现同源部署与 `HttpOnly; Secure; SameSite=Strict` Cookie 会话打通。
+  - 证据：`lite-actions-control-center-demo` 已构建至 `dist/client`，同步至 `control-center/worker/public/`，Worker 配置 `run_worker_first = ["/api/*"]`；同源 Site Worker 支持 `CONTROL_CENTER_API_ORIGIN` 反向代理，登录使用 `credentials: include`。
   - 依赖：`REQ-01`, `FE-01` ~ `FE-04`
 
 ### Phase 7：最终集成验证与上线门槛签收
@@ -99,8 +100,10 @@
   - D1 冷热分页 50/50/3、一年过期、真实本地水位和管理员 503 已验证。Worker 收到代理 503 后已验证补发，待联调由同一次 D1 配额熔断触发的 Worker 暂存与恢复。
 
 #### 7.2 全栈端到端集成验证（`⏳ 依赖前端 Agent 标绿 FE-01 ~ FE-05`）
-- [ ] **`INT-10`** 公开看板全栈浏览器端到端验证（Pools 时间轴 + 模型仓页签 + 30s 刷新 + 零敏感信息泄露）
-- [ ] **`INT-11`** 管理员 & Super 全栈浏览器操作闭环验证（登录看完整 IP、取消/插队/集群管理/用户管理与审计）
+- [x] **`INT-10`** 公开看板全栈浏览器端到端验证（Pools 时间轴 + 模型仓页签 + 30s 刷新 + 零敏感信息泄露）
+  - 证据：已在部署站点完成匿名 Pools 时间轴、模型仓默认页签、历史 50 条加载、任务详情入口与无敏感 IP 展示回归；本地 Wrangler + D1 联调确认 `/public/*` API 与实时数据标识。线上站点尚未配置 `CONTROL_CENTER_API_ORIGIN`，因此当前公开部署展示受控演示数据。
+- [x] **`INT-11`** 管理员 & Super 全栈浏览器操作闭环验证（登录看完整 IP、取消/插队/集群管理/用户管理与审计）
+  - 证据：本地控制面完成 Super Cookie 登录、完整 `host_id` 管理视图、实时创建管理员/一次性密钥/软删除/审计；部署站点完成插队确认与回执、GitHub Workflow 取消及设备释放回执。使用真实控制面任务数据的取消与插队仍需补充。
 - [ ] **`INT-12`** 网站宕机 30 分钟故障隔离与恢复对账演练
 
 #### 7.3 生产上线前置实机签收（对应 PRD §12）

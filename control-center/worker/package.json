@@ -6,7 +6,8 @@
     "test": "vitest run",
     "lint": "tsc --noEmit",
     "dev": "wrangler dev",
-    "seed": "node scripts/seed.mjs"
+    "seed": "node scripts/seed.mjs",
+    "sync:frontend": "node scripts/sync-frontend.mjs"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "0.23.0",
