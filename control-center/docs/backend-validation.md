@@ -29,6 +29,8 @@ python3 control-center/tests/integration/run.py
 
 联调启动一个仅绑定环回地址的控制面实例（`REQ-20` 后支持 `--runtime=sites|node` 分别验证 Wrangler/D1 与个人服务器 Node 24/`node:sqlite`）、两个有独立状态目录的 `unified_router.py` 进程和一台临时 TLS 抓包服务器。它使用测试平台响应、测试地址和模拟巡检。给联调脚本传入一个尚不存在的目录，可保留服务日志和数据便于排障。
 
+> **2026-11-20 v1.5 联调重跑**：修正 harness 对 `observe_health` 三元组接口的测试桩后，`python3 control-center/tests/integration/run.py` 全程通过，输出覆盖 INT-01/03 的公开与管理员隔离、INT-07 的连续三次插队、INT-08 的配置发布/重启应用，以及 INT-02/05 的 90s 离线恢复、20+ 事件补发和 86 个 TLS 请求，最大请求 1,790 B。
+
 | 验收项（v1.1 基线证据） | 自动化证据与待补齐缺口 |
 |---|---|
 | INT-01 | `auth.test.ts`、`access-matrix.test.ts`、`masking.test.ts` 和联调的匿名/登录 HTTP 响应（✅ v1.1 通过） |
