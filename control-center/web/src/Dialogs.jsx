@@ -263,8 +263,18 @@ export function AddNodeDialog({ worker, nodes, close, save }) {
   const [preview, setPreview] = useState(null);
   const [error, setError] = useState("");
   const workerId = selectedWorker.toLowerCase();
-  const checkoutPath = selectedWorker === "Yellow" ? "/opt/lite-actions/native-production/current" : "/opt/lite-actions/current";
-  const preflightCommand = `cd ${checkoutPath}\npython3 scripts/preflight.py --worker-id ${workerId} --export-node-snippet \\\n  --host-id "HOST_IP:PORT" \\\n  --ssh "SSH_TARGET" \\\n  --host-ssh "HOST_SSH_TARGET" \\\n  --node-ip "NODE_IP" \\\n  --nic "NETWORK_INTERFACE" \\\n  --devices "0-15" \\\n  --groups "0-7;8-15" \\\n  --container "CONTAINER_NAME_OR_ID"`;
+  const serviceName = `lite-actions-${workerId}.service`;
+  const preflightCommand = `service="${serviceName}"
+workdir="$(systemctl show "$service" -p WorkingDirectory --value)"
+if [ -z "$workdir" ] || [ "$workdir" = "/" ] || [ "$workdir" = "-" ]; then
+  workdir="$(systemctl show "$service" -p ExecStart --value | sed -n 's#.*\\(/[^ ;]*\\)/unified_router\\.py.*#\\1#p' | head -n1)"
+fi
+if [ -z "$workdir" ]; then
+  echo "无法从 $service 获取 Lite Actions 部署目录" >&2
+  exit 1
+fi
+cd "$workdir"
+python3 scripts/preflight.py --worker-id ${workerId} --export-node-snippet \\\n  --host-id "HOST_IP:PORT" \\\n  --ssh "SSH_TARGET" \\\n  --host-ssh "HOST_SSH_TARGET" \\\n  --node-ip "NODE_IP" \\\n  --nic "NETWORK_INTERFACE" \\\n  --devices "0-15" \\\n  --groups "0-7;8-15" \\\n  --container "CONTAINER_NAME_OR_ID"`;
   return <Dialog title="新增集群资产" subtitle="登记节点、设备拓扑和容器绑定。" close={close}>
     <form onSubmit={(event) => {
       event.preventDefault();
@@ -290,7 +300,7 @@ export function AddNodeDialog({ worker, nodes, close, save }) {
         <label>Pool<input name="pool" required defaultValue={nodes.find((node) => node.worker === worker)?.pool || ""} /></label>
         <div className="span-two asset-instructions">
           <h3>操作说明</h3>
-          <p>请先 SSH 登录目标 {selectedWorker} Worker 主机，在下方 checkout 目录执行命令。先将大写占位符替换为实际值。命令只读探查节点指纹、设备和容器绑定，不在网站或控制面 Worker 中执行。</p>
+          <p>请先 SSH 登录目标 {selectedWorker} Worker 主机，再执行下方命令。命令通过 systemctl 获取 Lite Actions 实际部署目录，先将大写占位符替换为实际值。命令只读探查节点指纹、设备和容器绑定，不在网站或控制面 Worker 中执行。</p>
           <CopyCommand value={preflightCommand} />
           <p>执行完成后，将标准输出的完整 JSON 粘贴到下方文本框，点击「解析片段」核对节点摘要，再发布配置。</p>
         </div>

@@ -308,7 +308,7 @@ sequenceDiagram
 
 网站不直连节点，所有实机校验在 Worker 侧完成。
 
-新增资产弹窗在粘贴区上方说明执行位置。管理员先 SSH 登录目标 Worker 主机，在该 Worker 的 Lite Actions checkout 根目录执行命令，Yellow 使用 `/opt/lite-actions/native-production/current`，Blue 使用 `/opt/lite-actions/current`。页面按当前 Worker 生成 `preflight.py --export-node-snippet` 完整命令，并提供「复制命令」按钮。管理员替换命令中的节点参数后执行，将标准输出的完整 JSON 粘贴回网站解析预览。命令只读探查，不在浏览器或控制面 Worker 中执行。
+新增资产弹窗在粘贴区上方说明执行位置。管理员先 SSH 登录目标 Worker 主机，命令按当前 Worker 查询对应的 `lite-actions-<worker>.service`，通过 `systemctl show` 获取实际 checkout 根目录后执行。页面按当前 Worker 生成 `preflight.py --export-node-snippet` 完整命令，并提供「复制命令」按钮。管理员替换命令中的节点参数后执行，将标准输出的完整 JSON 粘贴回网站解析预览。命令只读探查，不在浏览器或控制面 Worker 中执行。
 
 ### 9.4 暂停与恢复调度
 
