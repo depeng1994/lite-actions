@@ -6,8 +6,12 @@ import { lastSeenDateTime, resourceHealth } from "./resource-health.js";
 
 async function copyToClipboard(value) {
   if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(value);
-    return;
+    try {
+      await navigator.clipboard.writeText(value);
+      return;
+    } catch {
+      // Fall through to the selection-based browser fallback.
+    }
   }
   const input = document.createElement("textarea");
   input.value = value;
