@@ -151,17 +151,54 @@ class MoveUpTests(unittest.TestCase):
     def test_late_discovery_and_requeue_keep_swapped_workflow_order(self):
         with tempfile.TemporaryDirectory() as directory:
             state = JobState(Path(directory))
+
             def entry(key, run_id):
-                return (key, {"phase": "QUEUED", "run": {"id": run_id, "_ci_provider": "github",
-                    "_ci_repo": "depeng1994/lite-actions", "run_attempt": 1},
-                    "item": {"target_pool": "shared", "kind": "npu_smoke", "order": 0}})
+                return (
+                    key,
+                    {
+                        "phase": "QUEUED",
+                        "run": {
+                            "id": run_id,
+                            "_ci_provider": "github",
+                            "_ci_repo": "depeng1994/lite-actions",
+                            "run_attempt": 1,
+                        },
+                        "item": {
+                            "target_pool": "shared",
+                            "kind": "npu_smoke",
+                            "order": 0,
+                        },
+                    },
+                )
+
             state.admit([entry("a-case", "a")])
             state.admit([entry("b-case", "b")])
-            payload = {"a": {"provider": "github", "repo": "depeng1994/lite-actions", "run_id": "b", "attempt": 1},
-                "b": {"provider": "github", "repo": "depeng1994/lite-actions", "run_id": "a", "attempt": 1}, "op_id": "late-1"}
-            self.assertEqual(state.swap_workflow(payload, "cmd-late")["status"], "APPLIED")
+            payload = {
+                "a": {
+                    "provider": "github",
+                    "repo": "depeng1994/lite-actions",
+                    "run_id": "b",
+                    "attempt": 1,
+                },
+                "b": {
+                    "provider": "github",
+                    "repo": "depeng1994/lite-actions",
+                    "run_id": "a",
+                    "attempt": 1,
+                },
+                "op_id": "late-1",
+            }
+            self.assertEqual(
+                state.swap_workflow(payload, "cmd-late")["status"], "APPLIED"
+            )
             state.admit([entry("b-late-case", "b")])
-            self.assertEqual([key for key, _ in ordered_queued(state.read())], ["b-case", "b-late-case", "a-case"])
+            self.assertEqual(
+                [key for key, _ in ordered_queued(state.read())],
+                ["b-case", "b-late-case", "a-case"],
+            )
             state.update("b-case", phase="RESERVED")
             state.update("b-case", phase="QUEUED")
-            self.assertEqual([key for key, _ in ordered_queued(state.read())], ["b-case", "b-late-case", "a-case"])
+            self.assertEqual(
+                [key for key, _ in ordered_queued(state.read())],
+                ["b-case", "b-late-case", "a-case"],
+            )

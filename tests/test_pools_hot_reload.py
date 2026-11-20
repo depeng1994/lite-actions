@@ -123,8 +123,13 @@ class PoolReloadTests(unittest.TestCase):
         command = self.request(newer)
         self.verify(command)
         self.assertTrue(self.router.sync_pools(command))
-        case = {"pool": "test", "resources": {"nodes": 1, "devices_per_node": 8},
-            "kind": "npu_smoke", "execution_timeout_seconds": 60, "docker": {}}
+        case = {
+            "pool": "test",
+            "resources": {"nodes": 1, "devices_per_node": 8},
+            "kind": "npu_smoke",
+            "execution_timeout_seconds": 60,
+            "docker": {},
+        }
         self.assertEqual(candidates(case, self.router.pools), [])
         self.assertIsNone(self.router.claim(case))
         self.assertTrue(self.router.pools["test"]["enabled"] is False)
