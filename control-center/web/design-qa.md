@@ -16,7 +16,7 @@
 ## 浏览器验证
 
 - 两种主题均可切换。1487、1024 和 390 CSS 像素下检查 Pools。窄屏的时间轴和表格可在各自容器中横向滚动。
-- 匿名读取完整模拟 IP 和端口。模型仓默认打开 vllm-ascend。个人仓、组织仓和 GitHub／GitCode 可区分。103 条历史以 50、50、3 加载，匿名可打开归档详情。
+- 匿名读取正式 IP 脱敏结果。模型仓默认显示全部模型仓。个人仓、组织仓和 GitHub／GitCode 可区分。103 条历史以 50、50、3 加载，匿名可打开归档详情。
 - 普通管理员可为 GitCode 排队用例插队，GitCode 无取消入口。GitHub Workflow #1072 展示平台结果、Blue 与 Yellow 停止回执和设备释放，其他运行租约继续显示。 [取消回执](/Users/depeng/.codex/visualizations/2026/11/18/01a1ec5e-1625-7de0-8982-4e3307067e56/cancel-receipt.jpg)
 - Blue A3 设备组 0–7 暂停后，等到模拟配置回执才停止展示该组新排期，已有 8P 租约继续显示，8–15 维持启用。恢复、资产新增、排空和删除已用演示节点验证。 [暂停影响预览](/Users/depeng/.codex/visualizations/2026/11/18/01a1ec5e-1625-7de0-8982-4e3307067e56/pause-impact.jpg)
 - Super 能创建普通管理员、再次读取相同演示密钥并删除账号，审计显示撤销结果。普通管理员无用户管理入口。 [用户管理截图](/Users/depeng/.codex/visualizations/2026/11/18/01a1ec5e-1625-7de0-8982-4e3307067e56/super-users.jpg)
