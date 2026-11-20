@@ -114,7 +114,7 @@ class SelfSmokeTests(unittest.TestCase):
         ]
         self.assertEqual(len(results(comments, self.plan, "reporter")), 6)
         # Four Blue results cannot satisfy the missing Yellow instance.
-        blue_only = comments[:1] + comments[2:]
+        blue_only = comments[:1] + comments[2:5]
         self.assertNotIn(
             self.plan["cases"][1]["case_id"], results(blue_only, self.plan, "reporter")
         )
