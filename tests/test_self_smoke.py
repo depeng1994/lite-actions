@@ -354,7 +354,44 @@ class SelfSmokeTests(unittest.TestCase):
             ]
         ]
         pools["a3_shared_blue"] = pool
+
+        yellow_node = copy.deepcopy(pool["nodes"][0])
+        yellow_node["host_id"] = "192.0.2.30:22"
+        yellow_node["ssh"] = "192.0.2.30:22"
+        yellow_node["node_ip"] = "192.0.2.30"
+        yellow_node["device_ids"] = list(range(8))
+        yellow_node["allocation_groups"] = [
+            {"devices": list(range(8)), "verified": True}
+        ]
+        yellow_node["environments"] = {
+            "vllm-kimi-wangjinyin": {
+                "container_id": "c" * 64,
+                "image_id": "sha256:" + "d" * 64,
+                "image_ref": "vllm-kimi-wangjinyin:fixture",
+            }
+        }
+        pools["a5_shared_yellow"] = {
+            "owner": "yellow",
+            "enabled": True,
+            "nodes": [yellow_node],
+            "process_indexing": "card-die",
+            "max_jobs_per_host": 1,
+            "verified_multinode_allocations": [],
+        }
         path.write_text(json.dumps(pools))
+
+        workers_path = root / "config/workers.json"
+        workers = json.loads(workers_path.read_text())
+        workers["yellow"]["case_environments"]["vllm-kimi-wangjinyin"] = {
+            "ASCEND_SET_ENV_PATH": [
+                "/fixture/cann",
+                "/usr/local/Ascend/ascend-toolkit/set_env.sh",
+            ],
+            "HF_ASSETS_PATH": ["/fixture/model"],
+            "CKPT_INIT_LOAD_PATH": ["/fixture/checkpoint"],
+        }
+        workers_path.write_text(json.dumps(workers))
+
         service = Service([fixture_definition("dummy")], root)
         service.repo = SELF_REPO
         service.runs = {
