@@ -176,7 +176,9 @@ class ControlTests(unittest.TestCase):
                 return b"{}"
 
         with (
-            patch("ci_core.control_client.urllib.request.ProxyHandler") as proxy_handler,
+            patch(
+                "ci_core.control_client.urllib.request.ProxyHandler"
+            ) as proxy_handler,
             patch("ci_core.control_client.urllib.request.build_opener") as build_opener,
         ):
             build_opener.return_value.open.return_value = Response()
@@ -200,7 +202,9 @@ class ControlTests(unittest.TestCase):
                 return b"{}"
 
         with (
-            patch("ci_core.control_client.urllib.request.ProxyHandler") as proxy_handler,
+            patch(
+                "ci_core.control_client.urllib.request.ProxyHandler"
+            ) as proxy_handler,
             patch("ci_core.control_client.urllib.request.build_opener") as build_opener,
         ):
             build_opener.return_value.open.return_value = Response()

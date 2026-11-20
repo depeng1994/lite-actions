@@ -268,7 +268,11 @@ def deployment(asserted=None):
         from ci_core.egress_policy import control_origin, control_proxy
 
         control = cfg["control_center"]
-        if not isinstance(control, dict) or set(control) - {"url", "ci_reserve_bytes", "proxy"}:
+        if not isinstance(control, dict) or set(control) - {
+            "url",
+            "ci_reserve_bytes",
+            "proxy",
+        }:
             raise ValueError("INVALID_CONTROL_CENTER_CONFIG")
         control_origin(control.get("url", ""))
         if "proxy" in control:
