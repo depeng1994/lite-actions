@@ -57,6 +57,7 @@ class SelfSmokeTests(unittest.TestCase):
                 "dispatch_smoke_8p",
                 "dispatch_smoke_16p",
                 "dispatch_smoke_8p",
+                "dispatch_smoke_yellow_a5_8p",
             ],
         )
         self.assertEqual(
@@ -64,9 +65,9 @@ class SelfSmokeTests(unittest.TestCase):
                 item["resources"]["nodes"] * item["resources"]["devices_per_node"]
                 for item in self.plan["cases"]
             ],
-            [0, 0, 8, 16, 8],
+            [0, 0, 8, 16, 8, 8],
         )
-        self.assertEqual(len({item["case_id"] for item in self.plan["cases"]}), 5)
+        self.assertEqual(len({item["case_id"] for item in self.plan["cases"]}), 6)
         yellow = self.plan["cases"][1]
         self.assertEqual((yellow["kind"], yellow["worker"]), ("worker_probe", "yellow"))
         self.assertEqual((yellow["target_pool"], yellow["docker"]), (None, None))
@@ -90,7 +91,7 @@ class SelfSmokeTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
-        self.assertEqual(len(json.loads(result.stdout)), 5)
+        self.assertEqual(len(json.loads(result.stdout)), 6)
 
     def test_complete_identity_bound_results_and_fail_closed(self):
         run = {
@@ -111,9 +112,9 @@ class SelfSmokeTests(unittest.TestCase):
             }
             for item in self.plan["cases"]
         ]
-        self.assertEqual(len(results(comments, self.plan, "reporter")), 5)
+        self.assertEqual(len(results(comments, self.plan, "reporter")), 6)
         # Four Blue results cannot satisfy the missing Yellow instance.
-        blue_only = comments[:1] + comments[2:]
+        blue_only = comments[:1] + comments[2:5]
         self.assertNotIn(
             self.plan["cases"][1]["case_id"], results(blue_only, self.plan, "reporter")
         )
@@ -191,7 +192,7 @@ class SelfSmokeTests(unittest.TestCase):
 
     def test_matrix_output_is_the_selected_plan(self):
         # Job IDs come from the selected plan, including repeated 8P instances.
-        for profile, size in (("full", 5), ("cpu-only", 1)):
+        for profile, size in (("full", 6), ("cpu-only", 1)):
             with self.subTest(profile=profile):
                 output = Path(self.temp.name) / (profile + ".out")
                 env = {
@@ -353,7 +354,44 @@ class SelfSmokeTests(unittest.TestCase):
             ]
         ]
         pools["a3_shared_blue"] = pool
+
+        yellow_node = copy.deepcopy(pool["nodes"][0])
+        yellow_node["host_id"] = "192.0.2.30:22"
+        yellow_node["ssh"] = "192.0.2.30:22"
+        yellow_node["node_ip"] = "192.0.2.30"
+        yellow_node["device_ids"] = list(range(8))
+        yellow_node["allocation_groups"] = [
+            {"devices": list(range(8)), "verified": True}
+        ]
+        yellow_node["environments"] = {
+            "a5_ci_214": {
+                "container_id": "c" * 64,
+                "image_id": "sha256:" + "d" * 64,
+                "image_ref": "a5_ci_214:fixture",
+            }
+        }
+        pools["a5_shared_yellow"] = {
+            "owner": "yellow",
+            "enabled": True,
+            "nodes": [yellow_node],
+            "process_indexing": "card-die",
+            "max_jobs_per_host": 1,
+            "verified_multinode_allocations": [],
+        }
         path.write_text(json.dumps(pools))
+
+        workers_path = root / "config/workers.json"
+        workers = json.loads(workers_path.read_text())
+        workers["yellow"]["case_environments"]["a5_ci_214"] = {
+            "ASCEND_SET_ENV_PATH": [
+                "/fixture/cann",
+                "/usr/local/Ascend/ascend-toolkit/set_env.sh",
+            ],
+            "HF_ASSETS_PATH": ["/fixture/model"],
+            "CKPT_INIT_LOAD_PATH": ["/fixture/checkpoint"],
+        }
+        workers_path.write_text(json.dumps(workers))
+
         service = Service([fixture_definition("dummy")], root)
         service.repo = SELF_REPO
         service.runs = {
@@ -430,10 +468,10 @@ class SelfSmokeTests(unittest.TestCase):
                         worker.tick()
                         for future, _, _ in list(worker.active.values()):
                             future.result(10)
-                    if len(service.results()) == 5:
+                    if len(service.results()) == 6:
                         break
                 accepted = results(service.comments, self.plan, "reporter")
-                self.assertEqual(len(accepted), 5)
+                self.assertEqual(len(accepted), 6)
                 self.assertTrue(
                     all(
                         r["status"] == "PASS"
@@ -444,7 +482,10 @@ class SelfSmokeTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     [r["item"]["case_id"] for r in yellow.state.read().values()],
-                    ["case_001_worker_os_yellow"],
+                    [
+                        "case_001_worker_os_yellow",
+                        "case_005_dispatch_smoke_yellow_a5_8p",
+                    ],
                 )
                 queued = ("GET", "/actions/runs?status=queued&per_page=100&page=1")
                 own.assert_any_call(*queued)

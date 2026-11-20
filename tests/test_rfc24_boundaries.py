@@ -384,7 +384,7 @@ class Rfc24Boundaries(unittest.TestCase):
                 "subprocess.Popen", side_effect=AssertionError("unexpected child")
             ):
                 rows = inspect_archive(archive, {"suite": "dispatch_smoke"})
-                self.assertEqual(len(rows), 3)
+                self.assertEqual(len(rows), 4)
                 for row in rows:
                     self.assertEqual(
                         inspect_archive(archive, {"test_id": row["test_id"]}), [row]
