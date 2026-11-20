@@ -154,7 +154,8 @@
 
 #### 7.3 生产上线前置实机签收（对应 PRD v1.5 §12 全部 5 条前提）
 - [ ] **`REL-00`** **`★ 上线必过`** 初期 ChatGPT Sites 实机能力边界核验（验证 `.openai/hosting.json` D1 持久化绑定、服务端 Secret 注入、出站 `fetch()` 调 GitHub/GitCode API 及 Sites 域名接入；若任一项受限，直接以同一套可迁移代码零返工切至个人服务器或 Cloudflare Workers Free）
-- [ ] **`REL-01`** **`★ 上线必过`** 真实 Yellow 主机通过批准域名完成心跳、取令、拉配置、回执，满足出口放行与每日字节预算（待定 1）
+- [x] **`REL-01`** **`★ 上线必过`** 真实 Yellow 主机通过批准域名完成心跳、取令、拉配置、回执，满足出口放行与每日字节预算（待定 1）
+  - 实机证据（2026-11-20）：Yellow `offline=false`、`applied_rev=6`；`test_upload_intercept.py` 4/4 通过；`http-egress.json` 中 control 路径均 `rejected=0`、`sent_violations=0`，最大请求 1,828 B，日上传量 1,254,020 / 67,108,864。
 - [ ] **`REL-02`** **`★ 上线必过`** 已装 App 的 GitHub 测试仓 + 配好 Token 的 GitCode 测试仓各完成一次含原生作业和双区用例的真实整次取消
 - [ ] **`REL-03`** **`★ 上线必过`** 实际免费托管实例（ChatGPT Sites / D1 或 Cloudflare Workers Free + D1 Free）实测容量水位监控、80%→70% 滚删、CPU 预算与额度耗尽行为
 - [ ] **`REL-04`** **`★ 上线必过`** 真实双 Worker 环境联调一次 Workflow 级跨区插队（管理接口 → 两端应用回执 → 排期刷新），并回归原有调度规则
