@@ -364,10 +364,10 @@ class SelfSmokeTests(unittest.TestCase):
             {"devices": list(range(8)), "verified": True}
         ]
         yellow_node["environments"] = {
-            "vllm-kimi-wangjinyin": {
+            "a5_ci_214": {
                 "container_id": "c" * 64,
                 "image_id": "sha256:" + "d" * 64,
-                "image_ref": "vllm-kimi-wangjinyin:fixture",
+                "image_ref": "a5_ci_214:fixture",
             }
         }
         pools["a5_shared_yellow"] = {
@@ -382,7 +382,7 @@ class SelfSmokeTests(unittest.TestCase):
 
         workers_path = root / "config/workers.json"
         workers = json.loads(workers_path.read_text())
-        workers["yellow"]["case_environments"]["vllm-kimi-wangjinyin"] = {
+        workers["yellow"]["case_environments"]["a5_ci_214"] = {
             "ASCEND_SET_ENV_PATH": [
                 "/fixture/cann",
                 "/usr/local/Ascend/ascend-toolkit/set_env.sh",
