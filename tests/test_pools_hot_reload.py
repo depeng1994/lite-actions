@@ -149,15 +149,17 @@ class PoolReloadTests(unittest.TestCase):
             except ValueError:
                 pass
             self.router.consume_control()
-        self.assertEqual(self.router.pools_revision, 0)
-        self.router.control.complete.assert_called_once_with(
-            "cmd-1", "FAILED", err="PHYSICAL_NODE_IDENTITY_CHANGED"
-        )
+        self.assertEqual(self.router.pools_revision, 1)
+        failed = self.router.pools["test"]["nodes"][0]
+        self.assertTrue(failed["paused"])
+        self.assertTrue(failed["probe_unavailable"])
+        self.assertIn("PHYSICAL_NODE_IDENTITY_CHANGED", failed["probe_reason"])
+        self.router.control.complete.assert_called_once_with("cmd-1", "APPLIED", rev=1)
 
     def test_failed_probe_isolates_node_and_keeps_verified_nodes(self):
         newer = copy.deepcopy(self.pools)
-        for node in newer["test"]["nodes"]:
-            node["machine_fingerprint"] = "a" * 64
+        for index, node in enumerate(newer["test"]["nodes"]):
+            node["machine_fingerprint"] = ("a" if index == 0 else "c") * 64
             node["environments"] = {
                 "env": {
                     "container_id": "b" * 64,
