@@ -594,9 +594,11 @@ lite-actions/
      ```json
      "control_center": {
        "url": "https://lite-actions-control.xxx.workers.dev",
-       "ci_reserve_bytes": 262144
+       "ci_reserve_bytes": 262144,
+       "proxy": "http://<proxy-user>:<proxy-password>@<proxy-host>:<proxy-port>"
      }
      ```
+   - `control_center.proxy` 是可选的本机配置。只有显式配置时，控制面 HTTPS 请求才经该代理；客户端不会读取 `HTTP_PROXY`、`HTTPS_PROXY` 或其他环境代理。代理 URL 可含 userinfo，部署文件必须保持 root:root、0600；日志和异常不回显完整 URL。目标地址仍须为 HTTPS，并继续执行控制面 host/path 白名单与 `<2,000` 字节门禁。
    - 机器密钥通过环境变量 `LITE_ACTIONS_CONTROL_TOKEN` 注入（与 GitHub/GitCode Token 同级保护，不落盘日志）。未配置 `control_center` 时 Worker 100% 按原有纯平台模式运行，零行为变化。
 2. **线程解耦与唤醒机制**
    - `ControlClient` 在独立后台 daemon 线程运行（心跳周期 **30s**，事件刷新间隔 **5s** / 最多 30s 攒批一次）。
@@ -622,7 +624,7 @@ lite-actions/
 4. **磁盘持久化 Outbox**
    - 存放于 `${LITE_ACTIONS_STATE_DIR}/control-outbox.json`（文件锁 + 临时文件 `fsync` + `os.replace`，复用 `JobState` 原子写模式），保存单调递增 `next_seq` 与待发事件队列（上限 5,000 条，极端长期断网超限时自动折叠并标记 `need_snapshot=true`，恢复时由分片快照无损对账）。
 5. **Yellow `ci_core/egress_policy.py` 扩展**
-   - `Egress.before()` 新增 `provider="control"` 分支：校验 HTTPS + 精确匹配 `cfg["control_center"]["url"]` 的 host/port + 路径白名单（仅允许 `/api/v1/worker/{heartbeat,commands,command-receipts,events,snapshots,configs/[0-9]+}`）+ `size < 2000` + 令牌桶与每日字节配额。
+   - `Egress.before()` 新增 `provider="control"` 分支：校验 HTTPS + 精确匹配 `cfg["control_center"]["url"]` 的 host/port + 路径白名单（仅允许 `/api/v1/worker/{heartbeat,commands,command-receipts,events,snapshots,configs/[0-9]+}`）+ `size < 2000` + 令牌桶与每日字节配额；显式 `control_center.proxy` 仅用于该 HTTPS 目标，默认继续禁用环境代理。
    - **CI 平台保底预留（对接 PRD §12 待定 1）**：当 `provider == "control"` 且 `daily_upload_bytes - used - size < ci_reserve_bytes` 时抛出 `Deferred("CONTROL_CI_RESERVE")`，确保 Yellow 平台 ACK/结果回报永远优先。
    - 抽出公共函数 `estimate_http1_request_bytes(request)`，供 Blue 与 Yellow 的 `ControlClient` 共同强制校验 `< 2,000` 字节。
 

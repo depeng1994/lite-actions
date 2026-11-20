@@ -265,12 +265,14 @@ def deployment(asserted=None):
     worker = identify_worker(ips, doc["addresses"], asserted)
     cfg = doc["workers"][worker]
     if "control_center" in cfg:
-        from ci_core.egress_policy import control_origin
+        from ci_core.egress_policy import control_origin, control_proxy
 
         control = cfg["control_center"]
-        if not isinstance(control, dict) or set(control) - {"url", "ci_reserve_bytes"}:
+        if not isinstance(control, dict) or set(control) - {"url", "ci_reserve_bytes", "proxy"}:
             raise ValueError("INVALID_CONTROL_CENTER_CONFIG")
         control_origin(control.get("url", ""))
+        if "proxy" in control:
+            control_proxy(control["proxy"])
         reserve = control.get("ci_reserve_bytes", 262144)
         if type(reserve) is not int or reserve < 0:
             raise ValueError("INVALID_CONTROL_CENTER_RESERVE")

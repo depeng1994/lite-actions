@@ -257,6 +257,33 @@ def control_origin(url):
         raise ValueError("INVALID_CONTROL_CENTER_ORIGIN")
     return f"https://{parsed.netloc}"
 
+def control_proxy(url):
+    """Validate an explicit proxy URL without exposing its userinfo."""
+    if not isinstance(url, str) or any(
+        ord(char) < 32 or ord(char) == 127 for char in url
+    ):
+        raise ValueError("INVALID_CONTROL_CENTER_PROXY")
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        port = parsed.port
+    except ValueError:
+        raise ValueError("INVALID_CONTROL_CENTER_PROXY") from None
+    if (
+        parsed.scheme not in ("http", "https")
+        or not parsed.hostname
+        or parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+        or port is not None and not 1 <= port <= 65535
+        or any(
+            ord(char) < 32 or ord(char) == 127
+            for value in (parsed.username, parsed.password)
+            for char in urllib.parse.unquote(value or "")
+        )
+    ):
+        raise ValueError("INVALID_CONTROL_CENTER_PROXY")
+    return url
+
 
 class Egress:
     def __init__(self, worker, cfg, clock=time.time):

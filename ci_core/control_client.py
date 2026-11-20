@@ -19,6 +19,7 @@ from ci_core.contract import REPO
 from ci_core.egress_policy import (
     Rejected,
     control_origin,
+    control_proxy,
     estimate_http1_request_bytes,
 )
 
@@ -190,6 +191,11 @@ class ControlClient:
             raise ValueError("INVALID_CONTROL_MACHINE_TOKEN")
         self.worker = worker
         self.origin = control_origin(cfg["control_center"]["url"])
+        self.proxy = (
+            control_proxy(cfg["control_center"]["proxy"])
+            if "proxy" in cfg["control_center"]
+            else None
+        )
         self.outbox = ControlOutbox(cfg["state_dir"])
         self.headers = {
             "Authorization": "Bearer " + token,
@@ -223,7 +229,10 @@ class ControlClient:
         request = self.policy.before(
             self._request(route, payload), repo="", provider="control"
         )
-        handlers = [urllib.request.ProxyHandler({}), _NoRedirect()]
+        # Keep environment proxies disabled by default. A proxy is used only
+        # when explicitly present in the root-owned deployment configuration.
+        proxy_handlers = {"https": self.proxy} if self.proxy is not None else {}
+        handlers = [urllib.request.ProxyHandler(proxy_handlers), _NoRedirect()]
         ca_file = os.environ.get("LITE_ACTIONS_CONTROL_CA_FILE")
         if ca_file:
             handlers.append(
