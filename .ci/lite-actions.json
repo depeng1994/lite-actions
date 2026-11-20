@@ -34,7 +34,7 @@
     },
     "dispatch_smoke_yellow_a5_8p": {
       "ci_overrides": {
-        "docker": "vllm-kimi-wangjinyin",
+        "docker": "a5_ci_214",
         "target_pool": "a5_shared_yellow",
         "worker": "yellow"
       },
