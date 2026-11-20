@@ -267,7 +267,8 @@ export function AddNodeDialog({ worker, nodes, close, save }) {
   const preflightCommand = `service="${serviceName}"
 workdir="$(systemctl show "$service" -p WorkingDirectory --value)"
 if [ -z "$workdir" ] || [ "$workdir" = "/" ] || [ "$workdir" = "-" ]; then
-  workdir="$(systemctl show "$service" -p ExecStart --value | sed -n 's#.*\\(/[^ ;]*\\)/unified_router\\.py.*#\\1#p' | head -n1)"
+  router_path="$(systemctl show "$service" -p ExecStart --value | grep -oE '/[^ ;"]+/unified_router\\.py' | tail -n1)"
+  workdir="$(dirname "$router_path")"
 fi
 if [ -z "$workdir" ]; then
   echo "无法从 $service 获取 Lite Actions 部署目录" >&2
