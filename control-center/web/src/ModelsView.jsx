@@ -192,7 +192,7 @@ export function ModelsView({ model, cases, nodes, config, cancellations, priorit
 
   return <main className="standard-view">
     <div className="page-heading">
-      <div><h1>模型仓</h1><p>按当前队列顺序查看 Workflow，展开可查看子用例和实际分配。</p></div>
+      <div><h1>代码仓任务看板</h1><p>按当前队列顺序查看 Workflow，展开可查看子用例和实际分配。</p></div>
     </div>
     <div className="workflow-filters" aria-label="Workflow 筛选">
       <label>模型<select value={filters.model} onChange={(event) => updateFilter("model", event.target.value)}>
@@ -224,7 +224,7 @@ export function ModelsView({ model, cases, nodes, config, cancellations, priorit
       </div>
       <div className="workflow-count-main">{sort && <button className="text-button" onClick={() => setSort(null)}>恢复队列顺序</button>}<span>北京时间 (UTC+8)</span></div>
     </div>
-    <div className="table-scroll">
+    <div className="table-scroll workflow-table-scroll">
       <table className="data-table workflow-grid" aria-label="Workflow 活动与历史">
         <thead>
           <tr>{columns.map((column) => <SortHeader key={column.key} column={column} sort={sort} change={changeSort} />)}<th scope="col">操作</th></tr>

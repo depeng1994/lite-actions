@@ -158,6 +158,9 @@ function runFromWorkflow(row, nodesByRef, archived = false) {
     trigger: row.event_type === "pull_request" ? "PR" : row.event_type === "workflow_dispatch" ? "手动" : "事件",
     action: row.workflow_name || row.workflow_file?.replace(/^.*\//, "").replace(/\.ya?ml$/, "") || "Workflow",
     commit: "—", submitted: timestampMs(row.submitted_at),
+    startedAt: timestampMs(row.started_at), finishedAt: timestampMs(row.finished_at),
+    cardHours: row.card_hours == null ? null : Number(row.card_hours),
+    cardHoursPartial: Boolean(row.card_hours_partial),
     cancelSupported: Boolean(row.cancel_supported),
   };
   run.cases = (row.cases || []).map((task, index) => taskToCase(task, nodesByRef, workflowKey(run), archived, index));

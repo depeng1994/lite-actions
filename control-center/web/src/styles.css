@@ -247,11 +247,15 @@ th[aria-sort] .column-sort, th[aria-sort] .column-sort svg, .column-sort:hover {
 .workflow-grid .workflow-column-filters th { padding-block: 5px 8px; }
 .workflow-column-filters input { width: 100%; min-width: 0; height: 29px; padding: 3px 5px; border: 1px solid var(--line-strong); border-radius: 4px; font-size: 12px; background: var(--surface); color: var(--text); }
 .workflow-grid { min-width: 1140px; line-height: 1.35; }
+.workflow-table-scroll { max-height: min(68vh, 760px); overflow: auto; }
+.workflow-table-scroll .workflow-grid thead th { position: sticky; top: 0; z-index: 2; }
 .workflow-grid > thead th { white-space: nowrap; }
 .workflow-grid > thead th, .workflow-grid > tbody > tr > td { padding-inline: clamp(7px, 0.7vw, 12px); }
 .workflow-grid > tbody > tr > td { font-size: 14px; }
 .workflow-grid > tbody > tr > td:first-child { min-width: 82px; padding-inline: 7px; }
-.workflow-grid td strong { overflow-wrap: anywhere; }
+.workflow-grid > thead th:nth-child(3), .workflow-grid > tbody > tr > td:nth-child(3) { min-width: 220px; }
+.workflow-grid > tbody > tr > td:nth-child(3) { white-space: nowrap; }
+.workflow-grid td strong { overflow-wrap: normal; white-space: nowrap; }
 .workflow-pools span { display: block; white-space: nowrap; }
 .workflow-time { display: inline-block; white-space: nowrap; vertical-align: top; }
 .workflow-grid .workflow-time small { font-size: inherit; }

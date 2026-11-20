@@ -28,12 +28,14 @@ export function summarizeRun(run) {
   const active = cases.some(({ status }) => !terminalStatuses.has(status));
   const starts = cases.flatMap(({ start }) => start == null ? [] : [start]);
   const ends = cases.flatMap(({ end }) => end == null ? [] : [end]);
+  const inferredStarts = cases.flatMap((item) => item.end == null || item.elapsed == null
+    ? [] : [item.end - item.elapsed * 60000]);
   const allocated = cases.filter(({ allocatedCards }) => allocatedCards > 0);
   const measured = allocated.filter(({ elapsed }) => elapsed != null);
   return {
     active,
-    start: starts.length ? Math.min(...starts) : null,
-    end: !active && ends.length ? Math.max(...ends) : null,
+    start: run.startedAt ?? (starts.length ? Math.min(...starts) : inferredStarts.length ? Math.min(...inferredStarts) : null),
+    end: run.finishedAt ?? (!active && ends.length ? Math.max(...ends) : null),
     pools: [...new Set(cases.map((item) => {
       // Historical cases may finish without an allocation snapshot. In that
       // case the case's own formal worker/pool identity still defines its
@@ -42,8 +44,8 @@ export function summarizeRun(run) {
       return poolId(resource.worker, resource.pool);
     }))].sort(),
     maxCards: Math.max(0, ...cases.map(({ cards, allocatedCards }) => allocatedCards || cards)),
-    partialCardHours: measured.length > 0 && measured.length < allocated.length,
-    cardHours: measured.length ? measured.reduce((sum, item) => sum + item.elapsed * item.allocatedCards, 0) / 60 : null,
+    partialCardHours: run.cardHoursPartial ?? (measured.length > 0 && measured.length < allocated.length),
+    cardHours: run.cardHours ?? (measured.length ? measured.reduce((sum, item) => sum + item.elapsed * item.allocatedCards, 0) / 60 : null),
     result: active ? "排队中" : cases.every(({ status }) => status === "成功") ? "成功" : "失败",
   };
 }

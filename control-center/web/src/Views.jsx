@@ -132,7 +132,7 @@ export function PoolsView({ nodes, cases, config, open, go, live }) {
   return <main className="pools-view">
     <section aria-labelledby="pools-title">
       <div className="pools-header">
-        <h1 id="pools-title">Pools 时间轴</h1>
+        <h1 id="pools-title">Pools任务看板</h1>
         <div className="pools-meta">
           <div className="date-info">
             <span><CalendarBlank size={21} /> <time>{dateLabel}</time></span>
@@ -185,7 +185,7 @@ export function PoolsView({ nodes, cases, config, open, go, live }) {
             </select><CaretDown size={12} weight="bold" />
           </label>
         </div>
-        <button className="text-button" onClick={() => go("models")}>查看模型仓任务 <CaretRight size={16} weight="bold" /></button>
+        <button className="text-button" onClick={() => go("models")}>查看代码仓任务 <CaretRight size={16} weight="bold" /></button>
       </div>
       <div className="table-scroll">
         <table className="data-table queue-table">

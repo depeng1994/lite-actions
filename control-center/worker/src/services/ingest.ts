@@ -31,13 +31,14 @@ function refreshWorkflowRuns(db: D1Database, now: number): Statement[] {
         (SELECT q.queue_pos FROM queue_orders q WHERE q.task_uid=tasks_active.task_uid
           AND q.worker_id=tasks_active.worker_id AND q.pool_name=tasks_active.target_pool AND q.kind=tasks_active.kind) AS queue_pos,
         queued_at,reserved_at,
+        COALESCE(running_at,reserved_at) AS started_at,
         running_at,NULL AS finished_at,NULL AS duration_sec,req_nodes,req_devices,timing_reliable,
         allocation_json,kind,target_pool,1 AS active
       FROM tasks_active
       UNION ALL
       SELECT provider,repo,run_id,attempt,logical_model,submitted_at,workflow_name,workflow_file,
         pr_number,pr_author,trigger_actor,event_type,NULL AS phase,status,NULL AS queue_pos,NULL AS queued_at,
-        NULL AS reserved_at,NULL AS running_at,finished_at,duration_sec,req_nodes,req_devices,timing_reliable,
+        NULL AS reserved_at,started_at,NULL AS running_at,finished_at,duration_sec,req_nodes,req_devices,timing_reliable,
         actual_allocation_json AS allocation_json,kind,target_pool,0 AS active
       FROM task_index
     ), grouped AS (
@@ -56,7 +57,7 @@ function refreshWorkflowRuns(db: D1Database, now: number): Statement[] {
         SUM(active) AS active_case_count,
         COUNT(*) AS total_case_count,
         MIN(CASE WHEN active=1 AND phase='QUEUED' AND kind!='worker_probe' THEN queue_pos END) AS queue_order_rank,
-        MIN(CASE WHEN active=1 THEN COALESCE(running_at,reserved_at) END) AS first_started_at,
+        MIN(started_at) AS first_started_at,
         MAX(finished_at) AS finished_at,
         MAX(CASE WHEN active=0 AND status IS NOT NULL AND status!='PASS' THEN 1 ELSE 0 END) AS has_failed,
         json_group_array(DISTINCT target_pool) AS pools_json,
@@ -155,12 +156,12 @@ function finish(context: Context, selection: string, parameters: unknown[], fiel
     : "NULL";
   return [
     db.prepare(`
-      INSERT INTO task_index(${TASK_META.join(",")},finished_at,actual_allocation_json,status,exit_code,
+      INSERT INTO task_index(${TASK_META.join(",")},started_at,finished_at,actual_allocation_json,status,exit_code,
         cleanup_verified,duration_sec,timing_reliable)
-      SELECT ${TASK_META.join(",")},?,COALESCE(?,allocation_json),?,?,?,${duration},
+      SELECT ${TASK_META.join(",")},COALESCE(?,running_at,reserved_at),?,COALESCE(?,allocation_json),?,?,?,${duration},
         ${fields.reconciled ? "0" : "timing_reliable"} ${where}
       ON CONFLICT(task_uid) DO NOTHING
-    `).bind(finished, fields.alloc ? JSON.stringify(fields.alloc) : null, fields.status, fields.exit, fields.clean,
+    `).bind(times[3], finished, fields.alloc ? JSON.stringify(fields.alloc) : null, fields.status, fields.exit, fields.clean,
       ...(fields.reconciled ? [] : [finished, times[3], times[1], finished, times[3], times[1]]), ...filter),
     db.prepare(`
       INSERT INTO task_details_hot(task_uid,finished_at,detail_json)

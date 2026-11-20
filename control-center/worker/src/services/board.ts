@@ -15,7 +15,7 @@ type TaskRow = Pick<TaskSummary, "task_uid" | "worker_id" | "provider" | "repo" 
   "attempt" | "dispatch_id" | "case_id" | "test_id" | "label" | "kind" | "target_pool" | "req_nodes" | "req_devices" |
   "pr_number" | "pr_author" | "trigger_actor" | "event_type" | "workflow_file"> & {
   phase?: Phase; status?: string; queued_at?: number; finished_at?: number;
-  reserved_at?: number; staging_at?: number; running_at?: number; cleaning_at?: number;
+  reserved_at?: number; staging_at?: number; running_at?: number; cleaning_at?: number; started_at?: number;
   exit_code?: number; cleanup_verified?: number; duration_sec?: number; timing_reliable: number;
   allocation_json?: string; actual_allocation_json?: string; storage_tier?: "hot" | "cold"; cold_chunk_id?: string;
   queue_pos?: number; submitted_at?: number; workflow_name?: string;
@@ -60,7 +60,7 @@ async function summaries(context: Context, rows: TaskRow[]): Promise<TaskSummary
       duration_sec: row.duration_sec ?? null,
       submitted_at: row.submitted_at ?? row.queued_at ?? null,
       workflow_name: row.workflow_name ?? (workflow_file?.split("/").at(-1)?.replace(/\.ya?ml$/, "") ?? null),
-      started_at: row.running_at ?? row.reserved_at ?? null,
+      started_at: row.started_at ?? row.running_at ?? row.reserved_at ?? null,
       allocated_cards: allocations.reduce((sum, item) => sum + item.devices.length, 0),
       storage_tier: row.storage_tier ?? null,
       allocation: allocations,

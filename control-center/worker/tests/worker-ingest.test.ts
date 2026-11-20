@@ -75,10 +75,14 @@ test("binds zones, ingests transitions exactly once, and reconciles only a compl
   ]};
   expect(await (await worker("blue", "events", terminal)).json()).toEqual({ok: true, need_snapshot: false});
   expect((await worker("blue", "events", terminal)).status).toBe(200);
+  expect(await db.prepare("SELECT started_at FROM task_index WHERE task_uid=?")
+    .bind(replacement.ids.task_uid).first("started_at")).toBe(now - 12);
   expect(await db.prepare("SELECT duration_sec FROM duration_samples WHERE task_uid=?")
     .bind(replacement.ids.task_uid).first("duration_sec")).toBe(12);
-  expect(await db.prepare("SELECT is_active,total_case_count,result_state FROM workflow_runs WHERE run_id=?")
+  expect(await db.prepare("SELECT is_active,total_case_count,result_state,first_started_at FROM workflow_runs WHERE run_id=?")
     .bind(identity.run_id).first()).toMatchObject({is_active: 0, total_case_count: 2, result_state: "FAIL"});
+  expect(await db.prepare("SELECT first_started_at FROM workflow_runs WHERE run_id=?")
+    .bind(identity.run_id).first("first_started_at")).toBe(now - 12);
 });
 
 test("command lookup never acknowledges and receipts are worker-scoped and idempotent", async () => {

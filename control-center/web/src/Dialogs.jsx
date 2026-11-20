@@ -80,7 +80,7 @@ export function CaseDialog({ item, nodes, config, close, go }) {
       ]} />
     </div>
     <div className="dialog-actions">
-      <button className="button" onClick={() => { close(); go("models", run.model); }}>查看模型仓任务 <ArrowRight size={16} /></button>
+      <button className="button" onClick={() => { close(); go("models", run.model); }}>查看代码仓任务 <ArrowRight size={16} /></button>
 
     </div>
   </Dialog>;

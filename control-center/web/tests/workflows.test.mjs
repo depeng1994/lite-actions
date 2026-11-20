@@ -40,6 +40,19 @@ test("historical Workflow totals fall back to case identity without allocation",
   assert.equal(summary.result, "成功");
 });
 
+test("historical Workflow totals use persisted backend start and card-hour summary", () => {
+  const summary = summarizeRun({
+    startedAt: 1_000_000,
+    finishedAt: 1_002_000,
+    cardHours: 0.59,
+    cardHoursPartial: false,
+    cases: [{historyId: "history-2", status: "成功", worker: "Blue", pool: "a3_shared_blue", cards: 16, allocatedCards: 16}],
+  });
+  assert.equal(summary.start, 1_000_000);
+  assert.equal(summary.end, 1_002_000);
+  assert.equal(summary.cardHours, 0.59);
+});
+
 test("a queued Workflow swaps with its predecessor without mutating source cases", () => {
   const cases = queuedCases();
   const order = [keyA, keyB, keyC];
