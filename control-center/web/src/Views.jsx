@@ -185,7 +185,7 @@ export function PoolsView({ nodes, cases, config, open, go, live }) {
             </select><CaretDown size={12} weight="bold" />
           </label>
         </div>
-        <button className="text-button" onClick={() => go("models", "vllm-ascend")}>查看模型仓任务 <CaretRight size={16} weight="bold" /></button>
+        <button className="text-button" onClick={() => go("models")}>查看模型仓任务 <CaretRight size={16} weight="bold" /></button>
       </div>
       <div className="table-scroll">
         <table className="data-table queue-table">

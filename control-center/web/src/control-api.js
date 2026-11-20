@@ -30,6 +30,7 @@ const minuteOfDay = (timestamp) => {
   const date = new Date(timestamp * 1000);
   return date.getHours() * 60 + date.getMinutes() + date.getSeconds() / 60;
 };
+const timestampMs = (timestamp) => timestamp == null ? null : timestamp * 1000;
 const workerLabel = (value) => value ? value[0].toUpperCase() + value.slice(1) : "—";
 const phaseLabel = (task) => ({
   QUEUED: "排队中", RESERVED: "准备中", STAGING: "准备中", RUNNING: "运行中", CLEANING: "清理中",
@@ -134,7 +135,7 @@ function taskRun(task, model, tasks, isHistory, nodesByRef, index) {
     owner: task.repo?.startsWith("depeng1994/") ? "个人仓" : "组织仓", author: task.pr_author,
     actor: task.trigger_actor || "—", pr: task.pr_number, trigger: task.event_type === "pull_request" ? "PR" : task.event_type === "workflow_dispatch" ? "手动" : "事件",
     action: task.workflow_name || task.workflow_file?.replace(/^.*\//, "").replace(/\.ya?ml$/, "") || "Workflow", commit: task.dispatch_id || "—",
-    submitted: minuteOfDay(task.submitted_at ?? task.queued_at),
+    submitted: timestampMs(task.submitted_at ?? task.queued_at),
   };
   run.cases = tasks.map((item, caseIndex) => taskToCase(item, nodesByRef, workflowKey(run), isHistory, caseIndex));
   return run;
@@ -156,7 +157,7 @@ function runFromWorkflow(row, nodesByRef, archived = false) {
     author: row.pr_author, actor: row.trigger_actor || "—", pr: row.pr_number,
     trigger: row.event_type === "pull_request" ? "PR" : row.event_type === "workflow_dispatch" ? "手动" : "事件",
     action: row.workflow_name || row.workflow_file?.replace(/^.*\//, "").replace(/\.ya?ml$/, "") || "Workflow",
-    commit: "—", submitted: minuteOfDay(row.submitted_at) ?? 0,
+    commit: "—", submitted: timestampMs(row.submitted_at),
     cancelSupported: Boolean(row.cancel_supported),
   };
   run.cases = (row.cases || []).map((task, index) => taskToCase(task, nodesByRef, workflowKey(run), archived, index));

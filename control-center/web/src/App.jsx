@@ -11,7 +11,7 @@ import { currentWorkflowQueue, moveWorkflow, queuedChildren } from "./workflows.
 import { cancelWorkflow as apiCancelWorkflow, cancellationDetail as apiCancellationDetail, clusterPreview, clusterPublish, clusterRollback, createUser as apiCreateUser, deleteUser as apiDeleteUser, getSession, listUsers, loadControlCenter, loadMoreHistory as apiLoadMoreHistory, login as apiLogin, logout as apiLogout, moveWorkflowUp as apiMoveWorkflowUp, resetUserKey as apiResetUserKey } from "./control-api.js";
 
 const pages = [["pools", "Pools 时间轴"], ["models", "模型仓"], ["cluster", "集群管理"]];
-const defaultModel = repositories[0].name;
+const defaultModel = "";
 // Until the first control-center snapshot arrives, show an empty configuration
 // instead of carrying over values from the interactive prototype.
 const initialConfig = { desired: 0, applied: {}, flags: {}, pending: null };
