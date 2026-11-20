@@ -131,7 +131,7 @@ function taskToCase(task, nodesByRef, runKey, isHistory = false, index = 0) {
 
 function taskRun(task, model, tasks, isHistory, nodesByRef, index) {
   const run = {
-    id: task.run_id, attempt: task.attempt, model, platform: platformLabel(task.provider), repo: task.repo,
+    id: task.run_id, number: task.run_number, attempt: task.attempt, model, platform: platformLabel(task.provider), repo: task.repo,
     owner: task.repo?.startsWith("depeng1994/") ? "个人仓" : "组织仓", author: task.pr_author,
     actor: task.trigger_actor || "—", pr: task.pr_number, trigger: task.event_type === "pull_request" ? "PR" : task.event_type === "workflow_dispatch" ? "手动" : "事件",
     action: task.workflow_name || task.workflow_file?.replace(/^.*\//, "").replace(/\.ya?ml$/, "") || "Workflow", commit: task.dispatch_id || "—",
@@ -151,7 +151,7 @@ function runsFromModel(model, payload, nodesByRef) {
 
 function runFromWorkflow(row, nodesByRef, archived = false) {
   const run = {
-    id: row.run_id, attempt: row.attempt, model: row.logical_model,
+    id: row.run_id, number: row.run_number, attempt: row.attempt, model: row.logical_model,
     platform: platformLabel(row.provider), repo: row.repo,
     owner: row.repo?.startsWith("depeng1994/") ? "个人仓" : "组织仓",
     author: row.pr_author, actor: row.trigger_actor || "—", pr: row.pr_number,

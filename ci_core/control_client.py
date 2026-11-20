@@ -115,6 +115,7 @@ def task_descriptor(key, record):
         "wf": _bounded(run.get("path"), 100),
         "sub": _submitted_at(run, record.get("queued_at")),
         "wn": _bounded(run.get("name"), 64),
+        "rn": run.get("run_number") if type(run.get("run_number")) is int and run["run_number"] > 0 else None,
         "ph": record["phase"] if record["phase"] in ACTIVE else "QUEUED",
         "ts": int(record.get("queued_at", 0)),
         "tm": record.get("phase_timestamps", {}),

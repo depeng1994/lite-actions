@@ -261,6 +261,7 @@ th[aria-sort] .column-sort, th[aria-sort] .column-sort svg, .column-sort:hover {
 .workflow-grid .workflow-time small { font-size: inherit; }
 .workflow-actions { display: flex; gap: 5px; flex-wrap: wrap; }
 .workflow-grid th:last-child { min-width: 105px; }
+.workflow-grid > thead th:nth-child(6), .workflow-grid > tbody > tr > td:nth-child(6) { min-width: 155px; width: 155px; }
 .run-id { white-space: nowrap; }
 .expand-workflow { display: inline-grid; place-items: center; border: 1px solid var(--line-strong); background: var(--surface-raised); color: var(--accent); border-radius: 4px; width: 26px; height: 26px; padding: 0; }
 .expand-workflow:hover { border-color: var(--accent); }

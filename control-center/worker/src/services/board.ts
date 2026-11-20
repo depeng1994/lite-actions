@@ -12,7 +12,7 @@ import {runUrl} from "../utils/taskIdentity";
 import {POOL, REPO} from "../utils/validate";
 
 type TaskRow = Pick<TaskSummary, "task_uid" | "worker_id" | "provider" | "repo" | "logical_model" | "run_id" |
-  "attempt" | "dispatch_id" | "case_id" | "test_id" | "label" | "kind" | "target_pool" | "req_nodes" | "req_devices" |
+  "attempt" | "dispatch_id" | "run_number" | "case_id" | "test_id" | "label" | "kind" | "target_pool" | "req_nodes" | "req_devices" |
   "pr_number" | "pr_author" | "trigger_actor" | "event_type" | "workflow_file"> & {
   phase?: Phase; status?: string; queued_at?: number; finished_at?: number;
   reserved_at?: number; staging_at?: number; running_at?: number; cleaning_at?: number; started_at?: number;
@@ -53,7 +53,7 @@ async function summaries(context: Context, rows: TaskRow[]): Promise<TaskSummary
     const shape = {logical_model, test_id, target_pool, req_nodes, req_devices};
     const allocations = await Promise.all(allocation(row).map(async alloc => ({...await node(alloc.host_id), devices: alloc.devices})));
     return {
-      task_uid, worker_id, provider, repo, run_id, attempt, dispatch_id, case_id, label, kind,
+      task_uid, worker_id, provider, repo, run_id, attempt, dispatch_id, run_number: row.run_number ?? null, case_id, label, kind,
       pr_number, pr_author, trigger_actor, event_type, workflow_file, ...shape,
       phase: row.phase ?? null, status: row.status ?? null, queued_at: row.queued_at ?? null,
       finished_at: row.finished_at ?? null, queue_pos: row.queue_pos ?? null,
@@ -164,6 +164,7 @@ function workflowRows(tasks: TaskSummary[], history: boolean): WorkflowRow[] {
       provider: first.provider, repo: first.repo, run_id: first.run_id, attempt: first.attempt,
       sequence: history ? 0 : queued ? 0 : 0,
       submitted_at: submitted.length ? Math.min(...submitted) : null,
+      run_number: first.run_number ?? null,
       repo_scope: workflowScope(first), logical_model: first.logical_model,
       workflow_name: workflowName(first), workflow_file: first.workflow_file,
       pools: [...new Set(cases.map(item => item.target_pool))], max_cards: cards,

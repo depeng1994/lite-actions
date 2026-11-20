@@ -115,6 +115,7 @@ export interface TaskSummary extends RunIdentity {
   worker_id: WorkerId;
   logical_model: string;
   dispatch_id: string | null;
+  run_number: number | null;
   case_id: string;
   test_id: string;
   label: string;
@@ -208,6 +209,7 @@ export type WorkflowResult = "QUEUED" | "PASS" | "FAIL";
 export interface WorkflowRow extends RunIdentity {
   sequence: number;
   submitted_at: number | null;
+  run_number: number | null;
   repo_scope?: "组织仓" | "个人仓";
   logical_model: string;
   workflow_name: string | null;
