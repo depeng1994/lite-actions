@@ -116,6 +116,7 @@ export interface TaskSummary extends RunIdentity {
   logical_model: string;
   dispatch_id: string | null;
   run_number: number | null;
+  display_title: string | null;
   case_id: string;
   test_id: string;
   label: string;
@@ -210,6 +211,7 @@ export interface WorkflowRow extends RunIdentity {
   sequence: number;
   submitted_at: number | null;
   run_number: number | null;
+  display_title: string | null;
   repo_scope?: "组织仓" | "个人仓";
   logical_model: string;
   workflow_name: string | null;

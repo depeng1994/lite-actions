@@ -250,8 +250,8 @@ export function ModelsView({ model, cases, nodes, config, cancellations, priorit
               <td className="workflow-pools">{summary.pools.map((pool) => <span key={pool}>{pool.replace("/", " / ")}</span>)}</td>
               <td>{summary.maxCards}</td>
               <td><a className="text-button run-id" href={actionsUrl(run)} target="_blank" rel="noreferrer" title={`平台 Actions 链接 · ${run.id}`}>
-                {run.action}{run.number == null ? "" : ` #${run.number}`} <ArrowSquareOut size={13} />
-              </a><small>尝试 {run.attempt}{run.number == null ? "" : ` · ID ${run.id}`}</small></td>
+                {run.title || run.action} <ArrowSquareOut size={13} />
+              </a><small>{run.action}{run.number == null ? ` · 尝试 ${run.attempt}` : ` #${run.number} · 尝试 ${run.attempt}`}</small></td>
               <td title={summary.active ? "尚未产生最终结果，执行阶段见子用例" : undefined}><Status value={summary.result} /></td>
               <td>@{run.actor}</td><td>{run.trigger}{run.pr && <small>#{run.pr} · @{run.author}</small>}</td>
               <td><WorkflowTime value={summary.start} /></td>

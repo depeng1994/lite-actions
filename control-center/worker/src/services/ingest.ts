@@ -12,7 +12,7 @@ type Cursor = {instance_id: string; last_seq: number; last_snapshot_id: string |
 export const TASK_META = [
   "task_uid", "worker_id", "provider", "repo", "logical_model", "run_id", "attempt", "dispatch_id",
   "case_id", "test_id", "label", "kind", "target_pool", "req_nodes", "req_devices", "pr_number",
-  "pr_author", "trigger_actor", "event_type", "workflow_file", "submitted_at", "workflow_name", "run_number",
+  "pr_author", "trigger_actor", "event_type", "workflow_file", "submitted_at", "workflow_name", "run_number", "display_title",
 ] as const;
 const TASK_ACTIVE = [...TASK_META, "short_tid", "task_key", "phase", "allocation_json", "queued_at",
   "reserved_at", "staging_at", "running_at", "cleaning_at", "timing_reliable", "updated_at"];
@@ -26,7 +26,7 @@ function refreshWorkflowRuns(db: D1Database, now: number): Statement[] {
     db.prepare("DELETE FROM workflow_runs"),
     db.prepare(`
     WITH all_cases AS (
-      SELECT provider,repo,run_id,attempt,logical_model,submitted_at,workflow_name,run_number,workflow_file,
+      SELECT provider,repo,run_id,attempt,logical_model,submitted_at,workflow_name,run_number,display_title,workflow_file,
         pr_number,pr_author,trigger_actor,event_type,phase,NULL AS status,
         (SELECT q.queue_pos FROM queue_orders q WHERE q.task_uid=tasks_active.task_uid
           AND q.worker_id=tasks_active.worker_id AND q.pool_name=tasks_active.target_pool AND q.kind=tasks_active.kind) AS queue_pos,
@@ -36,7 +36,7 @@ function refreshWorkflowRuns(db: D1Database, now: number): Statement[] {
         allocation_json,kind,target_pool,1 AS active
       FROM tasks_active
       UNION ALL
-      SELECT provider,repo,run_id,attempt,logical_model,submitted_at,workflow_name,run_number,workflow_file,
+      SELECT provider,repo,run_id,attempt,logical_model,submitted_at,workflow_name,run_number,display_title,workflow_file,
         pr_number,pr_author,trigger_actor,event_type,NULL AS phase,status,NULL AS queue_pos,NULL AS queued_at,
         NULL AS reserved_at,started_at,NULL AS running_at,finished_at,duration_sec,req_nodes,req_devices,timing_reliable,
         actual_allocation_json AS allocation_json,kind,target_pool,0 AS active
@@ -47,6 +47,7 @@ function refreshWorkflowRuns(db: D1Database, now: number): Statement[] {
         MIN(submitted_at) AS submitted_at,
         MAX(workflow_name) AS workflow_name,
         MAX(run_number) AS run_number,
+        MAX(display_title) AS display_title,
         MAX(workflow_file) AS workflow_file,
         MAX(pr_number) AS pr_number,
         MAX(pr_author) AS pr_author,
@@ -69,11 +70,11 @@ function refreshWorkflowRuns(db: D1Database, now: number): Statement[] {
       FROM all_cases
       GROUP BY provider,repo,run_id,attempt
     )
-    INSERT INTO workflow_runs(provider,repo,run_id,attempt,logical_model,submitted_at,workflow_name,run_number,workflow_file,
+    INSERT INTO workflow_runs(provider,repo,run_id,attempt,logical_model,submitted_at,workflow_name,run_number,display_title,workflow_file,
       pr_number,pr_author,trigger_actor,event_type,is_active,has_in_flight,has_waiting_resource_case,
       active_case_count,total_case_count,queue_order_rank,first_started_at,finished_at,result_state,pools_json,
       max_cards,card_seconds_finished,has_unmeasured_allocated,updated_at)
-    SELECT provider,repo,run_id,attempt,logical_model,submitted_at,workflow_name,run_number,workflow_file,
+    SELECT provider,repo,run_id,attempt,logical_model,submitted_at,workflow_name,run_number,display_title,workflow_file,
       pr_number,pr_author,trigger_actor,event_type,is_active,has_in_flight,has_waiting_resource_case,
       active_case_count,total_case_count,queue_order_rank,first_started_at,
       CASE WHEN is_active=1 THEN NULL ELSE finished_at END,
@@ -110,6 +111,7 @@ async function task(context: Context, input: Input) {
   return {
     ...identity, worker_id: context.workerId, provider, repo, logical_model: logicalModel(provider, repo),
     run_id, attempt, dispatch_id, run_number: input.rn == null ? null : integer(input.rn, "run_number", 1),
+    display_title: nullableString(input.dt, "display_title", 128),
     case_id, test_id: case_id.slice(9), label: string(input.lbl, "label", 115),
     kind: member(input.k, "kind", ["npu_smoke", "train", "worker_probe"] as const),
     target_pool: string(input.pool, "pool", 64, POOL), req_nodes: integer(nodes, "nodes", 0, 256),

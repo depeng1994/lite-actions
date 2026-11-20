@@ -28,7 +28,7 @@ async function descriptor(caseId: string) {
   return {ids, task: {
     tid: ids.short_tid, p: "github", r: identity.repo, run: identity.run_id, att: 1,
     cid: caseId, lbl: "CI", k: "npu_smoke", pool: "pool_blue", req: [1, 8], ph: "QUEUED",
-    ts: now - 20, sub: now - 30, wn: "Dispatcher Smoke", rn: 17, tm: {QUEUED: now - 20}, reliable: 1,
+    ts: now - 20, sub: now - 30, wn: "Dispatcher Smoke", rn: 17, dt: "Lite Actions self smoke: cpu-only", tm: {QUEUED: now - 20}, reliable: 1,
   }};
 }
 
@@ -45,11 +45,11 @@ test("binds zones, ingests transitions exactly once, and reconciles only a compl
   expect(await (await worker("blue", "events", batch)).json()).toEqual({ok: true, need_snapshot: false});
   expect((await worker("blue", "events", batch)).status).toBe(200);
   expect(await db.prepare("SELECT count(*) AS n FROM worker_event_dedup").first("n")).toBe(2);
-  expect(await db.prepare("SELECT submitted_at,workflow_name,run_number FROM tasks_active WHERE task_uid=?")
-    .bind(ids.task_uid).first()).toMatchObject({submitted_at: now - 30, workflow_name: "Dispatcher Smoke", run_number: 17});
-  expect(await db.prepare("SELECT is_active,total_case_count,result_state,submitted_at,workflow_name,run_number FROM workflow_runs WHERE run_id=?")
+  expect(await db.prepare("SELECT submitted_at,workflow_name,run_number,display_title FROM tasks_active WHERE task_uid=?")
+    .bind(ids.task_uid).first()).toMatchObject({submitted_at: now - 30, workflow_name: "Dispatcher Smoke", run_number: 17, display_title: "Lite Actions self smoke: cpu-only"});
+  expect(await db.prepare("SELECT is_active,total_case_count,result_state,submitted_at,workflow_name,run_number,display_title FROM workflow_runs WHERE run_id=?")
     .bind(identity.run_id).first()).toMatchObject({is_active: 1, total_case_count: 1, result_state: "QUEUED",
-      submitted_at: now - 30, workflow_name: "Dispatcher Smoke", run_number: 17});
+      submitted_at: now - 30, workflow_name: "Dispatcher Smoke", run_number: 17, display_title: "Lite Actions self smoke: cpu-only"});
   const gap = await worker("blue", "events", {...base, ev: [{s: 4, t: "TF", tid: task.tid, ts: now, st: "PASS", cv: 1}]});
   expect(await gap.json()).toEqual({ok: true, need_snapshot: true, expected_seq: 3});
   const replacement = await descriptor("case_001_beta");
