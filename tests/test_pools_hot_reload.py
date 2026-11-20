@@ -154,6 +154,60 @@ class PoolReloadTests(unittest.TestCase):
             "cmd-1", "FAILED", err="PHYSICAL_NODE_IDENTITY_CHANGED"
         )
 
+    def test_failed_probe_isolates_node_and_keeps_verified_nodes(self):
+        newer = copy.deepcopy(self.pools)
+        for node in newer["test"]["nodes"]:
+            node["machine_fingerprint"] = "a" * 64
+            node["environments"] = {
+                "env": {
+                    "container_id": "b" * 64,
+                    "image_id": "sha256:image",
+                    "image_ref": "image:tag",
+                }
+            }
+        command = self.request(newer)
+        with patch(
+            "scripts.preflight.probe_node",
+            side_effect=[RuntimeError("Permission denied (publickey)"), {"ok": True}],
+        ):
+            from ci_core.pools_sync import verify
+
+            applied = verify(
+                "blue",
+                {"blue": {"enabled": True}},
+                self.pools,
+                command["config"],
+                command["payload"],
+            )
+        failed_node, verified_node = applied["pools"]["test"]["nodes"]
+        self.assertTrue(failed_node["paused"])
+        self.assertTrue(failed_node["probe_unavailable"])
+        self.assertIn("Permission denied", failed_node["probe_reason"])
+        self.assertFalse(failed_node["allocation_groups"][0]["verified"])
+        self.assertFalse(verified_node.get("paused", False))
+        self.assertFalse(verified_node.get("probe_unavailable", False))
+        self.assertEqual(applied["source_sha256"], command["payload"]["sha256"])
+        self.assertEqual(
+            hashlib.sha256(applied["config_json"].encode()).hexdigest(),
+            applied["sha256"],
+        )
+        self.assertEqual(
+            candidates(topology(), applied["pools"]),
+            [[{"host_id": HOST2, "devices": DEVICES}]],
+        )
+
+    def test_probe_unavailable_nodes_are_never_candidates(self):
+        pools = copy.deepcopy(self.pools)
+        node = pools["test"]["nodes"][0]
+        node["probe_unavailable"] = True
+        node["paused"] = True
+        node["allocation_groups"][0]["probe_unavailable"] = True
+        node["allocation_groups"][0]["verified"] = False
+        self.assertEqual(
+            candidates(topology(), pools),
+            [[{"host_id": HOST2, "devices": DEVICES}]],
+        )
+
     def test_deletion_waits_for_active_lease_and_refuses_quarantine(self):
         new = copy.deepcopy(self.pools)
         new["test"]["nodes"].pop(0)

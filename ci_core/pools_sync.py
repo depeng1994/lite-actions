@@ -1,5 +1,9 @@
 """Validate published Pools and calculate removals before a scheduler switch."""
 
+import copy
+import hashlib
+import json
+
 from ci_core.config import checked_pools
 from ci_core.resources import resource_keys
 
@@ -39,6 +43,37 @@ def verify(worker, workers, old, envelope, command):
         if pool["owner"] == worker
         for node in pool["nodes"]
     }
+    failed = False
+
+    def reason(error):
+        value = str(error).strip().replace("\\n", " ")
+        return (value or type(error).__name__)[:200]
+
+    def mark_unavailable(node, failure_reason):
+        node["paused"] = True
+        node["probe_paused"] = True
+        node["probe_unavailable"] = True
+        node["probe_status"] = "unavailable"
+        node["probe_reason"] = failure_reason
+        for group in node.get("allocation_groups", []):
+            group["paused"] = True
+            group["probe_paused"] = True
+            group["probe_unavailable"] = True
+            group["verified"] = False
+            group["probe_reason"] = failure_reason
+
+    def clear_probe_marker(node):
+        if node.pop("probe_paused", False):
+            node.pop("paused", None)
+        node.pop("probe_unavailable", None)
+        node.pop("probe_status", None)
+        node.pop("probe_reason", None)
+        for group in node.get("allocation_groups", []):
+            if group.pop("probe_paused", False):
+                group.pop("paused", None)
+            group.pop("probe_unavailable", None)
+            group.pop("probe_reason", None)
+
     for pool in new.values():
         if pool["owner"] != worker:
             continue
@@ -54,7 +89,15 @@ def verify(worker, workers, old, envelope, command):
                 "environments",
                 "machine_fingerprint",
             )
-            if any(node.get(field) != former.get(field) for field in binding_fields):
+            changed = any(node.get(field) != former.get(field) for field in binding_fields)
+            if not changed:
+                if former.get("probe_unavailable"):
+                    mark_unavailable(
+                        node,
+                        former.get("probe_reason", "previous probe failed"),
+                    )
+                continue
+            try:
                 from scripts.preflight import probe_machine, probe_node
 
                 if not fingerprint:
@@ -65,6 +108,18 @@ def verify(worker, workers, old, envelope, command):
                         probe_node(node, environment)
                 else:
                     probe_machine(node)
+                clear_probe_marker(node)
+            except Exception as error:
+                failed = True
+                mark_unavailable(node, reason(error))
+
+    if failed:
+        doc = copy.deepcopy(doc)
+        doc["source_sha256"] = doc["sha256"]
+        doc["pools"] = new
+        config_json = json.dumps(new, ensure_ascii=False, separators=(",", ":"))
+        doc["config_json"] = config_json
+        doc["sha256"] = hashlib.sha256(config_json.encode()).hexdigest()
     return doc
 
 

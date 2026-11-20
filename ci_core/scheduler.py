@@ -29,9 +29,13 @@ def candidates(case: dict, pools: dict, *, include_paused=False) -> list[list[di
     for host in sorted(
         pool["nodes"], key=lambda node: (node.get("priority", 0), node["host_id"])
     ):
+        if host.get("probe_unavailable"):
+            continue
         if host.get("paused") and not include_paused:
             continue
         for group in host.get("allocation_groups", []):
+            if group.get("probe_unavailable"):
+                continue
             if group.get("paused") and not include_paused:
                 continue
             devices = group["devices"]

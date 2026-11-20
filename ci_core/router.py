@@ -334,6 +334,14 @@ class Router:
                         if keys
                         else None
                     )
+                    unavailable = bool(node.get("probe_unavailable"))
+                    if unavailable:
+                        state = "probe_error"
+                        health = {
+                            **health,
+                            "v": 2,
+                            "mc": max(int(health.get("mc", 0)), 1),
+                        }
                     devices.append(
                         {
                             "pool": pool_name,
@@ -345,8 +353,9 @@ class Router:
                             "v": health.get("v", 2),
                             "mc": health.get("mc", 0),
                             "lo": health.get("lo"),
-                            "qu": int(bool(keys)),
+                            "qu": int(bool(keys) or unavailable),
                             "qid": qid,
+                            "reason": node.get("probe_reason") if unavailable else None,
                         }
                     )
         return {
@@ -408,7 +417,7 @@ class Router:
             import json
 
             saved = json.loads(path.read_text())
-            if saved["sha256"] != payload["sha256"]:
+            if saved.get("source_sha256", saved["sha256"]) != payload["sha256"]:
                 raise ValueError("POOL_REVISION_MISMATCH")
             cancelled = saved.get("drain_pending", [])
         else:
