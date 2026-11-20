@@ -482,7 +482,10 @@ class SelfSmokeTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     [r["item"]["case_id"] for r in yellow.state.read().values()],
-                    ["case_001_worker_os_yellow"],
+                    [
+                        "case_001_worker_os_yellow",
+                        "case_005_dispatch_smoke_yellow_a5_8p",
+                    ],
                 )
                 queued = ("GET", "/actions/runs?status=queued&per_page=100&page=1")
                 own.assert_any_call(*queued)
