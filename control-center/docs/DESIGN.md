@@ -128,7 +128,7 @@
 
 - [x] **`INT-01`** `★ P0` 公网匿名读取、IP 掩码、缓存头与四级权限全矩阵验证（v1.1 已过；v1.5 需对新增 `/workflows` 与增强 `/cluster` 补跑脱敏回归）
 - [x] **`INT-02`** `★ P0` 双 Worker 心跳、90s 离线、事件去重/缺口检测、分片快照对账与断网 30 分钟恢复验证（v1.1 已过）
-- [ ] **`INT-03`** `★ P0` 全部节点 2 分钟 `npu-smi` 可见性探测（含暂停/`enabled: false` Pool；1–4 异常 / 5 次已离线 / 最近在线时间不改写 / 重放不重计）+ 空闲三态叠加验证。`health-ingest.test.ts` 已通过 D1 Worker IP 事件、暂停 Pool、5 次离线、最近在线时间和重复轮次回放验证；全量生产节点 2 分钟实机演练仍待补。
+- [x] **`INT-03`** `★ P0` 全部节点 2 分钟 `npu-smi` 可见性探测（含暂停/`enabled: false` Pool；1–4 异常 / 5 次已离线 / 最近在线时间不改写 / 重放不重计）+ 空闲三态叠加验证。`health-ingest.test.ts` 已通过 D1 Worker IP 事件、暂停 Pool、5 次离线、最近在线时间和重复轮次回放验证；Yellow `.25` 实机 round 138–144 已完成 WARN 1–4、OFFLINE 第 5 次、恢复 ONLINE，`last_online_at` 在失败阶段保持不变并在恢复时更新。
 - [x] **`INT-04`** 耗时中位数与排期虚线投影 API 集成验证：`schedule-projection.test.ts` 覆盖 0、5、10+ 可靠样本、超时、无估算和未知外部占用，`schedule-api.test.ts` 通过真实 D1 Worker `/public/timeline` 验证 5 个可靠样本的中位数排期投影；FAIL 与 `timing_reliable=0` 样本不进入估算。
 - [x] **`INT-05`** `★ P0` 全链路上传报文 `< 2,000` 字节门禁验证：`control-center/tests/integration/run.py` 在当前 v1.5 协议上重跑通过，双 Worker 与两个平台客户端共 86 个 TLS 请求，最大 1,790 B，所有控制面路径和 Yellow 平台写路径均被捕获且低于门禁；`test_upload_intercept.py` 亦保持全绿。
 - [ ] **`INT-06`** `★ P0` GitHub & GitCode 整次 Workflow 取消端到端闭环（含原生作业、2 分钟 `force-cancel`、**双 Worker 断连网站但通平台仍停机**、清理失败进隔离）
