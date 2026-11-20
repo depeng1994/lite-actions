@@ -109,6 +109,21 @@
 #### 7.1 后端 + Worker 集成验证（不依赖前端，Phase 5.5 完成后立即跑绿）
 > 说明：v1.1 回归证据见 [backend-validation.md](backend-validation.md)；下列为补齐 v1.1 遗留项并升级至 v1.5 全量口径后的最新状态。
 
+#### 7.1A Yellow Worker 实机前置与逐项验证矩阵
+
+以下门禁依赖真实 Yellow Worker。切换 Yellow 后，先把 `<YELLOW_SSH_ALIAS>`、`<WORKER_UNIT>`、`<SITE_ORIGIN>` 和 `<CONTROL_URL>` 替换为现场值，并把命令输出、请求 ID、D1 revision、Worker instance、`http-egress.json` 和平台 run ID 保存到对应验收记录。日志和报文中不得回填 Token、密钥或真实未脱敏地址。
+
+| Yellow 依赖项 | 实机步骤 | 通过条件与证据 |
+|---|---|---|
+| **通用前置**（`REQ-04/06/15`、`REL-01`） | `ssh <YELLOW_SSH_ALIAS> 'cd /opt/lite-actions/native-production/current && /usr/bin/python3 --version && test -f unified_router.py'`；确认 `<CONTROL_URL>` 可访问；启动 `systemctl restart <WORKER_UNIT>` 后查看 `journalctl -u <WORKER_UNIT> --since "5 min ago"`。从控制面读取 `GET <SITE_ORIGIN>/api/v1/public/overview` 与 `/api/v1/public/cluster`。 | Yellow 心跳出现在 overview，`offline=false`；D1 `workers.instance_id`、`applied_rev`、`code_sha` 与主机运行目录一致；拉配置、回执和事件均有对应日志。 |
+| **`INT-03` / `REQ-15`** | 在 Yellow 的每个真实设备组执行 2 分钟一轮的可见性探测，连续发送在线、4 次失败、第 5 次失败、第 6 次恢复，并重放同一 `probe_round`。通过 `/api/v1/public/timeline` 检查 `device_groups[].health`。 | 所有 Yellow 设备组依次为 `ONLINE`、`PROBE_WARN 1/5..4/5`、`OFFLINE 5/5`、恢复 `ONLINE`；重放不增加 `consecutive_failures`；`last_online_at` 在失败阶段不回退；暂停 Pool 继续探测。证据为时间轴 JSON 和主机探测日志。 |
+| **`INT-05` / `E2E-02` / `REL-01`** | 在 Yellow 开启出站抓包或保留 `http-egress.json`，执行心跳、事件、分片快照、配置拉取、插队回执和 GitHub/GitCode 结果写回完整周期；同时运行 `python3 -m unittest tests/test_upload_intercept.py -v`。 | Yellow 发往控制面和平台的每个 HTTP/1.1 请求线序长度均 `<2,000` B，`sent_violations=0`，`max_request_bytes<2,000`；平台 ACK/终态在控制面恢复后仍能补发。 |
+| **`INT-06` / `FE-03` / `E2E-06` / `REL-02`** | 在 GitHub 与 GitCode 各触发含 Blue/Yellow 排队和在途用例的真实 Workflow，从 Site 点击取消并重复点击一次；再暂时断开控制面 URL，保持平台出口可用，等待取消跟踪和 GitHub 2 分钟 `force-cancel`。 | 两平台返回同一 `cancel_id`；两区排队/在途任务在 2 分钟内停止、清理并回报 `CANCELLED`；已结束 case 保持原结果；控制面断开期间平台仍停止，恢复后事件无重复；清理失败进入隔离。保存平台 run、cancel detail、两端状态目录和审计记录。 |
+| **`INT-07` / `REQ-17` / `E2E-05` / `REL-04`** | 创建 `W0` 在途、`W1/W2/W3` 等待的混合 GitHub/GitCode Workflow，使队列同时覆盖 Blue/Yellow 共享与不共享 Pool。用 Site 对 `W3` 连续执行 `3→2→1`，并用旧 `queue_version`、重复 `op_id`、单端断连、同 attempt 晚发现和回队 case 重试。 | Site 返回 `202` 与真实 `op_id`；Blue/Yellow command receipt 分 Pool/类型显示 `APPLIED/NOOP/CONFLICT/FAILED`；旧版本返回 `409`；重复 op 幂等；两端 `workflow_order`、`queue_rank` 与 Site `/workflows` 顺序一致；晚发现/回队沿用顺位。保存管理 API、command receipt、两端 `unified-jobs.json` 和队列事件。 |
+| **`INT-08` / `REQ-18` / `E2E-03` / `E2E-09`** | 在 Site 对 Yellow Pool/Node/DeviceGroup 执行 `DRAIN`，期间验证活动租约、排队引用和隔离阻断删除，再执行 `RESUME`；重新 `DRAIN` 后清零引用并执行第二步删除；暂停 16P 半节点并重启 Yellow。 | `DRAIN` 后唯一依赖目标的排队 case 取消，在途租约沿用快照；未清零删除返回对应 `409`；恢复删除后配置不含 `paused:false`；重启后 `pools-active.json`、revision、回执和健康状态一致。 |
+| **`INT-10` / `E2E-12`** | 先用 Sites/D1 跑匿名掩码、管理员登录、冷块读写和无 Cron 心跳，再将 Yellow `control_center.url` 改为 Node 24 `nodeServer.ts` 地址并重启，重复同一组心跳、快照、取消和读接口。 | Sites/D1 与 Node/SQLite 返回结构、Cookie/IP 锁定、冷块 SHA、`dbSizeBytes()`、SPA/API 404、取消推进和报文大小完全一致；只修改 `control_center.url`，业务代码和 Worker 运行逻辑不变。 |
+| **`E2E-07` / `REL-03`** | 在维护窗口停止 Site/控制面 30 分钟，保持 Yellow 平台出口可用，恢复后观察快照对账；构造 D1 水位超过 80%，再模拟写额度耗尽。 | 控制面不可用期间 Yellow 仍执行和回报；恢复后零重复对账；容量按完整 Workflow 从 80% 滚删至 70%；管理写返回 `503 WRITE_QUOTA_EXHAUSTED`，Worker Outbox 后续补发。 |
+
 - [x] **`INT-01`** `★ P0` 公网匿名读取、IP 掩码、缓存头与四级权限全矩阵验证（v1.1 已过；v1.5 需对新增 `/workflows` 与增强 `/cluster` 补跑脱敏回归）
 - [x] **`INT-02`** `★ P0` 双 Worker 心跳、90s 离线、事件去重/缺口检测、分片快照对账与断网 30 分钟恢复验证（v1.1 已过）
 - [ ] **`INT-03`** `★ P0` 全部节点 2 分钟 `npu-smi` 可见性探测（含暂停/`enabled: false` Pool；1–4 异常 / 5 次已离线 / 最近在线时间不改写 / 重放不重计）+ 空闲三态叠加验证。`health-ingest.test.ts` 已通过 D1 Worker IP 事件、暂停 Pool、5 次离线、最近在线时间和重复轮次回放验证；全量生产节点 2 分钟实机演练仍待补。
