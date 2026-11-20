@@ -219,7 +219,7 @@ export async function workflows(context: Context): Promise<WorkflowList> {
     // cap can silently truncate a Workflow when one run has many cases.
     db.prepare("SELECT * FROM task_index ORDER BY finished_at DESC,provider,repo,run_id,attempt,task_uid"),
     db.prepare("SELECT COUNT(DISTINCT provider||'/'||repo||'/'||run_id||'/'||attempt) AS count FROM task_index"),
-    db.prepare("SELECT COALESCE(MAX(queue_ver),0) AS version FROM queue_orders"),
+    db.prepare("SELECT queue_version AS version FROM workflow_queue_meta WHERE id=1"),
   ]);
   const filter = (row: WorkflowRow) => (!model || row.logical_model === model) && (!repo || row.repo === repo) &&
     (!platform || row.provider === platform) && (!pool || row.pools.includes(pool));

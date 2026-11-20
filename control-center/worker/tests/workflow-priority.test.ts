@@ -50,3 +50,11 @@ test("queue head returns NOOP and operation receipt exposes worker commands", as
   expect(response.status).toBe(200);
   expect(await response.json()).toMatchObject({status: "NOOP", reason: "ALREADY_AT_HEAD"});
 });
+
+test("workflow projection keeps the monotonic queue version after rows are consumed", async () => {
+  await db.prepare("DELETE FROM queue_orders WHERE task_uid IN ('workflow_a_case','workflow_b_case')").run();
+  const response = await request("/admin/workflows?limit=50", {cookie});
+  expect(response.status).toBe(200);
+  const payload = await response.json<{queue_version: number}>();
+  expect(payload.queue_version).toBe(2);
+});
