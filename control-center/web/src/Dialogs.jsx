@@ -285,8 +285,8 @@ python3 scripts/preflight.py --worker-id ${workerId} --export-node-snippet \\\n 
     <form onSubmit={(event) => {
       event.preventDefault();
       const raw = Object.fromEntries(new FormData(event.currentTarget));
-      const pool = raw.pool.trim().toUpperCase();
-      if (!/^[A-Z][A-Z0-9_\.-]*$/.test(pool)) {
+      const pool = raw.pool.trim();
+      if (!/^[A-Za-z][A-Za-z0-9_\.-]*$/.test(pool)) {
         setError("请输入有效的 Pool 名称。");
         return;
       }
