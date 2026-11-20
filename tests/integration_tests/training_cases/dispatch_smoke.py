@@ -68,7 +68,7 @@ def build_smoke_list() -> list[OverrideDefinitions]:
             ci_overrides={
                 "worker": "yellow",
                 "target_pool": "a5_shared_yellow",
-                "docker": "vllm-kimi-wangjinyin",
+                "docker": "a5_ci_214",
             },
         ),
     ]
