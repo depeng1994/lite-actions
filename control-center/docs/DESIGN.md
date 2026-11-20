@@ -131,7 +131,7 @@
 - [x] **`INT-03`** `★ P0` 全部节点 2 分钟 `npu-smi` 可见性探测（含暂停/`enabled: false` Pool；1–4 异常 / 5 次已离线 / 最近在线时间不改写 / 重放不重计）+ 空闲三态叠加验证。`health-ingest.test.ts` 已通过 D1 Worker IP 事件、暂停 Pool、5 次离线、最近在线时间和重复轮次回放验证；Yellow `.25` 实机 round 138–144 已完成 WARN 1–4、OFFLINE 第 5 次、恢复 ONLINE，`last_online_at` 在失败阶段保持不变并在恢复时更新。
 - [x] **`INT-04`** 耗时中位数与排期虚线投影 API 集成验证：`schedule-projection.test.ts` 覆盖 0、5、10+ 可靠样本、超时、无估算和未知外部占用，`schedule-api.test.ts` 通过真实 D1 Worker `/public/timeline` 验证 5 个可靠样本的中位数排期投影；FAIL 与 `timing_reliable=0` 样本不进入估算。
 - [x] **`INT-05`** `★ P0` 全链路上传报文 `< 2,000` 字节门禁验证：`control-center/tests/integration/run.py` 在当前 v1.5 协议上重跑通过，双 Worker 与两个平台客户端共 86 个 TLS 请求，最大 1,790 B，所有控制面路径和 Yellow 平台写路径均被捕获且低于门禁；`test_upload_intercept.py` 亦保持全绿。
-- [ ] **`INT-06`** `★ P0` GitHub & GitCode 整次 Workflow 取消端到端闭环（含原生作业、2 分钟 `force-cancel`、**双 Worker 断连网站但通平台仍停机**、清理失败进隔离） 当前会话没有可用的 GitCode Actions dispatch 接口或触发凭据，GitCode 侧真实 Workflow 暂标阻塞，未勾选。
+- [ ] **`INT-06`** `★ P0` GitHub & GitCode 整次 Workflow 取消端到端闭环（含原生作业、2 分钟 `force-cancel`、**双 Worker 断连网站但通平台仍停机**、清理失败进隔离） 当前会话没有可用的 GitCode Actions dispatch 接口或触发凭据，GitCode 侧真实 Workflow 暂标阻塞，未勾选。 GitHub 侧实测返回 400 APP_NOT_INSTALLED，控制面配置的 GitHub App 未安装到 depeng1994/lite-actions；当前集成无法代为安装或管理该 App，GitHub 侧真实取消暂标阻塞，未勾选。
 - [ ] **`INT-07`** `★ P0` Workflow 级跨区（Blue/Yellow）版本化插队联调（`3→2→1`、队首/在途、共享/不共享队列、晚发现/回队沿用顺位、并发/过期冲突、单端离线）+ 虚拟时钟验证 `train` 72h 排队超时（71h59m vs 72h01m）
 - [x] **`INT-08`** `★ P0` 集群配置热加载全场景（Pool `enabled: false` 与节点/组 `paused: true` 统一暂停语义不报错、16P 半节点暂停、在途快照隔离、`preflight.py` 实机校验、**两步先排空再删除（排空中可恢复，活动/排队/隔离未清零拒删）**、双 Worker 单端失败状态展示、回滚、重启/自动更新保留） Yellow 实机证据：r13 DRAIN Pool 后 applied_rev=13、命令 APPLIED、enabled=false；r14 RESUME 后 applied_rev=14、enabled=true、sha 与 r10 一致；修复版 01f0c205 重启后 service active、revision=14、pools-active 的 config_json 与 sha 一致、source_sha256 保留、.25 环境配置保持、站点 Yellow applied_rev=14/offline=false/error=null。16P 半节点与多节点删除场景因当前仅 .25 可调度，保留为阻塞项。
 - [ ] **`INT-09`** `★ P0` 单 SQLite/D1 热冷分层（103 个历史 Workflow 按 50/50/3 跨 30 天翻页、第 31 天冷解压、1 年过期、80%→70% 按完整 Workflow 滚删与提示、同一次写额度熔断触发管理写 503 + Worker 暂存恢复）
@@ -144,7 +144,7 @@
 - [ ] **`E2E-03`** **`★ P0 关键必通`** 设备组 5 次探测离线 + 最近在线时间 + 16P 半节点暂停热加载与重启保留闭环
 - [ ] **`E2E-04`** **`★ P0 关键必通`** 统一 Workflow 表格全交互闭环（`-3,-2,-1,0,1,2...` 序号、50 条上方历史分页/折叠恢复、12 列筛选排序、调度结果三态、运行总卡时、冷归档详情）
 - [ ] **`E2E-05`** **`★ P0 关键必通`** Workflow 级跨区（Blue/Yellow）插队端到端闭环（含筛选态按真实队列交换、多端回执、晚发现沿用、排期同步刷新）
-- [ ] **`E2E-06`** **`★ P0 关键必通`** GitHub & GitCode 整次 Workflow 取消端到端闭环（含原生作业、2 分钟 `force-cancel`、断连网站仍停机、清理失败隔离）
+- [ ] **`E2E-06`** **`★ P0 关键必通`** GitHub & GitCode 整次 Workflow 取消端到端闭环（含原生作业、2 分钟 `force-cancel`、断连网站仍停机、清理失败隔离） GitHub 侧因 APP_NOT_INSTALLED 阻塞，GitCode 侧无 dispatch 入口，未勾选。
 - [ ] **`E2E-07`** **`★ P0 关键必通`** 网站宕机 30 分钟故障隔离 + 恢复快照对账 + 单库 80%→70% 滚删 + 写额度耗尽降级演练
 - [ ] **`E2E-08`** `P1` Pools 时间轴 16P 双框独立点击与去重计卡 + 零卡探针不占行 + 0/<10/≥10 耗时样本与排期虚线边界
 - [ ] **`E2E-09`** `P1` 集群新增资产（粘贴 `preflight.py` 片段与指纹报错回退）、**两步先排空再删除（排空中可恢复 + 阻断条件校验）**、双 Worker 部分生效与版本回滚全栈闭环
@@ -156,7 +156,7 @@
 - [ ] **`REL-00`** **`★ 上线必过`** 初期 ChatGPT Sites 实机能力边界核验（验证 `.openai/hosting.json` D1 持久化绑定、服务端 Secret 注入、出站 `fetch()` 调 GitHub/GitCode API 及 Sites 域名接入；若任一项受限，直接以同一套可迁移代码零返工切至个人服务器或 Cloudflare Workers Free）
 - [x] **`REL-01`** **`★ 上线必过`** 真实 Yellow 主机通过批准域名完成心跳、取令、拉配置、回执，满足出口放行与每日字节预算（待定 1）
   - 实机证据（2026-11-20）：Yellow `offline=false`、`applied_rev=6`；`test_upload_intercept.py` 4/4 通过；`http-egress.json` 中 control 路径均 `rejected=0`、`sent_violations=0`，最大请求 1,828 B，日上传量 1,254,020 / 67,108,864。
-- [ ] **`REL-02`** **`★ 上线必过`** 已装 App 的 GitHub 测试仓 + 配好 Token 的 GitCode 测试仓各完成一次含原生作业和双区用例的真实整次取消 GitCode 侧真实 Workflow 触发当前阻塞，原因是本会话没有可用的 GitCode dispatch 接口或触发凭据，未勾选。
+- [ ] **`REL-02`** **`★ 上线必过`** 已装 App 的 GitHub 测试仓 + 配好 Token 的 GitCode 测试仓各完成一次含原生作业和双区用例的真实整次取消 GitCode 侧真实 Workflow 触发当前阻塞，原因是本会话没有可用的 GitCode dispatch 接口或触发凭据，未勾选。 GitHub 侧实测返回 400 APP_NOT_INSTALLED，GitHub App 安装阻塞；GitCode 侧触发同样阻塞，未勾选。
 - [ ] **`REL-03`** **`★ 上线必过`** 实际免费托管实例（ChatGPT Sites / D1 或 Cloudflare Workers Free + D1 Free）实测容量水位监控、80%→70% 滚删、CPU 预算与额度耗尽行为
 - [ ] **`REL-04`** **`★ 上线必过`** 真实双 Worker 环境联调一次 Workflow 级跨区插队（管理接口 → 两端应用回执 → 排期刷新），并回归原有调度规则
 
