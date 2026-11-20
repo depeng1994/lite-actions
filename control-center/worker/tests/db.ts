@@ -9,7 +9,6 @@ import workflowRunsMigration from "../migrations/0006_v15_workflow_runs.sql?raw"
 import taskStartedAtMigration from "../migrations/0007_v15_task_started_at.sql?raw";
 import runNumberMigration from "../migrations/0008_v15_run_number.sql?raw";
 import runDisplayTitleMigration from "../migrations/0009_v15_run_display_title.sql?raw";
-import workerCredentialsMigration from "../migrations/0010_worker_credentials.sql?raw";
 import type {Env} from "../src/router";
 import worker from "../src/index";
 
@@ -33,8 +32,6 @@ export const migrate = () => applyD1Migrations(db, [{
   name: "0008_v15_run_number.sql", queries: runNumberMigration.split(";").filter(query => query.trim()),
 }, {
   name: "0009_v15_run_display_title.sql", queries: runDisplayTitleMigration.split(";").filter(query => query.trim()),
-}, {
-  name: "0010_worker_credentials.sql", queries: workerCredentialsMigration.split(";").filter(query => query.trim()),
 }], "d1_test_migrations");
 export async function request(path: string, opts: {
   method?: string; data?: unknown; cookie?: string; headers?: HeadersInit;

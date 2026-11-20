@@ -6,7 +6,6 @@ import {authorize} from "./middleware/access";
 import {authRoutes} from "./routes/auth";
 import {userRoutes} from "./routes/users";
 import {workerRoutes} from "./routes/worker";
-import {workerCredentialRoutes} from "./routes/workerCredentials";
 import {boardRoutes} from "./routes/board";
 import {clusterRoutes} from "./routes/cluster";
 import {commandRoutes} from "./routes/commands";
@@ -22,7 +21,6 @@ clusterRoutes(router);
 authRoutes(router);
 userRoutes(router);
 workerRoutes(router);
-workerCredentialRoutes(router);
 
 const publicCache = new PublicCache();
 const publicHeaders = {"Cache-Control": "public, max-age=10", "Content-Type": "application/json"};
