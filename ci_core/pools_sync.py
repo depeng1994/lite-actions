@@ -89,7 +89,9 @@ def verify(worker, workers, old, envelope, command):
                 "environments",
                 "machine_fingerprint",
             )
-            changed = any(node.get(field) != former.get(field) for field in binding_fields)
+            changed = any(
+                node.get(field) != former.get(field) for field in binding_fields
+            )
             if not changed:
                 if former.get("probe_unavailable"):
                     mark_unavailable(
