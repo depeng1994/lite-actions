@@ -308,6 +308,8 @@ sequenceDiagram
 
 网站不直连节点，所有实机校验在 Worker 侧完成。
 
+新增资产弹窗在粘贴区上方说明执行位置。管理员先 SSH 登录目标 Worker 主机，在该 Worker 的 Lite Actions checkout 根目录执行命令，Yellow 使用 `/opt/lite-actions/native-production/current`，Blue 使用 `/opt/lite-actions/current`。页面按当前 Worker 生成 `preflight.py --export-node-snippet` 完整命令，并提供「复制命令」按钮。管理员替换命令中的节点参数后执行，将标准输出的完整 JSON 粘贴回网站解析预览。命令只读探查，不在浏览器或控制面 Worker 中执行。
+
 ### 9.4 暂停与恢复调度
 
 - **语义统一**：Pool、节点、设备组三级统一为同一“是否暂停调度”语义（不再区分 `enabled: false` 与 `paused: true`）。Pool 级使用 `enabled: false` 表示暂停调度、`enabled: true` 表示允许调度；节点和设备组级使用可选字段 `paused: true` 表示暂停调度（字段不存在即允许调度；恢复时直接删掉该字段，不写 `false`）。

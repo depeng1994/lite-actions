@@ -4,6 +4,45 @@ import { clock, dateFormatter, flagFor, impactOf, now, plannedTime, runs, workfl
 import { Details, DialogActions, DialogClose, ResourceStatus, Status, Tag } from "./Views.jsx";
 import { lastSeenDateTime, resourceHealth } from "./resource-health.js";
 
+async function copyToClipboard(value) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  const input = document.createElement("textarea");
+  input.value = value;
+  input.setAttribute("readonly", "");
+  input.style.position = "fixed";
+  input.style.opacity = "0";
+  document.body.appendChild(input);
+  input.select();
+  try {
+    if (!document.execCommand("copy")) throw new Error("clipboard unavailable");
+  } finally {
+    input.remove();
+  }
+}
+
+function CopyCommand({ value }) {
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState(false);
+  return <div className="command-block">
+    <div className="command-block-header"><span>在目标 Worker 主机执行</span><button className="button small" type="button" onClick={async () => {
+      try {
+        await copyToClipboard(value);
+        setCopied(true);
+        setError(false);
+        window.setTimeout(() => setCopied(false), 1800);
+      } catch {
+        setCopied(false);
+        setError(true);
+      }
+    }}><Copy size={15} />{copied ? "已复制" : "复制命令"}</button></div>
+    <pre><code>{value}</code></pre>
+    {error && <p role="status" className="subtle">浏览器未允许自动复制，请选中命令后手动复制。</p>}
+  </div>;
+}
+
 export function Dialog({ title, subtitle, close, drawer = false, children }) {
   const element = useRef(null);
   useEffect(() => {
@@ -219,9 +258,13 @@ export function ResourceDialog({ target, cases, nodes, config, close, go }) {
 }
 
 export function AddNodeDialog({ worker, nodes, close, save }) {
+  const [selectedWorker, setSelectedWorker] = useState(worker);
   const [raw, setRaw] = useState("");
   const [preview, setPreview] = useState(null);
   const [error, setError] = useState("");
+  const workerId = selectedWorker.toLowerCase();
+  const checkoutPath = selectedWorker === "Yellow" ? "/opt/lite-actions/native-production/current" : "/opt/lite-actions/current";
+  const preflightCommand = `cd ${checkoutPath}\npython3 scripts/preflight.py --worker-id ${workerId} --export-node-snippet \\\n  --host-id "HOST_IP:PORT" \\\n  --ssh "SSH_TARGET" \\\n  --host-ssh "HOST_SSH_TARGET" \\\n  --node-ip "NODE_IP" \\\n  --nic "NETWORK_INTERFACE" \\\n  --devices "0-15" \\\n  --groups "0-7;8-15" \\\n  --container "CONTAINER_NAME_OR_ID"`;
   return <Dialog title="新增集群资产" subtitle="登记节点、设备拓扑和容器绑定。" close={close}>
     <form onSubmit={(event) => {
       event.preventDefault();
@@ -243,8 +286,14 @@ export function AddNodeDialog({ worker, nodes, close, save }) {
       save({worker: raw.worker, pool, value: preview, label: id});
     }}>
       <div className="form-fields form-grid">
-        <label>Worker<select name="worker" defaultValue={worker}><option>Blue</option><option>Yellow</option></select></label>
+        <label>Worker<select name="worker" value={selectedWorker} onChange={(event) => setSelectedWorker(event.target.value)}><option>Blue</option><option>Yellow</option></select></label>
         <label>Pool<input name="pool" required defaultValue={nodes.find((node) => node.worker === worker)?.pool || ""} /></label>
+        <div className="span-two asset-instructions">
+          <h3>操作说明</h3>
+          <p>请先 SSH 登录目标 {selectedWorker} Worker 主机，在下方 checkout 目录执行命令。先将大写占位符替换为实际值。命令只读探查节点指纹、设备和容器绑定，不在网站或控制面 Worker 中执行。</p>
+          <CopyCommand value={preflightCommand} />
+          <p>执行完成后，将标准输出的完整 JSON 粘贴到下方文本框，点击「解析片段」核对节点摘要，再发布配置。</p>
+        </div>
         <label className="span-two">preflight.py 导出片段<textarea name="snippet" required rows="9" value={raw} onChange={(event) => {
           setRaw(event.target.value); setPreview(null); setError("");
         }} placeholder="粘贴 --export-node-snippet 输出的 JSON" /></label>
