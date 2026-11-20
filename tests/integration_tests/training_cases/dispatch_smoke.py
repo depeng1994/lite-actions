@@ -15,6 +15,7 @@ SMOKE_DEFAULTS = {
 
 SMOKE_PROFILES = {
     "cpu-only": ["worker_os_blue"],
+    "yellow-a5": ["worker_os_yellow", "dispatch_smoke_yellow_a5_8p"],
     "dispatch_smoke": [
         "worker_os_blue",
         "worker_os_yellow",
