@@ -21,6 +21,7 @@ SMOKE_PROFILES = {
         "dispatch_smoke_8p",
         "dispatch_smoke_16p",
         "dispatch_smoke_8p",
+        "dispatch_smoke_yellow_a5_8p",
     ],
 }
 
@@ -38,11 +39,17 @@ def build_smoke_list() -> list[OverrideDefinitions]:
             check_loss=False,
         )
 
-    def npu_smoke(nodes: int) -> OverrideDefinitions:
+    def npu_smoke(
+        nodes: int,
+        *,
+        test_name: str | None = None,
+        ci_overrides: dict | None = None,
+    ) -> OverrideDefinitions:
         return OverrideDefinitions(
-            test_name=f"dispatch_smoke_{nodes * 8}p",
+            test_name=test_name or f"dispatch_smoke_{nodes * 8}p",
             test_descr=f"Lite Actions dispatch smoke: {nodes} node(s), {nodes * 8}P HCCL/DP handshake",
             ci_kind="npu_smoke",
+            ci_overrides=ci_overrides or {},
             nnodes=nodes,
             ngpu=8,
             timeout=75,
@@ -55,6 +62,15 @@ def build_smoke_list() -> list[OverrideDefinitions]:
         worker_os("yellow"),
         npu_smoke(1),
         npu_smoke(2),
+        npu_smoke(
+            1,
+            test_name="dispatch_smoke_yellow_a5_8p",
+            ci_overrides={
+                "worker": "yellow",
+                "target_pool": "a5_shared_yellow",
+                "docker": "a5_ci_214",
+            },
+        ),
     ]
 
 
