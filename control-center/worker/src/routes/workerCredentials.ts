@@ -1,4 +1,4 @@
-import {body, type Router, HttpError} from "../router";
+import {body, type Router} from "../router";
 import {auditStatement} from "../services/audit";
 import {member, string} from "../utils/validate";
 

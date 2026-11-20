@@ -8,7 +8,7 @@ export async function authorize(context: Context): Promise<void> {
   if (path.startsWith("/api/v1/admin/")) {
     const actor = await principal(context);
     if (!actor) throw new HttpError(401, "ADMIN_REQUIRED");
-    if (/^\/api\/v1\/admin\/users(?:\/|$)/.test(path) && actor.role !== "super") {
+    if (/^\/api\/v1\/admin\/(?:users|worker-credentials)(?:\/|$)/.test(path) && actor.role !== "super") {
       throw new HttpError(403, "SUPER_REQUIRED");
     }
     context.principal = actor;

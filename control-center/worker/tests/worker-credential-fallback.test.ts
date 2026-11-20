@@ -7,6 +7,8 @@ beforeAll(migrate);
 test("super can register a SHA-256 worker credential without echoing the hash", async () => {
   await db.prepare("DELETE FROM worker_credentials").run();
   const cookie = sessionCookie(await signIn());
+  const adminKey = await (await request("/admin/users", {cookie, data: {username: "credential-admin"}})).json<{secret_once: string}>();
+  const adminCookie = sessionCookie(await signIn("credential-admin", adminKey.secret_once));
   const token = "yellow-fallback-token-256";
   const digest = await sha256(token);
   const registered = await request("/admin/worker-credentials", {
@@ -17,6 +19,12 @@ test("super can register a SHA-256 worker credential without echoing the hash", 
   const registeredBody = await registered.json();
   expect(registeredBody).toEqual({worker_id: "yellow", scheme: "sha256", created_at: expect.any(Number)});
   expect(JSON.stringify(registeredBody)).not.toContain(digest);
+  const ordinaryAdmin = await request("/admin/worker-credentials", {
+    cookie: adminCookie,
+    data: {worker_id: "yellow", scheme: "sha256", hash: digest},
+  });
+  expect(ordinaryAdmin.status).toBe(403);
+  expect(await ordinaryAdmin.json()).toMatchObject({code: "SUPER_REQUIRED"});
 
   const heartbeat = await request("/worker/heartbeat", {
     method: "POST",
