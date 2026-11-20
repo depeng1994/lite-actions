@@ -292,7 +292,9 @@ export function App() {
         return;
       }
       const sync = await clusterPublish(config.desired, operation, preview.preview_hash);
-      setConfig((previous) => ({...previous, desired: sync.revision, pending: null}));
+      setConfig((previous) => ({...previous, desired: sync.revision, pending: null,
+        workerStatus: {...previous.workerStatus, [target.worker]: {...previous.workerStatus?.[target.worker], desired: sync.revision}},
+      }));
       log("cluster", action, target.label, "控制面已发布配置");
       notify(`配置 r${sync.revision} 已提交，等待 Worker 应用`);
     } catch (error) {

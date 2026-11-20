@@ -251,7 +251,7 @@ export function ClusterView({ config, nodes, clusterPools = [], clusterHistory =
   const scoped = nodes.filter((node) => node.worker === worker);
   const pools = [...new Set([...scoped.map((node) => node.pool), ...clusterPools.filter((entry) => entry.worker === worker).map((entry) => entry.pool)])];
   const appliedRevision = config.applied[worker];
-  const desiredRevision = config.desired;
+  const desiredRevision = config.workerStatus?.[worker]?.desired ?? config.desired;
   return <main className="standard-view">
     <div className="page-heading">
       <div><h1>集群管理</h1><p>查看 Worker、Pool、节点与设备组的配置及生效状态。</p></div>

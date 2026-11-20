@@ -51,13 +51,19 @@ export function poolId(worker, pool) {
 }
 
 export function targetFor(node, group) {
+  const hostId = node.hostId || node.host_id || (node.ip && node.port ? `${node.ip}:${node.port}` : node.id);
   return group
-    ? {id: `${node.id}/${group}`, label: `${node.id} · 设备组 ${group}`, worker: node.worker, pool: node.pool, node: node.id, group, type: "设备组"}
-    : {id: node.id, label: node.id, worker: node.worker, pool: node.pool, node: node.id, type: "节点"};
+    ? {id: `${node.id}/${group}`, label: `${node.id} · 设备组 ${group}`, worker: node.worker, pool: node.pool, node: hostId, group, type: "设备组"}
+    : {id: node.id, label: node.id, worker: node.worker, pool: node.pool, node: hostId, type: "节点"};
 }
 
 export function flagFor(config, node, group) {
-  return config.flags[poolId(node.worker, node.pool)] || config.flags[node.id] || config.flags[`${node.id}/${group}`];
+  const hostId = node.hostId || node.host_id || (node.ip && node.port ? `${node.ip}:${node.port}` : null);
+  return config.flags[poolId(node.worker, node.pool)]
+    || config.flags[node.id]
+    || (hostId && config.flags[hostId])
+    || config.flags[`${node.id}/${group}`]
+    || (hostId && config.flags[`${hostId}/${group}`]);
 }
 
 export function plannedTime(item, config, nodes) {
@@ -68,7 +74,10 @@ export function plannedTime(item, config, nodes) {
 }
 
 export function impactOf(target, cases, nodes) {
-  const affectedNodes = nodes.filter((node) => node.worker === target.worker && node.pool === target.pool && (!target.node || target.node === node.id));
+  const affectedNodes = nodes.filter((node) => {
+    const hostId = node.hostId || node.host_id || (node.ip && node.port ? `${node.ip}:${node.port}` : null);
+    return node.worker === target.worker && node.pool === target.pool && (!target.node || target.node === node.id || target.node === hostId);
+  });
   const leases = cases.filter((item) => item.node && affectedNodes.some((node) => node.id === item.node) && (!target.group || item.groups.includes(target.group)) && ["准备中", "运行中", "清理中"].includes(item.status));
   const queue = cases.filter((item) => item.status === "排队中" && item.worker === target.worker && item.pool === target.pool && (!target.group || !item.plannedGroups || item.plannedGroups.includes(target.group)));
   return {affectedNodes, leases, queue};
