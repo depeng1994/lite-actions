@@ -159,6 +159,55 @@ class ControlTests(unittest.TestCase):
         )
         self.assertEqual(ledger["used"], 400)
 
+    def test_explicit_control_proxy_is_used_without_environment_proxy(self):
+        self.cfg["control_center"]["proxy"] = (
+            "http://proxy-user:placeholder@proxy.example.invalid:8080"
+        )
+        client = self.client()
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return None
+
+            def read(self, _):
+                return b"{}"
+
+        with (
+            patch("ci_core.control_client.urllib.request.ProxyHandler") as proxy_handler,
+            patch("ci_core.control_client.urllib.request.build_opener") as build_opener,
+        ):
+            build_opener.return_value.open.return_value = Response()
+            self.assertEqual(client._send("heartbeat", {"w": "blue"}), {})
+
+        proxy_handler.assert_called_once_with(
+            {"https": self.cfg["control_center"]["proxy"]}
+        )
+
+    def test_control_client_disables_environment_proxy_by_default(self):
+        client = self.client()
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return None
+
+            def read(self, _):
+                return b"{}"
+
+        with (
+            patch("ci_core.control_client.urllib.request.ProxyHandler") as proxy_handler,
+            patch("ci_core.control_client.urllib.request.build_opener") as build_opener,
+        ):
+            build_opener.return_value.open.return_value = Response()
+            self.assertEqual(client._send("heartbeat", {"w": "blue"}), {})
+
+        proxy_handler.assert_called_once_with({})
+
     def test_rebases_before_first_available_sequence_after_gap(self):
         self.records.clear()
         client = self.client()
