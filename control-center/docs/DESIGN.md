@@ -133,21 +133,23 @@
 - [x] **`INT-05`** `★ P0` 全链路上传报文 `< 2,000` 字节门禁验证：`control-center/tests/integration/run.py` 在当前 v1.5 协议上重跑通过，双 Worker 与两个平台客户端共 86 个 TLS 请求，最大 1,790 B，所有控制面路径和 Yellow 平台写路径均被捕获且低于门禁；`test_upload_intercept.py` 亦保持全绿。
 - [ ] **`INT-06`** `★ P0` GitHub & GitCode 整次 Workflow 取消端到端闭环（含原生作业、2 分钟 `force-cancel`、**双 Worker 断连网站但通平台仍停机**、清理失败进隔离） 当前会话没有可用的 GitCode Actions dispatch 接口或触发凭据，GitCode 侧真实 Workflow 暂标阻塞，未勾选。 GitHub 侧实测返回 400 APP_NOT_INSTALLED，控制面配置的 GitHub App 未安装到 depeng1994/lite-actions；当前集成无法代为安装或管理该 App，GitHub 侧真实取消暂标阻塞，未勾选。
 - [ ] **`INT-07`** `★ P0` Workflow 级跨区（Blue/Yellow）版本化插队联调（`3→2→1`、队首/在途、共享/不共享队列、晚发现/回队沿用顺位、并发/过期冲突、单端离线）+ 虚拟时钟验证 `train` 72h 排队超时（71h59m vs 72h01m）
+  - [x] Yellow 单节点可验证子集：r15 DRAIN 后 4 条 yellow-a5 全部 QUEUED；op1 3→2 返回 202、queue_version 19→20，Yellow command APPLIED；op2 2→1 返回 202、20→21，Yellow command APPLIED；旧 queue_version 返回 409 QUEUE_VERSION_CONFLICT；重复 idempotency_key 返回同一 op_id 且无第二个操作；r16 RESUME 后 W3(#62) 首先执行，随后其余 3 条均 PASS、exit_code=0、cleanup_verified=true，4 个 case 全部 REPORTED。
+  - [ ] Blue/GitCode 跨区、16P 和多节点部分阻塞，当前仅完成 Yellow 单节点子集。/admin/workflows 在队列项消费后显示旧 queue_version 与 queue_pos，属于后端投影缺陷而非浏览器缓存，已由 bb4a8eb 修复为读取 workflow_queue_meta 并新增回归测试。
 - [x] **`INT-08`** `★ P0` 集群配置热加载全场景（Pool `enabled: false` 与节点/组 `paused: true` 统一暂停语义不报错、16P 半节点暂停、在途快照隔离、`preflight.py` 实机校验、**两步先排空再删除（排空中可恢复，活动/排队/隔离未清零拒删）**、双 Worker 单端失败状态展示、回滚、重启/自动更新保留） Yellow 实机证据：r13 DRAIN Pool 后 applied_rev=13、命令 APPLIED、enabled=false；r14 RESUME 后 applied_rev=14、enabled=true、sha 与 r10 一致；修复版 01f0c205 重启后 service active、revision=14、pools-active 的 config_json 与 sha 一致、source_sha256 保留、.25 环境配置保持、站点 Yellow applied_rev=14/offline=false/error=null。16P 半节点与多节点删除场景因当前仅 .25 可调度，保留为阻塞项。
 - [ ] **`INT-09`** `★ P0` 单 SQLite/D1 热冷分层（103 个历史 Workflow 按 50/50/3 跨 30 天翻页、第 31 天冷解压、1 年过期、80%→70% 按完整 Workflow 滚删与提示、同一次写额度熔断触发管理写 503 + Worker 暂存恢复）
 - [x] **`INT-09B`** `★ P0` 统一 Workflow 表汇总口径专项验证：`workflows-board.test.ts` 已验证混合活动/已结束子用例只保留活动表并标 `0`、全结束历史固定负序号、调度结果三态、运行总卡时 16 卡 38 分钟 = `10.13` 卡·小时、截至当前和统计不完整标记；线上 `/public/workflows` 已返回真实历史数据。
-- [ ] **`INT-10`** `★ P0` 可迁移性 DT 拦截与双运行时对等联调（`portability-intercept.test.ts` + `sites-parity.test.ts` + `build-sites.mjs` 产物包校验 + 同一份代码与 SQLite 迁移分别在 Sites/D1 与个人服务器 Node 24/`node:sqlite` 上跑通双 Worker 心跳、无 Cron 取消推进、冷块 BLOB 读写与防爆破 IP 识别）
+- [ ] **`INT-10`** `★ P0` 可迁移性 DT 拦截与双运行时对等联调（`portability-intercept.test.ts` + `sites-parity.test.ts` + `build-sites.mjs` 产物包校验 + 同一份代码与 SQLite 迁移分别在 Sites/D1 与个人服务器 Node 24/`node:sqlite` 上跑通双 Worker 心跳、无 Cron 取消推进、冷块 BLOB 读写与防爆破 IP 识别） 本地 portability、Node 24 SQLite、Node server、Sites build 门禁已通过，真实 Sites/D1 与 Node 24 双运行时实机对等仍待验证。
 
 #### 7.2 全栈端到端联调（浏览器 + 正式前端 + 控制面 + 双 Worker，`⏳ 依赖 Phase 5.5 + FE-01~05 标绿`）
 - [ ] **`E2E-01`** **`★ P0 关键必通`** 公网匿名看板读取、服务端 IP 掩码、缓存隔离与四级权限/账号生命周期闭环
 - [ ] **`E2E-02`** **`★ P0 关键必通`** 全栈操作下的双 Worker 实时抓包 `< 2,000` 字节硬门禁验证
-- [ ] **`E2E-03`** **`★ P0 关键必通`** 设备组 5 次探测离线 + 最近在线时间 + 16P 半节点暂停热加载与重启保留闭环
+- [ ] **`E2E-03`** **`★ P0 关键必通`** 设备组 5 次探测离线 + 最近在线时间 + 16P 半节点暂停热加载与重启保留闭环 16P 半节点暂停与重启闭环需要可调度的 16P 资源，当前阻塞，未勾选。
 - [ ] **`E2E-04`** **`★ P0 关键必通`** 统一 Workflow 表格全交互闭环（`-3,-2,-1,0,1,2...` 序号、50 条上方历史分页/折叠恢复、12 列筛选排序、调度结果三态、运行总卡时、冷归档详情）
 - [ ] **`E2E-05`** **`★ P0 关键必通`** Workflow 级跨区（Blue/Yellow）插队端到端闭环（含筛选态按真实队列交换、多端回执、晚发现沿用、排期同步刷新）
 - [ ] **`E2E-06`** **`★ P0 关键必通`** GitHub & GitCode 整次 Workflow 取消端到端闭环（含原生作业、2 分钟 `force-cancel`、断连网站仍停机、清理失败隔离） GitHub 侧因 APP_NOT_INSTALLED 阻塞，GitCode 侧无 dispatch 入口，未勾选。
-- [ ] **`E2E-07`** **`★ P0 关键必通`** 网站宕机 30 分钟故障隔离 + 恢复快照对账 + 单库 80%→70% 滚删 + 写额度耗尽降级演练
-- [ ] **`E2E-08`** `P1` Pools 时间轴 16P 双框独立点击与去重计卡 + 零卡探针不占行 + 0/<10/≥10 耗时样本与排期虚线边界
-- [ ] **`E2E-09`** `P1` 集群新增资产（粘贴 `preflight.py` 片段与指纹报错回退）、**两步先排空再删除（排空中可恢复 + 阻断条件校验）**、双 Worker 部分生效与版本回滚全栈闭环
+- [ ] **`E2E-07`** **`★ P0 关键必通`** 网站宕机 30 分钟故障隔离 + 恢复快照对账 + 单库 80%→70% 滚删 + 写额度耗尽降级演练 当前缺少 D1 容量水位和写额度操作权限，演练阻塞，未勾选。
+- [ ] **`E2E-08`** `P1` Pools 时间轴 16P 双框独立点击与去重计卡 + 零卡探针不占行 + 0/<10/≥10 耗时样本与排期虚线边界 16P 双框与多机资源当前不可调度，阻塞，未勾选。
+- [ ] **`E2E-09`** `P1` 集群新增资产（粘贴 `preflight.py` 片段与指纹报错回退）、**两步先排空再删除（排空中可恢复 + 阻断条件校验）**、双 Worker 部分生效与版本回滚全栈闭环 16P/多节点真实资产与跨区部分当前不可执行，阻塞，未勾选。
 - [ ] **`E2E-10`** `P1` `train` 72 小时排队超时与 `npu_smoke` 无超时边界验证
 - [ ] **`E2E-11`** `P1` 30 秒页面自动刷新、浅/深色主题、切回后台标签页刷新与缓存时效一致性
 - [ ] **`E2E-12`** **`★ P0 关键必通`** ChatGPT Sites 产物包验证 + 个人服务器（Node 24 + SQLite）零业务改动迁移切换演练（含 Worker 仅改 `control_center.url` 重连对账、SPA 刷新回退、反代 IP 限流与 `portability_intercept` DT 全绿）
@@ -157,7 +159,7 @@
 - [x] **`REL-01`** **`★ 上线必过`** 真实 Yellow 主机通过批准域名完成心跳、取令、拉配置、回执，满足出口放行与每日字节预算（待定 1）
   - 实机证据（2026-11-20）：Yellow `offline=false`、`applied_rev=6`；`test_upload_intercept.py` 4/4 通过；`http-egress.json` 中 control 路径均 `rejected=0`、`sent_violations=0`，最大请求 1,828 B，日上传量 1,254,020 / 67,108,864。
 - [ ] **`REL-02`** **`★ 上线必过`** 已装 App 的 GitHub 测试仓 + 配好 Token 的 GitCode 测试仓各完成一次含原生作业和双区用例的真实整次取消 GitCode 侧真实 Workflow 触发当前阻塞，原因是本会话没有可用的 GitCode dispatch 接口或触发凭据，未勾选。 GitHub 侧实测返回 400 APP_NOT_INSTALLED，GitHub App 安装阻塞；GitCode 侧触发同样阻塞，未勾选。
-- [ ] **`REL-03`** **`★ 上线必过`** 实际免费托管实例（ChatGPT Sites / D1 或 Cloudflare Workers Free + D1 Free）实测容量水位监控、80%→70% 滚删、CPU 预算与额度耗尽行为
+- [ ] **`REL-03`** **`★ 上线必过`** 实际免费托管实例（ChatGPT Sites / D1 或 Cloudflare Workers Free + D1 Free）实测容量水位监控、80%→70% 滚删、CPU 预算与额度耗尽行为 当前缺少免费托管实例容量水位与写额度操作权限，实机 80%→70% 滚删和额度耗尽演练阻塞。
 - [ ] **`REL-04`** **`★ 上线必过`** 真实双 Worker 环境联调一次 Workflow 级跨区插队（管理接口 → 两端应用回执 → 排期刷新），并回归原有调度规则
 
 ---
