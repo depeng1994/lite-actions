@@ -57,6 +57,7 @@ class SelfSmokeTests(unittest.TestCase):
                 "dispatch_smoke_8p",
                 "dispatch_smoke_16p",
                 "dispatch_smoke_8p",
+                "dispatch_smoke_yellow_a5_8p",
             ],
         )
         self.assertEqual(
@@ -64,9 +65,9 @@ class SelfSmokeTests(unittest.TestCase):
                 item["resources"]["nodes"] * item["resources"]["devices_per_node"]
                 for item in self.plan["cases"]
             ],
-            [0, 0, 8, 16, 8],
+            [0, 0, 8, 16, 8, 8],
         )
-        self.assertEqual(len({item["case_id"] for item in self.plan["cases"]}), 5)
+        self.assertEqual(len({item["case_id"] for item in self.plan["cases"]}), 6)
         yellow = self.plan["cases"][1]
         self.assertEqual((yellow["kind"], yellow["worker"]), ("worker_probe", "yellow"))
         self.assertEqual((yellow["target_pool"], yellow["docker"]), (None, None))
@@ -90,7 +91,7 @@ class SelfSmokeTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
-        self.assertEqual(len(json.loads(result.stdout)), 5)
+        self.assertEqual(len(json.loads(result.stdout)), 6)
 
     def test_complete_identity_bound_results_and_fail_closed(self):
         run = {
@@ -111,7 +112,7 @@ class SelfSmokeTests(unittest.TestCase):
             }
             for item in self.plan["cases"]
         ]
-        self.assertEqual(len(results(comments, self.plan, "reporter")), 5)
+        self.assertEqual(len(results(comments, self.plan, "reporter")), 6)
         # Four Blue results cannot satisfy the missing Yellow instance.
         blue_only = comments[:1] + comments[2:]
         self.assertNotIn(
@@ -191,7 +192,7 @@ class SelfSmokeTests(unittest.TestCase):
 
     def test_matrix_output_is_the_selected_plan(self):
         # Job IDs come from the selected plan, including repeated 8P instances.
-        for profile, size in (("full", 5), ("cpu-only", 1)):
+        for profile, size in (("full", 6), ("cpu-only", 1)):
             with self.subTest(profile=profile):
                 output = Path(self.temp.name) / (profile + ".out")
                 env = {
@@ -430,10 +431,10 @@ class SelfSmokeTests(unittest.TestCase):
                         worker.tick()
                         for future, _, _ in list(worker.active.values()):
                             future.result(10)
-                    if len(service.results()) == 5:
+                    if len(service.results()) == 6:
                         break
                 accepted = results(service.comments, self.plan, "reporter")
-                self.assertEqual(len(accepted), 5)
+                self.assertEqual(len(accepted), 6)
                 self.assertTrue(
                     all(
                         r["status"] == "PASS"
