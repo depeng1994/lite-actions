@@ -14,8 +14,9 @@ test("super can register a SHA-256 worker credential without echoing the hash", 
     data: {worker_id: "yellow", scheme: "sha256", hash: digest},
   });
   expect(registered.status).toBe(200);
-  expect(await registered.json()).toEqual({worker_id: "yellow", scheme: "sha256", created_at: expect.any(Number)});
-  expect(await registered.text()).resolves.not.toContain(digest);
+  const registeredBody = await registered.json();
+  expect(registeredBody).toEqual({worker_id: "yellow", scheme: "sha256", created_at: expect.any(Number)});
+  expect(JSON.stringify(registeredBody)).not.toContain(digest);
 
   const heartbeat = await request("/worker/heartbeat", {
     method: "POST",
