@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from ci_core.config import execution_pools, load_active_pools
+from ci_core.config import checked_pools, execution_pools, load_active_pools
 from ci_core.router import Router
 from ci_core.scheduler import candidates, validate_allocation
 
@@ -197,6 +197,47 @@ class PoolReloadTests(unittest.TestCase):
             candidates(topology(), applied["pools"]),
             [[{"host_id": HOST2, "devices": DEVICES}]],
         )
+
+    def test_probe_marker_rewrites_digest_for_restart(self):
+        local = self.router.pools["test"]["nodes"][0]
+        local["paused"] = True
+        local["probe_paused"] = True
+        local["probe_unavailable"] = True
+        local["probe_status"] = "unavailable"
+        local["probe_reason"] = "Permission denied"
+        for group in local["allocation_groups"]:
+            group["paused"] = True
+            group["probe_paused"] = True
+            group["probe_unavailable"] = True
+            group["verified"] = False
+            group["probe_reason"] = "Permission denied"
+
+        command = self.request(self.pools, revision=1)
+        from ci_core.pools_sync import verify
+
+        applied = verify(
+            "blue",
+            {"blue": {"enabled": True}},
+            self.router.pools,
+            command["config"],
+            command["payload"],
+        )
+        self.assertEqual(applied["source_sha256"], command["payload"]["sha256"])
+        self.assertEqual(
+            hashlib.sha256(applied["config_json"].encode()).hexdigest(),
+            applied["sha256"],
+        )
+        self.assertEqual(json.loads(applied["config_json"]), applied["pools"])
+        checked_pools(applied, {"blue": {"enabled": True}})
+
+        state_path = self.router.state.path.parent / "pools-active.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps(applied))
+        self.router.close()
+        restarted = Router(self.root, "blue", MagicMock(), "bot")
+        self.addCleanup(restarted.close)
+        self.assertEqual(restarted.pools_revision, 1)
+        self.assertTrue(restarted.pools["test"]["nodes"][0]["probe_unavailable"])
 
     def test_probe_unavailable_nodes_are_never_candidates(self):
         pools = copy.deepcopy(self.pools)

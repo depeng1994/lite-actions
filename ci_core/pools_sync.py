@@ -115,13 +115,18 @@ def verify(worker, workers, old, envelope, command):
                 failed = True
                 mark_unavailable(node, reason(error))
 
-    if failed:
+    published_json = doc.get("config_json")
+    if published_json is None:
+        published_json = json.dumps(
+            doc["pools"], ensure_ascii=False, separators=(",", ":")
+        )
+    effective_json = json.dumps(new, ensure_ascii=False, separators=(",", ":"))
+    if failed or effective_json != published_json:
         doc = copy.deepcopy(doc)
         doc["source_sha256"] = doc["sha256"]
         doc["pools"] = new
-        config_json = json.dumps(new, ensure_ascii=False, separators=(",", ":"))
-        doc["config_json"] = config_json
-        doc["sha256"] = hashlib.sha256(config_json.encode()).hexdigest()
+        doc["config_json"] = effective_json
+        doc["sha256"] = hashlib.sha256(effective_json.encode()).hexdigest()
     return doc
 
 
