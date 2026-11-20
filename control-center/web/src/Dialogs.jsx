@@ -263,6 +263,7 @@ export function AddNodeDialog({ worker, nodes, close, save }) {
   const [preview, setPreview] = useState(null);
   const [error, setError] = useState("");
   const workerId = selectedWorker.toLowerCase();
+  // Resolve the deployed checkout from systemd so host layouts remain portable.
   const serviceName = `lite-actions-${workerId}.service`;
   const preflightCommand = `service="${serviceName}"
 workdir="$(systemctl show "$service" -p WorkingDirectory --value)"
