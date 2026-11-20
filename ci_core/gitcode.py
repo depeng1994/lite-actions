@@ -354,7 +354,10 @@ class GitCodeClient:
                         "actor": details.get("actor") or row.get("actor") or {},
                         "path": row.get("file_path"),
                         "name": row.get("workflow_name"),
-                        "display_title": details.get("display_title") or details.get("run_name") or row.get("display_title") or row.get("run_name"),
+                        "display_title": details.get("display_title")
+                        or details.get("run_name")
+                        or row.get("display_title")
+                        or row.get("run_name"),
                         "run_number": row.get("run_number"),
                         "created_at": dt.datetime.fromtimestamp(
                             start, dt.timezone.utc
