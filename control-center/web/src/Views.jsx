@@ -212,12 +212,14 @@ export function PoolsView({ nodes, cases, config, open, go, live }) {
 }
 
 function ClusterControls({ target, state, config, open }) {
-  const own = config.flags[target.id];
+  const own = state;
   const pending = config.pending;
-  const action = own === "暂停" || own === "排空中" ? "恢复" : "暂停";
+  const paused = own === "暂停" || own === "排空中";
+  const action = paused ? "恢复" : "暂停";
+  const label = paused ? "恢复调度" : "暂停";
   const Icon = action === "暂停" ? Pause : Play;
   return <div className="cluster-actions">
-    <button className="button small" disabled={Boolean(pending) || (!own && state != null)} onClick={() => open({ type: "config", target, action })}><Icon size={14} />{action}</button>
+    <button className="button small" disabled={Boolean(pending) || (!own && state != null)} onClick={() => open({ type: "config", target, action })}><Icon size={14} />{label}</button>
     <button className={`button small ${own === "排空中" ? "danger-subtle" : ""}`} disabled={Boolean(pending) || (!own && state != null)} onClick={() => open({ type: "config", target, action: own === "排空中" ? "删除" : "排空" })}>
       <Trash size={14} />{own === "排空中" ? "删除" : "排空删除"}
     </button>
