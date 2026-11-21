@@ -488,6 +488,78 @@ class SourceProfileTests(unittest.TestCase):
             with tarfile.open(archive, "r:gz") as content:
                 self.assertEqual(content.extractfile("marker").read(), b"fork commit")
 
+    def test_gitcode_fetch_sets_non_git_user_agent(self):
+        source = self.root / "user-agent-source"
+        source.mkdir()
+        subprocess.run(["git", "init", "-q", str(source)], check=True)
+        (source / "marker").write_text("user-agent", encoding="utf-8")
+        subprocess.run(["git", "-C", str(source), "add", "marker"], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(source),
+                "-c",
+                "user.email=test@example.invalid",
+                "-c",
+                "user.name=Fixture",
+                "commit",
+                "-qm",
+                "fixture",
+            ],
+            check=True,
+        )
+        sha = subprocess.check_output(
+            ["git", "-C", str(source), "rev-parse", "HEAD"], text=True
+        ).strip()
+        work = self.root / "user-agent-work"
+        work.mkdir()
+        home = self.root / "user-agent-home"
+        home.mkdir()
+        subprocess.run(
+            [
+                "git",
+                "config",
+                "--file",
+                str(home / ".gitconfig"),
+                f"url.file://{source}.insteadOf",
+                "https://gitcode.com/cann/torchtitan-npu.git",
+            ],
+            check=True,
+        )
+        env = {
+            "HOME": str(home),
+            "XDG_CONFIG_HOME": str(home),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_CONFIG_COUNT": "0",
+        }
+        with (
+            patch.dict(os.environ, env),
+            patch("ci_core.ssh_runner.ROOT", self.root),
+            patch("ci_core.ssh_runner.subprocess.run", wraps=subprocess.run) as run,
+        ):
+            archive = model_archive(
+                sha,
+                work,
+                source_repo=self.client.repo,
+                provider="gitcode",
+            )
+        fetch = next(
+            call
+            for call in run.call_args_list
+            if call.args
+            and call.args[0][:3] == ["git", "-C", str(work / "repo")]
+            and "fetch" in call.args[0]
+        )
+        child_env = fetch.kwargs["env"]
+        self.assertEqual(
+            child_env["GIT_CONFIG_VALUE_0"],
+            "Mozilla/5.0 (compatible; lite-actions)",
+        )
+        with tarfile.open(archive, "r:gz") as content:
+            self.assertEqual(content.extractfile("marker").read(), b"user-agent")
+
 
 if __name__ == "__main__":
     unittest.main()

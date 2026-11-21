@@ -97,6 +97,16 @@ def model_archive(
             git_env["GIT_CONFIG_COUNT"] = str(config_count + 1)
             git_env[f"GIT_CONFIG_KEY_{config_count}"] = "http.extraheader"
             git_env[f"GIT_CONFIG_VALUE_{config_count}"] = f"PRIVATE-TOKEN: {token}"
+    if provider == "gitcode":
+        # GitCode's web front door rejects Git's default User-Agent with 418.
+        # Keep the override scoped to GitCode source fetches and pass it through
+        # Git's isolated config environment instead of changing host config.
+        config_count = int(git_env.get("GIT_CONFIG_COUNT", "0"))
+        git_env["GIT_CONFIG_COUNT"] = str(config_count + 1)
+        git_env[f"GIT_CONFIG_KEY_{config_count}"] = "http.userAgent"
+        git_env[f"GIT_CONFIG_VALUE_{config_count}"] = (
+            "Mozilla/5.0 (compatible; lite-actions)"
+        )
     with lock_path.open("a+") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         if verified(cached, source_repo, sha):
