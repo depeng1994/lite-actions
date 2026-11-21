@@ -10,6 +10,30 @@ from ci_core.ssh_runner import run
 
 
 class CommunicationTopologyTests(unittest.TestCase):
+    def test_paused_or_unavailable_nodes_are_filtered(self):
+        devices = list(range(8))
+        pools = {
+            "pool": {
+                "nodes": [
+                    {
+                        "host_id": "one",
+                        "node_ip": "192.0.2.1",
+                        "paused": True,
+                        "allocation_groups": [{"devices": devices, "verified": True}],
+                    },
+                    {
+                        "host_id": "two",
+                        "node_ip": "192.0.2.2",
+                        "probe_unavailable": True,
+                        "allocation_groups": [{"devices": devices, "verified": True}],
+                    },
+                ],
+                "verified_multinode_allocations": [],
+            }
+        }
+        case = {"pool": "pool", "resources": {"nodes": 1, "devices_per_node": 8}}
+        self.assertEqual(candidates(case, pools), [])
+
     def test_addresses_are_unique_only_within_each_multinode_allocation(self):
         devices = list(range(8))
 

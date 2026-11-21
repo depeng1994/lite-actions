@@ -1,0 +1,23 @@
+{
+  "name": "lite-actions-control-center",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "lint": "tsc --noEmit",
+    "test:portability": "vitest run tests/portability-intercept.test.ts",
+    "test:node-sqlite": "node --experimental-strip-types scripts/node-sqlite-smoke.mjs",
+    "test:node-server": "node --experimental-strip-types scripts/node-server-smoke.mjs",
+    "test:node-control-center": "node --experimental-strip-types scripts/node-control-center-smoke.mjs",
+    "dev": "wrangler dev",
+    "seed": "node scripts/seed.mjs",
+    "sync:frontend": "node scripts/sync-frontend.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.23.0",
+    "@cloudflare/workers-types": "5.20261119.1",
+    "typescript": "~5.9.3",
+    "vitest": "^4.1.0",
+    "wrangler": "4.165.0"
+  }
+}

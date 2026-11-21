@@ -110,6 +110,14 @@ def _unique_object(pairs):
     return obj
 
 
+def _attempt_number(raw):
+    if type(raw) is str and raw.isascii() and raw.isdecimal():
+        raw = int(raw)
+    if type(raw) is not int or not 1 <= raw < 2**31:
+        raise ValueError("invalid GitCode run attempt")
+    return raw
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -181,9 +189,10 @@ class GitCodeClient:
         )
         return {
             "status": "completed"
-            if result.get("status") in {"COMPLETED", "FAILED", "CANCELED", "IGNORED"}
+            if str(result.get("status")).upper()
+            in {"COMPLETED", "FAILED", "CANCELED", "CANCELLED", "IGNORED", "STOPPED"}
             else "in_progress",
-            "run_attempt": result.get("attempt", 1),
+            "run_attempt": _attempt_number(result.get("attempt", 1)),
         }
 
     def pr_source(self, details):
@@ -236,6 +245,7 @@ class GitCodeClient:
                 raise RunChanged(
                     "run does not match the current PR merge ref and parents"
                 )
+        details["_ci_pr_author"] = (pr.get("user") or {}).get("login")
         return int(number), source, head["sha"]
 
     def running_workflows(self):
@@ -325,20 +335,29 @@ class GitCodeClient:
                         continue
                     pr_fields = {
                         "_ci_pr_number": number,
+                        "_ci_pr_author": details.get("_ci_pr_author"),
                         "_ci_source_repo": source,
                         "_ci_execution_sha": execution_sha,
                     }
+                try:
+                    attempt = _attempt_number(details.get("attempt", 1))
+                except ValueError:
+                    continue
                 runs.append(
                     {
                         "_ci_provider": "gitcode",
                         "_ci_repo": self.repo,
                         "id": run_id,
-                        "run_attempt": details.get("attempt", 1),
+                        "run_attempt": attempt,
                         "head_sha": row.get("head_sha"),
                         "head_branch": row.get("head_branch"),
-                        "actor": row.get("actor") or {},
+                        "actor": details.get("actor") or row.get("actor") or {},
                         "path": row.get("file_path"),
                         "name": row.get("workflow_name"),
+                        "display_title": details.get("display_title")
+                        or details.get("run_name")
+                        or row.get("display_title")
+                        or row.get("run_name"),
                         "run_number": row.get("run_number"),
                         "created_at": dt.datetime.fromtimestamp(
                             start, dt.timezone.utc
@@ -355,6 +374,7 @@ class GitCodeClient:
 
     def validate_current(self, run):
         details = self.request("GET", f"/actions/runs/{run['id']}", api=8)
+        details["attempt"] = _attempt_number(details.get("attempt", 1))
         expected = {
             "workflow_run_id": run["id"],
             "attempt": run["run_attempt"],
@@ -380,23 +400,121 @@ class GitCodeClient:
         ):
             raise RunChanged("GitCode PR source changed")
 
+    def _download_artifact_zip(self, artifact_id, limit, *, category):
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", str(artifact_id)):
+            raise ValueError("invalid artifact ID")
+        request = urllib.request.Request(
+            f"{self.v8}/actions/artifacts/{artifact_id}/zip",
+            headers={"PRIVATE-TOKEN": self.token},
+        )
+        if self.policy:
+            request = self.policy.before(
+                request, repo=self.repo, provider="gitcode", category=category
+            )
+        try:
+            urllib.request.build_opener(NoRedirect()).open(request, timeout=20)
+            raise ValueError("artifact download did not redirect")
+        except urllib.error.HTTPError as exc:
+            if exc.code != 302:
+                raise
+            url = exc.headers.get("Location", "")
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme != "https" or not parsed.hostname:
+            raise ValueError("invalid artifact redirect")
+        download = urllib.request.Request(url)
+        if self.policy:
+            self.policy.before(
+                download, repo=self.repo, provider="gitcode", storage=True
+            )
+        opener = (
+            urllib.request.build_opener(NoRedirect()).open
+            if self.policy
+            else urllib.request.urlopen
+        )
+        with opener(download, timeout=60) as response:
+            payload = response.read(limit + 1)
+        if len(payload) > limit:
+            raise ValueError("artifact exceeds limit")
+        return payload
+
+    def _source_archive(self, run):
+        """Read a model-owned source archive uploaded by the GitCode workflow."""
+        run_id, attempt = run["id"], run.get("run_attempt", 1)
+        found = self.request(
+            "GET", f"/actions/runs/{run_id}/artifacts?per_page=100", api=8
+        )
+        name = f"lite-ci-source-{attempt}"
+        matches = [
+            artifact
+            for artifact in found.get("artifacts", [])
+            if artifact.get("name") == name
+            and artifact.get("workflow_run_id") == run_id
+        ]
+        if not matches:
+            return None
+        if len(matches) != 1 or matches[0].get("size_bytes", 0) > 128 * 1024 * 1024:
+            raise ValueError("ambiguous or oversized source artifact")
+        payload = self._download_artifact_zip(
+            matches[0]["id"], 128 * 1024 * 1024, category="source_artifact_get"
+        )
+        expected_sha = run.get("_ci_execution_sha", run["head_sha"])
+        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+            names = [name for name in archive.namelist() if not name.endswith("/")]
+            source_names = [
+                name for name in names if name.split("/")[-1] == "source.tar.gz"
+            ]
+            manifest_names = [
+                name for name in names if name.split("/")[-1] == "source.json"
+            ]
+            if (
+                len(names) != 2
+                or len(source_names) != 1
+                or len(manifest_names) != 1
+                or any(".." in name.split("/") for name in names)
+            ):
+                raise ValueError("unexpected source artifact contents")
+            manifest = json.loads(archive.read(manifest_names[0]))
+            if manifest != {"schema": 1, "repo": self.repo, "sha": expected_sha}:
+                raise ValueError("source artifact identity mismatch")
+            source = archive.read(source_names[0])
+        from ci_core.source_cache import seal, verified
+        from ci_core.ssh_runner import ROOT
+
+        cache_dir = ROOT / "cache" / "model-archives" / "gitcode" / self.repo
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cached = cache_dir / f"{expected_sha}.tar.gz"
+        temporary = cached.with_name(f".{expected_sha}.{os.getpid()}.tmp")
+        try:
+            temporary.write_bytes(source)
+            os.replace(temporary, cached)
+            seal(cached, self.repo, expected_sha)
+        finally:
+            temporary.unlink(missing_ok=True)
+        if not verified(cached, self.repo, expected_sha):
+            raise ValueError("source artifact cache verification failed")
+        return cached
+
     def ci_request(self, run):
         if "_ci_dispatch_id" in run:
             from ci_core.registry import inspect_archive
             from ci_core.ssh_runner import model_archive
 
             self.validate_current(run)
-            with tempfile.TemporaryDirectory(prefix="lite-gitcode-source-") as tmp:
-                source = model_archive(
-                    run.get("_ci_execution_sha", run["head_sha"]),
-                    Path(tmp),
-                    source_repo=self.repo,
-                    provider="gitcode",
-                    fallback_repo=run.get("_ci_source_repo"),
-                )
-                rows = inspect_archive(
-                    source, {"suite": "dispatch_smoke"}, repo=self.repo
-                )
+            source = (
+                self._source_archive(run)
+                if os.environ.get("LITE_ACTIONS_GITCODE_SOURCE_ARTIFACTS") == "1"
+                else None
+            )
+            if source is None:
+                with tempfile.TemporaryDirectory(prefix="lite-gitcode-source-") as tmp:
+                    source = model_archive(
+                        run.get("_ci_execution_sha", run["head_sha"]),
+                        Path(tmp),
+                        source_repo=self.repo,
+                        provider="gitcode",
+                        fallback_repo=run.get("_ci_source_repo"),
+                    )
+            rows = inspect_archive(source, {"suite": "dispatch_smoke"}, repo=self.repo)
             plan = source_plan(rows, run, self.repo)
             if os.environ.get("LITE_ACTIONS_GITCODE_PROBE_ONLY") == "1" and any(
                 case["kind"] != "worker_probe" for case in plan["cases"]

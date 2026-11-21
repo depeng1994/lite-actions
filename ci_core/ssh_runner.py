@@ -21,6 +21,7 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from ci_core.config import execution_pools
 from ci_core.contract import REPO as MODEL_REPO
 from ci_core.registry import SELECTOR
 from ci_core.scheduler import validate_allocation
@@ -88,6 +89,24 @@ def model_archive(
     cache_dir.mkdir(parents=True, exist_ok=True)
     cached = cache_dir / f"{sha}.tar.gz"
     lock_path = cache_dir / f"{sha}.lock"
+    git_env = os.environ.copy()
+    if provider == "gitcode":
+        token = git_env.get("LITE_ACTIONS_GITCODE_TOKEN")
+        if token:
+            config_count = int(git_env.get("GIT_CONFIG_COUNT", "0"))
+            git_env["GIT_CONFIG_COUNT"] = str(config_count + 1)
+            git_env[f"GIT_CONFIG_KEY_{config_count}"] = "http.extraheader"
+            git_env[f"GIT_CONFIG_VALUE_{config_count}"] = f"PRIVATE-TOKEN: {token}"
+    if provider == "gitcode":
+        # GitCode's web front door rejects Git's default User-Agent with 418.
+        # Keep the override scoped to GitCode source fetches and pass it through
+        # Git's isolated config environment instead of changing host config.
+        config_count = int(git_env.get("GIT_CONFIG_COUNT", "0"))
+        git_env["GIT_CONFIG_COUNT"] = str(config_count + 1)
+        git_env[f"GIT_CONFIG_KEY_{config_count}"] = "http.userAgent"
+        git_env[f"GIT_CONFIG_VALUE_{config_count}"] = (
+            "Mozilla/5.0 (compatible; lite-actions)"
+        )
     with lock_path.open("a+") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         if verified(cached, source_repo, sha):
@@ -113,6 +132,7 @@ def model_archive(
                 check=True,
                 timeout=180,
                 capture_output=True,
+                env=git_env,
             )
         except subprocess.CalledProcessError:
             if source_pr is not None:
@@ -139,6 +159,7 @@ def model_archive(
                 check=True,
                 timeout=180,
                 capture_output=True,
+                env=git_env,
             )
         actual = subprocess.check_output(
             ["git", "-C", str(repo), "rev-parse", "FETCH_HEAD"], text=True
@@ -479,8 +500,8 @@ def run(
         or not SELECTOR.fullmatch(test_case)
     ):
         raise ValueError("unsafe run identifier / commit / execution directory")
-    pools = json.loads((root / "config/pools.json").read_text())
-    validate_allocation(case, pools, case["allocation"])
+    pools = execution_pools(root, case)
+    validate_allocation(case, pools, case["allocation"], include_paused=True)
     nodes = allocations(case, pools)
     base = f"{DEST_ROOT}/{remote_dir}"
     with tempfile.TemporaryDirectory(prefix="lite-ci-stage-") as tmp:
@@ -649,7 +670,7 @@ def main() -> int:
     from ci_core.resources import port_profile
 
     validate_allocation(
-        case, json.loads((ROOT / "config/pools.json").read_text()), case["allocation"]
+        case, execution_pools(ROOT, case), case["allocation"], include_paused=True
     )
     approved = port_profile(case["port_slot"])
     if any(case.get(field) != value for field, value in approved.items()):

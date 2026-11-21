@@ -23,7 +23,14 @@
           }
         ],
         "priority": 1,
-        "environments": {},
+        "environments": {
+          "cann_master_torchtitan_master_xyj": {
+            "container_id": "a59522f9fe617d4b133e8f9731058a4904a4e59c291476df7618af022c5f0839",
+            "image_id": "sha256:97a99d4210c836975654445abcd28af89856eec83737e1ab4a50f09679531b89",
+            "image_ref": "cann_900_torchtitan_master_zdp:latest"
+          }
+        },
+        "machine_fingerprint": "37f7d0638b37d5d74b88af476451f53f6e1c5f326e858e385ec66b007606425b",
         "host_ssh": "113.46.17.205:153",
         "capabilities": [
           "train",
@@ -51,7 +58,14 @@
           }
         ],
         "priority": 0,
-        "environments": {},
+        "environments": {
+          "cann_master_torchtitan_master_xyj": {
+            "container_id": "f8c37203c91c0045bee48b80c84d4d2eda1d20b7910ead13bb3eb06c5e9775bc",
+            "image_id": "sha256:4af1a99434aa47248bf2c5a7f2fc900cb159929b6030297cea3bf76d0be67207",
+            "image_ref": "cann_master_torchtitan_master_xyj:mountfix-20260810"
+          }
+        },
+        "machine_fingerprint": "43e4df8f792c4ebcda9738b7931df774adf92da798c55e86737f933e30a9820e",
         "host_ssh": "113.46.17.205:154",
         "capabilities": [
           "train",

@@ -220,6 +220,73 @@ def _category(provider, method, path, payload, override=None):
     return "metadata_get" if method == "GET" else "other_write"
 
 
+def estimate_http1_request_bytes(request):
+    """Count explicit headers plus a conservative urllib framing allowance."""
+    url = urllib.parse.urlsplit(request.full_url)
+    target = (url.path or "/") + (f"?{url.query}" if url.query else "")
+    headers = sum(
+        len(f"{key}: {value}\r\n".encode()) for key, value in request.header_items()
+    )
+    return (
+        len(f"{request.get_method()} {target} HTTP/1.1\r\n".encode())
+        + len(f"Host: {url.netloc}\r\n".encode())
+        + headers
+        + 2
+        + 128
+        + len(request.data or b"")
+    )
+
+
+_CONTROL_READ = re.compile(r"/api/v1/worker/(?:commands|configs/[1-9][0-9]*)")
+_CONTROL_WRITE = re.compile(
+    r"/api/v1/worker/(?:heartbeat|command-receipts|events|snapshots)"
+)
+
+
+def control_origin(url):
+    parsed = urllib.parse.urlsplit(url)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or not re.fullmatch(r"[a-z0-9.-]{1,80}(?::[0-9]{1,5})?", parsed.netloc)
+        or parsed.port == 0
+        or parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("INVALID_CONTROL_CENTER_ORIGIN")
+    return f"https://{parsed.netloc}"
+
+
+def control_proxy(url):
+    """Validate an explicit proxy URL without exposing its userinfo."""
+    if not isinstance(url, str) or any(
+        ord(char) < 32 or ord(char) == 127 for char in url
+    ):
+        raise ValueError("INVALID_CONTROL_CENTER_PROXY")
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        port = parsed.port
+    except ValueError:
+        raise ValueError("INVALID_CONTROL_CENTER_PROXY") from None
+    if (
+        parsed.scheme not in ("http", "https")
+        or not parsed.hostname
+        or parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+        or port is not None
+        and not 1 <= port <= 65535
+        or any(
+            ord(char) < 32 or ord(char) == 127
+            for value in (parsed.username, parsed.password)
+            for char in urllib.parse.unquote(value or "")
+        )
+    ):
+        raise ValueError("INVALID_CONTROL_CENTER_PROXY")
+    return url
+
+
 class Egress:
     def __init__(self, worker, cfg, clock=time.time):
         if worker not in {"blue", "yellow"}:
@@ -231,6 +298,8 @@ class Egress:
         self.path = self.root / "http-egress.json"
 
     def before(self, request, *, repo, provider, storage=False, category=None):
+        if provider == "control":
+            return self._control(request)
         if self.worker != "yellow":
             return request
         url = urllib.parse.urlsplit(request.full_url)
@@ -297,17 +366,7 @@ class Egress:
                 if method != "POST" or url.query or not m:
                     raise Rejected("UNSUPPORTED_WRITE")
                 yellow_body(payload, m[1])
-        # Count the complete HTTP/1 request line, URL, supplied final headers
-        # (including authentication), body and a tested 128-byte allowance for
-        # urllib/http.client generated Host/Connection/Accept-Encoding framing.
-        headers = sum(
-            len(k.encode()) + 2 + len(v.encode()) + 2 for k, v in request.header_items()
-        )
-        request_line = len(
-            f"{method} {url.path or '/'}{('?' + url.query) if url.query else ''} HTTP/1.1\r\n".encode()
-        )
-        host_line = len(f"Host: {url.netloc}\r\n".encode())
-        size = request_line + host_line + headers + 2 + 128 + len(payload or b"")
+        size = estimate_http1_request_bytes(request)
         category = _category(
             provider, method, path if not storage else url.path, payload, category
         )
@@ -334,11 +393,7 @@ class Egress:
                         envelope, separators=(",", ":"), ensure_ascii=False
                     ).encode()
                     request.data = payload
-                    headers = sum(
-                        len(k.encode()) + 2 + len(v.encode()) + 2
-                        for k, v in request.header_items()
-                    )
-                    size = request_line + host_line + headers + 2 + 128 + len(payload)
+                    size = estimate_http1_request_bytes(request)
             except (ValueError, KeyError, TypeError):
                 pass
         if size >= 2000:
@@ -352,6 +407,38 @@ class Egress:
             repo=repo,
             category=category,
         )
+        return request
+
+    def _control(self, request):
+        settings = self.cfg.get("control_center") or {}
+        url = urllib.parse.urlsplit(request.full_url)
+        method = request.get_method()
+        read = method == "GET"
+        valid_path = (_CONTROL_READ if read else _CONTROL_WRITE).fullmatch(url.path)
+        if (
+            f"{url.scheme}://{url.netloc}" != control_origin(settings.get("url", ""))
+            or url.query
+            or url.fragment
+            or not valid_path
+            or (read and request.data is not None)
+            or (not read and (method != "POST" or request.data is None))
+        ):
+            raise Rejected("UNTRUSTED_CONTROL_DESTINATION")
+        size = estimate_http1_request_bytes(request)
+        category = url.path.split("/")[4].replace("-", "_")
+        if size >= 2000:
+            if self.worker == "yellow":
+                self.record_rejection("control", category, size)
+            raise Rejected("REQUEST_SIZE_LIMIT")
+        if self.worker == "yellow":
+            self.reserve(
+                read,
+                size,
+                len(request.data or b""),
+                provider="control",
+                repo="control-center",
+                category=category,
+            )
         return request
 
     @staticmethod
@@ -493,6 +580,10 @@ class Egress:
                     total.update(window=window, count=0)
                 if entry["count"] >= cap or total["count"] >= 50:
                     raise Deferred("DISCOVERY_POLL_LIMIT")
+            if provider == "control" and self.cfg["daily_upload_bytes"] - saved[
+                "used"
+            ] - size < (self.cfg["control_center"].get("ci_reserve_bytes", 262144)):
+                raise Deferred("CONTROL_CI_RESERVE")
             if (
                 saved[key] < 1
                 or saved["bytes"] < size

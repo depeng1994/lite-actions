@@ -1,0 +1,8 @@
+{
+  "default_model": "vllm-ascend",
+  "models": [
+    {"slug":"vllm-ascend","display_name":"vLLM Ascend","repos":[{"provider":"github","repo":"cann-framework/vllm-ascend","repo_scope":"组织仓"}]},
+    {"slug":"torchtitan-npu","display_name":"TorchTitan NPU","repos":[{"provider":"github","repo":"cann-framework/torchtitan-npu","repo_scope":"组织仓"},{"provider":"gitcode","repo":"cann/torchtitan-npu","repo_scope":"组织仓"},{"provider":"gitcode","repo":"depeng1994/torchtitan-npu","repo_scope":"个人仓"}]},
+    {"slug":"lite-actions","display_name":"Lite Actions","repos":[{"provider":"github","repo":"depeng1994/lite-actions","repo_scope":"个人仓"}]}
+  ]
+}
