@@ -1,3 +1,5 @@
+[Reading 565 lines from start (total: 565 lines, 0 remaining)]
+
 """CPU contract tests for GitCode source profiles and PR lifecycle."""
 
 import io
@@ -487,7 +489,6 @@ class SourceProfileTests(unittest.TestCase):
             )
             with tarfile.open(archive, "r:gz") as content:
                 self.assertEqual(content.extractfile("marker").read(), b"fork commit")
-
 
     def test_gitcode_fetch_sets_non_git_user_agent(self):
         source = self.root / "user-agent-source"
