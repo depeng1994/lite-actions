@@ -1,5 +1,3 @@
-[Reading 565 lines from start (total: 565 lines, 0 remaining)]
-
 """CPU contract tests for GitCode source profiles and PR lifecycle."""
 
 import io
