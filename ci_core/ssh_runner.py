@@ -1,5 +1,3 @@
-[Reading 689 lines from start (total: 689 lines, 0 remaining)]
-
 """One trusted SSH execution engine for A3/A5, 1..N nodes.
 
 Only trusted local JSON selects the entrypoint. Training and validation live in
