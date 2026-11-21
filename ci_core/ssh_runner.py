@@ -1,3 +1,5 @@
+[Reading 689 lines from start (total: 689 lines, 0 remaining)]
+
 """One trusted SSH execution engine for A3/A5, 1..N nodes.
 
 Only trusted local JSON selects the entrypoint. Training and validation live in
@@ -104,7 +106,9 @@ def model_archive(
         config_count = int(git_env.get("GIT_CONFIG_COUNT", "0"))
         git_env["GIT_CONFIG_COUNT"] = str(config_count + 1)
         git_env[f"GIT_CONFIG_KEY_{config_count}"] = "http.userAgent"
-        git_env[f"GIT_CONFIG_VALUE_{config_count}"] = "Mozilla/5.0 (compatible; lite-actions)"
+        git_env[f"GIT_CONFIG_VALUE_{config_count}"] = (
+            "Mozilla/5.0 (compatible; lite-actions)"
+        )
     with lock_path.open("a+") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         if verified(cached, source_repo, sha):
