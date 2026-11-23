@@ -1029,9 +1029,9 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
                 from ci_core.ssh_runner import (
                     DEST_ROOT,
                     allocations,
-                    cancel as cancel_owned,
                     owned_processes_gone,
                 )
+                from ci_core.ssh_runner import cancel as cancel_owned
 
                 for attempt in range(3):
                     try:

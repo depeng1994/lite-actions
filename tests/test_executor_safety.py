@@ -54,9 +54,7 @@ class ExecutorSafetyTests(unittest.TestCase):
         stack.enter_context(
             patch(
                 "ci_core.ssh_runner.allocations",
-                return_value=[
-                    {"position": 0, "ssh": "fixture", "host_id": "fixture"}
-                ],
+                return_value=[{"position": 0, "ssh": "fixture", "host_id": "fixture"}],
             )
         )
         stack.enter_context(
