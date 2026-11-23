@@ -4,9 +4,9 @@
 > - 本文档记录的是 **v1.1 基线**（`REQ-01` ~ `REQ-14`）在 YCY 隔离环境的后端回归验收证据与部署初始化方法。
 > - 前端 Demo（`codex/control-center-demo @ cd770ce`）与 [PRD.md](PRD.md) 已升级至 **v1.5**（统一 Workflow 表、Workflow 级插队、全量节点 5 次探测离线模型、两步先排空再删除、统一 `enabled`/`paused` 暂停调度语义，以及按决策 2-A 的「初期 ChatGPT Sites 前端代理 + Cloudflare Workers/D1 后端、代码全入 GitHub 仓、支持零业务改动迁至个人服务器」与 `portability_intercept` DT 门禁）。v1.5 后端/Worker 增量开发（`REQ-15` ~ `REQ-20`）、联调补齐（`INT-03/04/05/06/07/08/09/09B/10`）以及全栈端到端联调清单（含 8 条 `★ P0 关键必通` 标注）统一以 [DESIGN.md](DESIGN.md) 为准。
 
-> **正式环境证据（2026-11-20）**：线上控制面为 Cloudflare Worker + D1 `lite-actions-control-center`，正式 Site 版本 17 通过 server-backed API 访问线上数据。前端已移除 Demo/fixture 数据回退，正式库没有活动任务时只显示空队列。Cloudflare Worker 静态包已由 `17ed45f` 切换为同一正式前端构建，线上 `/`、`/api/v1/public/overview` 和 `/api/v1/public/workflows` 实测不含 Demo/fixture/模拟数据，部署版本为 `f332c4d0-131d-4783-8b7b-c0b4749ff811`。Blue 当前发布 SHA 为 `d9fcf5de649540d0e0f5ea0ab503727f7815ea7f`，D1 集群配置 `revision=4` 已应用，两个 A3 节点通过实机指纹与 TorchTitan 容器绑定校验，线上 overview 实测 `offline=false`、`applied_rev=4`。CPU-only self-smoke run `44594574859` 已通过。GitCode 源归档与隔离 profile 的真实 Blue NPU 联调也已通过：8P run `55b7bf72c6e541babc5977eef7f486a8`、16P run `5a7f8c3030a549bab4cadde3a6678ad9` 均 `COMPLETED`，结果为 `PASS`、`exit_code=0`、`cleanup_verified=true`，诊断分别含 `all_reduce_sum=28` 与 `all_reduce_sum=120`。
+> **历史环境基线证据（2026-11-20，PR #44 本轮 `REQ-15`~`REQ-20` 改造与 `0010` 迁移前的旧版线上实例；不代表当前 PR #44 已完成生产发布验收）**：旧版线上 Cloudflare Worker（`f332c4d0-131d-4783-8b7b-c0b4749ff811`）+ D1 `lite-actions-control-center` 与旧版 Site v17 曾验证真实无 Demo 数据；Blue 当时发布 SHA `d9fcf5de649540d0e0f5ea0ab503727f7815ea7f`、`revision=4`、`offline=false`，CPU-only self-smoke run `44594574859` 与 GitCode 8P (`55b7bf72c6e541babc5977eef7f486a8`) / 16P (`5a7f8c3030a549bab4cadde3a6678ad9`) 真实 Blue NPU 隔离联调通过。**当前 PR #44 尚未发布到生产 Worker/D1 与 ChatGPT Sites，实机验收项见 [DESIGN.md](DESIGN.md) Phase 7 未勾选门禁。**
 
-> **YCY Linux 回归证据（2026-11-20）**：在 Blue 当前发布目录使用 `/usr/bin/python3` 执行 `python3 -m unittest discover -s tests`，`215 tests` 全部通过。macOS 本地运行的 Linux 专属 `/proc`、systemd 和 `/etc/os-release` 测试失败不作为生产回归结论。
+> **Linux CI 全量 Python 回归证据（2026-11-23，PR #44 `d10ee37`，GitHub Actions Run `45130566857`）**：在 `ubuntu-latest`（Python 3.12.16 + Node 24）执行 `python -m unittest discover -s tests`，**`233 tests OK (skipped=3)`**（0 failures，0 errors）；另历史 2026-11-20 在 Blue YCY 主机执行 `/usr/bin/python3 -m unittest discover -s tests` 为 `215 tests` 全绿。macOS 本地因缺少 `/etc/os-release`、`/proc` 与 `systemctl` 产生的 Linux 专属测试失败不作为回归结论。
 
 v1.1 实现基线运行在 Cloudflare Worker + 单 D1 库；完成 `REQ-20` 托管解耦与决策 2-A 收敛后，初期正式采用 **ChatGPT Sites 前端代理（`d1: null`, `r2: null`，部署期注入 `SITES_PROJECT_ID` 与运行时 `CONTROL_CENTER_API_ORIGIN`）+ Cloudflare Workers Free / D1 Free 后端**，后期同一套核心业务与 `migrations/*.sql` 可零业务改动迁移至 **个人服务器（Node.js 24 + 内置 `node:sqlite`）**。Blue 和 Yellow Worker 仅通过 HTTPS 出站接入，迁移时只改 `control_center.url`。
 
@@ -36,7 +36,7 @@ python3 control-center/tests/integration/run.py --runtime=node
 
 上述集成脚本属于 **isolated fixture evidence（本地隔离夹具验证）**：启动一个仅绑定环回地址的控制面实例（支持 `--runtime=d1` 与 `--runtime=node` 分别验证 Wrangler/D1 与个人服务器 Node 24/`node:sqlite`）、两个有独立状态目录的 `unified_router.py` 进程和一台本地 TLS 抓包代理服务器。其中平台写请求发往本地 Proxy stub（直接返回 `201 {"id":1}`），**仅证明协议线序 `< 2,000` B 与双运行时控制面闭环，不替代真实外部平台写回或线上生产部署验收**。给联调脚本传入一个尚不存在的目录，可保留服务日志和数据便于排障。
 
-> **2026-11-20 v1.5 联调重跑**：修正 harness 对 `observe_health` 三元组接口的测试桩后，`python3 control-center/tests/integration/run.py` 全程通过，输出覆盖 INT-01/03 的公开与管理员隔离、INT-07 的连续三次插队、INT-08 的配置发布/重启应用，以及 INT-02/05 的 90s 离线恢复、20+ 事件补发和 86 个 TLS 请求，最大请求 1,790 B。
+> **2026-11-23 PR #44 隔离夹具双运行时实测（GitHub Actions Run `45130566857` & 本地 Python 3.12）**：`python3 control-center/tests/integration/run.py --runtime=d1`（79 TLS 请求、峰值 1,795 B）与 `--runtime=node`（81 TLS 请求、峰值 1,795 B）均全绿通过，覆盖 INT-01/03 公开与管理员隔离、INT-07 连续三次插队、INT-08 配置发布与重启应用、INT-02/05 90s 离线恢复与 20+ 事件补发（含 8 次本地 stub 平台写请求）。此为 **isolated fixture evidence**，不替代真实外部平台或线上生产验收。
 
 | 验收项（v1.1 基线证据） | 自动化证据与待补齐缺口 |
 |---|---|
@@ -44,7 +44,7 @@ python3 control-center/tests/integration/run.py --runtime=node
 | INT-02 | `worker-ingest.test.ts`、`test_control_client.py` 和双进程联调，覆盖去重、跳号重建、分片重试、本地日志与 503 后补发（✅ v1.1 通过） |
 | INT-03 | `test_idle_probe.py`、`device-state.test.ts` 和 Blue 线上设备组状态（✅ REQ-15 全量探测、轮次持久化、健康投影与 `last_online_at` 已实现；⏳ 完整 5 次实机失败/恢复演练待补） |
 | INT-04 | `schedule-projection.test.ts` 和 `test_queue_telemetry.py`（⏳ 待从同一 D1 数据集核验排除失败及不可靠样本后的 API 响应） |
-| INT-05 | `test_upload_intercept.py` 实际 HTTP/1.1 序列化、静态路径注册门禁，以及当前 v1.5 TLS 联调抓取两个 Worker 和两个平台客户端的请求（✅ 2026-11-20 重跑通过，86 个请求，最长 1,790 B） |
+| INT-05 | `test_upload_intercept.py` 实际 HTTP/1.1 序列化、静态路径注册门禁，以及 `run.py --runtime=d1/node` 本地隔离夹具 TLS 抓包（✅ 2026-11-23 Run `45130566857` 通过：d1 79 请求 / node 81 请求，峰值 1,795 B `< 2,000` B；含 8 次本地 stub 平台写请求，真实 Yellow 外发证据另见 `REL-01`） |
 | INT-06 | `cancellations.test.ts` 使用模拟平台核验 App 令牌、attempt 校验、幂等和强制取消（⏳ 待补齐双平台、双 Worker 在网站断连时的整次取消联调） |
 | INT-07 | `move-up.test.ts`、`test_move_up.py`、`test_smoke_queue.py`（⏳ **v1.5 需按 `REQ-17` 升级为 Workflow 级跨区插队联调，并补齐虚拟时钟 71h59m/72h01m 超时实测**） |
 | INT-08 | `cluster-config.test.ts`（新增 DRAIN→RESUME、删除前四项门禁与 `enabled: false` 断言）、`test_preflight_export.py`、`test_pools_hot_reload.py`（⏳ **仍需补齐 Worker 侧排空取消、双 Worker 单端失败、实机重启与自动更新闭环**） |

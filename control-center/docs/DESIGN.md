@@ -95,13 +95,13 @@
 
 ### Phase 7：端到端联调、最终集成验证与生产上线签收
 
-> **2026-11-20 正式上线记录**：Cloudflare Worker 使用线上 D1 `lite-actions-control-center`，正式 Site **版本 22** 通过同源 Server-backed API 访问控制面。前端构建已移除所有 Demo/fixture 数据回退，并清除了默认版本、默认选中任务和虚构 Pool 初始值，正式 D1 无活动任务时页面显示空队列。默认模型仓筛选为“全部模型”，Workflow 提交时间直接使用正式 Unix 时间戳。Sites API 返回 Site `active`、版本 22、生产部署 `succeeded`；后端 Worker 最新生产版本 `c6ebeccd-a93f-4f71-85b3-13f1f7e20a9b` 已通过 Wrangler API 部署。线上 `/`、`/api/v1/public/overview` 和 `/api/v1/public/workflows` 实测不含 Demo/fixture/模拟数据，模型仓历史显示真实 GitCode PASS 记录。Blue 当前运行发布 SHA `d9fcf5de649540d0e0f5ea0ab503727f7815ea7f`，控制面已应用 D1 集群配置 `revision=4`，两台 A3 节点均通过机器指纹和 TorchTitan 容器绑定复核，`/api/v1/public/overview` 实测 Blue `offline=false`、`applied_rev=4`、活动任务归零。个人仓 `depeng1994/lite-actions` 的 CPU-only self-smoke run `44594574859` 已通过。Site 版本 22 还通过了 API 代理环境变量、完整静态资源、SPA 路由回退、后台标签页暂停刷新与切回立即刷新、正式 cluster 状态映射（包含 `enabled: false` Pool 的暂停态）、动态资源范围、实际设备卡数、历史详情、无节点分配历史 Workflow 白屏回归、空配置版本显示和无新增浏览器错误核验。
+> **历史基线部署记录（2026-11-20，PR #44 本轮 `REQ-15`~`REQ-20` / `0010` 迁移合入前的旧版本；不代表当前 PR #44 已完成生产验收）**：线上控制面旧版 Cloudflare Worker（版本 `c6ebeccd-a93f-4f71-85b3-13f1f7e20a9b`）使用线上 D1 `lite-actions-control-center`，旧版 Site **版本 22** 通过同源 Server-backed API 访问控制面。当时实测 `/`、`/api/v1/public/overview` 和 `/api/v1/public/workflows` 不含 Demo/fixture 数据，模型仓历史显示真实 GitCode PASS 记录；Blue 当时运行发布 SHA `d9fcf5de649540d0e0f5ea0ab503727f7815ea7f`、集群配置 `revision=4`、`offline=false`；个人仓 `depeng1994/lite-actions` 的 CPU-only self-smoke run `44594574859` 通过。
 
-> **2026-11-20 任务看板修复记录**：D1 迁移 `0007_v15_task_started_at.sql` 为已归档任务持久化 `started_at`，并从历史 `finished_at - duration_sec` 回填可推导记录；Worker 版本 `d8a3bcb4-fa2f-4a44-b9eb-b8d3d0af3be6` 已部署。正式 Site **版本 23** 已发布，页面标题更新为“Pools任务看板”和“代码仓任务看板”，代码仓 Workflow 列表增加独立纵向滚动容器，仓库列保持完整单行显示。浏览器已核对历史任务开始时间、16P Workflow `0.59` 卡·小时、全部模型筛选和正式 API 数据。D1 迁移 `0008_v15_run_number.sql` 已保存平台 `run_number`，Actions 列采用 Workflow 名称与 `#run_number` 紧凑显示，完整 `run_id` 保留在链接目标。D1 迁移 `0009_v15_run_display_title.sql` 开始保存平台具体运行标题，例如 `Lite Actions self smoke: cpu-only`，标题缺失时回退到 Workflow 名称。
+> **历史基线修复记录（2026-11-20，旧版 Site v23 & Worker `d8a3bcb4`，合入 PR #44 本轮改造前）**：旧版已应用 D1 迁移 `0007`~`0009`（`started_at`、`run_number`、`run_display_title`）并发布旧版 Site v23。**PR #44 本轮新增的 D1 迁移 `0010_v15_partial_applied.sql`、最新 Worker 代码与最新 Sites 前端代理包尚未部署到生产环境。**
 
 > **GitHub/GitCode 扩展联调记录**：GitHub `cann-framework/vllm-ascend` 的 `lite-ci-dispatcher-smoke` run `44587929243` 与重试 `44589895549` 已被 Blue 接收，但因 A3 vLLM 运行容器尚未作为正式资产部署而回写 `INFRA_ERROR`，因此 vLLM 生产用例仍未勾选。GitCode 个人仓 `depeng1994/torchtitan-npu` 已改用模型仓上传的固定 SHA 源代码归档，绕过 Blue 到 `gitcode.com` 的 Git HTTPS 418。隔离 profile `dispatch_smoke_8p` run `55b7bf72c6e541babc5977eef7f486a8` 与 `dispatch_smoke_16p` run `5a7f8c3030a549bab4cadde3a6678ad9` 均为 `COMPLETED`，Blue 分别回写 `PASS`、`exit_code=0`、`cleanup_verified=true`，并记录 `world_size=8 all_reduce_sum=28` 与 `world_size=16 all_reduce_sum=120`。完整三用例 profile run `6a0c885cde484684b184837fb87cb538` 与大规格重跑 `140b727835be4b51a082a7c194cf9b1f` 的真实 NPU 执行均通过，但平台在结果回写窗口结束前终止 workflow，后两例被规范回写为 `CANCELLED`。GitCode workflow 当前分支提交 `d9c65132d860fc84788f79bfe51f0516494e3147` 增加了固定源归档、`dispatch_smoke_8p`/`dispatch_smoke_16p` 独立 profile 与默认 `dispatch_smoke` suite 别名。
 
-> v1.1 隔离联调实测通过：公开/管理员权限与掩码、双 Worker 90s 离线与恢复、连续三次插队、集群发布/重启应用、20+ 条事件补发、双平台写回；TLS 抓包 86 个请求，最大 1,761 字节。Blue 真实 GitCode 8P/16P 隔离 Smoke 已通过，Yellow 主机、三用例整包在平台等待窗口内的完整回写、v1.5 Phase 5.5 及双平台取消仍按下方未勾选门槛记录。
+> **历史 v1.1 隔离联调记录（已由本轮 PR #44 双运行时隔离夹具覆盖）**：v1.1 阶段曾跑通本地隔离联调（86 请求，峰值 1,761 B）；Blue 真实 GitCode 8P/16P 隔离 Smoke 已通过，但 Yellow 主机、三用例整包回写、PR #44 线上新版本部署及双平台取消均仍处于下方未勾选状态。
 
 > **证据边界说明（代码/本地隔离夹具 vs 真实生产/外部平台验收）**：Phase 5.5（`REQ-15` ~ `REQ-20`）与 Phase 6（`FE-01` ~ `FE-05`）的代码实现、单测、4 层 `portability_intercept` DT、直传原始 `D1Database` binding 的 `sites-parity.test.ts`、以及 `control-center/tests/integration/run.py`（`--runtime=d1` 与 `--runtime=node`）均已通过。**须明确区分**：`run.py` 属于 **isolated fixture evidence（本地隔离夹具验证）**——使用本地 TLS Proxy 拦截请求，且 `platform_wire()` 中的 8 次 Yellow 平台写请求由合成 GitHub/GitCode 客户端发往本地 Proxy stub（直接返回 `201 {"id":1}`），**仅证明协议线序 `< 2,000` B 与双运行时控制面闭环，不构成真实外部平台写回或线上部署验收**。真实 Sites/CF D1 线上新版本部署（含 `SITES_PROJECT_ID`/`CONTROL_CENTER_API_ORIGIN` 注入与 D1 迁移 `0010`）、真实 Blue/Yellow 跨区 16P 实机联调、真实 GitHub/GitCode 平台取消与真实主机切 URL 迁移演练均保留在下方 Phase 7 未勾选门禁（`INT-06`、`INT-07`、`INT-09`、`INT-10`、`E2E-01`~`E2E-12`、`REL-00`、`REL-02`~`REL-04`）中等待现场基础设施执行。
 
@@ -1419,7 +1419,7 @@ lite-actions/
 - **对应 PRD**：§1（托管与迁移/存储）、§2（边界：初期 ChatGPT Sites 前端代理 + CF Workers/D1 后端、代码全入 GitHub 仓、支持迁个人服务器）、§6（维护触发与容量检测）、§11（可迁移性与 Sites 打包 `portability_intercept` DT）、§12（上线前提 1 与待定 2）
 - **状态**：✅ 代码与本地/隔离夹具门禁已完成（4 类平台锁死已剥离并接入 CI 拦截门禁；线上部署切换验收见 `INT-10` / `E2E-12` / `REL-00`）
 
-#### 1. 现状代码实审发现的 4 类锁死与缺口（迁移个人服务器必踩坑）
+#### 1. 改造前 v1.1 代码实审识别出的 4 类锁死与缺口（均已在 `REQ-20` 中消除）
 
 对原 v1.1 仓库 `control-center/worker/src/`、`scripts/seed.mjs` 与 `wrangler.toml` 逐行核查，识别出以下 4 处会阻断多运行时可迁移性（ChatGPT Sites 前端代理 + CF Workers/D1 后端与个人服务器 Node 24/`node:sqlite` 双运行时对等）的实现耦合，并在本需求中彻底剥离：
 1. **Cloudflare 专有非标准 Web Crypto API（`src/utils/crypto.ts:24`）**：`safeHashEqual()` 直接调用 `crypto.subtle.timingSafeEqual(...)`——该 API 为 Cloudflare Workers 私有扩展，**在标准 Node.js Web Crypto 中不存在**，迁到个人服务器后首次登录/Worker 鉴权即抛 `TypeError`。
@@ -1429,7 +1429,7 @@ lite-actions/
    - `board.ts:171-173` 与 `retention.ts:52` 假定 SQLite BLOB 返回 `number[]` 或 `ArrayBuffer`（在 `board.ts:173` 若遇到 `ArrayBuffer` 调用 `Uint8Array.from(ab)` 甚至会得到空字节数组），而 Node 24 内置 `node:sqlite` 返回 `Uint8Array`；
    - `scripts/seed.mjs` 仅支持调用 `wrangler d1 execute --local|--remote`，无法直接初始化个人服务器本地 SQLite 文件。
 4. **缺少静态资产托管、SPA 回退与无 Cron 托管兜底（`src/index.ts`）**：
-   - 当前 `src/index.ts` 对非 `/api/*` 路径一律返回 JSON 404，尚未实现类似 Demo（`demo/worker/index.js`）的 `env.ASSETS.fetch(request)` + HTML SPA 路由回退（且保证 `/api/*` 和非 GET 请求绝不被错转为 `index.html`）；
+   - 原 v1.1 的 `src/index.ts` 对非 `/api/*` 路径一律返回 JSON 404，当时尚未实现静态资产托管与 HTML SPA 路由回退；**现已在 `src/app.ts`（统一静态资产 + SPA 回退，同时保证 `/api/*` 和非 GET 请求绝不被错转为 `index.html`）与双适配层中实现并由 `sites-parity.test.ts` / `portability-intercept.test.ts` 验证**；
    - 原取消跟踪（1 分钟 / GitHub 2 分钟 `force-cancel`）与每日热冷归档/滚删完全依赖 Cloudflare `scheduled()` Cron；为保证在无独立 Cron 的托管或轻量自建环境中仍可收敛，需在心跳与读/写流量中保留节流惰性维护兜底。
 
 #### 2. 详细技术方案
