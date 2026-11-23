@@ -42,7 +42,9 @@ class SmokeReconciliationTests(unittest.TestCase):
                     ["reconcile.py", "--worker-id", "blue", "--task-key", "task"],
                 ),
                 patch.object(reconcile, "JobState", return_value=state),
-                patch.object(reconcile, "load", return_value=({}, pools)),
+                patch.object(
+                    reconcile, "load_active_pools", return_value=({}, pools, 0)
+                ),
                 patch.object(
                     reconcile, "execution_node", return_value={"ssh": "fixture"}
                 ),

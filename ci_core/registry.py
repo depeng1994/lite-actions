@@ -63,11 +63,18 @@ def validate_case_environment(
         # Never let one dormant recipe disable every smoke case; enforce mandatory
         # operator-approved paths when the selected case is actually admitted.
         return env.copy()
-    required = ASSET_ENV_KEYS if kind == "train" else ("ASCEND_SET_ENV_PATH",)
+    required = ("ASCEND_SET_ENV_PATH",)
     for key in required:
         path = env.get(key)
         if not isinstance(path, str) or not path.startswith("/"):
             raise ValueError(f"model test must define an absolute {key} in env_vars")
+    for key in ("HF_ASSETS_PATH", "CKPT_INIT_LOAD_PATH"):
+        if key in env:
+            path = env[key]
+            if not isinstance(path, str) or not path.startswith("/"):
+                raise ValueError(
+                    f"model test must define an absolute {key} in env_vars"
+                )
     return env.copy()
 
 

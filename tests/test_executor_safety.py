@@ -50,8 +50,12 @@ class ExecutorSafetyTests(unittest.TestCase):
         mocks.owned = stack.enter_context(
             patch("ci_core.ssh_runner.owned_processes_gone")
         )
+        mocks.cancel = stack.enter_context(patch("ci_core.ssh_runner.cancel"))
         stack.enter_context(
-            patch("ci_core.ssh_runner.allocations", return_value=[{"position": 0}])
+            patch(
+                "ci_core.ssh_runner.allocations",
+                return_value=[{"position": 0, "ssh": "fixture", "host_id": "fixture"}],
+            )
         )
         stack.enter_context(
             patch("ci_core.config.execution_node", return_value={"ssh": "fixture"})
@@ -110,6 +114,7 @@ class ExecutorSafetyTests(unittest.TestCase):
                 self.assertEqual(
                     mocks.broadcast.call_args.kwargs["released"], cleanup_verified
                 )
+                self.assertEqual(mocks.cancel.call_count, 1 if cleanup_verified else 3)
 
     def test_external_occupancy_requeues_and_tries_another_allocation(self):
         busy = True

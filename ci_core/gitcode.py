@@ -6,12 +6,10 @@ import json
 import logging
 import os
 import re
-import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
-from pathlib import Path
 from types import SimpleNamespace
 
 from ci_core.contract import (
@@ -74,6 +72,11 @@ def source_plan(rows, run, repo):
     return plan
 
 
+DISPATCH_JOB_NAMES = frozenset(
+    {"Dispatcher Smoke", "Per-PR Alltest", "Nightly Alltest"}
+)
+
+
 def source_dispatch(details):
     stages = details.get("stages")
     if not isinstance(stages, list) or any(
@@ -87,7 +90,7 @@ def source_dispatch(details):
         job
         for stage in stages
         for job in stage.get("jobs", [])
-        if job.get("name") == "Dispatcher Smoke"
+        if job.get("name") in DISPATCH_JOB_NAMES
     ]
     if len(jobs) != 1 or jobs[0].get("status") != "RUNNING":
         raise RunChanged("smoke execution job unavailable or ambiguous")
@@ -108,6 +111,14 @@ def _unique_object(pairs):
             raise ValueError("duplicate catalog field")
         obj[key] = value
     return obj
+
+
+def _attempt_number(raw):
+    if type(raw) is str and raw.isascii() and raw.isdecimal():
+        raw = int(raw)
+    if type(raw) is not int or not 1 <= raw < 2**31:
+        raise ValueError("invalid GitCode run attempt")
+    return raw
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -181,9 +192,10 @@ class GitCodeClient:
         )
         return {
             "status": "completed"
-            if result.get("status") in {"COMPLETED", "FAILED", "CANCELED", "IGNORED"}
+            if str(result.get("status")).upper()
+            in {"COMPLETED", "FAILED", "CANCELED", "CANCELLED", "IGNORED", "STOPPED"}
             else "in_progress",
-            "run_attempt": result.get("attempt", 1),
+            "run_attempt": _attempt_number(result.get("attempt", 1)),
         }
 
     def pr_source(self, details):
@@ -236,6 +248,7 @@ class GitCodeClient:
                 raise RunChanged(
                     "run does not match the current PR merge ref and parents"
                 )
+        details["_ci_pr_author"] = (pr.get("user") or {}).get("login")
         return int(number), source, head["sha"]
 
     def running_workflows(self):
@@ -299,7 +312,7 @@ class GitCodeClient:
                     for job in (stage.get("jobs") or [])
                     if isinstance(job, dict)
                 ]
-                if any(job.get("name") == "Dispatcher Smoke" for job in jobs):
+                if any(job.get("name") in DISPATCH_JOB_NAMES for job in jobs):
                     try:
                         dispatch = source_dispatch(details)
                     except RunChanged:
@@ -325,20 +338,29 @@ class GitCodeClient:
                         continue
                     pr_fields = {
                         "_ci_pr_number": number,
+                        "_ci_pr_author": details.get("_ci_pr_author"),
                         "_ci_source_repo": source,
                         "_ci_execution_sha": execution_sha,
                     }
+                try:
+                    attempt = _attempt_number(details.get("attempt", 1))
+                except ValueError:
+                    continue
                 runs.append(
                     {
                         "_ci_provider": "gitcode",
                         "_ci_repo": self.repo,
                         "id": run_id,
-                        "run_attempt": details.get("attempt", 1),
+                        "run_attempt": attempt,
                         "head_sha": row.get("head_sha"),
                         "head_branch": row.get("head_branch"),
-                        "actor": row.get("actor") or {},
+                        "actor": details.get("actor") or row.get("actor") or {},
                         "path": row.get("file_path"),
                         "name": row.get("workflow_name"),
+                        "display_title": details.get("display_title")
+                        or details.get("run_name")
+                        or row.get("display_title")
+                        or row.get("run_name"),
                         "run_number": row.get("run_number"),
                         "created_at": dt.datetime.fromtimestamp(
                             start, dt.timezone.utc
@@ -355,6 +377,7 @@ class GitCodeClient:
 
     def validate_current(self, run):
         details = self.request("GET", f"/actions/runs/{run['id']}", api=8)
+        details["attempt"] = _attempt_number(details.get("attempt", 1))
         expected = {
             "workflow_run_id": run["id"],
             "attempt": run["run_attempt"],
@@ -380,55 +403,19 @@ class GitCodeClient:
         ):
             raise RunChanged("GitCode PR source changed")
 
-    def ci_request(self, run):
-        if "_ci_dispatch_id" in run:
-            from ci_core.registry import inspect_archive
-            from ci_core.ssh_runner import model_archive
-
-            self.validate_current(run)
-            with tempfile.TemporaryDirectory(prefix="lite-gitcode-source-") as tmp:
-                source = model_archive(
-                    run.get("_ci_execution_sha", run["head_sha"]),
-                    Path(tmp),
-                    source_repo=self.repo,
-                    provider="gitcode",
-                    fallback_repo=run.get("_ci_source_repo"),
-                )
-                rows = inspect_archive(
-                    source, {"suite": "dispatch_smoke"}, repo=self.repo
-                )
-            plan = source_plan(rows, run, self.repo)
-            if os.environ.get("LITE_ACTIONS_GITCODE_PROBE_ONLY") == "1" and any(
-                case["kind"] != "worker_probe" for case in plan["cases"]
-            ):
-                raise ValueError("only zero-device probes are enabled")
-            return plan
-        run_id, attempt = run["id"], run["run_attempt"]
-        name = f"lite-ci-request-{attempt}"
-        found = self.request(
-            "GET", f"/actions/runs/{run_id}/artifacts?per_page=100", api=8
-        )
-        matches = [
-            a
-            for a in found.get("artifacts", [])
-            if a.get("name") == name and a.get("workflow_run_id") == run_id
-        ]
-        if not matches:
-            return None
-        if len(matches) != 1 or matches[0].get("size_bytes", 0) > 262144:
-            raise ValueError("ambiguous or oversized request artifact")
-        artifact_id = matches[0]["id"]
+    def _download_artifact_zip(self, artifact_id, limit, *, category=None):
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", str(artifact_id)):
             raise ValueError("invalid artifact ID")
-
-        req = urllib.request.Request(
+        request = urllib.request.Request(
             f"{self.v8}/actions/artifacts/{artifact_id}/zip",
             headers={"PRIVATE-TOKEN": self.token},
         )
         if self.policy:
-            req = self.policy.before(req, repo=self.repo, provider="gitcode")
+            request = self.policy.before(
+                request, repo=self.repo, provider="gitcode", category=category
+            )
         try:
-            urllib.request.build_opener(NoRedirect).open(req, timeout=20)
+            urllib.request.build_opener(NoRedirect()).open(request, timeout=20)
             raise ValueError("artifact download did not redirect")
         except urllib.error.HTTPError as exc:
             if exc.code != 302:
@@ -442,15 +429,36 @@ class GitCodeClient:
             self.policy.before(
                 download, repo=self.repo, provider="gitcode", storage=True
             )
-        open_storage = (
-            urllib.request.build_opener(NoRedirect).open
+        opener = (
+            urllib.request.build_opener(NoRedirect()).open
             if self.policy
             else urllib.request.urlopen
         )
-        with open_storage(download, timeout=30) as response:
-            payload = response.read(262145)
-        if len(payload) > 262144:
+        with opener(download, timeout=60) as response:
+            payload = response.read(limit + 1)
+        if len(payload) > limit:
             raise ValueError("artifact exceeds limit")
+        return payload
+
+    def ci_request(self, run):
+        self.validate_current(run)
+        run_id, attempt = run["id"], run["run_attempt"]
+        name = f"lite-ci-request-{attempt}"
+        found = self.request(
+            "GET", f"/actions/runs/{run_id}/artifacts?per_page=100", api=8
+        )
+        matches = [
+            a
+            for a in found.get("artifacts", [])
+            if a.get("name") == name and a.get("workflow_run_id") == run_id
+        ]
+        if not matches:
+            return None
+        if len(matches) != 1 or (matches[0].get("size_bytes") or 0) > 262144:
+            raise ValueError("ambiguous or oversized request artifact")
+        payload = self._download_artifact_zip(
+            matches[0]["id"], 262144, category="metadata_get"
+        )
         with zipfile.ZipFile(io.BytesIO(payload)) as archive:
             names = [n for n in archive.namelist() if not n.endswith("/")]
             if (
@@ -463,10 +471,8 @@ class GitCodeClient:
             if info.file_size > 262144:
                 raise ValueError("request exceeds limit")
             payload = archive.read(info)
-        plan = json.loads(payload)
+        plan = json.loads(payload, object_pairs_hook=_unique_object)
         parse_plan(plan, run, run["path"].rsplit("/", 1)[-1], repo=self.repo)
-        if len(plan["cases"]) != 1:
-            raise ValueError("GitCode fixed environment requires exactly one case")
         if os.environ.get("LITE_ACTIONS_GITCODE_PROBE_ONLY") == "1" and any(
             case["kind"] != "worker_probe" for case in plan["cases"]
         ):

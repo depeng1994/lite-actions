@@ -1,6 +1,7 @@
 # Runtime data (never version-control job state or logs).
 logs/
 state/
+control-center/dist/
 
 # Interpreter/build artifacts.
 .DS_Store

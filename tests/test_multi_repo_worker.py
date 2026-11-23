@@ -180,10 +180,11 @@ class MultiRepoWorkerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with (
                 patch(
-                    "ci_core.router.load",
+                    "ci_core.router.load_active_pools",
                     return_value=(
                         {"yellow": {"enabled": True}},
                         {"a5_shared_yellow": {"nodes": []}},
+                        0,
                     ),
                 ),
                 patch.dict(

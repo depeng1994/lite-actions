@@ -15,21 +15,55 @@ def _distinct_node_ips(nodes):
     return len(addresses) == len(nodes)
 
 
-def candidates(case: dict, pools: dict) -> list[list[dict]]:
+def candidates(case: dict, pools: dict, *, include_paused=False) -> list[list[dict]]:
     spec = case["resources"]
     nodes, ngpu = spec["nodes"], spec["devices_per_node"]
     if nodes < 1 or ngpu < 1:
         raise ValueError("invalid requested topology")
     pool = pools[case["pool"]]
+    if not pool.get("enabled", True) and not include_paused:
+        return []
+    if pool.get("paused") and not include_paused:
+        return []
     eligible = []
     for host in sorted(
         pool["nodes"], key=lambda node: (node.get("priority", 0), node["host_id"])
     ):
+        if host.get("probe_unavailable"):
+            continue
+        if host.get("paused") and not include_paused:
+            continue
         for group in host.get("allocation_groups", []):
+            if group.get("probe_unavailable"):
+                continue
+            if group.get("paused") and not include_paused:
+                continue
             devices = group["devices"]
             if group.get("verified") and len(devices) == ngpu:
                 eligible.append({"host_id": host["host_id"], "devices": list(devices)})
     if nodes == 1:
+        if not eligible:
+            for host in sorted(
+                pool["nodes"],
+                key=lambda node: (node.get("priority", 0), node["host_id"]),
+            ):
+                if host.get("probe_unavailable"):
+                    continue
+                if host.get("paused") and not include_paused:
+                    continue
+                groups = host.get("allocation_groups", [])
+                if len(groups) < 2 or not all(
+                    group.get("verified")
+                    and not group.get("probe_unavailable")
+                    and (not group.get("paused") or include_paused)
+                    for group in groups
+                ):
+                    continue
+                combined = sorted({d for g in groups for d in g["devices"]})
+                if len(combined) == ngpu and combined == sorted(
+                    host.get("device_ids", [])
+                ):
+                    eligible.append({"host_id": host["host_id"], "devices": combined})
         # Round-robin verified groups across hosts before taking a second
         # group on one host. This works even when two workers allocate at the
         # same instant, before either has persisted its state record.
@@ -70,9 +104,12 @@ def candidates(case: dict, pools: dict) -> list[list[dict]]:
     return result
 
 
-def validate_allocation(case: dict, pools: dict, allocation: list[dict]) -> None:
+def validate_allocation(
+    case: dict, pools: dict, allocation: list[dict], *, include_paused=False
+) -> None:
     expected = resource_keys(allocation)
     if not expected or not any(
-        resource_keys(item) == expected for item in candidates(case, pools)
+        resource_keys(item) == expected
+        for item in candidates(case, pools, include_paused=include_paused)
     ):
         raise ValueError("allocation outside verified topology or pool")

@@ -13,6 +13,7 @@ from tests.integration_tests.tools.lite_actions.entrypoint import inspect_profil
 
 PLAN = Path(".ci-request/ci-request.json")
 CPU_TITLE = "Lite Actions self smoke: cpu-only"
+YELLOW_A5_TITLE = "Lite Actions self smoke: yellow-a5"
 
 
 def case_passed(result):
@@ -26,9 +27,15 @@ def case_passed(result):
 
 def expected_plan(run):
     # The Worker selects the suite from GitHub's run, not the submitted artifact.
-    cpu_only = run.get("display_title") == CPU_TITLE
-    rows = inspect_profile("cpu-only" if cpu_only else "dispatch_smoke")
-    if cpu_only and any(row["kind"] != "worker_probe" for row in rows):
+    title = run.get("display_title")
+    if title == CPU_TITLE:
+        profile = "cpu-only"
+    elif title == YELLOW_A5_TITLE:
+        profile = "yellow-a5"
+    else:
+        profile = "dispatch_smoke"
+    rows = inspect_profile(profile)
+    if profile == "cpu-only" and any(row["kind"] != "worker_probe" for row in rows):
         raise ValueError("cpu-only cannot schedule device jobs")
     return source_plan(rows, run, SELF_REPO)
 
@@ -37,14 +44,20 @@ def prepare(environ=os.environ):
     if environ["GITHUB_REPOSITORY"] != SELF_REPO:
         raise ValueError("unexpected self-smoke repository")
     profile = environ.get("SELF_SMOKE_PROFILE", "full")
-    if profile not in {"full", "cpu-only"}:
+    if profile not in {"full", "cpu-only", "yellow-a5"}:
         raise ValueError("unknown self-smoke profile")
     run = {
         "id": int(environ["GITHUB_RUN_ID"]),
         "run_attempt": int(environ["GITHUB_RUN_ATTEMPT"]),
         "head_sha": environ["GITHUB_SHA"],
         "path": ".github/workflows/" + SELF_WORKFLOW,
-        "display_title": CPU_TITLE if profile == "cpu-only" else "",
+        "display_title": (
+            CPU_TITLE
+            if profile == "cpu-only"
+            else YELLOW_A5_TITLE
+            if profile == "yellow-a5"
+            else ""
+        ),
     }
     plan = expected_plan(run)
     PLAN.parent.mkdir(parents=True, exist_ok=True)

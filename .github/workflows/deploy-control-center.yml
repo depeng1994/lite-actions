@@ -8,31 +8,58 @@ on:
         required: true
         default: website/control-center-prd
         type: string
+      deploy_server:
+        description: Publish the build to the personal control-center host
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout requested ref
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
-
-      - name: Set up Node.js 24
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '24'
-
-      - name: Install Worker dependencies
-        run: npm ci --prefix control-center/worker
-
-      - name: Deploy Control Center Worker
-        working-directory: control-center/worker
+      - name: Install dependencies
+        run: |
+          npm ci --prefix control-center/worker
+          npm ci --prefix control-center/web
+      - name: Validate and build
+        run: |
+          npm run lint --prefix control-center/worker
+          npm test --prefix control-center/worker
+          npm test --prefix control-center/web
+          npm run build:node --prefix control-center/worker
+          npm run build --prefix control-center/web
+          python3 control-center/tests/integration/run.py
+      - name: Package personal-server release
+        run: |
+          mkdir -p release/control-center
+          cp -a control-center/worker release/control-center/
+          cp -a control-center/web/dist release/control-center/web-dist
+          cp -a config release/config
+          tar -czf lite-actions-control-center.tar.gz -C release control-center config
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lite-actions-control-center
+          path: lite-actions-control-center.tar.gz
+          if-no-files-found: error
+      - name: Publish through the authorized server deploy hook
+        if: ${{ inputs.deploy_server }}
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx wrangler deploy
+          SERVER_DEPLOY_COMMAND: ${{ secrets.SERVER_DEPLOY_COMMAND }}
+        run: |
+          if [ -z "${SERVER_DEPLOY_COMMAND}" ]; then
+            echo "::error::deploy_server=true requires SERVER_DEPLOY_COMMAND."
+            exit 1
+          fi
+          export RELEASE_ARCHIVE="$PWD/lite-actions-control-center.tar.gz"
+          bash -euo pipefail -c "${SERVER_DEPLOY_COMMAND}"

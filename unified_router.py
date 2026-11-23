@@ -5,10 +5,11 @@ import argparse
 import logging
 import os
 import signal
+import threading
 import time
 from pathlib import Path
 
-from ci_core.config import deployment, load
+from ci_core.config import deployment, load_active_pools
 from ci_core.contract import configured_repos
 from ci_core.egress_policy import Egress
 from ci_core.gitcode import GitCodeClient, MultiPlatformClient
@@ -29,7 +30,7 @@ def main():
     a.worker_id, cfg = deployment(a.worker_id)
     os.environ["LITE_ACTIONS_STATE_DIR"] = cfg["state_dir"]
     policy = Egress(a.worker_id, cfg)
-    load(ROOT, a.worker_id)
+    load_active_pools(ROOT, a.worker_id)
     repos = configured_repos()
     if a.validate:
         print(f"Validated worker {a.worker_id} repositories: {', '.join(repos)}")
@@ -75,15 +76,54 @@ def main():
             os.environ.get("LITE_ACTIONS_RESULT_AUTHOR"),
             deployment_config=cfg,
         )
+        control = None
+        wake = threading.Event()
+        if cfg.get("control_center"):
+            from ci_core.control_client import ControlClient
+            from ci_core.idle_probe import IdleProbe
+
+            try:
+                control = ControlClient(
+                    a.worker_id,
+                    cfg,
+                    os.environ.get("LITE_ACTIONS_CONTROL_TOKEN"),
+                    policy,
+                    wake,
+                    router.control_view,
+                )
+                router.control = control
+                router.idle_probe = IdleProbe(
+                    a.worker_id,
+                    lambda: (router.pools, router.state.read()),
+                    state_dir=cfg["state_dir"],
+                )
+                router.idle_probe.start()
+                control.start()
+            except Exception as exc:
+                control = None
+                router.control = None
+                logging.warning(
+                    "control center startup deferred (%s)", type(exc).__name__
+                )
         ready_file = os.environ.get("LITE_ACTIONS_READY_FILE", "").strip()
         ready_published = False
+        poll_seconds = max(60, int(os.environ.get("LITE_ACTIONS_POLL_SECONDS", "60")))
+        next_poll = 0
         try:
             while True:
                 tick_succeeded = False
                 try:
-                    router.tick()
-                    tick_succeeded = True
+                    if time.monotonic() >= next_poll:
+                        next_poll = time.monotonic() + poll_seconds
+                        router.tick()
+                        router.control_healthy = True
+                        tick_succeeded = True
+                    elif control:
+                        router.consume_control()
+                        router.pump()
+                        router.flush()
                 except Exception:
+                    router.control_healthy = False
                     logging.exception("worker poll failed")
                 # The optional marker is written only after a successful poll.
                 # A failed poll must never convince the updater to commit a release.
@@ -102,13 +142,16 @@ def main():
                         logging.exception("worker readiness publication failed")
                 if a.once:
                     break
-                time.sleep(
-                    max(60, int(os.environ.get("LITE_ACTIONS_POLL_SECONDS", "60")))
-                )
+                if wake.wait(max(0, next_poll - time.monotonic())):
+                    wake.clear()
         except KeyboardInterrupt:
             pass
         finally:
             router.close()
+            if control:
+                control.close()
+            if router.idle_probe:
+                router.idle_probe.close()
 
 
 if __name__ == "__main__":

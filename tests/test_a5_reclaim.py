@@ -11,6 +11,8 @@ from unittest.mock import Mock, patch
 
 from ci_core.executor import (
     ExternalNpuOccupancy,
+    _process_rows,
+    _verified_inventory,
     execute,
     process_evidence,
     remote_preflight,
@@ -36,6 +38,36 @@ A3 = """| NPU ID | Chip ID | Process id in container |
 +===========================+
 """
 
+A5_950_PREFIX = """+--------+------------------+---------------+--------------------------------------------------------+
+| NPU ID | Name             | Health        | Power(W)              Temp(C)                  Hugepages-Usage(page) |
+|        |                  | Bus-Id        | NPU Util(%)           Memory-Usage(MB)         HBM-Usage(MB)         |
++========+==================+===============+========================================================+
+"""
+A5_950_SEPARATOR = "+===========================+===============+========================================================+\n"
+
+
+def a5_950_output(process_pid=None):
+    output = A5_950_PREFIX
+    for card in range(8):
+        output += (
+            f"| {card:<6} | Ascend950DT      | OK            | 409.8                 62                       0     / 0             |\n"
+            "|        |                  | NA            | 0                     0     / 0                95115 / 98304         |\n"
+        )
+        output += A5_950_SEPARATOR
+    output += "| NPU ID | Process id | Process name | Process memory(MB) | Process id in container |\n"
+    output += A5_950_SEPARATOR
+    if process_pid is not None:
+        output += f"| 0      | {process_pid}    | VLLMWorker_TP | 89915             | NA                      |\n"
+    for card in range(8):
+        if process_pid is None or card != 0:
+            output += f"| No running processes found in NPU {card} |\n"
+    output += A5_950_SEPARATOR
+    return output
+
+
+A5_950_BUSY = a5_950_output(4183608)
+A5_950_EMPTY = a5_950_output()
+
 
 class ReclaimTests(unittest.TestCase):
     def setUp(self):
@@ -54,7 +86,7 @@ class ReclaimTests(unittest.TestCase):
         self.case = {
             "pool": "a5",
             "allocation": [{"host_id": self.node["host_id"], "devices": [0]}],
-            "docker": "vllm-kimi-wangjinyin",
+            "docker": "a5_ci_214",
         }
         self.container_ssh = "worker-ssh:22/" + ("a" * 64)
 
@@ -83,6 +115,60 @@ class ReclaimTests(unittest.TestCase):
                 ascend_env="/usr/local/Ascend/ascend-toolkit/set_env.sh",
             )
         return commands
+
+    def test_ascend950dt_inventory_and_host_pid_rows(self):
+        _verified_inventory(A5_950_BUSY, "card", list(range(8)))
+        self.assertEqual(
+            _process_rows(
+                A5_950_BUSY,
+                list(range(8)),
+                indexing="card",
+                host_pids=True,
+                coverage_devices=list(range(8)),
+                require_end=True,
+                require_coverage=True,
+            ),
+            [(0, 4183608, "NA")],
+        )
+
+    def test_ascend950dt_preemption_kills_host_pid_and_rechecks_idle(self):
+        node = {
+            "host_id": "192.0.2.50:22",
+            "ssh": "host-ssh:22",
+            "machine_fingerprint": "a" * 64,
+            "device_ids": list(range(8)),
+        }
+        pool = {
+            "owner": "yellow",
+            "type": "ascend-a5",
+            "process_indexing": "card",
+            "force_reclaim": True,
+            "nodes": [node],
+        }
+        case = {
+            "pool": "a5",
+            "allocation": [{"host_id": node["host_id"], "devices": list(range(8))}],
+        }
+        outputs = iter([A5_950_BUSY, A5_950_BUSY, A5_950_EMPTY])
+        commands = []
+
+        def transport(host, command, **kwargs):
+            commands.append((host, command))
+            if command.startswith("python3 -c "):
+                return SimpleNamespace(returncode=0, stdout="SIGNALED")
+            return SimpleNamespace(returncode=0, stdout=next(outputs))
+
+        with patch("ci_core.transport.run", side_effect=transport):
+            remote_preflight(case, {"a5": pool})
+        self.assertTrue(
+            any(
+                host == "host-ssh:22" and command.startswith("python3 -c ")
+                for host, command in commands
+            )
+        )
+        self.assertEqual(
+            sum(command.startswith("python3 -c ") for _, command in commands), 1
+        )
 
     def test_a5_unknown_rows_fail_closed(self):
         for bad in (
@@ -298,7 +384,14 @@ class ReclaimTests(unittest.TestCase):
                 stack.enter_context(patch("ci_core.executor.time.sleep"))
                 stack.enter_context(
                     patch(
-                        "ci_core.ssh_runner.allocations", return_value=[{"position": 0}]
+                        "ci_core.ssh_runner.allocations",
+                        return_value=[
+                            {
+                                "position": 0,
+                                "ssh": self.container_ssh,
+                                "host_id": "host-ssh:22",
+                            }
+                        ],
                     )
                 )
                 stack.enter_context(patch("ci_core.ssh_runner.owned_processes_gone"))

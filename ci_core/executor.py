@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ci_core.broadcast import broadcast_job
+from ci_core.config import execution_pools
 from ci_core.contract import (
     TORCHTITAN_REPO,
     VLLM_REPO,
@@ -189,27 +190,29 @@ def remote_task_name(run: dict) -> str:
 
 def _verified_inventory(output, indexing, expected_devices):
     lines = output.splitlines()
-    header = next(
-        (
-            i
-            for i, line in enumerate(lines)
-            if line.startswith("|")
-            and " ".join(line.split("|")[1].split()) == "NPU Name"
-        ),
-        None,
-    )
+    header = None
+    a5_inventory = False
+    for i, line in enumerate(lines):
+        if not line.startswith("|"):
+            continue
+        cells = (
+            [cell.strip() for cell in line[1:-1].split("|")]
+            if line.endswith("|")
+            else []
+        )
+        if cells and " ".join(cells[0].split()) == "NPU Name":
+            header = i
+            break
+        if len(cells) >= 2 and cells[0] == "NPU ID" and cells[1] == "Name":
+            header = i
+            a5_inventory = True
+            break
     if header is None or header + 1 >= len(lines):
         raise ValueError("NPU hardware inventory header missing")
-    chip_header = lines[header + 1]
-    if (
-        not chip_header.startswith("|")
-        or " ".join(chip_header.split("|")[1].split()) != "Chip Phy-ID"
-    ):
-        raise ValueError("NPU hardware mapping header missing")
     end = next(
         (
             i
-            for i in range(header + 2, len(lines))
+            for i in range(header + 1, len(lines))
             if "Process id in container" in lines[i]
         ),
         None,
@@ -223,6 +226,59 @@ def _verified_inventory(output, indexing, expected_devices):
     ]
     if not data or len(data) % 2:
         raise ValueError("incomplete NPU hardware mapping")
+
+    if a5_inventory:
+        if indexing != "card":
+            raise ValueError("Ascend950DT inventory requires card indexing")
+        second_header = (
+            [cell.strip() for cell in lines[header + 1][1:-1].split("|")]
+            if lines[header + 1].strip().startswith("|")
+            else []
+        )
+        if len(second_header) < 3 or second_header[2] != "Bus-Id":
+            raise ValueError("NPU hardware mapping header missing")
+        mapping = {}
+        buses = set()
+        for i in range(0, len(data), 2):
+            first, second = data[i : i + 2]
+            if not (
+                first.startswith("|")
+                and first.endswith("|")
+                and second.startswith("|")
+                and second.endswith("|")
+            ):
+                raise ValueError("unrecognized NPU hardware row")
+            npu_cells = [cell.strip() for cell in first[1:-1].split("|")]
+            status_cells = [cell.strip() for cell in second[1:-1].split("|")]
+            if (
+                len(npu_cells) < 3
+                or len(status_cells) < 3
+                or not re.fullmatch(r"[0-9]+", npu_cells[0])
+                or not re.fullmatch(r"Ascend950[A-Za-z0-9_.-]*", npu_cells[1])
+                or npu_cells[2] != "OK"
+            ):
+                raise ValueError("unrecognized NPU hardware mapping")
+            card = int(npu_cells[0])
+            bus = status_cells[2]
+            if bus != "NA" and not re.fullmatch(
+                r"[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]", bus
+            ):
+                raise ValueError("unrecognized NPU hardware mapping")
+            if card in mapping or (bus != "NA" and bus.lower() in buses):
+                raise ValueError("duplicate NPU hardware mapping")
+            mapping[card] = card
+            if bus != "NA":
+                buses.add(bus.lower())
+        if not mapping or set(mapping) != set(expected_devices):
+            raise ValueError("NPU hardware inventory differs from configured devices")
+        return
+
+    chip_header = lines[header + 1]
+    if (
+        not chip_header.startswith("|")
+        or " ".join(chip_header.split("|")[1].split()) != "Chip Phy-ID"
+    ):
+        raise ValueError("NPU hardware mapping header missing")
     mapping, buses = {}, set()
     for i in range(0, len(data), 2):
         first, second = data[i : i + 2]
@@ -583,6 +639,19 @@ def remote_preflight(
         node = by_host[request["host_id"]]
         legacy_a5 = legacy_reclaim(pool, node)
         reclaim = node_preempts(pool, node)
+        if reclaim and legacy_a5 and pool.get("type") == "ascend-a5":
+            devices = node.get("device_ids")
+            if (
+                isinstance(node.get("machine_fingerprint"), str)
+                and re.fullmatch(r"[0-9a-f]{64}", node["machine_fingerprint"])
+                and isinstance(devices, list)
+                and devices
+                and all(type(device) is int and device >= 0 for device in devices)
+                and len(set(devices)) == len(devices)
+            ):
+                # A5 host-PID reclaim is safe when the node carries the same
+                # verified identity required by the explicit preempt policy.
+                legacy_a5 = False
         if cleanup and (not legacy_a5 or (cancel is not None and cancel.is_set())):
             reclaim = False
         host_pids = reclaim and not legacy_a5
@@ -822,10 +891,10 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
     environment = case["verified_env"]
     setup = environment["ASCEND_SET_ENV_PATH"]
     case = {**case, "ascend_set_env_path": setup}
-    pools = json.loads((root / "config/pools.json").read_text())
+    pools = execution_pools(root, case)
     from ci_core.scheduler import validate_allocation
 
-    validate_allocation(case, pools, case["allocation"])
+    validate_allocation(case, pools, case["allocation"], include_paused=True)
     run.get("_ci_runtime_callback", lambda value: None)(case)
     runtime_file = log_dir / "runtime-case.json"
     runtime_file.write_text(json.dumps(case) + "\n")
@@ -962,9 +1031,17 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
                     allocations,
                     owned_processes_gone,
                 )
+                from ci_core.ssh_runner import cancel as cancel_owned
 
                 for attempt in range(3):
                     try:
+                        if child_started:
+                            for node in allocations(case, pools):
+                                destination = (
+                                    f"{DEST_ROOT}/{remote_task_name(run)}"
+                                    f"/node{node['position']}"
+                                )
+                                cancel_owned(node, destination, log_dir.name)
                         remote_preflight(
                             case,
                             pools,

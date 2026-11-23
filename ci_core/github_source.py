@@ -234,6 +234,7 @@ def bind_request_source(client, run, source):
             raise ValueError("invalid PR source repository")
         bound.update(
             _ci_pr_number=number,
+            _ci_pr_author=(pr.get("user") or {}).get("login"),
             _ci_source_repo=name,
             _ci_source_repo_id=repo.get("id"),
             _ci_base_ref=(pr.get("base") or {}).get("ref"),

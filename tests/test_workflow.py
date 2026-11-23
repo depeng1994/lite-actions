@@ -70,7 +70,7 @@ class WorkflowTests(unittest.TestCase):
                 return
         self.fail("workflow did not settle")
 
-    def test_model_artifact_cannot_request_host_probes_on_either_worker(self):
+    def test_model_artifact_worker_probe_runs_builtin_probe_only(self):
         service = Service(
             [
                 definition("blue_os", kind="worker_probe"),
@@ -80,14 +80,23 @@ class WorkflowTests(unittest.TestCase):
         )
         blue = self.router(service)
         yellow = self.router(service, "yellow")
-        with service.connected():
+        with (
+            service.connected(),
+            patch("ci_core.router.execute") as execute,
+            patch("ci_core.router.model_archive") as archive,
+        ):
             for router in [blue, yellow]:
                 router.tick()
                 self.drain(router)
                 router.tick()
-        self.assertFalse(blue.state.read())
-        self.assertFalse(yellow.state.read())
-        self.assertEqual(service.results(), [])
+            execute.assert_not_called()
+            archive.assert_not_called()
+        results = {(r["test_id"], r["worker"]): r for r in service.results()}
+        self.assertEqual(set(results), {("blue_os", "blue"), ("yellow_os", "yellow")})
+        for result in results.values():
+            self.assertEqual(result["status"], "PASS")
+            self.assertEqual(result["exit_code"], 0)
+            self.assertIn("WORKER_HOSTNAME=fixture", result["last_20_lines"])
 
     def test_parallel_cases_hold_disjoint_devices_and_ports_until_report(self):
         service = Service([definition("first"), definition("second")], self.root)
@@ -1069,3 +1078,25 @@ class Rfc24RecoveryTests(unittest.TestCase):
             pc.assert_not_called()
             self.assertFalse(marker.exists())
             self.assertEqual(service.results()[0]["status"], "PASS")
+
+    def test_single_node_full_host_allocation_combines_verified_groups(self):
+        from ci_core.config import load
+        from ci_core.scheduler import candidates
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_workspace(root)
+            _, pools = load(root, "blue")
+            case = {
+                "pool": "pool_blue",
+                "resources": {"nodes": 1, "devices_per_node": 4},
+            }
+            allocs = candidates(case, pools)
+            self.assertEqual(len(allocs), 2)
+            self.assertEqual(allocs[0][0]["devices"], [0, 1, 2, 3])
+            pools["pool_blue"]["nodes"][0]["allocation_groups"][1]["paused"] = True
+            allocs_after_pause = candidates(case, pools)
+            self.assertEqual(len(allocs_after_pause), 1)
+            self.assertEqual(allocs_after_pause[0][0]["host_id"], "192.0.2.11:22")
+            pools["pool_blue"]["nodes"][1]["allocation_groups"][1]["verified"] = False
+            self.assertEqual(candidates(case, pools), [])

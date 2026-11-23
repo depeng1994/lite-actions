@@ -1,5 +1,7 @@
 """Independent Pull workers sharing one schedule/execute implementation."""
 
+import hashlib
+import json
 import logging
 import os
 import subprocess
@@ -10,9 +12,10 @@ from collections import Counter
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 from contextlib import ExitStack
+from copy import deepcopy
 from pathlib import Path
 
-from ci_core.config import load, runtime_case
+from ci_core.config import load_active_pools, runtime_case
 from ci_core.contract import (
     REPO,
     SELF_REPO,
@@ -22,7 +25,7 @@ from ci_core.contract import (
 )
 from ci_core.executor import ExternalNpuOccupancy, execute
 from ci_core.gitcode import RunChanged
-from ci_core.job_state import JobState
+from ci_core.job_state import JobState, ordered_queued
 from ci_core.plan import verify_definition
 from ci_core.reporting import (
     body_for,
@@ -69,8 +72,98 @@ def run_key(run):
     )
 
 
+def eligible_topologies(case, pools, *, include_paused=False):
+    options = candidates(case, pools, include_paused=include_paused)
+    if not options:
+        raise ValueError("NO_VERIFIED_TOPOLOGY")
+    inventory = {n["host_id"]: n for n in pools[case["pool"]]["nodes"]}
+    options = [
+        allocation
+        for allocation in options
+        if all(
+            case.get("kind", "train")
+            in inventory[n["host_id"]].get("capabilities", ["train", "npu_smoke"])
+            for n in allocation
+        )
+    ]
+    if not options:
+        raise ValueError("NO_CAPABLE_TOPOLOGY")
+    if case.get("docker"):
+        options = [
+            a
+            for a in options
+            if all(
+                inventory[n["host_id"]].get("environments", {}).get(case["docker"])
+                for n in a
+            )
+        ]
+        if not options:
+            raise ValueError("CONTAINER_BINDING_MISSING")
+    return options
+
+
+def queue_telemetry(worker, pools, records, quarantine):
+    from ci_core.idle_probe import group_id
+
+    blocked = set()
+    if quarantine:
+        for record in records.values():
+            if record.get("quarantined"):
+                blocked.update(resource_keys(record.get("allocation") or []))
+    rows = {}
+    indexes = {
+        name: {
+            group_id(name, node["host_id"], group["devices"]): idx
+            for idx, (node, group) in enumerate(
+                (node, group)
+                for node in pool["nodes"]
+                for group in node.get("allocation_groups", [])
+            )
+        }
+        for name, pool in pools.items()
+        if pool["owner"] == worker
+    }
+    for key, record in ordered_queued(records):
+        item = record["item"]
+        pool, kind = item["target_pool"], item["kind"]
+        if kind not in {"train", "npu_smoke"}:
+            continue
+        queue = rows.setdefault((pool, kind), [])
+        try:
+            case = runtime_case(item, pools, worker)
+            options = eligible_topologies(case, pools)
+        except ValueError:
+            options = []
+        indices = [
+            [
+                indexes[pool][group_id(pool, host["host_id"], host["devices"])]
+                for host in allocation
+            ]
+            for allocation in options
+            if not blocked.intersection(resource_keys(allocation))
+        ]
+        queue.append(
+            {
+                "tid": hashlib.sha256(key.encode()).hexdigest()[:12],
+                "pos": len(queue),
+                "ix": indices,
+            }
+        )
+    return rows
+
+
+TRAIN_QUEUE_TIMEOUT_SECONDS = 72 * 3600
+
+
+def queue_timeout(kind):
+    return {"train": TRAIN_QUEUE_TIMEOUT_SECONDS, "worker_probe": 3600}.get(kind)
+
+
 class Router:
     def __init__(self, root, worker, client, author, *, deployment_config=None):
+        self.control = None
+        self.idle_probe = None
+        self.control_healthy = True
         self.deployment = deployment_config
         self.release_logs = None
         self.next_expiry = 0.0
@@ -94,7 +187,13 @@ class Router:
             client,
             author,
         )
-        self.workers, self.pools = load(self.root, worker)
+        self.workers, self.pools, self.pools_revision = load_active_pools(
+            self.root, worker
+        )
+        self.config_lock = threading.Lock()
+        self.config_verification = None
+        self.config_executor = None
+        self.draining = set()
         if deployment_config is not None:
             self.workers[worker]["case_environments"] = deployment_config[
                 "case_environments"
@@ -189,6 +288,229 @@ class Router:
                     and (self.quarantine_enabled or r["item"].get("worker") != worker),
                     report=result,
                 )
+
+    def control_view(self):
+        from ci_core.idle_probe import group_id
+
+        with self.config_lock:
+            pools, revision = self.pools, self.pools_revision
+        records = self.state.read()
+        probe, probe_time, sampled_pools = (
+            self.idle_probe.sample if self.idle_probe else ({}, None, None)
+        )
+        visibility = self.idle_probe.health if self.idle_probe else {}
+        probe_round = self.idle_probe.probe_round if self.idle_probe else 0
+        if sampled_pools is not pools:
+            probe, probe_time = {}, None
+        blocked = {}
+        if self.quarantine_enabled:
+            for key, record in records.items():
+                if record.get("quarantined"):
+                    for resource in resource_keys(record.get("allocation") or []):
+                        blocked[resource] = key
+        devices = []
+        for pool_name, pool in pools.items():
+            if pool["owner"] != self.worker:
+                continue
+            for node in pool["nodes"]:
+                host = node["host_id"]
+                for group in node.get("allocation_groups", []):
+                    ids = sorted(group["devices"])
+                    resources = resource_keys([{"host_id": host, "devices": ids}])
+                    state, ts = probe.get(group_id(pool_name, host, ids), (None, None))
+                    health = visibility.get(
+                        json.dumps([pool_name, host, ids], separators=(",", ":"))
+                    )
+                    keys = sorted(
+                        {
+                            blocked[resource]
+                            for resource in resources
+                            if resource in blocked
+                        }
+                    )
+                    qid = (
+                        "t_" + hashlib.sha256(keys[0].encode()).hexdigest()[:32]
+                        if keys
+                        else None
+                    )
+                    unavailable = bool(node.get("probe_unavailable"))
+                    if unavailable:
+                        state = "probe_error"
+                        base_health = health or {}
+                        health = {
+                            "pr": max(int(base_health.get("pr", probe_round)), 1),
+                            "v": 2,
+                            "mc": max(int(base_health.get("mc", 0)), 1),
+                            "lo": base_health.get("lo"),
+                        }
+                    entry = {
+                        "pool": pool_name,
+                        "h": host,
+                        "d": ids,
+                        "st": state,
+                        "ts": ts,
+                        "qu": int(bool(keys) or unavailable),
+                        "qid": qid,
+                    }
+                    if health is not None:
+                        entry.update(
+                            {
+                                "pr": health.get("pr", probe_round),
+                                "v": health.get("v"),
+                                "mc": health.get("mc", 0),
+                                "lo": health.get("lo"),
+                            }
+                        )
+                    devices.append(entry)
+        return {
+            "records": records,
+            "sha": self.self_sha or os.environ.get("LITE_ACTIONS_RELEASE_SHA", ""),
+            "healthy": self.control_healthy,
+            "revision": revision,
+            "idle_ts": probe_time,
+            "probe_ts": probe_time,
+            "devices": devices,
+            "queues": queue_telemetry(
+                self.worker, pools, records, self.quarantine_enabled
+            ),
+        }
+
+    def consume_control(self):
+        if not self.control:
+            return
+        for entry in self.control.commands():
+            command = entry["cmd_id"]
+            try:
+                if entry["cmd_type"] == "SWAP_WORKFLOW":
+                    self.control.complete(
+                        command,
+                        **self.state.swap_workflow(entry["payload"], command),
+                    )
+                elif entry["cmd_type"] == "SYNC_CONFIG":
+                    if not self.sync_pools(entry):
+                        break
+                else:
+                    self.control.complete(command, "FAILED", err="UNSUPPORTED_COMMAND")
+            except Exception as exc:
+                if entry["cmd_type"] == "SYNC_CONFIG":
+                    self.draining = set()
+                    self.config_verification = None
+                logging.warning("control command failed (%s)", type(exc).__name__)
+                self.control.complete(
+                    command,
+                    "FAILED",
+                    err=str(exc) if isinstance(exc, ValueError) else type(exc).__name__,
+                )
+
+    def sync_pools(self, entry):
+        from ci_core.control_client import ACTIVE, write_json
+        from ci_core.pools_sync import affected_resources, removed_groups, verify
+
+        payload = entry["payload"]
+        target = payload["revision"]
+        cmd = entry["cmd_id"]
+        path = self.state.path.parent / "pools-active.json"
+        if type(target) is not int or target < self.pools_revision:
+            raise ValueError("STALE_POOL_REVISION")
+        if target == self.pools_revision:
+            import json
+
+            saved = json.loads(path.read_text())
+            if saved.get("source_sha256", saved["sha256"]) != payload["sha256"]:
+                raise ValueError("POOL_REVISION_MISMATCH")
+            cancelled = saved.get("drain_pending", [])
+            unavailable = saved.get("unavailable_nodes", [])
+        else:
+            if not self.config_verification:
+                if not self.config_executor:
+                    self.config_executor = ThreadPoolExecutor(max_workers=1)
+                self.config_verification = self.config_executor.submit(
+                    verify,
+                    self.worker,
+                    self.workers,
+                    self.pools,
+                    entry["config"],
+                    payload,
+                )
+                self.config_verification.add_done_callback(
+                    lambda _: self.control.wake.set()
+                )
+                return False
+            if not self.config_verification.done():
+                return False
+            doc = self.config_verification.result()
+            next_pools = doc["pools"]
+            removed = removed_groups(self.worker, self.pools, next_pools)
+            self.draining = affected_resources(removed)
+            records = self.state.read()
+            for record in records.values():
+                resources = set(resource_keys(record.get("allocation") or []))
+                if resources.intersection(self.draining) and record.get("quarantined"):
+                    raise ValueError("QUARANTINED_RESOURCE_CANNOT_DELETE")
+            for record in records.values():
+                resources = set(resource_keys(record.get("allocation") or []))
+                if resources.intersection(self.draining) and record.get(
+                    "phase"
+                ) in ACTIVE - {"QUEUED"}:
+                    return False
+
+            cancelled = []
+            impacted = {name for name, _, _ in removed}
+            for key, record in ordered_queued(records):
+                item = record["item"]
+                if (
+                    item["target_pool"] not in impacted
+                    or item["kind"] == "worker_probe"
+                ):
+                    continue
+                try:
+                    old_case = runtime_case(item, self.pools, self.worker)
+                    eligible_topologies(old_case, self.pools, include_paused=True)
+                except ValueError:
+                    continue
+                try:
+                    new_case = runtime_case(item, next_pools, self.worker)
+                    eligible_topologies(new_case, next_pools, include_paused=True)
+                except ValueError:
+                    cancelled.append(key)
+            for key in payload.get("drain_cancel_keys") or []:
+                if key in cancelled:
+                    continue
+                record = records.get(key)
+                if not record or record.get("phase") != "QUEUED":
+                    continue
+                item = record["item"]
+                if item.get("kind") == "worker_probe":
+                    continue
+                try:
+                    new_case = runtime_case(item, next_pools, self.worker)
+                    eligible_topologies(new_case, next_pools, include_paused=False)
+                except ValueError:
+                    cancelled.append(key)
+            doc.update(applied_at=int(time.time()), drain_pending=cancelled)
+            unavailable = doc.get("unavailable_nodes", [])
+            write_json(path, doc)
+            with self.config_lock:
+                self.pools, self.pools_revision = next_pools, target
+            self.config_verification = None
+            self.draining = set()
+        current = self.state.read()
+        cancel_reason = (
+            "Resource draining by cluster configuration"
+            if payload.get("drain_action") == "DRAIN"
+            else "Resource removed by cluster configuration"
+        )
+        for key in cancelled:
+            if current.get(key, {}).get("phase") == "QUEUED":
+                self.finish(key, "CANCELLED", 130, [cancel_reason])
+        if unavailable:
+            summary = "; ".join(
+                f"{entry['host_id']}: {entry['reason']}" for entry in unavailable
+            )[:200]
+            self.control.complete(cmd, "PARTIAL_APPLIED", rev=target, err=summary)
+        else:
+            self.control.complete(cmd, "APPLIED", rev=target)
+        return True
 
     def client_for(self, run):
         repo = run.get("_ci_repo", REPO)
@@ -400,8 +722,6 @@ class Router:
 
                 if plan != expected_plan(run):
                     raise ValueError("self-smoke plan differs from its pinned profile")
-            elif any(i["kind"] == "worker_probe" for i in plan["cases"]):
-                raise ValueError("MODEL_HOST_PROBE_FORBIDDEN")
             self.plans[identity] = plan
         else:
             plan = cached
@@ -462,32 +782,15 @@ class Router:
             self.transition(key, "QUEUED")
 
     def claim(self, case):
-        options = candidates(case, self.pools)
-        if not options:
-            raise ValueError("NO_VERIFIED_TOPOLOGY")
-        inventory = {n["host_id"]: n for n in self.pools[case["pool"]]["nodes"]}
+        all_options = eligible_topologies(case, self.pools, include_paused=True)
+        allowed = candidates(case, self.pools)
+        active = {resource_keys(option) for option in allowed}
         options = [
-            allocation
-            for allocation in options
-            if all(
-                case.get("kind", "train")
-                in inventory[n["host_id"]].get("capabilities", ["train", "npu_smoke"])
-                for n in allocation
-            )
+            option
+            for option in all_options
+            if resource_keys(option) in active
+            and not self.draining.intersection(resource_keys(option))
         ]
-        if not options:
-            raise ValueError("NO_CAPABLE_TOPOLOGY")
-        if case.get("docker"):
-            options = [
-                a
-                for a in options
-                if all(
-                    inventory[n["host_id"]].get("environments", {}).get(case["docker"])
-                    for n in a
-                )
-            ]
-            if not options:
-                raise ValueError("CONTAINER_BINDING_MISSING")
         blocked = set()
         for r in self.state.read().values():
             if self.quarantine_enabled and r.get("quarantined"):
@@ -688,7 +991,13 @@ class Router:
                     ):
                         raise ValueError("self-smoke probe identity mismatch")
                 else:
-                    raise ValueError("MODEL_HOST_PROBE_FORBIDDEN")
+                    if (
+                        "env_vars" in item
+                        or item.get("target_pool") is not None
+                        or item.get("docker") is not None
+                        or item.get("resources") != {"nodes": 0, "devices_per_node": 0}
+                    ):
+                        raise ValueError("INVALID_WORKER_PROBE_ITEM")
                 self.transition(key, "RUNNING")
                 p = probe_worker()
                 locator = None
@@ -715,38 +1024,48 @@ class Router:
                     locator=locator,
                 )
                 return
-            with tempfile.TemporaryDirectory(prefix="lite-definition-") as tmp:
-                source_repo = run.get("_ci_repo", REPO)
-                archive = model_archive(
-                    run.get("_ci_execution_sha", run["head_sha"]),
-                    Path(tmp),
-                    source_repo=source_repo,
-                    provider=run.get("_ci_provider", "github"),
-                    fallback_repo=run.get("_ci_source_repo"),
-                    source_pr=(
-                        run["_ci_pr_number"]
-                        if run.get("_ci_source", {}).get("mode") == "merge_result"
-                        else None
-                    ),
-                )
-                definition = verify_definition(
-                    archive, item, r["defaults"], repo=source_repo
-                )
-            if run.get("_ci_provider") == "gitcode":
-                self.client_for(run).validate_current(run)
+            if "env_vars" in item:
+                raw_env = item["env_vars"]
+                if run.get("_ci_provider") == "gitcode":
+                    self.client_for(run).validate_current(run)
+            else:
+                with tempfile.TemporaryDirectory(prefix="lite-definition-") as tmp:
+                    source_repo = run.get("_ci_repo", REPO)
+                    archive = model_archive(
+                        run.get("_ci_execution_sha", run["head_sha"]),
+                        Path(tmp),
+                        source_repo=source_repo,
+                        provider=run.get("_ci_provider", "github"),
+                        fallback_repo=run.get("_ci_source_repo"),
+                        source_pr=(
+                            run["_ci_pr_number"]
+                            if run.get("_ci_source", {}).get("mode") == "merge_result"
+                            else None
+                        ),
+                    )
+                    definition = verify_definition(
+                        archive, item, r["defaults"], repo=source_repo
+                    )
+                if run.get("_ci_provider") == "gitcode":
+                    self.client_for(run).validate_current(run)
+                raw_env = definition["env_vars"]
             from ci_core.registry import validate_case_environment
 
-            environment = validate_case_environment(
-                definition["env_vars"], kind=item["kind"]
-            )
-            # The model selects values; only the deployment may authorize them.
+            environment = validate_case_environment(raw_env, kind=item["kind"])
+            # The model selects values; only the deployment may authorize
+            # ASCEND_SET_ENV_PATH and any explicitly constrained keys.
             rules = (
                 self.workers[self.worker]
                 .get("case_environments", {})
                 .get(item["docker"], {})
             )
+            approved_setup = rules.get("ASCEND_SET_ENV_PATH")
+            if type(approved_setup) is not list or (
+                environment.get("ASCEND_SET_ENV_PATH") not in approved_setup
+            ):
+                raise ValueError("MODEL_ENV_NOT_APPROVED")
             if any(
-                type(rules.get(k)) is not list or v not in rules[k]
+                k in rules and (type(rules[k]) is not list or v not in rules[k])
                 for k, v in environment.items()
             ):
                 raise ValueError("MODEL_ENV_NOT_APPROVED")
@@ -878,26 +1197,7 @@ class Router:
                 and not self.preflight[key].is_set()
             ):
                 blocked_pools.add((item["target_pool"], True))
-        queued = sorted(
-            ((k, r) for k, r in records.items() if r.get("phase") == "QUEUED"),
-            key=lambda kv: (
-                kv[1]["run"].get("created_at", ""),
-                str(kv[1]["run"]["id"]),
-                kv[1]["item"]["order"],
-            ),
-        )
-        # Keep the legacy ordering and its positions relative to Smoke while
-        # ordering only the Smoke positions by durable admission sequence.
-        smoke = iter(
-            sorted(
-                (pair for pair in queued if pair[1]["item"]["kind"] == "npu_smoke"),
-                key=lambda pair: pair[1].get("admission_seq", 0),
-            )
-        )
-        queued = [
-            next(smoke) if r["item"]["kind"] == "npu_smoke" else (key, r)
-            for key, r in queued
-        ]
+        queued = ordered_queued(records)
         for key, r in queued:
             item = r["item"]
             pool = item["target_pool"]
@@ -913,12 +1213,13 @@ class Router:
             if queue in blocked_pools:
                 continue
             # Smoke waits for capacity while its originating run remains active.
-            if not is_smoke and time.time() - r["queued_at"] > 3600:
+            timeout = queue_timeout(item["kind"])
+            if timeout is not None and time.time() - r["queued_at"] > timeout:
                 self.finish(
                     key,
                     "RESOURCE_TIMEOUT",
                     124,
-                    ["Resource wait exceeded 3600 seconds"],
+                    [f"Resource wait exceeded {timeout} seconds"],
                 )
                 continue
             light = item["kind"] == "worker_probe"
@@ -945,6 +1246,7 @@ class Router:
                         blocked_pools.add(queue)
                         continue
                     lease, case = claim
+                    case["pools_snapshot"] = {pool: deepcopy(self.pools[pool])}
                 self.state.update(
                     key,
                     phase="RESERVED",
@@ -1120,6 +1422,7 @@ class Router:
                 )
             ):
                 self.maybe_ack(key, r)
+        self.consume_control()
         # Limit only discovery. Cancellation, queue progress and outbox keep ticking.
         now = time.monotonic()
         if self.worker != "yellow" or now >= self.next_discovery:
@@ -1129,6 +1432,8 @@ class Router:
         self.flush()
 
     def close(self):
+        if self.config_executor:
+            self.config_executor.shutdown(wait=False, cancel_futures=True)
         self._complete_active()
         for future, event, _ in self.active.values():
             if not future.done():

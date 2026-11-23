@@ -91,6 +91,7 @@ CASE_KEYS = {
     "docker",
     "execution_timeout_seconds",
 }
+OPTIONAL_CASE_KEYS = {"env_vars"}
 
 
 def digest(plan):
@@ -154,7 +155,7 @@ def normalize(test, defaults, order):
     timeout = test.timeout or (90 if kind == "worker_probe" else 7200)
     if type(timeout) is not int or not 1 <= timeout <= 14400:
         raise ValueError("invalid execution timeout")
-    return dict(
+    case = dict(
         case_id=f"case_{order:03d}_{test.test_name}",
         order=order,
         test_id=test.test_name,
@@ -166,9 +167,19 @@ def normalize(test, defaults, order):
         docker=docker,
         execution_timeout_seconds=timeout,
     )
+    raw_env = getattr(test, "env_vars", None)
+    if raw_env is not None:
+        if kind == "worker_probe":
+            raise ValueError("probe cannot define environment")
+        from ci_core.registry import validate_case_environment
+
+        case["env_vars"] = validate_case_environment(raw_env, kind=kind, execution=True)
+    return case
 
 
-def create_plan(cases, *, run_id, attempt, sha, workflow, defaults, repo=REPO):
+def create_plan(
+    cases, *, run_id, attempt, sha, workflow, defaults, repo=REPO, provider="github"
+):
     plan = dict(
         schema=3,
         repo=repo,
@@ -181,7 +192,10 @@ def create_plan(cases, *, run_id, attempt, sha, workflow, defaults, repo=REPO):
     )
     plan["plan_digest"] = digest(plan)
     parse_plan(
-        plan, dict(id=run_id, run_attempt=attempt, head_sha=sha), workflow, repo=repo
+        plan,
+        dict(id=run_id, run_attempt=attempt, head_sha=sha, _ci_provider=provider),
+        workflow,
+        repo=repo,
     )
     return plan
 
@@ -253,7 +267,11 @@ def parse_plan(plan, run, workflow, *, repo=REPO):
         raise ValueError("invalid case count")
     seen = {}
     for i, c in enumerate(items):
-        if not isinstance(c, dict) or set(c) != CASE_KEYS:
+        if (
+            not isinstance(c, dict)
+            or not CASE_KEYS <= set(c)
+            or set(c) - CASE_KEYS - OPTIONAL_CASE_KEYS
+        ):
             raise ValueError("invalid case structure")
         if not isinstance(c["test_id"], str) or not TEST.fullmatch(c["test_id"]):
             raise ValueError("duplicate/invalid test")
@@ -264,7 +282,8 @@ def parse_plan(plan, run, workflow, *, repo=REPO):
             if (
                 prior["kind"] != "npu_smoke"
                 or c["kind"] != "npu_smoke"
-                or any(prior[key] != c[key] for key in CASE_KEYS - {"case_id", "order"})
+                or set(prior) != set(c)
+                or any(prior[key] != c[key] for key in set(c) - {"case_id", "order"})
             ):
                 raise ValueError("duplicate/invalid test")
         seen[c["test_id"]] = c
@@ -276,6 +295,7 @@ def parse_plan(plan, run, workflow, *, repo=REPO):
             raise ValueError("invalid case order/ID")
         from types import SimpleNamespace
 
+        extra = {"env_vars": c["env_vars"]} if "env_vars" in c else {}
         expected = normalize(
             SimpleNamespace(
                 test_name=c["test_id"],
@@ -293,6 +313,7 @@ def parse_plan(plan, run, workflow, *, repo=REPO):
                     }
                 ),
                 timeout=c["execution_timeout_seconds"],
+                **extra,
             ),
             defaults,
             i,
