@@ -105,6 +105,9 @@
 
 > **证据边界说明（代码/本地隔离夹具 vs 真实生产/外部平台验收）**：Phase 5.5（`REQ-15` ~ `REQ-20`）与 Phase 6（`FE-01` ~ `FE-05`）的代码实现、单测、4 层 `portability_intercept` DT、直传原始 `D1Database` binding 的 `sites-parity.test.ts`、以及 `control-center/tests/integration/run.py`（`--runtime=d1` 与 `--runtime=node`）均已通过。**须明确区分**：`run.py` 属于 **isolated fixture evidence（本地隔离夹具验证）**——使用本地 TLS Proxy 拦截请求，且 `platform_wire()` 中的 8 次 Yellow 平台写请求由合成 GitHub/GitCode 客户端发往本地 Proxy stub（直接返回 `201 {"id":1}`），**仅证明协议线序 `< 2,000` B 与双运行时控制面闭环，不构成真实外部平台写回或线上部署验收**。真实 Sites/CF D1 线上新版本部署（含 `SITES_PROJECT_ID`/`CONTROL_CENTER_API_ORIGIN` 注入与 D1 迁移 `0010`）、真实 Blue/Yellow 跨区 16P 实机联调、真实 GitHub/GitCode 平台取消与真实主机切 URL 迁移演练均保留在下方 Phase 7 未勾选门禁（`INT-06`、`INT-07`、`INT-09`、`INT-10`、`E2E-01`~`E2E-12`、`REL-00`、`REL-02`~`REL-04`）中等待现场基础设施执行。
 
+> **2026-11-23 线上 Site 浏览器/HTTP 复核（Site v31）**：正式 Site `https://lite-actions-yellow-control-center.promisingdace3.chatgpt.site` 的匿名 HTTP smoke 已通过，`/`、`/models`、`/cluster` 均返回 SPA HTML，`/api/v1/public/overview` 与 `/api/v1/public/workflows?history_limit=0` 返回 JSON，未知 `/api/*` 返回 JSON 404。浏览器复核默认模型筛选为「全部模型」，显示 `38 / 38` 条真实历史 Workflow；选择 `vllm-ascend` 后显示 `2 / 2`，清除筛选恢复 `38 / 38`；历史 Workflow 可折叠/展开，表头包含 12 列，Actions ID 同时呈现运行标题（例如 `Lite Actions self smoke: cpu-only`），展开子用例可见真实开始/结束时间与耗时。该证据补齐 `E2E-04` 的正式 Site 子集，不等同于 103 条冷热分页、冷归档详情和完整管理员生命周期验收。浏览器还验证了深浅主题切换，源码复核确认 30 秒静默刷新、后台暂停与切回立即刷新逻辑。
+> **当前线上边界**：Site v31 已上线，但 Cloudflare 控制面仍需发布当前 PR #44 的 Worker/D1 迁移版本；线上 `/public/overview` 当前 Blue/Yellow 均为 `offline=true`，因此不把 Site 可访问性误记为 Worker 心跳或生产发布通过。PR #44 最新控制面 CI 为 Run `45148768196`，提交 `ee666f9`，全量 Worker、前端、portability 和 D1/Node 双运行时隔离门禁通过。
+
 
 #### 7.1 后端 + Worker 集成验证（不依赖前端，Phase 5.5 完成后立即跑绿）
 > 说明：v1.1 回归证据见 [backend-validation.md](backend-validation.md)；下列为补齐 v1.1 遗留项并升级至 v1.5 全量口径后的最新状态。
@@ -145,6 +148,8 @@
 - [ ] **`E2E-02`** **`★ P0 关键必通`** 全栈操作下的双 Worker 实时抓包 `< 2,000` 字节硬门禁验证
 - [ ] **`E2E-03`** **`★ P0 关键必通`** 设备组 5 次探测离线 + 最近在线时间 + 16P 半节点暂停热加载与重启保留闭环 16P 半节点暂停与重启闭环需要可调度的 16P 资源，当前阻塞，未勾选。
 - [ ] **`E2E-04`** **`★ P0 关键必通`** 统一 Workflow 表格全交互闭环（`-3,-2,-1,0,1,2...` 序号、50 条上方历史分页/折叠恢复、12 列筛选排序、调度结果三态、运行总卡时、冷归档详情）
+  - [x] Site v31 浏览器子集：默认全部模型与 38/38 历史、单模型筛选后清除、历史折叠/展开、12 列表头、Actions 运行标题、真实开始/结束时间与耗时。
+  - [ ] 仍需 103 条 `50/50/3` 冷热分页、冷归档详情、组合列筛选/排序和完整管理员浏览器会话证据。
 - [ ] **`E2E-05`** **`★ P0 关键必通`** Workflow 级跨区（Blue/Yellow）插队端到端闭环（含筛选态按真实队列交换、多端回执、晚发现沿用、排期同步刷新） Blue/GitCode/16P 跨区部分当前阻塞，Yellow 单节点子集已在 INT-07 记录，未勾选。
 - [ ] **`E2E-06`** **`★ P0 关键必通`** GitHub & GitCode 整次 Workflow 取消端到端闭环（含原生作业、2 分钟 `force-cancel`、断连网站仍停机、清理失败隔离） GitHub 侧因 APP_NOT_INSTALLED 阻塞，GitCode 侧无 dispatch 入口，未勾选。
 - [ ] **`E2E-07`** **`★ P0 关键必通`** 网站宕机 30 分钟故障隔离 + 恢复快照对账 + 单库 80%→70% 滚删 + 写额度耗尽降级演练 当前缺少 D1 容量水位和写额度操作权限，演练阻塞，未勾选。
@@ -152,6 +157,8 @@
 - [ ] **`E2E-09`** `P1` 集群新增资产（粘贴 `preflight.py` 片段与指纹报错回退）、**两步先排空再删除（排空中可恢复 + 阻断条件校验）**、双 Worker 部分生效与版本回滚全栈闭环 16P/多节点真实资产与跨区部分当前不可执行，阻塞，未勾选。
 - [ ] **`E2E-10`** `P1` `train` 72 小时排队超时与 `npu_smoke` 无超时边界验证
 - [ ] **`E2E-11`** `P1` 30 秒页面自动刷新、浅/深色主题、切回后台标签页刷新与缓存时效一致性
+  - [x] Site v31 已在浏览器完成深浅主题切换，正式源码包含 30 秒定时刷新、`document.hidden` 后台暂停和 `visibilitychange` 切回刷新。
+  - [ ] 仍需浏览器计时抓包确认 30 秒请求间隔及后台/切回网络请求序列。
 - [ ] **`E2E-12`** **`★ P0 关键必通`** ChatGPT Sites 产物包验证 + 个人服务器（Node 24 + SQLite）零业务改动迁移切换演练（含 Worker 仅改 `control_center.url` 重连对账、SPA 刷新回退、反代 IP 限流与 `portability_intercept` DT 全绿）
 
 #### 7.3 生产上线前置实机签收（对应 PRD v1.5 §12 全部 5 条前提）
