@@ -1,8 +1,14 @@
 import process from "node:process";
 
-const originRaw = (process.env.SITES_ORIGIN || process.argv[2] || "").trim();
+const args = process.argv.slice(2);
+const requireAdmin =
+  args.includes("--require-admin") || process.env.REQUIRE_ADMIN_CHECK === "1";
+const positionalOrigin = args.find((arg) => !arg.startsWith("--")) || "";
+const originRaw = (process.env.SITES_ORIGIN || positionalOrigin).trim();
 if (!originRaw) {
-  throw new Error("SITES_ORIGIN (or argv[2]) is required, e.g. https://your-site.example");
+  throw new Error(
+    "SITES_ORIGIN (or positional origin arg) is required, e.g. https://your-site.example",
+  );
 }
 
 let originUrl;
@@ -23,8 +29,14 @@ async function checkHtml(pathname) {
   });
   const ct = res.headers.get("content-type") || "";
   const body = await res.text();
-  if (res.status !== 200 || !ct.includes("text/html") || !body.includes("<div id=\"root\"")) {
-    throw new Error(`Expected 200 SPA HTML for ${pathname}, got status=${res.status} content-type=${ct}`);
+  if (
+    res.status !== 200 ||
+    !ct.includes("text/html") ||
+    !body.includes('<div id="root"')
+  ) {
+    throw new Error(
+      `Expected 200 SPA HTML for ${pathname}, got status=${res.status} content-type=${ct}`,
+    );
   }
   return { pathname, status: res.status, contentType: ct };
 }
@@ -47,6 +59,11 @@ async function checkAdminLogin() {
   const username = (process.env.VERIFY_ADMIN_USERNAME || "").trim();
   const secret = (process.env.VERIFY_ADMIN_SECRET || "").trim();
   if (!username || !secret) {
+    if (requireAdmin) {
+      throw new Error(
+        "VERIFY_ADMIN_USERNAME and VERIFY_ADMIN_SECRET are required when --require-admin (or REQUIRE_ADMIN_CHECK=1) is enabled",
+      );
+    }
     return { skipped: true };
   }
   const loginRes = await fetch(`${base}/api/v1/auth/login`, {
@@ -55,7 +72,9 @@ async function checkAdminLogin() {
     body: JSON.stringify({ username, secret }),
   });
   if (loginRes.status !== 200) {
-    throw new Error(`Admin login failed with status=${loginRes.status}: ${(await loginRes.text()).slice(0, 200)}`);
+    throw new Error(
+      `Admin login failed with status=${loginRes.status}: ${(await loginRes.text()).slice(0, 200)}`,
+    );
   }
   const setCookie = loginRes.headers.get("set-cookie") || "";
   const cookiePair = setCookie.split(";")[0];
@@ -66,7 +85,9 @@ async function checkAdminLogin() {
     headers: { Cookie: cookiePair, Accept: "application/json" },
   });
   if (adminRes.status !== 200) {
-    throw new Error(`Authenticated /api/v1/admin/overview failed with status=${adminRes.status}`);
+    throw new Error(
+      `Authenticated /api/v1/admin/overview failed with status=${adminRes.status}`,
+    );
   }
   await fetch(`${base}/api/v1/auth/logout`, {
     method: "POST",
@@ -90,8 +111,14 @@ console.log(
   JSON.stringify(
     {
       ok: true,
+      mode: "http_smoke_only",
+      note: "HTTP SPA/proxy/auth smoke only; does not replace real browser rendering/console-error E2E",
       origin: results.origin,
-      spaChecks: [results.rootHtml.pathname, results.deepLinkModels.pathname, results.deepLinkCluster.pathname],
+      spaChecks: [
+        results.rootHtml.pathname,
+        results.deepLinkModels.pathname,
+        results.deepLinkCluster.pathname,
+      ],
       overviewWorkers: (results.overviewApi.json.workers || []).map((w) => ({
         worker: w.worker_id || w.worker,
         offline: w.offline,
