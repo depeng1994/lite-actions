@@ -1,6 +1,6 @@
 import { CalendarBlank, CaretDown, CaretRight, Pause, Play, Plus, Trash, X } from "@phosphor-icons/react";
 import { useEffect, useState } from "react";
-import { beijingClock, clock, displayNodeHost, flagFor, plannedTime, poolId, runs, statusTone, targetFor, workers, workflowKey } from "./formal-data.js";
+import { clock, displayNodeHost, flagFor, plannedTime, poolId, statusTone, targetFor, timelineClock, timelineLabel, timelineMinuteFor, timelineRuns, workers, workflowKey } from "./formal-data.js";
 import { commandStatusLabel, commandStatusTone } from "./command-status.js";
 import { lastSeenDateTime, resourceHealth } from "./resource-health.js";
 
@@ -83,29 +83,37 @@ function ResourceLabel({ row, folded, changeFold, config, selectScope, open }) {
 }
 
 function LeaseBar({ item, run, rows, config, nodes, clockState, selected, onClick }) {
-  const { now, timelineStart, timelineEnd } = clockState;
+  const { now: timelineNow, timelineStart, timelineEnd } = clockState;
   const marker = (minute) => `${(minute - timelineStart) / Math.max(1, timelineEnd - timelineStart) * 100}%`;
   const queued = item.status === "排队中";
   const actual = item.node && ["准备中", "运行中", "清理中"].includes(item.status);
-  const ended = item.node && item.status === "已取消" && item.finished;
+  const ended = item.node && item.timelineFinished != null && ["成功", "失败", "已取消"].includes(item.status);
   const selectedGroup = queued ? item.plannedGroups : item.groups;
   const node = queued ? item.plannedNode : item.node;
-  const resourceRowsList = rows.filter((row) => row.node?.id === node && selectedGroup?.includes(row.group));
+  const allocations = item.allocations?.length ? item.allocations : item.allocation ? [item.allocation] : [];
+  const resourceRowsList = queued
+    ? rows.filter((row) => row.node?.id === node && selectedGroup?.includes(row.group))
+    : rows.filter((row) => allocations.some((allocation) => {
+        const ids = [...(allocation.devices || [])].sort((a, b) => a - b);
+        const label = ids.length ? `${ids[0]}–${ids.at(-1)}` : null;
+        return row.node?.id === (allocation.node_ref || allocation.id) && row.group === label;
+      }));
   if (!resourceRowsList.length || (!queued && !actual && !ended)) return null;
-  const start = queued ? plannedTime(item, config, nodes) : item.started;
+  const planned = queued ? plannedTime(item, config, nodes) : null;
+  const start = queued ? timelineMinuteFor(planned, timelineNow) : item.timelineStarted;
   if (start == null) return null;
   const projectedEnd = queued
-    ? (item.plannedEnd ?? (item.estimate ? start + item.estimate : null))
-    : actual && item.estimate && item.started != null && item.started + item.estimate > now
-      ? item.started + item.estimate
+    ? (item.plannedEnd == null ? (item.estimate ? start + item.estimate : null) : timelineMinuteFor(item.plannedEnd, timelineNow))
+    : actual && item.estimate && item.timelineStarted != null && item.timelineStarted + item.estimate > timelineNow
+      ? item.timelineStarted + item.estimate
       : null;
-  const finish = ended ? item.finished : projectedEnd ?? now;
+  const finish = ended ? item.timelineFinished : projectedEnd ?? timelineNow;
   const visibleStart = Math.max(start, timelineStart);
   const total = Math.min(finish, timelineEnd) - visibleStart;
   if (total <= 0) return null;
-  const solid = queued ? 0 : Math.max(0, Math.min(100, (now - visibleStart) / total * 100));
-  const startLabel = clock(start);
-  const finishLabel = clock(finish);
+  const solid = queued ? 0 : Math.max(0, Math.min(100, (timelineNow - visibleStart) / total * 100));
+  const startLabel = timelineLabel(start);
+  const finishLabel = timelineLabel(finish);
   const style = {
     "--actual": `${solid}%`,
     left: marker(visibleStart),
@@ -126,18 +134,18 @@ function LeaseBar({ item, run, rows, config, nodes, clockState, selected, onClic
   </button>);
 }
 
-export function PoolsView({ nodes, cases, config, open, go, live }) {
+export function PoolsView({ nodes, cases, timelineCases, config, open, go, live }) {
   const [folded, setFolded] = useState({});
   const [queueScope, selectScope] = useState("");
   const [selected, setSelected] = useState(null);
-  const [clockState, setClockState] = useState(() => beijingClock());
+  const [clockState, setClockState] = useState(() => timelineClock());
   useEffect(() => {
-    setClockState(beijingClock());
-    const timer = setInterval(() => setClockState(beijingClock()), 30_000);
+    setClockState(timelineClock());
+    const timer = setInterval(() => setClockState(timelineClock()), 30_000);
     return () => clearInterval(timer);
   }, [cases, nodes]);
-  const { dateLabel, now, timelineStart, timelineEnd } = clockState;
-  const ticks = Array.from({ length: 6 }, (_, index) => timelineStart + index * 30);
+  const { dateLabel, now: timelineNow, displayNow, timelineStart, timelineEnd } = clockState;
+  const ticks = Array.from({ length: 7 }, (_, index) => timelineStart + index * 12 * 60);
   const marker = (minute) => `${(minute - timelineStart) / Math.max(1, timelineEnd - timelineStart) * 100}%`;
 
   const rows = resourceRows(nodes, folded);
@@ -149,7 +157,9 @@ export function PoolsView({ nodes, cases, config, open, go, live }) {
     .sort((a, b) => a.position - b.position);
   const showCase = (item) => {
     setSelected(item.id);
-    open({ type: "case", caseId: item.id });
+    open(item.historyId
+      ? { type: "history", runKey: item.run, historyId: item.historyId }
+      : { type: "case", caseId: item.id });
   };
   return <main className="pools-view">
     <section aria-labelledby="pools-title">
@@ -158,7 +168,7 @@ export function PoolsView({ nodes, cases, config, open, go, live }) {
         <div className="pools-meta">
           <div className="date-info">
             <span><CalendarBlank size={21} /> <time>{dateLabel}</time></span>
-            <span>Asia/Shanghai (UTC+8)</span><span>现在 {clock(now)}（{live ? "实时" : "等待连接"}）</span>
+            <span>Asia/Shanghai (UTC+8)</span><span>近72小时</span><span>现在 {clock(displayNow)}（{live ? "实时" : "等待连接"}）</span>
           </div>
           <ul className="legend" aria-label="时间轴图例">
             <li><i className="legend-actual" />实际租约</li>
@@ -174,7 +184,7 @@ export function PoolsView({ nodes, cases, config, open, go, live }) {
           <div className="axis">
             <div className="chart-coordinates">
               {ticks.map((minute) => <span key={minute} className="axis-tick mono" style={{ left: marker(minute) }}>{clock(minute)}</span>)}
-              <span className="now-label mono" style={{ left: marker(now) }}>现在 {clock(now)}</span>
+              <span className="now-label mono" style={{ left: marker(timelineNow) }}>现在 {timelineLabel(timelineNow)}</span>
             </div>
           </div>
           <div className="resources">
@@ -187,15 +197,15 @@ export function PoolsView({ nodes, cases, config, open, go, live }) {
             <div className="chart-coordinates">
               {ticks.map((minute) => <i key={minute} className="grid-line" style={{ left: marker(minute) }} />)}
               {rows.filter((row) => row.level === "group" && row.node.unknown.includes(row.group)).map((row) => (
-                <button key={row.key} className="unknown-block" style={{ left: marker(timelineStart + 2), width: marker(Math.max(timelineStart + 4, now - 2)), top: row.top + 11 }}
+                <button key={row.key} className="unknown-block" style={{ left: marker(timelineStart + 2), width: marker(Math.max(timelineStart + 4, timelineNow - 2)), top: row.top + 11 }}
                   onClick={() => open({ type: "resource", target: targetFor(row.node, row.group) })}>未知占用</button>
               ))}
-              {cases.map((item) => {
-                const run = runs.find((candidate) => workflowKey(candidate) === item.run);
+              {(timelineCases || cases).map((item) => {
+                const run = timelineRuns.find((candidate) => workflowKey(candidate) === item.run);
                 return run ? <LeaseBar key={item.id} item={item} run={run}
                   rows={rows} config={config} nodes={nodes} clockState={clockState} selected={selected === item.id} onClick={() => showCase(item)} /> : null;
               })}
-              <i className="now-line" style={{ left: marker(now) }} />
+              <i className="now-line" style={{ left: marker(timelineNow) }} />
             </div>
           </div>
         </div>

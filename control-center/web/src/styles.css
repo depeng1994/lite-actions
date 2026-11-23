@@ -138,8 +138,11 @@ code, .mono { font-family: var(--mono); font-size: .94em; letter-spacing: -.25px
 .legend .legend-actual { background: var(--blue-bar); border-color: var(--blue-stroke); }
 .legend .legend-planned { background: var(--blue-plan); border: 1.5px dashed var(--blue-dash); }
 .legend .legend-unknown, .unknown-block { background: repeating-linear-gradient(132deg, transparent 0 5px, var(--unknown) 5px 6px); }
-.timeline-scroll { margin: 0 5px; overflow-x: auto; }
-.timeline { min-width: 1010px; display: grid; grid-template-columns: clamp(285px, 27%, 400px) minmax(0, 1fr); grid-template-rows: 61px auto; border: 1px solid var(--line); border-radius: 2px; overflow: hidden; background: var(--plot); }
+.timeline-scroll { margin: 0 5px; overflow-x: auto; scrollbar-gutter: stable; }
+.timeline-scroll::-webkit-scrollbar { height: 12px; }
+.timeline-scroll::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 8px; }
+.timeline-scroll::-webkit-scrollbar-track { background: var(--heading); }
+.timeline { min-width: 3000px; display: grid; grid-template-columns: clamp(285px, 27%, 400px) minmax(0, 1fr); grid-template-rows: 61px auto; border: 1px solid var(--line); border-radius: 2px; overflow: hidden; background: var(--plot); }
 .axis, .axis-label { position: relative; border-bottom: 1px solid var(--line); }
 .axis-label { display: flex; align-items: center; padding: 0 16px; border-right: 1px solid var(--line); font-size: 17px; font-weight: 680; }
 .axis-label span { margin-left: 3px; }

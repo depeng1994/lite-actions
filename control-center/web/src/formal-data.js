@@ -22,6 +22,20 @@ export function beijingClock(date = new Date()) {
   };
 }
 
+export function timelineClock(date = new Date()) {
+  const parts = shanghaiTimeParts.formatToParts(date);
+  const hour = Number(parts.find(({type}) => type === "hour")?.value || 0) % 24;
+  const minute = Number(parts.find(({type}) => type === "minute")?.value || 0);
+  return {
+    currentDate: shanghaiDateFormatter.format(date),
+    dateLabel: shanghaiLabelFormatter.format(date),
+    now: Math.floor(date.getTime() / 60000),
+    displayNow: hour * 60 + minute,
+    timelineStart: Math.floor(date.getTime() / 60000) - 72 * 60,
+    timelineEnd: Math.floor(date.getTime() / 60000) + 60,
+  };
+}
+
 const initialClock = beijingClock();
 export const currentDate = initialClock.currentDate;
 export const dateLabel = initialClock.dateLabel;
@@ -38,6 +52,7 @@ export const repositories = [
   {name: "lite-actions", sources: []},
 ];
 export const runs = [];
+export const timelineRuns = [];
 export const history = [];
 export const initialQueueOrder = [];
 export const initialCases = [];
@@ -58,6 +73,22 @@ export function clock(minute) {
   const normalized = ((Math.floor(minute) % 1440) + 1440) % 1440;
   return [Math.floor(normalized / 60), normalized % 60]
     .map((part) => String(part).padStart(2, "0")).join(":");
+}
+
+export function timelineLabel(minute) {
+  if (minute == null) return "暂无估算";
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
+  }).format(new Date(minute * 60000)).replaceAll("/", "-");
+}
+
+export function timelineMinuteFor(dayMinute, referenceMinute = Math.floor(Date.now() / 60000)) {
+  if (dayMinute == null) return null;
+  const shanghaiDate = shanghaiDateFormatter.format(new Date(referenceMinute * 60000));
+  const midnight = Date.parse(`${shanghaiDate}T00:00:00+08:00`) / 60000;
+  let candidate = midnight + dayMinute;
+  if (candidate < referenceMinute - 12 * 60) candidate += 24 * 60;
+  return candidate;
 }
 
 export function poolId(worker, pool) {

@@ -6,7 +6,7 @@ import {
   AddNodeDialog, buildClusterOperation, CancelDialog, CancellationReceipt, CaseDialog, ConfigDialog, DeleteUserDialog, ExpediteDialog,
   HistoryDialog, LoginForm, NewUserDialog, PriorityReceipt, ResourceDialog, ResetUserKeyDialog, UserKeyDialog,
 } from "./Dialogs.jsx";
-import { dateTimeSecondFormatter, history, initialCases, initialNodes, initialQueueOrder, poolId, repositories, runs, workflowKey } from "./formal-data.js";
+import { dateTimeSecondFormatter, history, initialCases, initialNodes, initialQueueOrder, poolId, repositories, runs, timelineRuns, workflowKey } from "./formal-data.js";
 import { currentWorkflowQueue, queuedChildren } from "./workflows.js";
 import {
   cancelWorkflow as apiCancelWorkflow,
@@ -94,6 +94,7 @@ export function App() {
   const [clusterPools, setClusterPools] = useState([]);
   const [clusterHistory, setClusterHistory] = useState([]);
   const [cases, setCases] = useState(initialCases);
+  const [timelineCases, setTimelineCases] = useState(initialCases);
   const [workflowOrder, setWorkflowOrder] = useState(initialQueueOrder);
   const [queueVersion, setQueueVersion] = useState(0);
   const [historyCursor, setHistoryCursor] = useState(null);
@@ -125,6 +126,7 @@ export function App() {
     setClusterPools(snapshot.clusterPools || []);
     setClusterHistory(snapshot.clusterHistory || []);
     setCases(snapshot.cases);
+    setTimelineCases(snapshot.timelineCases || snapshot.cases);
     setWorkflowOrder(snapshot.workflowOrder);
     setQueueVersion(snapshot.queueVersion || 0);
     setTruncatedByCapacity(Boolean(snapshot.truncatedByCapacity));
@@ -457,13 +459,13 @@ export function App() {
   };
 
   const viewProps = {
-    nodes, clusterPools, clusterHistory, cases, config, queueVersion,
+    nodes, clusterPools, clusterHistory, cases, timelineCases, config, queueVersion,
     historyHasMore, historyLoaded, truncatedByCapacity, purgedNotice, loadMoreHistory,
     rollbackCluster, canManage, access, open, go, audit, live: dataMode === "live",
   };
   const item = modal?.caseId && cases.find(({ id }) => id === modal.caseId);
   const run = modal?.runKey && runs.find((candidate) => workflowKey(candidate) === modal.runKey);
-  const historicalRun = modal?.historyId && history.find((candidate) => workflowKey(candidate) === modal.runKey);
+  const historicalRun = modal?.historyId && [...history, ...timelineRuns].find((candidate) => workflowKey(candidate) === modal.runKey);
   const historicalCase = historicalRun && historicalRun.cases.find(({ historyId }) => historyId === modal.historyId);
   const user = modal?.name && accounts.find(({ name }) => name === modal.name);
   const dialogProps = { ...viewProps, close };

@@ -95,3 +95,21 @@ test("public timeline and workflow views share allocations while admin can read 
   expect(admin.headers.get("Cache-Control")).toBe("private, no-store");
   expect((await admin.json<Timeline>()).workers[0].pools[0].nodes.map(node => node.host_id)).toEqual(hosts);
 });
+
+test("timeline includes completed tasks from the requested history window", async () => {
+  const finished = now - 60 * 60;
+  const devices = [0,1,2,3,4,5,6,7];
+  await db.prepare(`INSERT INTO task_index(task_uid,finished_at,worker_id,provider,repo,logical_model,run_id,attempt,
+    case_id,test_id,label,kind,target_pool,req_nodes,req_devices,actual_allocation_json,status,timing_reliable,
+    storage_tier,started_at,workflow_name)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, ?,?)`)
+    .bind("t_history_timeline", finished, "blue", "gitcode", "cann/torchtitan-npu", "torchtitan-npu", "history-run", 1,
+      "case_history", "history", "Historical task", "npu_smoke", "pool", 1, 8,
+      JSON.stringify([{host_id: "198.51.100.1:22", devices}]), "PASS", 1, "hot", finished - 120, "history-workflow").run();
+
+  const timeline = await (await request("/public/timeline?history_hours=72")).json<Timeline>();
+  expect(timeline.history_tasks.map(task => task.task_uid)).toContain("t_history_timeline");
+  const historyBlock = timeline.workers[0].pools[0].nodes[0].device_groups[0].solid_blocks
+    .find(block => block.task_uid === "t_history_timeline");
+  expect(historyBlock).toMatchObject({task_uid: "t_history_timeline", total_cards: 8, group_count: 1});
+});

@@ -80,7 +80,7 @@
 ### Phase 6：正式前端工程化、GitHub 仓合入与 个人服务器统一产物构建（P1/P2 改造完成）
 
 - [x] **`FE-00` 交互原型 Demo 定稿与确认**：`codex/control-center-demo @ cd770ce`。
-- [x] **`FE-01` Pools任务看板与排队面板正式化**：已对接 `/timeline`，补齐动态北京时间轴（`beijingClock()`）、映射后端 `projections` / `dashed_blocks` 虚线排期与 `WAITING_EXTERNAL`/`NO_ESTIMATE` 状态、直接以 `display_host_id`/`host_id` 展示节点、移除硬编码 8 卡回退。
+- [x] **`FE-01` Pools任务看板与排队面板正式化**：已对接 `/timeline`，补齐动态北京时间轴（`beijingClock()`）、近 72 小时历史租约横向滚动、映射后端 `projections` / `dashed_blocks` 虚线排期与 `WAITING_EXTERNAL`/`NO_ESTIMATE` 状态、直接以 `display_host_id`/`host_id` 展示节点、移除硬编码 8 卡回退。
   - 后端依赖：`REQ-15`, `REQ-16`, `REQ-18`
 - [x] **`FE-02` 统一 Workflow 表格、上方 50 条历史分页/折叠与任务详情抽屉正式化**：首次/定时刷新改请求 `history_limit=0` 且不清空已加载历史、直接使用后端 `sequence`/`repo_scope`/`card_hours_as_of_now`、详情抽屉（`CaseDialog`/`HistoryDialog`）接入 `GET /tasks/:taskUid` 展示完整阶段时间/退出码/清理状态/热冷层级、展示 `purged_notice`。
   - 后端依赖：`REQ-16`, `REQ-19`

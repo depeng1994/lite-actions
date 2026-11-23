@@ -418,7 +418,12 @@ export async function taskDetail(context: Context): Promise<TaskDetail> {
 
 export async function timeline(context: Context): Promise<Timeline> {
   const {DB: db} = context.env;
-  const results = await db.batch([
+  const requestedHistoryHours = context.url.searchParams.get("history_hours");
+  const historyHours = Number(requestedHistoryHours ?? 0);
+  if (!Number.isSafeInteger(historyHours) || historyHours < 0 || historyHours > 72) {
+    throw new HttpError(400, "INVALID_HISTORY_HOURS");
+  }
+  const statements = [
     db.prepare("SELECT * FROM workers"),
     db.prepare(`SELECT revision,config_json FROM pools_configs WHERE revision IN
       (SELECT MAX(revision) FROM pools_configs UNION SELECT MIN(revision) FROM pools_configs UNION SELECT applied_rev FROM workers)
@@ -427,13 +432,24 @@ export async function timeline(context: Context): Promise<Timeline> {
     db.prepare("SELECT * FROM device_group_states"),
     db.prepare("SELECT * FROM queue_orders ORDER BY worker_id,pool_name,kind,queue_pos,task_uid"),
     db.prepare("SELECT worker_id,scope,pool_name,host_id,devices_json FROM cluster_drain_targets"),
-  ]);
-  const [health, versions, tasks, observations, queueRows, drains] = results.map(result => result.results ?? []) as unknown as
+  ];
+  if (historyHours > 0) {
+    statements.push(db.prepare(`SELECT * FROM task_index
+      WHERE finished_at >= ? AND finished_at <= ?
+      ORDER BY finished_at DESC, task_uid DESC
+      LIMIT 5000`).bind(context.now - historyHours * 3600, context.now));
+  }
+  const results = await db.batch(statements);
+  const [health, versions, tasks, observations, queueRows, drains] = results.slice(0, 6).map(result => result.results ?? []) as unknown as
     [WorkerRow[], Revision[], TaskRow[], GroupRow[], QueueRow[], Array<{worker_id: WorkerId; scope: string; pool_name: string; host_id: string | null; devices_json: string | null}>];
+  const historyTasks = historyHours > 0 ? (results[6]?.results ?? []) as unknown as TaskRow[] : [];
   const latest = versions.at(-1)?.revision ?? 0;
   const details = await summaries(context, tasks);
+  const historyDetails = historyTasks.length ? await summaries(context, historyTasks) : [];
   const byUid = new Map(tasks.map((task, i) => [task.task_uid, {task, detail: details[i], allocation: allocation(task)}]));
   const leases = [...byUid.values()].filter(lease => lease.allocation.length && lease.task.phase !== "QUEUED");
+  const historyLeases = historyTasks.map((task, index) => ({task, detail: historyDetails[index], allocation: allocation(task)}))
+    .filter(lease => lease.allocation.length && lease.task.started_at != null && lease.task.finished_at != null);
   const probe = new Map(observations.map(row => [JSON.stringify([row.worker_id, row.pool_name, row.host_id, row.devices_json]), row]));
   const isPoolDraining = (zone: WorkerId, poolName: string) =>
     drains.some(row => row.worker_id === zone && row.scope === "pool" && row.pool_name === poolName);
@@ -464,7 +480,7 @@ export async function timeline(context: Context): Promise<Timeline> {
         const device_groups: DeviceGroup[] = [];
         for (const group of node.allocation_groups ?? []) {
           const ids = group.devices.slice().sort((a, b) => a - b);
-          const allocated = leases.filter(lease => lease.task.worker_id === zone && lease.task.target_pool === pool_name
+          const allocated = [...leases, ...historyLeases].filter(lease => lease.task.worker_id === zone && lease.task.target_pool === pool_name
             && overlaps(node.host_id, ids, lease.allocation));
           const observation = probe.get(JSON.stringify([zone, pool_name, node.host_id, JSON.stringify(ids)]));
           const groupDraining = isGroupDraining(zone, pool_name, node.host_id, ids);
@@ -474,7 +490,7 @@ export async function timeline(context: Context): Promise<Timeline> {
           let release_at = context.now;
           let uncertain = false;
           for (const {task, detail, allocation: allocatedNodes} of allocated) {
-            const start_at = task.running_at ?? task.reserved_at ?? context.now;
+            const start_at = task.running_at ?? task.reserved_at ?? task.started_at ?? context.now;
             const ending = detail.estimated_sec === null ? context.now : start_at + detail.estimated_sec;
             release_at = Math.max(release_at, ending);
             uncertain ||= detail.estimated_sec === null || ending <= context.now || task.phase === "CLEANING";
@@ -535,7 +551,7 @@ export async function timeline(context: Context): Promise<Timeline> {
       if (block) block.group_count = rows.length;
     }
   }
-  const tasks_by_uid = Object.fromEntries(details.map(task => [task.task_uid, task]));
+  const tasks_by_uid = Object.fromEntries([...details, ...historyDetails].map(task => [task.task_uid, task]));
   const queued_by_pool: Record<string, TaskSummary[]> = {};
   for (const task of details.filter(item => item.phase === "QUEUED")) {
     const key = `${task.worker_id}/${task.target_pool}`;
@@ -544,5 +560,5 @@ export async function timeline(context: Context): Promise<Timeline> {
   for (const tasksForPool of Object.values(queued_by_pool)) tasksForPool.sort((left, right) =>
     (left.queue_pos ?? Number.MAX_SAFE_INTEGER) - (right.queue_pos ?? Number.MAX_SAFE_INTEGER));
   return {workers, now: context.now, zero_card_tasks: details.filter(task => task.kind === "worker_probe"), projections,
-    tasks_by_uid, queued_by_pool};
+    tasks_by_uid, queued_by_pool, history_tasks: historyDetails};
 }
