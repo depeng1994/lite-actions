@@ -129,7 +129,7 @@ function LeaseBar({ item, run, rows, config, nodes, clockState, selected, onClic
       <small>{run.action} #{run.id} / {item.name} · {item.cards}P</small>
       {actual && <small className="lease-meta">{item.status} · 已用 {Math.max(0, Math.round(now - item.started))} 分钟 · {item.estimate ? `预计 ${item.estimate} 分钟（${item.samples} 样本）` : "暂无估算"}</small>}
     </span>
-    {start > timelineStart && <span className="lease-time lease-start">{startLabel}</span>}
+    {!compact && start > timelineStart && <span className="lease-time lease-start">{startLabel}</span>}
     {actual && projectedEnd && <span className="lease-time lease-end">{finishLabel}</span>}
   </button>);
 }
