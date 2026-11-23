@@ -107,7 +107,7 @@
 
 > **2026-11-23 个人域名生产复核（lite-actions.ooguy.com）**：`lite-actions.ooguy.com` DNS 已解析到 `186.241.84.211`，Caddy 已取得 HTTPS 证书并监听 80/443，Node.js 24 控制面 systemd 服务 active。`GET /api/v1/public/overview` 返回 200，`GET /models` 在 `Accept: text/html` 下返回 SPA HTML，未知 `/api/v1/*` 返回 JSON 404。Blue 已把 `/etc/lite-actions/deployment.json` 的 `control_center.url` 切换到新域名，实际 heartbeat 成功，`offline=false`、`healthy=true`、`applied_rev=17`。Yellow 尚未切换，等待 Issue #49 完成 DNS/TLS/POST 预验证和安全 URL 切换。该证据可标注为 `lite-actions.ooguy.com已验证`，不替代 Yellow 双区、GitHub/GitCode 取消、16P 资源和完整管理员生命周期门禁。
 
-> **Phase 7 任务计数（2026-11-23）**：本节 28 个顶层联调/上线门禁中，8 个已按证据勾选，20 个仍未完成。20 个未完成项为 `INT-06/07/09/10`、`E2E-01`~`E2E-12`、`REL-00/02/03/04`。其中多个项目已有隔离夹具、Yellow 单节点或 控制面网页 浏览器子集证据，未将局部证据提升为全量通过；需现场补齐的核心依赖集中在 personal server 最新 Worker/SQLite 发布、GitHub App/GitCode 取消凭据、Blue/Yellow 跨区 16P 与多节点资源、SQLite 配额演练和 Node 24 实机切换。
+> **Phase 7 任务计数（2026-11-23）**：本节 28 个顶层联调/上线门禁中，7 个已按证据勾选，21 个仍未完成。21 个未完成项为 `INT-06/07/09/10`、`E2E-01`~`E2E-12`、`REL-00/01/02/03/04`。其中多个项目已有隔离夹具、Yellow 单节点或 控制面网页 浏览器子集证据，未将局部证据提升为全量通过；需现场补齐的核心依赖集中在 personal server 最新 Worker/SQLite 发布、Yellow 新域名可达性、GitHub App/GitCode 取消凭据、Blue/Yellow 跨区 16P 与多节点资源、SQLite 配额演练和 Node 24 实机切换。
 
 > **2026-11-23 Yellow 现场复核（Issue #49）**：`lite-actions-yellow.service` 当前进程为 active，但因 `/etc/lite-actions/yellow.env` 缺少 `LITE_ACTIONS_CONTROL_TOKEN`，ControlClient 在启动构造阶段报 `INVALID_CONTROL_MACHINE_TOKEN`，IdleProbe 与控制面心跳均未启动；Yellow 自 `09:21:58` 起 `offline=true`。本地 `pools-active.json` 为 revision 16，控制面 desired/latest 为 18/19，且目标配置把 `a5_shared_yellow` 设为 `enabled=false`。现场仅有 1×8P 可用，16P 双设备组和第二节点不存在；`.25` 正被 ttnpu 专线占用，正式 `a5_ci_214` 容器名缺失。该复核未改动服务或配置，已将修复顺序写入 Issue #49：先由正式控制面网页 恢复 A5 调度目标态，再恢复 Yellow 控制 token 和心跳，保留 ttnpu 专线，确认备份容器未被占用后才恢复 smoke 容器名，最后做 3 轮探测与同 `probe_round` 重放。该现场状态使 `INT-07` 的 Yellow 子集、`INT-08` 的当前复核和 `REL-01` 的当前心跳恢复仍需补跑，历史通过证据继续保留但不覆盖本次失联。
 
@@ -169,8 +169,9 @@
 #### 7.3 生产上线前置实机签收（对应 PRD v1.5 §12 全部 5 条前提）
 - [ ] **`REL-00`** **`★ 上线必过`** 初期 lite-actions.ooguy.com 前端与 API 同源部署 + Node.js/SQLite 实机核验（验证 `control-center/deploy/Caddyfile.personal-server.example` 保持 `Node.js 24 + SQLite`/``、部署时注入 `CONTROL_CENTER_DOMAIN` 与 `CONTROL_CENTER_ORIGIN` 反代同源 `/api/v1/*`、Node.js/SQLite Secret 注入与出站 `fetch()` 调 GitHub/GitCode API 及域名接入）
   - [x] `lite-actions.ooguy.com已验证` 子集：DNS、Caddy HTTPS、Node systemd 服务、匿名 overview、SPA 回退、JSON 404 与 Blue heartbeat 已通过实机证据确认。
-- [x] **`REL-01`** **`★ 上线必过`** 真实 Yellow 主机通过批准域名完成心跳、取令、拉配置、回执，满足出口放行与每日字节预算（待定 1）
-  - 实机证据（2026-11-20）：Yellow `offline=false`、`applied_rev=6`；`test_upload_intercept.py` 4/4 通过；`http-egress.json` 中 control 路径均 `rejected=0`、`sent_violations=0`，最大请求 1,828 B，日上传量 1,254,020 / 67,108,864。
+- [ ] **`REL-01`** **`★ 上线必过`** 真实 Yellow 主机通过 `lite-actions.ooguy.com` 完成心跳、取令、拉配置、回执，满足出口放行与每日字节预算（待定 1）
+  - 历史证据（2026-11-20，旧控制面地址）：Yellow `offline=false`、`applied_rev=6`；`test_upload_intercept.py` 4/4 通过；`http-egress.json` 中 control 路径均 `rejected=0`、`sent_violations=0`，最大请求 1,828 B，日上传量 1,254,020 / 67,108,864。
+  - 当前域名复核待完成：Yellow 侧受限 DNS/TCP 仍不可达，已通过 Issue #49 授权可回滚的 `/etc/hosts` 方案。
 - [ ] **`REL-02`** **`★ 上线必过`** 已装 App 的 GitHub 测试仓 + 配好 Token 的 GitCode 测试仓各完成一次含原生作业和双区用例的真实整次取消 GitCode 侧真实 Workflow 触发当前阻塞，原因是本会话没有可用的 GitCode dispatch 接口或触发凭据，未勾选。 GitHub 侧实测返回 400 APP_NOT_INSTALLED，GitHub App 安装阻塞；GitCode 侧触发同样阻塞，未勾选。
 - [ ] **`REL-03`** **`★ 上线必过`** 实际免费托管实例（lite-actions.ooguy.com / SQLite 或 personal server Node.js 24 + SQLite）实测容量水位监控、80%→70% 滚删、CPU 预算与额度耗尽行为 当前缺少免费托管实例容量水位与写额度操作权限，实机 80%→70% 滚删和额度耗尽演练阻塞。
 - [ ] **`REL-04`** **`★ 上线必过`** 真实双 Worker 环境联调一次 Workflow 级跨区插队（管理接口 → 两端应用回执 → 排期刷新），并回归原有调度规则 Blue/GitCode/16P 跨区部分当前阻塞，Yellow 单节点子集已在 INT-07 记录，未勾选。
