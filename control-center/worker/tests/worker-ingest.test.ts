@@ -88,7 +88,7 @@ test("binds zones, ingests transitions exactly once, and reconciles only a compl
 test("command lookup never acknowledges and receipts are worker-scoped and idempotent", async () => {
   await db.prepare(`
     INSERT INTO commands(cmd_id,worker_id,cmd_type,payload_json,status,created_by,created_at)
-    VALUES ('cmd_test','yellow','MOVE_UP','{}','PENDING','test',?)
+    VALUES ('cmd_test','yellow','SWAP_WORKFLOW','{}','PENDING','test',?)
   `).bind(now).run();
   expect(await (await heartbeat("yellow")).json()).toMatchObject({pending_commands: 1});
   expect(await (await worker("blue", "commands")).json()).toEqual({commands: []});

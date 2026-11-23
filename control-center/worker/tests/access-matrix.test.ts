@@ -13,7 +13,7 @@ test("public cache ignores credential and management is private", async () => {
   expect(publicRead.headers.get("Cache-Control")).toBe("public, max-age=10");
   expect(await publicRead.text()).toEqual(await (await request("/public/models")).text());
   expect((await request("/public/models", {data: {}})).status).toBe(405);
-  for (const path of ["/admin/users", "/admin/tasks/example/move-up", "/admin/cancellations", "/admin/cluster/publish", "/worker/heartbeat"]) {
+  for (const path of ["/admin/users", "/admin/workflows/move-up", "/admin/cancellations", "/admin/cluster/publish", "/worker/heartbeat"]) {
     const denied = await request(path, {data: {}});
     expect(denied.status, path).toBe(401);
     expect(denied.headers.get("Cache-Control")).toBe("private, no-store");

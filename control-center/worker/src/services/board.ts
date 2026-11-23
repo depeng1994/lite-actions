@@ -2,7 +2,7 @@ import {installation, supportsCancel} from "./cancelPlatform";
 import {modelMap} from "../modelMap";
 import {type Context, HttpError} from "../router";
 import type {SqlStatement} from "../storage/sqlStore";
-import type {CaseKind, DeviceGroup, ModelRepo, ModelTab, Phase, Projection, Provider, RunGroup, TaskDetail, TaskSummary, Timeline, WorkflowList, WorkflowRow, WorkerId} from "../types/api";
+import type {CaseKind, DeviceGroup, ModelRepo, ModelTab, Phase, Projection, Provider, TaskDetail, TaskSummary, Timeline, WorkflowList, WorkflowRow, WorkerId} from "../types/api";
 import {pepper} from "./auth";
 import {aggregateHealth, type GroupRow, offline, overlaps, type Pools, projectDevice, type RawAllocation, type WorkerRow, workerStatus} from "./deviceState";
 import {refreshWorkflowRuns, type WorkflowIdentity as IngestWorkflowIdentity} from "./ingest";
@@ -115,17 +115,6 @@ export async function models(context: Context) {
     for (const row of repos) row.cancel_supported = canCancel(context, row.provider, row.repo);
   }
   return {default_model: modelMap.default_model, models: [...tabs.values()]};
-}
-
-function byRun(tasks: TaskSummary[]): RunGroup[] {
-  const bins = new Map<string, RunGroup>();
-  for (const task of tasks) {
-    const {provider, repo, run_id, attempt} = task;
-    const key = JSON.stringify([provider, repo, run_id, attempt]);
-    if (!bins.has(key)) bins.set(key, {provider, repo, run_id, attempt, tasks: []});
-    bins.get(key)!.tasks.push(task);
-  }
-  return [...bins.values()];
 }
 
 type WorkflowRunRecord = {
@@ -260,7 +249,10 @@ export async function workflows(context: Context): Promise<WorkflowList> {
   const filterSql = filterClauses.length ? " AND " + filterClauses.join(" AND ") : "";
 
   const metaStatements: SqlStatement[] = [
-    db.prepare("SELECT queue_version AS version FROM workflow_queue_meta WHERE id=1"),
+    db.prepare(`SELECT MAX(
+      COALESCE((SELECT queue_version FROM workflow_queue_meta WHERE id=1), 0),
+      COALESCE((SELECT MAX(queue_ver) FROM queue_orders), 0)
+    ) AS version`),
     db.prepare("SELECT meta_value FROM system_meta WHERE meta_key='capacity_purged_before_ts'"),
   ];
   if (showActive) {
@@ -392,45 +384,6 @@ export async function workflows(context: Context): Promise<WorkflowList> {
     has_more: hasMore,
     truncated_by_capacity: purged,
     purged_notice: purged ? "更早的记录已因容量清理" : null,
-  };
-}
-function readCursor(cursor: string | null, slug: string): [number, string] {
-  if (!cursor) return [Number.MAX_SAFE_INTEGER, "~"];
-  try {
-    if (!/^[A-Za-z0-9_-]{1,300}$/.test(cursor)) throw new Error();
-    const [model, finished, uid] = JSON.parse(atob(cursor.replaceAll("-", "+").replaceAll("_", "/")));
-    if (model === slug && Number.isSafeInteger(finished) && finished >= 0 && typeof uid === "string" && uid.length <= 80) {
-      return [finished, uid];
-    }
-  } catch {
-    // Invalid cursors are never interpolated into SQL.
-  }
-  throw new HttpError(400, "INVALID_CURSOR");
-}
-export async function modelRuns(context: Context) {
-  const slug = context.params.slug;
-  if (!/^[A-Za-z0-9_.-]{1,128}$/.test(slug)) throw new HttpError(400, "INVALID_MODEL");
-  const [finished, uid] = readCursor(context.url.searchParams.get("cursor"), slug);
-  const limit = Number(context.url.searchParams.get("limit") ?? 50);
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) throw new HttpError(400, "INVALID_LIMIT");
-  const {DB: db} = context.env;
-  const result = await db.batch<TaskRow>([
-    db.prepare(ACTIVE_SELECT + " WHERE a.logical_model=? ORDER BY a.queued_at,a.task_uid").bind(slug),
-    db.prepare(`SELECT * FROM task_index WHERE logical_model=? AND (finished_at,task_uid)<(?,?)
-        ORDER BY finished_at DESC,task_uid DESC LIMIT ?`).bind(slug, finished, uid, limit + 1),
-  ]);
-  const [active, history] = result.map(entry => entry.results ?? []);
-  const has_more = history.length > limit;
-  const visible = history.slice(0, limit);
-  const last = visible.at(-1);
-  const truncated = !has_more && Boolean(await db.prepare(
-    "SELECT meta_value FROM system_meta WHERE meta_key='capacity_purged_before_ts'",
-  ).first("meta_value"));
-  const [activeTasks, historicalTasks] = await Promise.all([summaries(context, active), summaries(context, visible)]);
-  return {
-    active: byRun(activeTasks), history: byRun(historicalTasks), has_more,
-    next_cursor: has_more && last ? base64url(new TextEncoder().encode(JSON.stringify([slug, last.finished_at, last.task_uid]))) : null,
-    truncated_by_capacity: truncated, purged_notice: truncated ? "更早的记录已因容量清理" : null,
   };
 }
 

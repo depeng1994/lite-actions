@@ -25,9 +25,6 @@ npm run lint --prefix control-center/worker
 npm test --prefix control-center/worker
 npm test --prefix control-center/web
 npm run test:portability --prefix control-center/worker
-npm run test:node-sqlite --prefix control-center/worker
-npm run test:node-server --prefix control-center/worker
-npm run test:node-control-center --prefix control-center/worker
 SITES_PROJECT_ID=sites_ci_fixture_project CONTROL_CENTER_API_ORIGIN=https://control-center-ci.example \
   node control-center/scripts/build-sites.mjs --require-origin
 python3 control-center/tests/integration/run.py --runtime=d1

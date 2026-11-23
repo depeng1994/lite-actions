@@ -557,9 +557,9 @@ def integration(root, runtime="d1"):
             return 0, {}, {}
 
     def tasks():
-        status, body, _ = http("/public/models/vllm-ascend/runs")
+        status, body, _ = http("/public/workflows?model=vllm-ascend&history_limit=0")
         return (
-            [task for run in body.get("active", []) for task in run["tasks"]]
+            [task for run in body.get("active", []) for task in run["cases"]]
             if status == 200
             else []
         )
@@ -604,7 +604,7 @@ def integration(root, runtime="d1"):
         )
         assert status == 200 and "Secure" in headers["Set-Cookie"]
         cookie = headers["Set-Cookie"].split(";")[0]
-        active = until(
+        until(
             lambda: (
                 rows
                 if len(rows := tasks()) == 8
@@ -642,27 +642,75 @@ def integration(root, runtime="d1"):
             f"INT-01/03 ({runtime})  public/admin cache isolation, masking, workflows/cluster health, dual Worker census",
             flush=True,
         )
-        by_zone = [task for task in active if task["worker_id"] == "blue"]
-        target = max(by_zone, key=lambda task: task["queue_pos"])
-        for _ in range(3):
-            status, issued, _ = http(
-                f"/admin/tasks/{target['task_uid']}/move-up", payload={}, session=cookie
+        status, wf_state, _ = http(
+            "/admin/workflows?model=vllm-ascend&history_limit=0", session=cookie
+        )
+        assert status == 200, wf_state
+        blue_wfs = [
+            wf
+            for wf in wf_state["active"]
+            if any(c["worker_id"] == "blue" for c in wf["cases"])
+        ]
+        target_wf = max(blue_wfs, key=lambda wf: wf["sequence"])
+        applied_swaps = 0
+        for _ in range(16):
+            status, wf_now, _ = http(
+                "/admin/workflows?model=vllm-ascend&history_limit=0", session=cookie
             )
-            assert status == 202, issued
-
-            def command():
-                status, data, _ = http(
-                    "/admin/commands/" + issued["cmd_id"], session=cookie
+            assert status == 200, wf_now
+            current_target = next(
+                wf
+                for wf in wf_now["active"]
+                if (wf["provider"], wf["repo"], wf["run_id"], wf["attempt"])
+                == (
+                    target_wf["provider"],
+                    target_wf["repo"],
+                    target_wf["run_id"],
+                    target_wf["attempt"],
                 )
-                return data if status == 200 and data["status"] == "APPLIED" else None
+            )
+            if current_target["sequence"] == 1:
+                break
+            status, issued, _ = http(
+                "/admin/workflows/move-up",
+                payload={
+                    "provider": target_wf["provider"],
+                    "repo": target_wf["repo"],
+                    "run_id": target_wf["run_id"],
+                    "attempt": target_wf["attempt"],
+                    "queue_version": wf_now["queue_version"],
+                },
+                session=cookie,
+            )
+            if status == 409 and issued.get("code") == "QUEUE_VERSION_CONFLICT":
+                continue
+            assert status in (200, 202), issued
+            if status == 202:
 
-            until(command)
+                def op_done():
+                    s, data, _ = http(
+                        "/admin/workflow-priority-ops/" + issued["op_id"],
+                        session=cookie,
+                    )
+                    return (
+                        data
+                        if s == 200
+                        and data["status"] in ("APPLIED", "NOOP", "PARTIAL_FAILED")
+                        else None
+                    )
+
+                receipt = until(op_done)
+                assert receipt["status"] in ("APPLIED", "NOOP"), receipt
+                if receipt["status"] == "APPLIED":
+                    applied_swaps += 1
+        assert applied_swaps >= 3, applied_swaps
         assert (
             states["blue"].read()[cases["blue"][-1]]["queue_rank"]
             < states["blue"].read()[cases["blue"][0]]["queue_rank"]
         )
         print(
-            "INT-07  three standalone move-up commands applied in sequence", flush=True
+            "INT-07  workflow-level move-up (SWAP_WORKFLOW) applied in sequence",
+            flush=True,
         )
         node = pools["pool_blue"]["nodes"][0]
         op = {
@@ -744,12 +792,12 @@ def integration(root, runtime="d1"):
         until(offline, timeout=110)
         proxy.paused = False
         history = until(
-            lambda: http("/admin/models/vllm-ascend/runs", session=cookie)[1].get(
-                "history"
-            ),
+            lambda: http(
+                "/admin/workflows?model=vllm-ascend&history_limit=50", session=cookie
+            )[1].get("history"),
             timeout=65,
         )
-        finished = [task for run in history for task in run["tasks"]]
+        finished = [task for run in history for task in run["cases"]]
         assert len(finished) == 1 and finished[0]["status"] == "PASS", finished
         until(lambda: len(tasks()) == 17, timeout=55)
         required = {

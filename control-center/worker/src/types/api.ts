@@ -165,17 +165,6 @@ export interface TaskDetail extends TaskSummary {
   exit_code: number | null;
   cleanup_verified: boolean | null;
 }
-export interface RunGroup extends RunIdentity {
-  tasks: TaskSummary[];
-}
-export interface ModelRuns {
-  active: RunGroup[];
-  history: RunGroup[];
-  next_cursor: string | null;
-  has_more: boolean;
-  truncated_by_capacity: boolean;
-  purged_notice: string | null;
-}
 export type ClusterScope = "pool" | "node" | "device_group";
 export type ClusterOperation =
   | { op: "PAUSE" | "RESUME" | "DRAIN"; scope: ClusterScope; pool: string; host_id?: string; devices?: number[] }

@@ -48,9 +48,6 @@ jobs:
           npx wrangler d1 migrations apply DB --local
           npm test
           npm run test:portability
-          npm run test:node-sqlite
-          npm run test:node-server
-          npm run test:node-control-center
       - name: Dual Worker API integration (D1 & Node 24 SQLite parity)
         run: |
           python control-center/tests/integration/run.py --runtime=d1

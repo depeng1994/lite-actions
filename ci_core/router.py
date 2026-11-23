@@ -381,12 +381,7 @@ class Router:
         for entry in self.control.commands():
             command = entry["cmd_id"]
             try:
-                if entry["cmd_type"] == "MOVE_UP":
-                    self.control.complete(
-                        command,
-                        **self.state.move_up(entry["payload"]["task_key"], command),
-                    )
-                elif entry["cmd_type"] == "SWAP_WORKFLOW":
+                if entry["cmd_type"] == "SWAP_WORKFLOW":
                     self.control.complete(
                         command,
                         **self.state.swap_workflow(entry["payload"], command),

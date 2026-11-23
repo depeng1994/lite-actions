@@ -39,7 +39,9 @@ class ControlTests(unittest.TestCase):
             "events": {"need_snapshot": False},
             "snapshots": {"complete": True},
             "commands": {
-                "commands": [{"cmd_id": "test", "cmd_type": "MOVE_UP", "payload": {}}]
+                "commands": [
+                    {"cmd_id": "test", "cmd_type": "SWAP_WORKFLOW", "payload": {}}
+                ]
             },
             "command-receipts": {"ok": True},
         }

@@ -434,68 +434,6 @@ class JobState:
                 self._write(current)
                 return result
 
-    def move_up(self, key: str, command: str) -> dict:
-        """Commit adjacent swap and command outcome in the same generation."""
-        with _MUTEX:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with self.path.with_suffix(".lock").open("a+b") as lock:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-                current = self._read_raw()
-                meta = current.setdefault(
-                    _META,
-                    {
-                        "phase": "REPORTED",
-                        "next_sequence": 1
-                        + max(
-                            (r.get("admission_seq", 0) for r in current.values()),
-                            default=0,
-                        ),
-                    },
-                )
-                commands = meta.setdefault("control_moves", {})
-                if command in commands:
-                    return commands[command]
-                record = current.get(key, {})
-                pool, kind = queue_identity(record)
-                if record.get("phase") != "QUEUED" or kind not in {
-                    "train",
-                    "npu_smoke",
-                }:
-                    result = {"status": "CONFLICT", "err": "TASK_NOT_QUEUED"}
-                else:
-                    queue = [
-                        pair
-                        for pair in ordered_queued(current)
-                        if queue_identity(pair[1]) == (pool, kind)
-                    ]
-                    pos = next(
-                        index
-                        for index, (candidate, _) in enumerate(queue)
-                        if candidate == key
-                    )
-                    if not pos:
-                        result = {"status": "NOOP", "pos": 0}
-                    else:
-                        lower = max(
-                            (
-                                r.get("queue_rank", 0)
-                                for r in current.values()
-                                if queue_identity(r) == (pool, kind)
-                            ),
-                            default=0,
-                        )
-                        for rank, (_, other) in enumerate(queue, lower + 1):
-                            other["queue_rank"] = rank
-                        other = queue[pos - 1][1]
-                        record["queue_rank"], other["queue_rank"] = (
-                            other["queue_rank"],
-                            record["queue_rank"],
-                        )
-                        result = {"status": "APPLIED", "pos": pos - 1}
-                commands[command] = result
-                self._write(current)
-                return result
-
     def update_many(self, keys: list[str], **fields) -> None:
         with _MUTEX:
             self.path.parent.mkdir(parents=True, exist_ok=True)
