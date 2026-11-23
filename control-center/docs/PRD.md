@@ -18,8 +18,8 @@
 | 集群管理 | 新增、暂停调度、恢复调度、先排空再删除 Pool / 节点 / 设备组 | 配置带版本号，可回滚；Pool `enabled` 与暂停调度语义统一 |
 | 账号 | Super + 普通管理员 | 密钥只显示一次；会话 7 天 |
 | 刷新 | 页面数据自动刷新 | 页面 30 秒；公开接口缓存 10 秒；Worker 心跳 30 秒；90 秒没心跳算离线 |
-| 存储 | 全部在一个 SQLite/D1 单库里 | 近 30 天热数据，1 年内冷数据；容量超 80% 自动删最早的记录 |
-| 托管与迁移 | 初期使用 ChatGPT Sites 前端代理 + Cloudflare Workers/D1 免费后端部署，后期可迁至个人服务器 | 全量前后端与迁移代码合入 GitHub 仓；Sites 仅托管静态页面与同源 `/api/v1/*` 代理（`d1: null`, `r2: null`，部署时注入 `CONTROL_CENTER_API_ORIGIN` 与 `SITES_PROJECT_ID`）；零新增费用，由 `portability_intercept` DT 拦截防平台锁定 |
+| 存储 | 全部在一个 SQLite/SQLite 单库里 | 近 30 天热数据，1 年内冷数据；容量超 80% 自动删最早的记录 |
+| 托管与迁移 | 初期使用 lite-actions.ooguy.com 页面与 API 同源部署 + Node.js 24 + SQLite 后端部署，后期可迁至个人服务器 | 全量前后端与迁移代码合入 GitHub 仓；server 仅托管静态页面与同源 `/api/v1/*` 代理（`Node.js 24 + SQLite，部署时注入 `CONTROL_CENTER_ORIGIN` 与 `CONTROL_CENTER_DOMAIN`）；零新增费用，由 `portability_intercept` DT 拦截防平台锁定 |
 | 上传报文 | Worker 发往网站的全部上传请求及 Yellow 平台写请求严格控包 | 单次整包 < 2,000 字节（严于 2 KB），由 `upload_intercept` UT 强制拦截校验 |
 
 ## 2. 边界
@@ -27,7 +27,7 @@
 - **网站挂了，CI 照常跑。** Blue、Yellow 仍然自己从 GitHub/GitCode 拉任务、调度、回报。网站只做汇总、取消和下发命令。
 - **网站不调度。** 谁先跑、分哪组卡，全部由 Unified Router 决定。网站不写第二套选单算法。
 - **Worker 只出不进。** 所有通信由 Worker 主动发 HTTPS，Worker 不开入站端口。
-- **初期 ChatGPT Sites 前端代理 + Cloudflare Workers/D1 免费后端，代码全入 GitHub 仓、支持零改动迁至个人服务器。** 前后端源码、数据库迁移、Sites 打包脚本与个人服务器运行入口全部合入 GitHub 主仓；ChatGPT Sites 负责托管静态页面及同源 `/api/v1/*` 反代（部署时注入 `CONTROL_CENTER_API_ORIGIN` 与 `SITES_PROJECT_ID`，不绑定 D1/R2），后端运行于 Cloudflare Workers Free + D1 Free；业务核心仅依赖标准 Web Fetch 与 SQLite 抽象（`SqlStore`），不强绑定单一托管商专有 API，支持零业务代码改动迁移至个人服务器（Node.js 24 + 内置 `node:sqlite`）。
+- **初期 lite-actions.ooguy.com 页面与 API 同源部署 + Node.js 24 + SQLite 后端，代码全入 GitHub 仓、支持零改动迁至个人服务器。** 前后端源码、数据库迁移、前端与服务打包脚本与个人服务器运行入口全部合入 GitHub 主仓；lite-actions.ooguy.com 负责托管静态页面及同源 `/api/v1/*` 反代（部署时注入 `CONTROL_CENTER_ORIGIN` 与 `CONTROL_CENTER_DOMAIN`，不绑定 SQLite/R2），后端运行于 personal server Node.js 24 + SQLite；业务核心仅依赖标准 Web Fetch 与 SQLite 抽象（`SqlStore`），不强绑定单一托管商专有 API，支持零业务代码改动迁移至个人服务器（Node.js 24 + 内置 `node:sqlite`）。
 - **零新增费用。** 不开 R2，不开付费功能。免费额度用完就当天不可用，不自动升级。
 - **不公开敏感信息。** 原始日志、诊断行、平台 Token、Worker 密钥、SSH/代理凭据、容器 ID、内网 `node_ip` 不出现在任何公开接口。
 
@@ -43,8 +43,8 @@ flowchart LR
     subgraph Yellow区
         WY[Yellow Worker] --> NY[A3/A5 节点]
     end
-    subgraph 托管网站["托管网站（初期 ChatGPT Sites / 可迁个人服务器）"]
-        S[网站服务<br/>页面 + API] --> D[(单库 SQLite / D1)]
+    subgraph 托管网站["托管网站（初期 lite-actions.ooguy.com / 可迁个人服务器）"]
+        S[网站服务<br/>页面 + API] --> D[(单库 SQLite / SQLite)]
     end
     WB <-->|拉任务/回报结果/查 run 状态| GH
     WB <-->|拉任务/回报结果/查 run 状态| GC
@@ -170,7 +170,7 @@ sequenceDiagram
 
 ## 6. 数据存储与留存
 
-只用一个 SQLite 兼容单库（初期托管于 ChatGPT Sites / D1 Free，单库上限 500 MB；后期迁移个人服务器时直接使用同一套迁移 SQL 的本地单文件 SQLite）。
+只用一个 SQLite 兼容单库（初期托管于 lite-actions.ooguy.com / SQLite Free，单库上限 500 MB；后期迁移个人服务器时直接使用同一套迁移 SQL 的本地单文件 SQLite）。
 
 | 数据 | 内容 |
 |---|---|
@@ -190,7 +190,7 @@ flowchart LR
 - 维护任务（支持平台 Cron、个人服务器定时器，以及无 Cron 托管下的心跳/写流量节流惰性触发）把满 30 天的明细压进冷数据，写入并校验成功后再删热数据；同时删除满 1 年的记录。
 - 容量超过 80%（默认 400 MB，个人服务器可按配置上限调整），从最早结束的完整 Workflow 开始删（摘要、索引、明细一起），删到 70% 以下并告警。活动任务、未结束的命令和取消单、账号、审计不参与滚动删除。
 - 历史列表翻到底，如果有被删掉的数据，提示“更早的记录已因容量清理”。
-- 免费托管日写额度（如 D1 10 万行）用完：网站拒绝管理操作；Worker 的事件留在本地，之后补发；CI 不受影响。
+- 免费托管日写额度（如 SQLite 10 万行）用完：网站拒绝管理操作；Worker 的事件留在本地，之后补发；CI 不受影响。
 
 ## 7. 取消 Workflow
 
@@ -369,13 +369,13 @@ sequenceDiagram
 | 取消 | GitHub 和 GitCode 各一个含原生作业、两区排队和在途用例的 run，一次取消后 2 分钟内全部停下并释放设备。覆盖：取消后才被发现的用例、旧 attempt、重复点击、Worker 与网站断开但能访问平台、清理失败、平台取消接口失败、GitHub `always()` 作业需 force-cancel。 |
 | 插队 | GitHub 和 GitCode 均以 Workflow 为单位提优。验证序号 3 与 2 交换、再次点击将 2 与 1 交换、队首置灰、筛选后仍按真实前一位交换。覆盖跨 Blue/Yellow、共享和不共享资源、晚发现用例、重复与过期请求、单端离线；在途租约及多机组合保持原状。 |
 | 集群 | 全部已配置节点（含暂停调度 / `enabled: false` 的 Pool 与节点）均执行 2 分钟在线探测；同一组连续 4 次查不到卡仍显示探测异常，第 5 次显示已离线，期间最近在线时间保持上次成功值；再次查到全部卡恢复在线并刷新时间。未知占用标红，暂停调度/排空中标黄且与在线状态并列。Pool `enabled: false` 与节点/组 `paused: true` 语义统一（均只停新租约、排队不报错）。暂停 16P 节点的一组 8P：该组及包含它的组合不发新租约，另一组正常；在途任务用旧配置跑完。验证「先排空、再删除」两步闭环：排空中可恢复，活动租约/排队引用/隔离未清零时拒绝第二步删除，清零后删除生效。覆盖：粘贴 preflight 片段新增节点、两 Worker 只有一端生效、回滚、断网 30 分钟后重连对账去重、Worker 重启和代码自动更新后仍用最新生效版本。 |
-| 可迁移性与 Sites 打包（`portability_intercept` DT） | `control-center/worker/tests/portability-intercept.test.ts` 作为 CI 必跑拦截门禁：① 源码静态扫描业务核心目录，禁止直接调用平台专有 API（如 `crypto.subtle.timingSafeEqual`、`CF-Connecting-IP`、`caches.default`）、禁止直接引入 `@cloudflare/*`/`node:*`、禁止直接引用 `D1Database`/`D1PreparedStatement`、禁止硬编码托管域名或个人 `project_id`、禁止启用 R2/付费绑定；② 同一份核心代码与同一份 SQLite 迁移文件，同时在 Cloudflare Workers/D1 运行时（`sites-parity.test.ts`）与个人服务器 Node.js 24 + `node:sqlite` 运行时跑通全套核心链路（静态 SPA 回退、公开脱敏、管理员登录与防爆破 IP 识别、无 Cron 心跳推进取消跟踪、冷块 gzip BLOB 读写与容量检测）；③ 校验 GitHub 仓内完整源码一键产出标准 ChatGPT Sites 前端代理产物包（`dist/client/index.html`、`dist/server/index.js`、`dist/.openai/hosting.json` 且 `d1: null`、`r2: null`），运行时由 `CONTROL_CENTER_API_ORIGIN` 反代同源 `/api/v1/*`，前端零硬编码绝对后端地址、零仓外私有路径引用。 |
+| 可迁移性与 前端与服务打包（`portability_intercept` DT） | `control-center/worker/tests/node-runtime.test.ts` 作为 CI 必跑拦截门禁：① 源码静态扫描业务核心目录，禁止直接调用平台专有 API（如 `crypto.subtle.timingSafeEqual`、`X-Forwarded-For`、`caches.default`）、禁止直接引入 `host-specific packages`/`node:*`、禁止直接引用 `SQLiteDatabase`/`SQLiteStatement`、禁止硬编码托管域名或个人 `domain`、禁止启用 R2/付费绑定；② 同一份核心代码与同一份 SQLite 迁移文件，同时在 Node.js 24/SQLite 运行时（`node-runtime.test.ts`）与个人服务器 Node.js 24 + `node:sqlite` 运行时跑通全套核心链路（静态 SPA 回退、公开脱敏、管理员登录与防爆破 IP 识别、无 Cron 心跳推进取消跟踪、冷块 gzip BLOB 读写与容量检测）；③ 校验 GitHub 仓内完整源码一键产出标准 lite-actions.ooguy.com 前端与 API 同源部署产物包（`dist/client/index.html`、`dist/server/index.js`、`dist/control-center/deploy/Caddyfile.personal-server.example` 且 Node.js 24 + SQLite），运行时由 `CONTROL_CENTER_ORIGIN` 反代同源 `/api/v1/*`，前端零硬编码绝对后端地址、零仓外私有路径引用。 |
 
 ## 12. 上线前提与待定事项
 
 上线前需要：
 
-1. **初期 ChatGPT Sites 前端代理 + CF Worker/D1 架构核验**：确认 ChatGPT Sites 部署时通过环境变量注入 `CONTROL_CENTER_API_ORIGIN` 与 `SITES_PROJECT_ID`（`.openai/hosting.json` 保持 `d1: null`、`r2: null`），同源代理 `/api/v1/*` 至 Cloudflare Workers Free + D1 Free 后端；后期迁移至个人服务器（Node.js 24 + `node:sqlite`）时以同一套核心代码与迁移文件零业务返工切换。
+1. **初期 lite-actions.ooguy.com 前端与 API 同源部署 + Node.js/SQLite 架构核验**：确认 lite-actions.ooguy.com 部署时通过环境变量注入 `CONTROL_CENTER_ORIGIN` 与 `CONTROL_CENTER_DOMAIN`（`control-center/deploy/Caddyfile.personal-server.example` 保持 Node.js 24 + SQLite），同源代理 `/api/v1/*` 至 personal server Node.js 24 + SQLite 后端；后期迁移至个人服务器（Node.js 24 + `node:sqlite`）时以同一套核心代码与迁移文件零业务返工切换。
 2. 真实 Yellow 用网站域名完成心跳、取令、拉配置、回执，并满足出口预算（取决于待定 1）。
 3. 在装了 App 的 GitHub 测试仓、配好 Token 的 GitCode 测试仓，各完成一次含原生作业和 Worker 用例的整次取消。
 4. 在实际免费配置上验证容量水位、滚动删除和额度耗尽行为。
@@ -384,5 +384,5 @@ sequenceDiagram
 待定：
 
 1. **Yellow 出口策略。** 现在 Yellow 只放行 GitHub/GitCode API，单个请求必须小于 2,000 字节，写请求令牌桶上限 4 个，还有每日上传字节总额。要定：网站域名能否加入放行名单；网站流量和平台回报是否共用每日额度（共用的话给 CI 回报留保底，超水位先停网站上报）。协议已按小报文设计，结论不影响接口。
-2. **域名与托管切换。** 初期使用 ChatGPT Sites 分配域名直接部署；后期可无痛迁移至个人服务器自有域名（或 `workers.dev`）。Worker 侧仅修改配置中的 `control_center.url`，零代码变更；边缘/反代缓存按实际域名实测确认。
+2. **域名与托管切换。** 初期使用 lite-actions.ooguy.com 分配域名直接部署；后期可无痛迁移至个人服务器自有域名（或 `lite-actions.ooguy.com`）。Worker 侧仅修改配置中的 `control_center.url`，零代码变更；边缘/反代缓存按实际域名实测确认。
 3. **72 小时排队的实际上限。** 模型仓的 Waiter job 如果跑在 GitHub 托管 runner 上，单 job 最长 6 小时；Waiter 结束、run 结束后，Worker 会把排队的 case 取消。要让 train 真的能排 72 小时，Waiter 需要跑在自托管 runner 上，或改等待方式。

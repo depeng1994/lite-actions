@@ -6,9 +6,9 @@ export async function gzip(text: string): Promise<ArrayBuffer> {
 }
 
 /**
- * D1 returns BLOB columns as ArrayBuffer in production and as a byte array in
- * some local test/runtime adapters. Keep the conversion at the boundary so
- * callers do not have to guess which representation they received.
+ * SQLite adapters may return BLOB columns as ArrayBuffer or a byte array.
+ * Keep the conversion at the boundary so callers do not have to guess which
+ * representation they received.
  */
 export const blobBuffer = toArrayBuffer;
 

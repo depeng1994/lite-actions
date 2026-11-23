@@ -62,7 +62,7 @@ async function toRequest(request: IncomingMessage, body: Buffer): Promise<Reques
     else if (value != null) headers.set(key, value);
   }
   return new Request(url, {method: request.method, headers,
-    body: ["GET", "HEAD"].includes(request.method ?? "GET") ? undefined : body});
+    body: ["GET", "HEAD"].includes(request.method ?? "GET") ? undefined : new Uint8Array(body)});
 }
 
 async function writeResponse(response: Response, output: ServerResponse) {

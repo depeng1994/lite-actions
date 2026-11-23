@@ -30,7 +30,7 @@ async function coldGroup(db: SqlStore, group: ArchiveGroup, now: number) {
   const entries: [string, unknown][] = [];
   let rawBytes = 0;
   const encoder = new TextEncoder();
-  // A D1 row including the compressed BLOB must stay under 2 MB.
+  // A SQLite row including the compressed BLOB must stay under 2 MB.
   for (const row of rows) {
     rawBytes += encoder.encode(row.task_uid + row.detail_json).length + 6;
     if (rawBytes > 1400000) break;
@@ -136,7 +136,7 @@ export async function databaseSize(db: SqlStore): Promise<number> {
 
 export async function capacity(context: Context, probe: SizeProbe = databaseSize) {
   const db = context.env.DB;
-  const limit = Number(context.env.DB_LIMIT_BYTES ?? context.env.D1_LIMIT_BYTES ?? DEFAULT_CAPACITY);
+  const limit = Number(context.env.DB_LIMIT_BYTES ?? DEFAULT_CAPACITY);
   if (!Number.isFinite(limit) || limit <= 0) throw new Error("INVALID_DB_LIMIT_BYTES");
   const flags = await db.prepare(`SELECT meta_key,meta_value FROM system_meta WHERE
     meta_key IN ('last_db_size_bytes','capacity_cleanup_pending')`).all<{meta_key: string; meta_value: string}>();

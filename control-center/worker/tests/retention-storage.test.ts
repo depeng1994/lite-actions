@@ -60,7 +60,7 @@ test("rolls oldest summaries and their details, keeps protected data and marks h
   const first = await db.prepare("SELECT task_uid FROM task_index ORDER BY finished_at,task_uid LIMIT 1").first("task_uid");
   let probes = 0;
   const size = async () => (++probes === 1 ? 810 : 690);
-  await capacity({...context, env: {...bindings, D1_LIMIT_BYTES: "1000"}}, size);
+  await capacity({...context, env: {...bindings, DB_LIMIT_BYTES: "1000"}}, size);
   expect(probes).toBe(2);
   expect(await db.prepare("SELECT task_uid FROM task_index WHERE task_uid=?").bind(first).first("task_uid")).toBeNull();
   expect(await db.prepare("SELECT status FROM commands WHERE cmd_id='protected'").first("status")).toBe("PENDING");
@@ -85,13 +85,13 @@ test("quota rejection is read-safe, prevents managed writes and rolls over UTC",
   expect((await request("/admin/users", {cookie, data: {username: "recovered"}})).status).toBe(201);
 });
 
-test("local D1 size_after crosses real storage watermarks", async () => {
+test("local SQLite size_after crosses real storage watermarks", async () => {
   await seed(440, "t_sized_", i => now - i);
   await db.prepare(`UPDATE task_details_hot SET detail_json=json_object('padding',hex(randomblob(1800)))
     WHERE task_uid LIKE 't_sized_%'`).run();
   const before = await databaseSize(db);
   const limit = Math.ceil(before / .82);
-  await capacity({...context, env: {...bindings, D1_LIMIT_BYTES: String(limit)}});
+  await capacity({...context, env: {...bindings, DB_LIMIT_BYTES: String(limit)}});
   const after = await databaseSize(db);
   expect(after).toBeLessThan(.7 * limit);
   expect(await db.prepare("SELECT count(*) AS n FROM task_index WHERE task_uid LIKE 't_sized_%'").first("n")).toBeGreaterThan(0);

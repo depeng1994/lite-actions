@@ -158,15 +158,18 @@ class UploadTests(unittest.TestCase):
 
     def intercept(self, responder):
         wire = UploadInterceptor(responder)
-        self.enterContext(patch("urllib.request.build_opener", side_effect=wire.build))
-        self.enterContext(patch("urllib.request.urlopen", side_effect=wire.open))
-        self.enterContext(
+        patches = [
+            patch("urllib.request.build_opener", side_effect=wire.build),
+            patch("urllib.request.urlopen", side_effect=wire.open),
             patch.object(
                 http.client.HTTPConnection,
                 "connect",
                 side_effect=AssertionError("unexpected socket"),
-            )
-        )
+            ),
+        ]
+        for active in patches:
+            active.start()
+            self.addCleanup(active.stop)
         return wire
 
     def test_static_registry_and_negative_checks(self):

@@ -1,59 +1,45 @@
-import {env} from "cloudflare:workers";
-import {applyD1Migrations} from "cloudflare:test";
-import migration from "../migrations/0001_init.sql?raw";
-import healthMigration from "../migrations/0002_v15_health.sql?raw";
-import drainMigration from "../migrations/0003_v15_cluster_drain.sql?raw";
-import priorityMigration from "../migrations/0004_v15_workflow_priority.sql?raw";
-import metadataMigration from "../migrations/0005_v15_workflow_metadata.sql?raw";
-import workflowRunsMigration from "../migrations/0006_v15_workflow_runs.sql?raw";
-import taskStartedAtMigration from "../migrations/0007_v15_task_started_at.sql?raw";
-import runNumberMigration from "../migrations/0008_v15_run_number.sql?raw";
-import runDisplayTitleMigration from "../migrations/0009_v15_run_display_title.sql?raw";
-import partialAppliedMigration from "../migrations/0010_v15_partial_applied.sql?raw";
-import {createD1Store} from "../src/adapters/d1";
+import {DatabaseSync} from "node:sqlite";
+import {mkdtempSync, readFileSync, readdirSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
+import {handleRequest} from "../src/app";
+import {createNodeSqliteStore} from "../src/adapters/nodeSqlite";
 import type {Env} from "../src/router";
-import worker from "../src/index";
 
-export const rawDb = (env as unknown as {DB: D1Database}).DB;
-export const db = createD1Store(rawDb);
+const directory = mkdtempSync(join(tmpdir(), "lite-actions-control-center-test-"));
+const sqlitePath = join(directory, "control-center.sqlite");
+const rawDb = new DatabaseSync(sqlitePath);
+rawDb.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;");
+export const db = createNodeSqliteStore(sqlitePath);
 export const bindings: Env = {DB: db, SUPER_SECRET: "test-super-secret", KEY_PEPPER: "test-pepper"};
-export const workerBindings = {DB: rawDb, SUPER_SECRET: "test-super-secret", KEY_PEPPER: "test-pepper"};
-export const migrate = () => applyD1Migrations(rawDb, [{
-  name: "0001_init.sql", queries: migration.split(";").filter(query => query.trim()),
-}, {
-  name: "0002_v15_health.sql", queries: healthMigration.split(";").filter(query => query.trim()),
-}, {
-  name: "0003_v15_cluster_drain.sql", queries: drainMigration.split(";").filter(query => query.trim()),
-}, {
-  name: "0004_v15_workflow_priority.sql", queries: priorityMigration.split(";").filter(query => query.trim()),
-}, {
-  name: "0005_v15_workflow_metadata.sql", queries: metadataMigration.split(";").filter(query => query.trim()),
-}, {
-  name: "0006_v15_workflow_runs.sql", queries: workflowRunsMigration.split(";").filter(query => query.trim()),
-}, {
-  name: "0007_v15_task_started_at.sql", queries: taskStartedAtMigration.split(";").filter(query => query.trim()),
-}, {
-  name: "0008_v15_run_number.sql", queries: runNumberMigration.split(";").filter(query => query.trim()),
-}, {
-  name: "0009_v15_run_display_title.sql", queries: runDisplayTitleMigration.split(";").filter(query => query.trim()),
-}, {
-  name: "0010_v15_partial_applied.sql", queries: partialAppliedMigration.split(";").filter(query => query.trim()),
-}], "d1_test_migrations");
+export const workerBindings = bindings;
+
+let migrated = false;
+export async function migrate() {
+  if (migrated) return;
+  for (const file of readdirSync(new URL("../migrations/", import.meta.url)).filter(name => name.endsWith(".sql")).sort()) {
+    rawDb.exec(readFileSync(new URL(`../migrations/${file}`, import.meta.url), "utf8"));
+  }
+  migrated = true;
+}
+
 export async function request(path: string, opts: {
   method?: string; data?: unknown; cookie?: string; headers?: HeadersInit;
-} = {}, config: typeof workerBindings | Env = workerBindings) {
+} = {}, config: Env = bindings) {
   const headers = new Headers(opts.headers);
   if (opts.cookie) headers.set("Cookie", opts.cookie);
-  return worker.fetch(new Request("https://example.test/api/v1" + path, {
+  const response = await handleRequest(new Request("https://example.test/api/v1" + path, {
     method: opts.method ?? (opts.data === undefined ? "GET" : "POST"),
     body: opts.data === undefined ? undefined : JSON.stringify(opts.data),
     headers,
-  }), config);
+  }), config, {clientIp: headers.get("X-Test-Client-IP") || "192.0.2.1"});
+  return response;
 }
 
 export async function signIn(username = "super", secret = "test-super-secret", ip = "192.0.2.1") {
-  return request("/auth/login", {data: {username, secret}, headers: {"CF-Connecting-IP": ip}});
+  return request("/auth/login", {data: {username, secret}, headers: {"X-Test-Client-IP": ip}});
 }
+
 export function sessionCookie(response: Response) {
   return response.headers.get("Set-Cookie")!.split(";")[0];
 }

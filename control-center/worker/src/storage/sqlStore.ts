@@ -1,7 +1,7 @@
 /** Runtime-neutral SQL and asset primitives used across all business services.
  *
- * Cloudflare D1 and Node 24's built-in node:sqlite both satisfy SqlStore so
- * core application code stays free of provider-specific types and APIs.
+ * Node 24's built-in node:sqlite satisfies SqlStore so core application code
+ * stays free of provider-specific types and APIs.
  */
 export interface SqlRunResult {
   meta: {changes: number; last_row_id?: number; size_after?: number};
@@ -29,7 +29,7 @@ export interface StaticAssets {
   fetch(request: Request): Promise<Response>;
 }
 
-/** Normalize BLOB values returned by D1, SQLite adapters, or test doubles. */
+/** Normalize BLOB values returned by SQLite adapters or test doubles. */
 export function toArrayBuffer(value: unknown): ArrayBuffer {
   if (value instanceof ArrayBuffer) return value;
   if (ArrayBuffer.isView(value)) {

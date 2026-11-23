@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Disposable dual-Worker verification against Wrangler D1 with a TLS wire capture."""
+"""Disposable dual-Worker verification against the Node 24 control plane."""
 
 import hashlib
 import hmac
@@ -404,7 +404,7 @@ def fini(proc):
             proc.wait()
 
 
-def integration(root, runtime="d1"):
+def integration(root):
     pools = workspace(root)
     cert, key = root / "cert.pem", root / "private.key"
     subprocess.run(
@@ -438,8 +438,6 @@ def integration(root, runtime="d1"):
     python = sys.executable
     config = encode(pools)
     sha = hashlib.sha256(config.encode()).hexdigest()
-    wrangler_cfg = root / "wrangler-config"
-    wrangler_cfg.mkdir(exist_ok=True)
     worker_hashes = {
         f"WORKER_{zone.upper()}_KEY_HASH": hmac.new(
             PEPPER.encode(), token.encode(), hashlib.sha256
@@ -449,90 +447,36 @@ def integration(root, runtime="d1"):
     environment = os.environ | {
         "LITE_ACTIONS_CONTROL_CA_FILE": str(cert),
         "NODE_ENV": "test",
-        "XDG_CONFIG_HOME": str(wrangler_cfg),
-        "WRANGLER_LOG": "none",
+        "CONTROL_CENTER_DOMAIN": "lite-actions.ooguy.com",
     }
-    if runtime == "d1":
-        wrangler = [str(BACKEND / "node_modules/.bin/wrangler")]
-        storage = ["--local", "--persist-to", str(root / "d1")]
-        migration = root / "seed.sql"
-        migration.write_text(
-            f"INSERT INTO pools_configs(revision,sha256,config_json,created_by,created_at) VALUES(1,'{sha}','{config}','fixture',1);"
-        )
-        subprocess.run(
-            [*wrangler, "d1", "migrations", "apply", "DB", *storage],
-            cwd=BACKEND,
-            env=environment,
-            check=True,
-            capture_output=True,
-        )
-        subprocess.run(
-            [
-                *wrangler,
-                "d1",
-                "execute",
-                "DB",
-                *storage,
-                "--file",
-                str(migration),
-                "--yes",
-            ],
-            cwd=BACKEND,
-            env=environment,
-            check=True,
-            capture_output=True,
-        )
-        key_args = [
-            item
-            for env_name, env_val in worker_hashes.items()
-            for item in ["--var", f"{env_name}:{env_val}"]
-        ]
-        backend_cmd = [
-            *wrangler,
-            "dev",
-            *storage,
-            "--ip",
-            "127.0.0.1",
-            "--port",
-            str(port),
-            "--var",
-            "KEY_PEPPER:" + PEPPER,
-            "--var",
-            "SUPER_SECRET:" + SUPER,
-            *key_args,
-        ]
-        backend_env = environment
-    elif runtime == "node":
-        import sqlite3
+    import sqlite3
 
-        db_path = root / "control-center.sqlite"
-        conn = sqlite3.connect(db_path)
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA foreign_keys=ON;")
-        for sql_file in sorted((BACKEND / "migrations").glob("*.sql")):
-            conn.executescript(sql_file.read_text())
-        conn.execute(
-            "INSERT INTO pools_configs(revision,sha256,config_json,created_by,created_at) VALUES(1,?,?,?,1)",
-            (sha, config, "fixture"),
-        )
-        conn.commit()
-        conn.close()
-        backend_cmd = [
-            "node",
-            "--experimental-strip-types",
-            str(BACKEND / "scripts/start-node-server.mjs"),
-        ]
-        backend_env = environment | {
-            "HOST": "127.0.0.1",
-            "PORT": str(port),
-            "DB_PATH": str(db_path),
-            "KEY_PEPPER": PEPPER,
-            "SUPER_SECRET": SUPER,
-            "DISABLE_TIMERS": "1",
-            **worker_hashes,
-        }
-    else:
-        raise ValueError(f"Unsupported runtime: {runtime}")
+    db_path = root / "control-center.sqlite"
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA foreign_keys=ON;")
+    for sql_file in sorted((BACKEND / "migrations").glob("*.sql")):
+        conn.executescript(sql_file.read_text())
+    conn.execute(
+        "INSERT INTO pools_configs(revision,sha256,config_json,created_by,created_at) VALUES(1,?,?,?,1)",
+        (sha, config, "fixture"),
+    )
+    conn.commit()
+    conn.close()
+    backend_cmd = [
+        "node",
+        "--experimental-strip-types",
+        str(BACKEND / "scripts/start-node-server.mjs"),
+    ]
+    backend_env = environment | {
+        "HOST": "127.0.0.1",
+        "PORT": str(port),
+        "DB_PATH": str(db_path),
+        "KEY_PEPPER": PEPPER,
+        "SUPER_SECRET": SUPER,
+        "DISABLE_TIMERS": "1",
+        **worker_hashes,
+    }
     states = {zone: JobState(root / zone) for zone in ZONES}
     cases = {
         zone: [seed_case(states[zone], zone, i) for i in range(4)] for zone in ZONES
@@ -639,7 +583,7 @@ def integration(root, runtime="d1"):
             pub_cluster
         )
         print(
-            f"INT-01/03 ({runtime})  public/admin cache isolation, masking, workflows/cluster health, dual Worker census",
+            "INT-01/03 (node)  public/admin cache isolation, masking, workflows/cluster health, dual Worker census",
             flush=True,
         )
         status, wf_state, _ = http(
@@ -823,20 +767,17 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--worker":
         worker(sys.argv[2], Path(sys.argv[3]), sys.argv[4])
     else:
-        runtime = "d1"
         args = sys.argv[1:]
         filtered = []
         for arg in args:
-            if arg.startswith("--runtime="):
-                runtime = arg.split("=", 1)[1]
-            else:
+            if not arg.startswith("--runtime="):
                 filtered.append(arg)
         if filtered:
             destination = Path(filtered[0]).resolve()
             destination.mkdir(parents=True, exist_ok=False)
-            integration(destination, runtime=runtime)
+            integration(destination)
         else:
             with tempfile.TemporaryDirectory(
-                prefix=f"lite-control-integration-{runtime}-"
+                prefix="lite-control-integration-node-"
             ) as scratch:
-                integration(Path(scratch), runtime=runtime)
+                integration(Path(scratch))

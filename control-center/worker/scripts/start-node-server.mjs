@@ -29,7 +29,7 @@ const {handleRequest, runMaintenance} = await import(pathToFileURL(appModulePath
 if (tempBundleDir) rmSync(tempBundleDir, {recursive: true, force: true});
 
 const dbPath = path.resolve(process.env.DB_PATH || path.join(workerRoot, "control-center.sqlite"));
-const staticDir = process.env.STATIC_DIR ? path.resolve(process.env.STATIC_DIR) : path.resolve(workerRoot, "../web/dist/client");
+const staticDir = process.env.STATIC_DIR ? path.resolve(process.env.STATIC_DIR) : path.resolve(workerRoot, "../web/dist");
 const port = Number(process.env.PORT || 8788);
 const host = process.env.HOST || "127.0.0.1";
 

@@ -4,7 +4,7 @@ import type {SqlRunResult, SqlRows, SqlStatement, SqlStore} from "../storage/sql
 /**
  * Node 24 adapter for the runtime-neutral SqlStore boundary.
  *
- * The adapter deliberately keeps the same async surface as D1. SQLite calls
+ * The adapter deliberately keeps the same async surface as the service API. SQLite calls
  * are synchronous inside a request, while callers can continue to await the
  * boundary without changing business services.
  */
@@ -81,9 +81,14 @@ export class NodeSqliteStore implements SqlStore {
   }
 
   async dbSizeBytes(): Promise<number> {
-    const pageCount = Number((this.database.prepare("PRAGMA page_count").get() as {page_count: number}).page_count);
-    const pageSize = Number((this.database.prepare("PRAGMA page_size").get() as {page_size: number}).page_size);
-    return pageCount * pageSize;
+    try {
+      const row = this.database.prepare("SELECT COALESCE(SUM(pgsize), 0) AS bytes FROM dbstat").get() as {bytes: number};
+      return Number(row.bytes);
+    } catch {
+      const pageCount = Number((this.database.prepare("PRAGMA page_count").get() as {page_count: number}).page_count);
+      const pageSize = Number((this.database.prepare("PRAGMA page_size").get() as {page_size: number}).page_size);
+      return pageCount * pageSize;
+    }
   }
 
   close(): void {

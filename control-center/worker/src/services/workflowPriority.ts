@@ -205,7 +205,7 @@ export async function moveWorkflowUp(context: Context, input: Record<string, unk
 
   // Statement 0 enforces the optimistic lock via the NOT NULL constraint on
   // workflow_queue_meta.queue_version so any concurrent version bump rolls back
-  // the entire D1/SQLite batch without leaving dirty commands or audits.
+  // the entire SQLite batch without leaving dirty commands or audits.
   try {
     await db.batch([
       db.prepare(`UPDATE workflow_queue_meta

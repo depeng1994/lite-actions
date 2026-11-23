@@ -12,11 +12,14 @@ WorkingDirectory=/opt/lite-actions/control-center
 Environment=HOST=127.0.0.1
 Environment=PORT=8788
 Environment=DB_PATH=/var/lib/lite-actions/control-center.sqlite
-Environment=STATIC_DIR=/opt/lite-actions/control-center/web/dist/client
+Environment=STATIC_DIR=/opt/lite-actions/control-center/web/dist
 Environment=TRUST_PROXY_HEADERS=1
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=/etc/lite-actions/control-center.env
-ExecStartPre=/usr/bin/node /opt/lite-actions/control-center/worker/scripts/seed.mjs --sqlite /var/lib/lite-actions/control-center.sqlite
-ExecStart=/usr/bin/node --experimental-strip-types /opt/lite-actions/control-center/worker/scripts/start-node-server.mjs
+# `node` must be Node.js 24 or newer.  `/usr/bin/env` keeps this unit usable on
+# hosts that install Node under `/usr/local/bin` (the ycy host does).
+ExecStartPre=/usr/bin/env node /opt/lite-actions/control-center/worker/scripts/seed.mjs --sqlite /var/lib/lite-actions/control-center.sqlite
+ExecStart=/usr/bin/env node --experimental-strip-types /opt/lite-actions/control-center/worker/scripts/start-node-server.mjs
 Restart=on-failure
 RestartSec=3
 

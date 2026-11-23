@@ -5,18 +5,15 @@
   "scripts": {
     "test": "vitest run",
     "lint": "tsc --noEmit",
-    "test:portability": "vitest run --config vitest.portability.config.ts",
+    "test:runtime": "vitest run",
     "build:node": "npx esbuild src/app.ts --bundle --format=esm --platform=node --outfile=dist/app.mjs",
     "start:node": "node --experimental-strip-types scripts/start-node-server.mjs",
-    "dev": "wrangler dev",
-    "seed": "node scripts/seed.mjs",
-    "sync:frontend": "node scripts/sync-frontend.mjs"
+    "seed": "node scripts/seed.mjs"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "0.23.0",
-    "@cloudflare/workers-types": "5.20261119.1",
+    "@types/node": "^24.19.2",
+    "esbuild": "^0.28.2",
     "typescript": "~5.9.3",
-    "vitest": "^4.1.0",
-    "wrangler": "4.165.0"
+    "vitest": "^4.1.0"
   }
 }

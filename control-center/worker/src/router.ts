@@ -15,7 +15,6 @@ export interface Env {
   GITHUB_APP_ID?: string;
   GITHUB_APP_PRIVATE_KEY?: string;
   GITCODE_CANCEL_TOKEN?: string;
-  D1_LIMIT_BYTES?: string;
   DB_LIMIT_BYTES?: string;
   FORCE_CANCEL_WAIT_SECONDS?: string;
 }

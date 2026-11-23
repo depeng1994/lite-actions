@@ -1,0 +1,7 @@
+# Personal-server HTTPS entry point for lite-actions.ooguy.com.
+# Keep the Node control plane bound to loopback. Caddy terminates TLS and
+# forwards the original scheme and client IP for the Node adapter's auth guard.
+lite-actions.ooguy.com {
+    encode gzip
+    reverse_proxy 127.0.0.1:8788
+}

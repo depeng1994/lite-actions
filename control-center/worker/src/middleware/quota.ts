@@ -5,7 +5,7 @@ import type {SqlStore} from "../storage/sqlStore";
 const DAY = 86400;
 const exhausted = new WeakMap<SqlStore, number>();
 const quota = (now: number) => new HttpError(503, "WRITE_QUOTA_EXHAUSTED",
-  "D1 每日写入额度已用尽，写操作暂停，CI 正常运行", {"Retry-After": String(DAY - now % DAY)});
+  "SQLite 每日写入预算已用尽，写操作暂停，CI 正常运行", {"Retry-After": String(DAY - now % DAY)});
 
 export async function requireWriteQuota(context: Context) {
   const day = Math.floor(context.now / DAY);
@@ -19,7 +19,7 @@ export async function requireWriteQuota(context: Context) {
 }
 
 export async function quotaError(context: Context, error: unknown) {
-  if (!/daily row write limit|write quota|D1.*daily write.*(?:quota|limit)/i.test(String(error))) return error;
+  if (!/daily row write limit|write quota|SQLite.*daily write.*(?:quota|limit)/i.test(String(error))) return error;
   const day = Math.floor(context.now / DAY);
   const db = context.env.DB;
   exhausted.set(db, day);

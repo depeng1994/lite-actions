@@ -1,34 +1,12 @@
-import { env } from "cloudflare:workers";
-import { applyD1Migrations } from "cloudflare:test";
-import { expect, test } from "vitest";
-import migrations from "../migrations/0001_init.sql?raw";
-import healthMigration from "../migrations/0002_v15_health.sql?raw";
-import drainMigration from "../migrations/0003_v15_cluster_drain.sql?raw";
-import priorityMigration from "../migrations/0004_v15_workflow_priority.sql?raw";
-import metadataMigration from "../migrations/0005_v15_workflow_metadata.sql?raw";
-import workflowRunsMigration from "../migrations/0006_v15_workflow_runs.sql?raw";
-import runNumberMigration from "../migrations/0008_v15_run_number.sql?raw";
-import runDisplayTitleMigration from "../migrations/0009_v15_run_display_title.sql?raw";
-import partialAppliedMigration from "../migrations/0010_v15_partial_applied.sql?raw";
-import { logicalModel, modelMap } from "../src/modelMap";
+import {beforeAll, expect, test} from "vitest";
+import {logicalModel, modelMap} from "../src/modelMap";
+import {db, migrate} from "./db";
 
-const db = (env as unknown as {DB: D1Database}).DB;
+beforeAll(migrate);
 
 test("migrations create project tables and history indexes", async () => {
-  await applyD1Migrations(db, [
-    {name: "0001_init.sql", queries: migrations.split(";").filter(query => query.trim())},
-    {name: "0002_v15_health.sql", queries: healthMigration.split(";").filter(query => query.trim())},
-    {name: "0003_v15_cluster_drain.sql", queries: drainMigration.split(";").filter(query => query.trim())},
-    {name: "0004_v15_workflow_priority.sql", queries: priorityMigration.split(";").filter(query => query.trim())},
-    {name: "0005_v15_workflow_metadata.sql", queries: metadataMigration.split(";").filter(query => query.trim())},
-    {name: "0006_v15_workflow_runs.sql", queries: workflowRunsMigration.split(";").filter(query => query.trim())},
-    {name: "0007_v15_task_started_at.sql", queries: ["ALTER TABLE task_index ADD COLUMN started_at INTEGER", "UPDATE task_index SET started_at = finished_at - duration_sec WHERE started_at IS NULL AND duration_sec IS NOT NULL AND duration_sec >= 0"]},
-    {name: "0008_v15_run_number.sql", queries: runNumberMigration.split(";").filter(query => query.trim())},
-    {name: "0009_v15_run_display_title.sql", queries: runDisplayTitleMigration.split(";").filter(query => query.trim())},
-    {name: "0010_v15_partial_applied.sql", queries: partialAppliedMigration.split(";").filter(query => query.trim())},
-  ], "d1_test_migrations");
   const {results} = await db.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all<{name: string}>();
-  expect(results.map(table => table.name).filter(name => !/^(d1_|sqlite_|_cf_)/.test(name))).toHaveLength(23);
+  expect(results.map(table => table.name)).toHaveLength(24);
   const index = await db.prepare("SELECT sql FROM sqlite_schema WHERE name='idx_task_index_model_page'").first<string>("sql");
   expect(index).toContain("finished_at DESC,task_uid DESC");
   const columns = await db.prepare("PRAGMA table_info(device_group_states)").all<{name: string}>();

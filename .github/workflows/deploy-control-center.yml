@@ -8,93 +8,58 @@ on:
         required: true
         default: website/control-center-prd
         type: string
-      build_sites_package:
-        description: Build & upload deployable ChatGPT Sites frontend-proxy package (requires SITES_PROJECT_ID & CONTROL_CENTER_API_ORIGIN)
-        required: false
-        default: true
-        type: boolean
-      deploy_sites:
-        description: Execute SITES_DEPLOY_COMMAND secret to publish control-center/dist to ChatGPT Sites and verify live SITES_ORIGIN
+      deploy_server:
+        description: Publish the build to the personal control-center host
         required: false
         default: false
         type: boolean
-      sites_origin:
-        description: Live ChatGPT Sites origin to verify after Sites deploy (overrides SITES_ORIGIN secret if provided)
-        required: false
-        default: ''
-        type: string
 
 permissions:
   contents: read
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout requested ref
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
-
-      - name: Set up Node.js 24
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '24'
-
-      - name: Install Worker dependencies
-        run: npm ci --prefix control-center/worker
-
-      - name: Apply remote D1 migrations
-        working-directory: control-center/worker
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx wrangler d1 migrations apply DB --remote
-
-      - name: Deploy Control Center Worker
-        working-directory: control-center/worker
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx wrangler deploy
-
-      - name: Build deployable ChatGPT Sites frontend-proxy package
-        if: ${{ inputs.build_sites_package || inputs.deploy_sites }}
-        env:
-          SITES_PROJECT_ID: ${{ secrets.SITES_PROJECT_ID }}
-          CONTROL_CENTER_API_ORIGIN: ${{ secrets.CONTROL_CENTER_API_ORIGIN }}
+      - name: Install dependencies
         run: |
+          npm ci --prefix control-center/worker
           npm ci --prefix control-center/web
-          node control-center/scripts/build-sites.mjs --require-origin
-          curl -fsS "${CONTROL_CENTER_API_ORIGIN%/}/api/v1/public/overview" > /dev/null
-
-      - name: Upload ChatGPT Sites package artifact
-        if: ${{ inputs.build_sites_package || inputs.deploy_sites }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: chatgpt-sites-dist
-          path: control-center/dist
-          if-no-files-found: error
-
-      - name: Publish control-center/dist to ChatGPT Sites (explicit deploy hook required)
-        if: ${{ inputs.deploy_sites }}
-        env:
-          SITES_PROJECT_ID: ${{ secrets.SITES_PROJECT_ID }}
-          CONTROL_CENTER_API_ORIGIN: ${{ secrets.CONTROL_CENTER_API_ORIGIN }}
-          SITES_DEPLOY_COMMAND: ${{ secrets.SITES_DEPLOY_COMMAND }}
-          SITES_DIST_DIR: control-center/dist
+      - name: Validate and build
         run: |
-          if [ -z "${SITES_DEPLOY_COMMAND}" ]; then
-            echo "::error::deploy_sites=true requires repository secret SITES_DEPLOY_COMMAND (executable Sites publish command that uploads control-center/dist and binds runtime CONTROL_CENTER_API_ORIGIN)."
+          npm run lint --prefix control-center/worker
+          npm test --prefix control-center/worker
+          npm test --prefix control-center/web
+          npm run build:node --prefix control-center/worker
+          npm run build --prefix control-center/web
+          python3 control-center/tests/integration/run.py
+      - name: Package personal-server release
+        run: |
+          mkdir -p release/control-center
+          cp -a control-center/worker release/control-center/
+          cp -a control-center/web/dist release/control-center/web-dist
+          cp -a config release/config
+          tar -czf lite-actions-control-center.tar.gz -C release control-center config
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lite-actions-control-center
+          path: lite-actions-control-center.tar.gz
+          if-no-files-found: error
+      - name: Publish through the authorized server deploy hook
+        if: ${{ inputs.deploy_server }}
+        env:
+          SERVER_DEPLOY_COMMAND: ${{ secrets.SERVER_DEPLOY_COMMAND }}
+        run: |
+          if [ -z "${SERVER_DEPLOY_COMMAND}" ]; then
+            echo "::error::deploy_server=true requires SERVER_DEPLOY_COMMAND."
             exit 1
           fi
-          bash -euo pipefail -c "${SITES_DEPLOY_COMMAND}"
-
-      - name: Verify live ChatGPT Sites HTTP SPA/proxy/admin-auth smoke (does not replace browser E2E)
-        if: ${{ inputs.deploy_sites || inputs.sites_origin != '' }}
-        env:
-          SITES_ORIGIN: ${{ inputs.sites_origin != '' && inputs.sites_origin || secrets.SITES_ORIGIN }}
-          VERIFY_ADMIN_USERNAME: ${{ secrets.VERIFY_ADMIN_USERNAME }}
-          VERIFY_ADMIN_SECRET: ${{ secrets.VERIFY_ADMIN_SECRET }}
-        run: node control-center/scripts/verify-live-sites.mjs --require-admin
+          export RELEASE_ARCHIVE="$PWD/lite-actions-control-center.tar.gz"
+          bash -euo pipefail -c "${SERVER_DEPLOY_COMMAND}"

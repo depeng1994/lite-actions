@@ -439,7 +439,7 @@ function advance(context: Context, instance: string, seq: number, sid: string | 
 }
 
 function guard(context: Context, instance: string, seq: number, prior: Cursor): Statement {
-  // A stale concurrent writer aborts the entire D1 transaction through the
+  // A stale concurrent writer aborts the entire SQLite transaction through the
   // NOT NULL constraint. Bind the expected cursor and current heartbeat instance.
   return context.env.DB.prepare(`
     INSERT INTO worker_event_dedup(worker_id,instance_id,seq,received_at)

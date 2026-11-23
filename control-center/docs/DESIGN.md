@@ -9,13 +9,13 @@
 >   3. **双平台取消**：GitHub 与 GitCode 同时支持，前端按接口 `cancel_supported` 渲染；
 >   4. **节点展示与隐私**：公网匿名服务端掩码（`113.xxx.xxx.205:153`）、登录后完整呈现 `host_id`；**不增加节点显示别名**，直接以 `host_id` 呈现；
 >   5. **全量探测与统一调度开关**：**全部已配置节点（含暂停调度 / `enabled: false` Pool）均执行 2 分钟在线探测**；`enabled` 与「是否暂停调度」统一为同一语义（Pool `enabled: false` 与节点/组 `paused: true` 均只停止发新租约、任务继续排队不报错失败）；`model_repos.json` 静态配置 `repo_scope`（组织仓/个人仓）。
-> - **初期托管与可迁移架构原则（已拍板 · 架构决策 2-A）**：初期正式采用 **ChatGPT Sites 前端代理 + Cloudflare Workers Free / D1 Free 后端** 架构。ChatGPT Sites 产物包（`.openai/hosting.json`）保持 `d1: null`、`r2: null`，不硬编码个人 `project_id`，部署时注入 `SITES_PROJECT_ID` 与 `CONTROL_CENTER_API_ORIGIN` 代理同源 `/api/v1/*`；全部前后端源码、数据库迁移、Sites 打包脚本与个人服务器运行入口完整合入 GitHub 仓；业务核心严格只依赖标准 Web Fetch 与 SQLite 抽象（`SqlStore`），不绑定任何单一托管商专有 API，支持零业务代码改动迁移至个人服务器（Node.js 24 + 内置 `node:sqlite`），并由 **`portability_intercept` DT 门禁（`REQ-20`）** 在 CI 中强制防锁死拦截。
+> - **正式托管架构**：控制面统一部署在个人服务器 `186.241.84.211`，公网入口为 `https://lite-actions.ooguy.com`，Caddy 终止 HTTPS，Node.js 24 + 内置 `node:sqlite` 提供 API 与静态前端。所有业务代码、迁移文件、systemd/Caddy 模板和联调脚本均在仓库内维护，运行时不依赖外部托管专有 API。
 > - **实机复核失败策略（已拍板 · 架构决策 1-B）**：`ci_core/pools_sync.py` 在 `SYNC_CONFIG` 实机探针中若部分节点不可达或校验失败，保留健康节点生效并将失败节点本地标记 `probe_unavailable` + `paused: true` + `verified: false` 隔离（同时重算本地生效配置摘要并保留 `source_sha256`），向控制面回执明确的 **`PARTIAL_APPLIED`**（附 `rev` 与不可达节点 `err` 原因，不再伪造 `APPLIED`）；服务端更新 `applied_rev` 并在 `/cluster` 向管理员展示 `PARTIAL_APPLIED` 与失败原因（公开接口仅展示状态不泄露真实 IP）。
-> - **后端/Worker 现状**：基于 **v1.1** 的底座（`REQ-01` ~ `REQ-14`）已落地并通过 27 项后端单测、209 项 Python 单测及 YCY 隔离回归；实审现有代码发现 4 处 Cloudflare/D1 锁死点（见 `REQ-20`）。需完成 **Phase 5.5（`REQ-15` ~ `REQ-20`，预计 ~4,020 行增量）** 及联调补齐（`INT-03/04/05/06/07/08/09/09B/10`）即可进入全栈端到端联调。
+> - **后端/Worker 现状**：`REQ-01` ~ `REQ-20` 的业务代码、Node 24/SQLite 适配层和前端已合入当前分支，单测、静态检查与隔离集成测试持续作为发布门禁。真实 Yellow 心跳、双平台取消、跨区插队、多节点资源和生产迁移仍按 Phase 7 的证据边界逐项复核。
 > - **双轨并行开工**：
->   - **正式网页开发（前端 Agent）**：✅ **可立即启动**。基于 Demo（`cd770ce`）将全量前端源码迁入 GitHub 仓 `control-center/web/`，对接本版冻结的 [v1.5 API 契约](api-contract.md) 并落实第 5.2 节定稿改造项，统一构建至 `control-center/dist/client/`（同时适配 ChatGPT Sites 与个人服务器）。
+>   - **正式网页开发（前端 Agent）**：✅ **可立即启动**。基于 Demo（`cd770ce`）将全量前端源码迁入 GitHub 仓 `control-center/web/`，对接本版冻结的 [v1.5 API 契约](api-contract.md) 并落实第 5.2 节定稿改造项，统一构建至 `control-center/dist/client/`（同时适配 lite-actions.ooguy.com 与个人服务器）。
 >   - **后端与 Worker 增量开发**：✅ **可立即启动 Phase 5.5（`REQ-15` ~ `REQ-20`）**，完成后与前端汇合直通 Phase 7 端到端联调。
-> - **硬边界（不可妥协）**：零新增费用（禁用 R2/KV/DO 等付费绑定）；初期采用 ChatGPT Sites 前端代理 + Cloudflare Workers/D1 后端（决策 2-A）、代码全入 GitHub 仓且可零业务改动迁个人服务器（由 `portability_intercept` DT 强制拦截）；网站故障不影响原 CI 调度与回报；网站不实现第二套选单算法；Worker 只出不进；所有网站上传请求与 Yellow 平台写请求单次整包严格 `< 2,000` 字节（严于 2 KB，由 `tests/test_upload_intercept.py` 强制门禁）。
+> - **硬边界（不可妥协）**：零新增费用（禁用 R2/KV/DO 等付费绑定）；初期采用 lite-actions.ooguy.com 前端与 API 同源部署 + Node.js 24/SQLite 后端（决策 2-A）、代码全入 GitHub 仓且可零业务改动迁个人服务器（由 `node-runtime` DT 强制拦截）；网站故障不影响原 CI 调度与回报；网站不实现第二套选单算法；Worker 只出不进；所有网站上传请求与 Yellow 平台写请求单次整包严格 `< 2,000` 字节（严于 2 KB，由 `tests/test_upload_intercept.py` 强制门禁）。
 
 ---
 
@@ -24,13 +24,13 @@
 > **执行指引**
 > 1. **Phase 0–5（v1.1 基线）** 已实现；其中受 PRD v1.5 升级及托管解耦影响的 9 项（`REQ-01/02/07/08/09/11/12/13/14` 局部）由 **Phase 5.5（`REQ-15` ~ `REQ-20`）** 增量覆盖，切勿将 v1.1 的 `[x]` 误判为已满足 Demo/PRD v1.5 或个人服务器可迁移要求。
 > 2. **双轨并行推进**：后端/Worker 立即执行 **Phase 5.5（`REQ-15` ~ `REQ-20`）** 与 **Phase 7.1** 补齐；前端 Agent 同步执行 **Phase 6（`FE-01` ~ `FE-05`）**，每完成一项由项目负责人标绿 `[x]`。
-> 3. **双拦截门禁不松动**：① 任何涉及 Worker 出站报文或调度的改动，提交前必须跑绿 `python3 -m unittest tests/test_upload_intercept.py -v` 与 `python3 scripts/lint.py`；② 任何涉及控制面服务端/前端/打包配置的改动，提交前必须跑绿 **`npm run test:portability --prefix control-center/worker`**（`portability_intercept` DT）与 `SITES_PROJECT_ID=... CONTROL_CENTER_API_ORIGIN=... node control-center/scripts/build-sites.mjs --require-origin`。
+> 3. **双拦截门禁不松动**：① 任何涉及 Worker 出站报文或调度的改动，提交前必须跑绿 `python3 -m unittest tests/test_upload_intercept.py -v` 与 `python3 scripts/lint.py`；② 任何涉及控制面服务端/前端/打包配置的改动，提交前必须跑绿 **`npm run test:runtime --prefix control-center/worker`**（`node-runtime` DT）与 `CONTROL_CENTER_DOMAIN=... CONTROL_CENTER_ORIGIN=... node control-center/worker/scripts/start-node-server.mjs --require-origin`。
 > 4. **放行标准**：Phase 7.2 中标有 **`★ P0 关键必通`** 的 **8 条**核心闭环用例 100% 通过且 **`REL-00` ~ `REL-04`** 签收后方可正式上线。
 
 ### Phase 0 ~ Phase 5：v1.1 后端与 Worker 底座（已落地，含 4 项待 v1.5 增量升级）
 
 #### Phase 0：控制面工程底座、账号权限与 v1.1 契约
-- [x] **`REQ-01` 控制面骨架与 D1 Schema（v1.1 基线）**：`control-center/worker/` 骨架、`migrations/0001_init.sql`、`model_repos.json`（v1.5 增量表结构见 `REQ-15/16/17`）。
+- [x] **`REQ-01` 控制面骨架与 SQLite Schema（v1.1 基线）**：`control-center/worker/` 骨架、`migrations/0001_init.sql`、`model_repos.json`（v1.5 增量表结构见 `REQ-15/16/17`）。
 - [x] **`REQ-02` 账号、会话、防爆破与审计**：Super/普通管理员认证、HMAC-SHA256 哈希、密钥仅展示一次、重置密钥/删号即刻失效、7 天 Cookie、10 分钟 5 次锁 10 分钟、操作审计。
 - [x] **`REQ-03` 权限矩阵、服务端 IP 掩码与缓存隔离**：公开/管理员/Super/Worker 四级鉴权、服务端 IPv4 掩码 + `node_ref`、`/public/*`（`max-age=10`）与 `/admin/*`（`private, no-store`）路由隔离。
 
@@ -48,17 +48,17 @@
 - [x] **`REQ-10` 整次 Workflow 取消（GitHub App + GitCode + Cron）**：`/api/v1/admin/cancellations`、GitHub cancel / 2 分钟 force-cancel、GitCode `/stop`、1 分钟 Cron 跟踪与 Worker 轮询闭环。
 - [x] **`REQ-11` 排队插队与 train 72h 超时（v1.1 case 级基线；⚠ v1.5 升级为 Workflow 级见 `REQ-17`）**：已完成 `train` 72h（259,200s）排队超时与 case 级 `MOVE_UP`；**须按 `REQ-17` 升级为 Workflow 级版本化跨区相邻交换**。
 
-#### Phase 4 ~ Phase 5：集群配置热加载与单 D1 热冷自治（已落地，含 2 项待 v1.5 增量升级）
+#### Phase 4 ~ Phase 5：集群配置热加载与单 SQLite 热冷自治（已落地，含 2 项待 v1.5 增量升级）
 - [x] **`REQ-12` 集群管理服务端与 `preflight.py` 片段导出（v1.1 基线；⚠ v1.5 升级见 `REQ-15/18`）**：乐观锁版本、预览、发布、回滚、三级暂停、隔离拒删、跨 Worker 先删后加、`--export-node-snippet`；**待按 `REQ-18` 升级为两步「先排空再删除」与统一 `enabled`/`paused` 语义**。
 - [x] **`REQ-13` Worker Pools 持久化、实机校验与调度间隙热加载（v1.1 基线；⚠ v1.5 升级见 `REQ-18`）**：`pools-active.json` 优先加载、实机复核指纹/容器、在途 `pools_snapshot` 隔离、重启/自动更新保留；**待按 `REQ-18` 统一 `enabled: false` 与 `paused: true` 为同一暂停调度语义（不报 `POOL_DISABLED`）**。
-- [x] **`REQ-14` 单 D1 热转冷（30d）、1 年清理、80%→70% 滚删与写额度降级**：压缩冷块写-校-删、1 年清理、`meta.size_after` 滚删、写额度 503 降级（`REQ-16` 同步确保滚删按完整 Workflow 粒度不删半残）。
+- [x] **`REQ-14` 单 SQLite 热转冷（30d）、1 年清理、80%→70% 滚删与写额度降级**：压缩冷块写-校-删、1 年清理、`meta.size_after` 滚删、写额度 503 降级（`REQ-16` 同步确保滚删按完整 Workflow 粒度不删半残）。
 
 ---
 
 ### Phase 5.5：v1.5 规格对齐增量开发（对标确认版 Demo `cd770ce` & PRD v1.5，P0/P1/P2 代码与本地/双运行时门禁已补齐）
 - [x] **`REQ-15` 全量节点 2 分钟 `npu-smi` 在线探测（含暂停/`enabled: false` Pool）、5 次离线状态机与 `/cluster` / `/timeline` 健康融合**
   - 已完成：`control_client.py` 稳态轮次仅按业务状态字段判定变化（0 额外稳态 `IP` 写入，心跳 `probe_ts` 刷新在线新鲜度）；未探测组省略 `v` 保持 `PENDING_PROBE`；`idle_probe.py` 按设备组独立解析可见性；`deviceState.ts` 将 `pool.enabled === false` 并入 `paused_scopes` 并实现 `aggregateHealth()`；`/timeline` 与 `/cluster` 均融合输出 Pool/Node/DeviceGroup `health`、`occupancy_state`、`quarantined`、`draining` 与 `last_online_at`。
-  - 依赖：`REQ-04` ~ `REQ-07`, `REQ-12` ｜ 门禁：`npx wrangler d1 migrations apply DB --local`、`python3 -m unittest tests/test_idle_probe.py tests/test_upload_intercept.py -v`、`npm test -- device-state.test.ts cluster-config.test.ts` 全绿
+  - 依赖：`REQ-04` ~ `REQ-07`, `REQ-12` ｜ 门禁：`node control-center/worker/scripts/seed.mjs --sqlite /var/lib/lite-actions/control-center.sqlite`、`python3 -m unittest tests/test_idle_probe.py tests/test_upload_intercept.py -v`、`npm test -- device-state.test.ts cluster-config.test.ts` 全绿
 - [x] **`REQ-16` 统一 Workflow 表格接口（`/workflows`）、50 Workflow 游标分页、汇总口径（调度结果 / 运行总卡时）与 `/timeline` 零 N+1 增强**
   - 已完成：`ingest.ts` 仅按受影响 `(provider, repo, run_id, attempt)` 增量维护 `workflow_runs` 并保留既有 `queue_order_rank`；`board.ts:workflows()` 读 `workflow_runs` 做 SQL 过滤/排序/游标分页，`history_limit=0` 零扫描 `task_index`，`capacity_purged_before_ts` 单次查询；`GET /models` 返回 `default_model` 并改为查询 `workflow_runs`（零扫描 `task_index`）；`/timeline` 补齐 Pool/Node `health` 与 `draining`。
   - 依赖：`REQ-06`, `REQ-08`, `REQ-09`, `REQ-14`, `REQ-15` ｜ 门禁：`python3 -m unittest tests/test_control_client.py tests/test_queue_telemetry.py tests/test_upload_intercept.py -v`、`npm test -- workflows-board.test.ts board-read.test.ts retention-storage.test.ts` 全绿
@@ -66,18 +66,18 @@
   - 已完成：服务端 `workflowPriority.ts` 以 `workflow_runs` + `queue_order_rank` 为唯一顺序源，拒绝对在途 `sequence=0` 插队，多子用例按共享队列完整槽位交换，跨池换位持久化到 `workflow_runs`，并以 `workflow_queue_meta.queue_version` `NOT NULL` 守卫保证并发 409 整批回滚零脏写；Worker 侧 `job_state.py` 修复 `W1/W2/W3` 换位后回队、连续换位、多子用例槽位、目标离队 `CONFLICT` 与终态裁剪；前端已接入真实 `/admin/workflow-priority-ops/:opId` 回执轮询。真实 Blue/Yellow 跨区 16P 实机联调门禁仍按 `INT-07` / `REL-04` 单独跟踪。
   - 依赖：`REQ-05`, `REQ-11`, `REQ-16` ｜ 门禁：`python3 -m unittest tests/test_move_up.py tests/test_smoke_queue.py tests/test_upload_intercept.py -v`、`npm test -- workflow-priority.test.ts` 全绿
 - [x] **`REQ-18` 集群两步「先排空再删除」状态机、统一 `enabled`/`paused` 暂停调度语义与实机复核 `PARTIAL_APPLIED` 策略**
-  - 已完成：`cluster.ts` 在 `DRAIN` 时计算唯一依赖排队用例 `drain_cancel_tasks` 并下发 `SYNC_CONFIG.drain_cancel_keys`；`router.py` 消费 `drain_cancel_keys` 在调度间隙取消唯一依赖排队用例；`NODE_QUARANTINED` 在 `preview` 返回 `blocking_reasons`、`publish` 返回 409；`/cluster` 与 `/timeline` 精确输出 Pool/Node/DeviceGroup `draining` 与统一 `paused` 语义；按已拍板决策 1-B，`pools_sync.py` 探针失败时保留健康节点生效并隔离失败节点，`router.py` 回执 `PARTIAL_APPLIED`（附 `rev` 与不可达原因），D1 迁移 `0010_v15_partial_applied.sql`、`/worker/command-receipts`、`/cluster` 与前端 `ClusterView` 已全链路对齐。
+  - 已完成：`cluster.ts` 在 `DRAIN` 时计算唯一依赖排队用例 `drain_cancel_tasks` 并下发 `SYNC_CONFIG.drain_cancel_keys`；`router.py` 消费 `drain_cancel_keys` 在调度间隙取消唯一依赖排队用例；`NODE_QUARANTINED` 在 `preview` 返回 `blocking_reasons`、`publish` 返回 409；`/cluster` 与 `/timeline` 精确输出 Pool/Node/DeviceGroup `draining` 与统一 `paused` 语义；按已拍板决策 1-B，`pools_sync.py` 探针失败时保留健康节点生效并隔离失败节点，`router.py` 回执 `PARTIAL_APPLIED`（附 `rev` 与不可达原因），SQLite 迁移 `0010_v15_partial_applied.sql`、`/worker/command-receipts`、`/cluster` 与前端 `ClusterView` 已全链路对齐。
   - 依赖：`REQ-12`, `REQ-13`, `REQ-15` ｜ 门禁：`python3 -m unittest tests/test_pools_hot_reload.py tests/test_upload_intercept.py -v`、`npm test -- cluster-config.test.ts` 全绿
 - [x] **`REQ-19` v1.5 TypeScript 契约冻结（`types/api.ts` + `model_repos.json` 含 `repo_scope`）与正式前端接入基线同步**
   - 实现：`cb58ecd` 及 P1 读视图补齐，`/models` 返回 `default_model` 与组织仓/个人仓 `repo_scope`，契约类型（含 `PARTIAL_APPLIED`、`draining`、`health`）与定向测试已同步。
   - 依赖：`REQ-15` ~ `REQ-18` ｜ 门禁：`npm run lint --prefix control-center/worker` & 契约类型一致性检查全绿
-- [x] **`REQ-20` 托管解耦、ChatGPT Sites 前端代理打包、个人服务器（Node 24 + `node:sqlite`）迁移适配与 `portability_intercept` DT 拦截门禁（代码与本地/隔离夹具门禁已完成；线上实机部署切换验收见 `INT-10` / `E2E-12` / `REL-00`）**
-  - 已完成（代码与本地门禁）：全部业务核心（`src/app.ts`、`src/router.ts`、`src/services/*`、`src/routes/*`、`src/middleware/*`）已彻底剥离 `D1Database`/`D1PreparedStatement`/`ExecutionContext`/`ScheduledController`/`Fetcher`/`CF-Connecting-IP`/`timingSafeEqual`，统一基于 `SqlStore`；补齐 `src/adapters/d1.ts`、`src/adapters/nodeSqlite.ts`（含 `ArrayBuffer` 绑定归一化）、`src/adapters/nodeServer.ts`、`scripts/start-node-server.mjs` 与 `control-center/deploy/{Dockerfile,control-center.service.example}`；按已拍板决策 2-A 收敛 ChatGPT Sites 为前端代理架构（`build-sites.mjs` 强制要求注入非空 `SITES_PROJECT_ID`，支持 `--require-origin` 校验 `CONTROL_CENTER_API_ORIGIN`，并在 `.github/workflows/deploy-control-center.yml` 提供 D1 迁移 + Worker 部署 + Sites 打包/代理核验流水线）；补齐 4 层 `portability-intercept.test.ts` 与直传原始 `D1Database` binding 的 `sites-parity.test.ts`，并全部纳入 `.github/workflows/control-center.yml` CI 门禁。
-  - 依赖：`REQ-01` ~ `REQ-19` ｜ 门禁：`npm run test:portability --prefix control-center/worker`、`npm test --prefix control-center/worker` 与 `SITES_PROJECT_ID=... CONTROL_CENTER_API_ORIGIN=... node control-center/scripts/build-sites.mjs --require-origin` 全绿
+- [x] **`REQ-20` 托管解耦、lite-actions.ooguy.com 前端与 API 同源部署打包、个人服务器（Node 24 + `node:sqlite`）迁移适配与 `node-runtime` DT 拦截门禁（代码与本地/隔离夹具门禁已完成；线上实机部署切换验收见 `INT-10` / `E2E-12` / `REL-00`）**
+  - 已完成（代码与本地门禁）：全部业务核心（`src/app.ts`、`src/router.ts`、`src/services/*`、`src/routes/*`、`src/middleware/*`）已彻底剥离 `SQLiteDatabase`/`SQLiteStatement`/`ExecutionContext`/`ScheduledController`/`Fetcher`/`X-Forwarded-For`/`timingSafeEqual`，统一基于 `SqlStore`；补齐 `src/adapters/nodeSqlite.ts`、`src/adapters/nodeSqlite.ts`（含 `ArrayBuffer` 绑定归一化）、`src/adapters/nodeServer.ts`、`scripts/start-node-server.mjs` 与 `control-center/deploy/{Dockerfile,control-center.service.example}`；按已拍板决策 2-A 收敛 lite-actions.ooguy.com 为前端与 API 同源部署架构（`scripts/start-node-server.mjs` 强制要求注入非空 `CONTROL_CENTER_DOMAIN`，支持 `--require-origin` 校验 `CONTROL_CENTER_ORIGIN`，并在 `.github/workflows/deploy-control-center.yml` 提供 SQLite 迁移 + Worker 部署 + 前端与服务打包/代理核验流水线）；补齐 4 层 `node-runtime.test.ts` 与直传原始 `SQLiteDatabase` binding 的 `node-runtime.test.ts`，并全部纳入 `.github/workflows/control-center.yml` CI 门禁。
+  - 依赖：`REQ-01` ~ `REQ-19` ｜ 门禁：`npm run test:runtime --prefix control-center/worker`、`npm test --prefix control-center/worker` 与 `CONTROL_CENTER_DOMAIN=... CONTROL_CENTER_ORIGIN=... node control-center/worker/scripts/start-node-server.mjs --require-origin` 全绿
 
 ---
 
-### Phase 6：正式前端工程化、GitHub 仓合入与 Sites/自建统一产物构建（P1/P2 改造完成）
+### Phase 6：正式前端工程化、GitHub 仓合入与 个人服务器统一产物构建（P1/P2 改造完成）
 
 - [x] **`FE-00` 交互原型 Demo 定稿与确认**：`codex/control-center-demo @ cd770ce`。
 - [x] **`FE-01` Pools任务看板与排队面板正式化**：已对接 `/timeline`，补齐动态北京时间轴（`beijingClock()`）、映射后端 `projections` / `dashed_blocks` 虚线排期与 `WAITING_EXTERNAL`/`NO_ESTIMATE` 状态、直接以 `display_host_id`/`host_id` 展示节点、移除硬编码 8 卡回退。
@@ -88,31 +88,28 @@
   - 后端依赖：`REQ-02`, `REQ-03`, `REQ-10`, `REQ-17`
 - [x] **`FE-04` 集群管理与 Super 用户管理正式化**：接入真实 `GET /admin/audits`、操作弹窗打开前先调 `POST /admin/cluster/preview` 并按后端 `blocking_reasons` 控制提交（移除未知占用阻塞删除误判）、展示 `PARTIAL_APPLIED` 状态与管理员可见原因、移除登录弹窗快捷账号按钮残留。
   - 后端依赖：`REQ-02`, `REQ-12`, `REQ-15`, `REQ-18`
-- [x] **`FE-05` 源码全入 GitHub 仓与统一产物构建（ChatGPT Sites 前端代理 / 个人服务器自建共用）**：移除已入库产物 `control-center/worker/public/` 与仓外路径 `lite-actions-control-center-demo`、移除个人 `project_id` fallback、按决策 2-A 收敛 Sites 打包并将前端 build/test/Sites 打包全部纳入 `.github/workflows/control-center.yml`。
+- [x] **`FE-05` 源码全入 GitHub 仓与统一产物构建（lite-actions.ooguy.com 前端与 API 同源部署 / 个人服务器自建共用）**：移除已入库产物 `control-center/worker/public/` 与仓外路径 `lite-actions-control-center-demo`、移除个人 `domain` fallback、按决策 2-A 收敛 前端与服务打包并将前端 build/test/前端与服务打包全部纳入 `.github/workflows/control-center.yml`。
   - 后端依赖：`REQ-01`, `REQ-20`, `FE-01` ~ `FE-04`
 
 ---
 
 ### Phase 7：端到端联调、最终集成验证与生产上线签收
 
-> **历史基线部署记录（2026-11-20，PR #44 本轮 `REQ-15`~`REQ-20` / `0010` 迁移合入前的旧版本；不代表当前 PR #44 已完成生产验收）**：线上控制面旧版 Cloudflare Worker（版本 `c6ebeccd-a93f-4f71-85b3-13f1f7e20a9b`）使用线上 D1 `lite-actions-control-center`，旧版 Site **版本 22** 通过同源 Server-backed API 访问控制面。当时实测 `/`、`/api/v1/public/overview` 和 `/api/v1/public/workflows` 不含 Demo/fixture 数据，模型仓历史显示真实 GitCode PASS 记录；Blue 当时运行发布 SHA `d9fcf5de649540d0e0f5ea0ab503727f7815ea7f`、集群配置 `revision=4`、`offline=false`；个人仓 `depeng1994/lite-actions` 的 CPU-only self-smoke run `44594574859` 通过。
+> **历史基线部署记录（2026-11-20，PR #44 本轮 `REQ-15`~`REQ-20` / `0010` 迁移合入前的旧版本；不代表当前 PR #44 已完成生产验收）**：线上控制面旧版 personal server control plane（版本 `c6ebeccd-a93f-4f71-85b3-13f1f7e20a9b`）使用线上 SQLite `lite-actions-control-center`，旧版 控制面网页 **版本 22** 通过同源 Server-backed API 访问控制面。当时实测 `/`、`/api/v1/public/overview` 和 `/api/v1/public/workflows` 不含 Demo/fixture 数据，模型仓历史显示真实 GitCode PASS 记录；Blue 当时运行发布 SHA `d9fcf5de649540d0e0f5ea0ab503727f7815ea7f`、集群配置 `revision=4`、`offline=false`；个人仓 `depeng1994/lite-actions` 的 CPU-only self-smoke run `44594574859` 通过。
 
-> **历史基线修复记录（2026-11-20，旧版 Site v23 & Worker `d8a3bcb4`，合入 PR #44 本轮改造前）**：旧版已应用 D1 迁移 `0007`~`0009`（`started_at`、`run_number`、`run_display_title`）并发布旧版 Site v23。**PR #44 本轮新增的 D1 迁移 `0010_v15_partial_applied.sql`、最新 Worker 代码与最新 Sites 前端代理包尚未部署到生产环境。**
+> **历史基线修复记录（2026-11-20，旧版前端版本 v23 & Worker `d8a3bcb4`，合入 PR #44 本轮改造前）**：旧版已应用 SQLite 迁移 `0007`~`0009`（`started_at`、`run_number`、`run_display_title`）并发布旧版前端版本 v23。**PR #44 本轮新增的 SQLite 迁移 `0010_v15_partial_applied.sql`、最新 Worker 代码与最新 前端与 API 同源部署包尚未部署到生产环境。**
 
 > **GitHub/GitCode 扩展联调记录**：GitHub `cann-framework/vllm-ascend` 的 `lite-ci-dispatcher-smoke` run `44587929243` 与重试 `44589895549` 已被 Blue 接收，但因 A3 vLLM 运行容器尚未作为正式资产部署而回写 `INFRA_ERROR`，因此 vLLM 生产用例仍未勾选。GitCode 个人仓 `depeng1994/torchtitan-npu` 已改用模型仓上传的固定 SHA 源代码归档，绕过 Blue 到 `gitcode.com` 的 Git HTTPS 418。隔离 profile `dispatch_smoke_8p` run `55b7bf72c6e541babc5977eef7f486a8` 与 `dispatch_smoke_16p` run `5a7f8c3030a549bab4cadde3a6678ad9` 均为 `COMPLETED`，Blue 分别回写 `PASS`、`exit_code=0`、`cleanup_verified=true`，并记录 `world_size=8 all_reduce_sum=28` 与 `world_size=16 all_reduce_sum=120`。完整三用例 profile run `6a0c885cde484684b184837fb87cb538` 与大规格重跑 `140b727835be4b51a082a7c194cf9b1f` 的真实 NPU 执行均通过，但平台在结果回写窗口结束前终止 workflow，后两例被规范回写为 `CANCELLED`。GitCode workflow 当前分支提交 `d9c65132d860fc84788f79bfe51f0516494e3147` 增加了固定源归档、`dispatch_smoke_8p`/`dispatch_smoke_16p` 独立 profile 与默认 `dispatch_smoke` suite 别名。
 
 > **历史 v1.1 隔离联调记录（已由本轮 PR #44 双运行时隔离夹具覆盖）**：v1.1 阶段曾跑通本地隔离联调（86 请求，峰值 1,761 B）；Blue 真实 GitCode 8P/16P 隔离 Smoke 已通过，但 Yellow 主机、三用例整包回写、PR #44 线上新版本部署及双平台取消均仍处于下方未勾选状态。
 
-> **证据边界说明（代码/本地隔离夹具 vs 真实生产/外部平台验收）**：Phase 5.5（`REQ-15` ~ `REQ-20`）与 Phase 6（`FE-01` ~ `FE-05`）的代码实现、单测、4 层 `portability_intercept` DT、直传原始 `D1Database` binding 的 `sites-parity.test.ts`、以及 `control-center/tests/integration/run.py`（`--runtime=d1` 与 `--runtime=node`）均已通过。**须明确区分**：`run.py` 属于 **isolated fixture evidence（本地隔离夹具验证）**——使用本地 TLS Proxy 拦截请求，且 `platform_wire()` 中的 8 次 Yellow 平台写请求由合成 GitHub/GitCode 客户端发往本地 Proxy stub（直接返回 `201 {"id":1}`），**仅证明协议线序 `< 2,000` B 与双运行时控制面闭环，不构成真实外部平台写回或线上部署验收**。真实 Sites/CF D1 线上新版本部署（含 `SITES_PROJECT_ID`/`CONTROL_CENTER_API_ORIGIN` 注入与 D1 迁移 `0010`）、真实 Blue/Yellow 跨区 16P 实机联调、真实 GitHub/GitCode 平台取消与真实主机切 URL 迁移演练均保留在下方 Phase 7 未勾选门禁（`INT-06`、`INT-07`、`INT-09`、`INT-10`、`E2E-01`~`E2E-12`、`REL-00`、`REL-02`~`REL-04`）中等待现场基础设施执行。
+> **证据边界说明（代码/本地隔离夹具 vs 真实生产/外部平台验收）**：Phase 5.5（`REQ-15` ~ `REQ-20`）与 Phase 6（`FE-01` ~ `FE-05`）的代码实现、单测、4 层 `node-runtime` DT、直传原始 `SQLiteDatabase` binding 的 `node-runtime.test.ts`、以及 `control-center/tests/integration/run.py`（`--runtime=node` ）均已通过。**须明确区分**：`run.py` 属于 **isolated fixture evidence（本地隔离夹具验证）**——使用本地 TLS Proxy 拦截请求，且 `platform_wire()` 中的 8 次 Yellow 平台写请求由合成 GitHub/GitCode 客户端发往本地 Proxy stub（直接返回 `201 {"id":1}`），**仅证明协议线序 `< 2,000` B 与双运行时控制面闭环，不构成真实外部平台写回或线上部署验收**。真实 personal server SQLite 线上新版本部署（含 `CONTROL_CENTER_DOMAIN`/`CONTROL_CENTER_ORIGIN` 注入与 SQLite 迁移 `0010`）、真实 Blue/Yellow 跨区 16P 实机联调、真实 GitHub/GitCode 平台取消与真实主机切 URL 迁移演练均保留在下方 Phase 7 未勾选门禁（`INT-06`、`INT-07`、`INT-09`、`INT-10`、`E2E-01`~`E2E-12`、`REL-00`、`REL-02`~`REL-04`）中等待现场基础设施执行。
 
-> **2026-11-23 线上 Site 浏览器/HTTP 复核（Site v31）**：正式 Site `https://lite-actions-yellow-control-center.promisingdace3.chatgpt.site` 的匿名 HTTP smoke 已通过，`/`、`/models`、`/cluster` 均返回 SPA HTML，`/api/v1/public/overview` 与 `/api/v1/public/workflows?history_limit=0` 返回 JSON，未知 `/api/*` 返回 JSON 404。浏览器复核默认模型筛选为「全部模型」，显示 `38 / 38` 条真实历史 Workflow；选择 `vllm-ascend` 后显示 `2 / 2`，清除筛选恢复 `38 / 38`；历史 Workflow 可折叠/展开，表头包含 12 列，Actions ID 同时呈现运行标题（例如 `Lite Actions self smoke: cpu-only`），展开子用例可见真实开始/结束时间与耗时。该证据补齐 `E2E-04` 的正式 Site 子集，不等同于 103 条冷热分页、冷归档详情和完整管理员生命周期验收。浏览器还验证了深浅主题切换，源码复核确认 30 秒静默刷新、后台暂停与切回立即刷新逻辑。
-> **当前线上边界**：Site v31 已上线，但 Cloudflare 控制面仍需发布当前 PR #44 的 Worker/D1 迁移版本；线上 `/public/overview` 当前 Blue/Yellow 均为 `offline=true`，因此不把 Site 可访问性误记为 Worker 心跳或生产发布通过。Cloudflare D1 控制台最近 24 小时只读数据为约 `1.4 MB / 5 GB`、`119k` 行写入、`5.26k` 次写查询，已超过免费实例的 `100k` 行日额度。PR #44 最新控制面 CI 为 Run `45162298826`，提交 `27d7dd3`，全量 Worker、前端、portability 和 D1/Node 双运行时隔离门禁通过。当前本机重新执行 `run.py --runtime=d1` 与 `--runtime=node` 均通过，各捕获 111 个 TLS 请求，含 8 次 Yellow 平台 stub 写请求，峰值 1,795 B `< 2,000` B。
+> **2026-11-23 个人域名生产复核（lite-actions.ooguy.com）**：`lite-actions.ooguy.com` DNS 已解析到 `186.241.84.211`，Caddy 已取得 HTTPS 证书并监听 80/443，Node.js 24 控制面 systemd 服务 active。`GET /api/v1/public/overview` 返回 200，`GET /models` 在 `Accept: text/html` 下返回 SPA HTML，未知 `/api/v1/*` 返回 JSON 404。Blue 已把 `/etc/lite-actions/deployment.json` 的 `control_center.url` 切换到新域名，实际 heartbeat 成功，`offline=false`、`healthy=true`、`applied_rev=17`。Yellow 尚未切换，等待 Issue #49 完成 DNS/TLS/POST 预验证和安全 URL 切换。该证据可标注为 `lite-actions.ooguy.com已验证`，不替代 Yellow 双区、GitHub/GitCode 取消、16P 资源和完整管理员生命周期门禁。
 
-> **2026-11-23 D1 配额根因定位**：Cloudflare Dashboard 的查询元数据显示，线上旧 Worker 的全量 `workflow_runs` 重算 SQL 执行 `565` 次并写入约 `91.32k` 行，单次事件批次都重新扫描并 upsert 全部 Workflow；这是本轮额度耗尽的主要来源。仓库当前 `refreshWorkflowRuns()` 已改为只刷新受影响的 `(provider, repo, run_id, attempt)`，相关 `workflows-board.test.ts` 7 个用例与 Worker 全量 44 个用例均通过，但该增量实现尚未部署到生产 Worker。额度保护命中后，`/api/v1/auth/login` 也会被写入配额中间件拦截并返回 `503 WRITE_QUOTA_EXHAUSTED`，旧前端把该响应误显示为“用户名或登录密钥有误”；因此管理员发布 r20 需等 D1 UTC 日额度重置或先提升托管额度，随后部署增量 Worker 并重新验证登录和集群发布。
+> **Phase 7 任务计数（2026-11-23）**：本节 28 个顶层联调/上线门禁中，8 个已按证据勾选，20 个仍未完成。20 个未完成项为 `INT-06/07/09/10`、`E2E-01`~`E2E-12`、`REL-00/02/03/04`。其中多个项目已有隔离夹具、Yellow 单节点或 控制面网页 浏览器子集证据，未将局部证据提升为全量通过；需现场补齐的核心依赖集中在 personal server 最新 Worker/SQLite 发布、GitHub App/GitCode 取消凭据、Blue/Yellow 跨区 16P 与多节点资源、SQLite 配额演练和 Node 24 实机切换。
 
-> **Phase 7 任务计数（2026-11-23）**：本节 28 个顶层联调/上线门禁中，8 个已按证据勾选，20 个仍未完成。20 个未完成项为 `INT-06/07/09/10`、`E2E-01`~`E2E-12`、`REL-00/02/03/04`。其中多个项目已有隔离夹具、Yellow 单节点或 Site 浏览器子集证据，未将局部证据提升为全量通过；需现场补齐的核心依赖集中在 Cloudflare 最新 Worker/D1 发布、GitHub App/GitCode 取消凭据、Blue/Yellow 跨区 16P 与多节点资源、D1 配额演练和 Node 24 实机切换。
-
-> **2026-11-23 Yellow 现场复核（Issue #49）**：`lite-actions-yellow.service` 当前进程为 active，但因 `/etc/lite-actions/yellow.env` 缺少 `LITE_ACTIONS_CONTROL_TOKEN`，ControlClient 在启动构造阶段报 `INVALID_CONTROL_MACHINE_TOKEN`，IdleProbe 与控制面心跳均未启动；Yellow 自 `09:21:58` 起 `offline=true`。本地 `pools-active.json` 为 revision 16，控制面 desired/latest 为 18/19，且目标配置把 `a5_shared_yellow` 设为 `enabled=false`。现场仅有 1×8P 可用，16P 双设备组和第二节点不存在；`.25` 正被 ttnpu 专线占用，正式 `a5_ci_214` 容器名缺失。该复核未改动服务或配置，已将修复顺序写入 Issue #49：先由正式 Site 恢复 A5 调度目标态，再恢复 Yellow 控制 token 和心跳，保留 ttnpu 专线，确认备份容器未被占用后才恢复 smoke 容器名，最后做 3 轮探测与同 `probe_round` 重放。该现场状态使 `INT-07` 的 Yellow 子集、`INT-08` 的当前复核和 `REL-01` 的当前心跳恢复仍需补跑，历史通过证据继续保留但不覆盖本次失联。
+> **2026-11-23 Yellow 现场复核（Issue #49）**：`lite-actions-yellow.service` 当前进程为 active，但因 `/etc/lite-actions/yellow.env` 缺少 `LITE_ACTIONS_CONTROL_TOKEN`，ControlClient 在启动构造阶段报 `INVALID_CONTROL_MACHINE_TOKEN`，IdleProbe 与控制面心跳均未启动；Yellow 自 `09:21:58` 起 `offline=true`。本地 `pools-active.json` 为 revision 16，控制面 desired/latest 为 18/19，且目标配置把 `a5_shared_yellow` 设为 `enabled=false`。现场仅有 1×8P 可用，16P 双设备组和第二节点不存在；`.25` 正被 ttnpu 专线占用，正式 `a5_ci_214` 容器名缺失。该复核未改动服务或配置，已将修复顺序写入 Issue #49：先由正式控制面网页 恢复 A5 调度目标态，再恢复 Yellow 控制 token 和心跳，保留 ttnpu 专线，确认备份容器未被占用后才恢复 smoke 容器名，最后做 3 轮探测与同 `probe_round` 重放。该现场状态使 `INT-07` 的 Yellow 子集、`INT-08` 的当前复核和 `REL-01` 的当前心跳恢复仍需补跑，历史通过证据继续保留但不覆盖本次失联。
 
 
 #### 7.1 后端 + Worker 集成验证（不依赖前端，Phase 5.5 完成后立即跑绿）
@@ -120,59 +117,59 @@
 
 #### 7.1A Yellow Worker 实机前置与逐项验证矩阵
 
-以下门禁依赖真实 Yellow Worker。切换 Yellow 后，先把 `<YELLOW_SSH_ALIAS>`、`<WORKER_UNIT>`、`<SITE_ORIGIN>` 和 `<CONTROL_URL>` 替换为现场值，并把命令输出、请求 ID、D1 revision、Worker instance、`http-egress.json` 和平台 run ID 保存到对应验收记录。日志和报文中不得回填 Token、密钥或真实未脱敏地址。
+以下门禁依赖真实 Yellow Worker。切换 Yellow 后，先把 `<YELLOW_SSH_ALIAS>`、`<WORKER_UNIT>`、`<SITE_ORIGIN>` 和 `<CONTROL_URL>` 替换为现场值，并把命令输出、请求 ID、SQLite revision、Worker instance、`http-egress.json` 和平台 run ID 保存到对应验收记录。日志和报文中不得回填 Token、密钥或真实未脱敏地址。
 
 | Yellow 依赖项 | 实机步骤 | 通过条件与证据 |
 |---|---|---|
-| **通用前置**（`REQ-04/06/15`、`REL-01`） | `ssh <YELLOW_SSH_ALIAS> 'cd /opt/lite-actions/native-production/current && /usr/bin/python3 --version && test -f unified_router.py'`；确认 `<CONTROL_URL>` 可访问；启动 `systemctl restart <WORKER_UNIT>` 后查看 `journalctl -u <WORKER_UNIT> --since "5 min ago"`。从控制面读取 `GET <SITE_ORIGIN>/api/v1/public/overview` 与 `/api/v1/public/cluster`。 | Yellow 心跳出现在 overview，`offline=false`；D1 `workers.instance_id`、`applied_rev`、`code_sha` 与主机运行目录一致；拉配置、回执和事件均有对应日志。 |
+| **通用前置**（`REQ-04/06/15`、`REL-01`） | `ssh <YELLOW_SSH_ALIAS> 'cd /opt/lite-actions/native-production/current && /usr/bin/python3 --version && test -f unified_router.py'`；确认 `<CONTROL_URL>` 可访问；启动 `systemctl restart <WORKER_UNIT>` 后查看 `journalctl -u <WORKER_UNIT> --since "5 min ago"`。从控制面读取 `GET <SITE_ORIGIN>/api/v1/public/overview` 与 `/api/v1/public/cluster`。 | Yellow 心跳出现在 overview，`offline=false`；SQLite `workers.instance_id`、`applied_rev`、`code_sha` 与主机运行目录一致；拉配置、回执和事件均有对应日志。 |
 | **`INT-03` / `REQ-15`** | 在 Yellow 的每个真实设备组执行 2 分钟一轮的可见性探测，连续发送在线、4 次失败、第 5 次失败、第 6 次恢复，并重放同一 `probe_round`。通过 `/api/v1/public/timeline` 检查 `device_groups[].health`。 | 所有 Yellow 设备组依次为 `ONLINE`、`PROBE_WARN 1/5..4/5`、`OFFLINE 5/5`、恢复 `ONLINE`；重放不增加 `consecutive_failures`；`last_online_at` 在失败阶段不回退；暂停 Pool 继续探测。证据为时间轴 JSON 和主机探测日志。 |
 | **`INT-05` / `E2E-02` / `REL-01`** | 在 Yellow 开启出站抓包或保留 `http-egress.json`，执行心跳、事件、分片快照、配置拉取、插队回执和 GitHub/GitCode 结果写回完整周期；同时运行 `python3 -m unittest tests/test_upload_intercept.py -v`。 | Yellow 发往控制面和平台的每个 HTTP/1.1 请求线序长度均 `<2,000` B，`sent_violations=0`，`max_request_bytes<2,000`；平台 ACK/终态在控制面恢复后仍能补发。 |
-| **`INT-06` / `FE-03` / `E2E-06` / `REL-02`** | 在 GitHub 与 GitCode 各触发含 Blue/Yellow 排队和在途用例的真实 Workflow，从 Site 点击取消并重复点击一次；再暂时断开控制面 URL，保持平台出口可用，等待取消跟踪和 GitHub 2 分钟 `force-cancel`。 | 两平台返回同一 `cancel_id`；两区排队/在途任务在 2 分钟内停止、清理并回报 `CANCELLED`；已结束 case 保持原结果；控制面断开期间平台仍停止，恢复后事件无重复；清理失败进入隔离。保存平台 run、cancel detail、两端状态目录和审计记录。 |
-| **`INT-07` / `REQ-17` / `E2E-05` / `REL-04`** | 创建 `W0` 在途、`W1/W2/W3` 等待的混合 GitHub/GitCode Workflow，使队列同时覆盖 Blue/Yellow 共享与不共享 Pool。用 Site 对 `W3` 连续执行 `3→2→1`，并用旧 `queue_version`、重复 `op_id`、单端断连、同 attempt 晚发现和回队 case 重试。 | Site 返回 `202` 与真实 `op_id`；Blue/Yellow command receipt 分 Pool/类型显示 `APPLIED/NOOP/CONFLICT/FAILED`；旧版本返回 `409`；重复 op 幂等；两端 `workflow_order`、`queue_rank` 与 Site `/workflows` 顺序一致；晚发现/回队沿用顺位。保存管理 API、command receipt、两端 `unified-jobs.json` 和队列事件。 |
-| **`INT-08` / `REQ-18` / `E2E-03` / `E2E-09`** | 在 Site 对 Yellow Pool/Node/DeviceGroup 执行 `DRAIN`，期间验证活动租约、排队引用和隔离阻断删除，再执行 `RESUME`；重新 `DRAIN` 后清零引用并执行第二步删除；暂停 16P 半节点并重启 Yellow。 | `DRAIN` 后唯一依赖目标的排队 case 取消，在途租约沿用快照；未清零删除返回对应 `409`；恢复删除后配置不含 `paused:false`；重启后 `pools-active.json`、revision、回执和健康状态一致。 |
-| **`INT-10` / `E2E-12`** | 先用 CF Workers/D1 + ChatGPT Sites 前端代理跑匿名掩码、管理员登录、冷块读写和无 Cron 心跳，再将 Yellow `control_center.url` 改为 Node 24（`scripts/start-node-server.mjs`）地址并重启，重复同一组心跳、快照、取消和读接口。 | CF Workers/D1 与 Node 24/SQLite 返回结构、Cookie/IP 锁定、冷块 SHA、`dbSizeBytes()`、SPA/API 404、取消推进和报文大小完全一致；只修改 `control_center.url`，业务代码和 Worker 运行逻辑不变。 |
-| **`E2E-07` / `REL-03`** | 在维护窗口停止 Site/控制面 30 分钟，保持 Yellow 平台出口可用，恢复后观察快照对账；构造 D1 水位超过 80%，再模拟写额度耗尽。 | 控制面不可用期间 Yellow 仍执行和回报；恢复后零重复对账；容量按完整 Workflow 从 80% 滚删至 70%；管理写返回 `503 WRITE_QUOTA_EXHAUSTED`，Worker Outbox 后续补发。 |
+| **`INT-06` / `FE-03` / `E2E-06` / `REL-02`** | 在 GitHub 与 GitCode 各触发含 Blue/Yellow 排队和在途用例的真实 Workflow，从控制面网页点击取消并重复点击一次；再暂时断开控制面 URL，保持平台出口可用，等待取消跟踪和 GitHub 2 分钟 `force-cancel`。 | 两平台返回同一 `cancel_id`；两区排队/在途任务在 2 分钟内停止、清理并回报 `CANCELLED`；已结束 case 保持原结果；控制面断开期间平台仍停止，恢复后事件无重复；清理失败进入隔离。保存平台 run、cancel detail、两端状态目录和审计记录。 |
+| **`INT-07` / `REQ-17` / `E2E-05` / `REL-04`** | 创建 `W0` 在途、`W1/W2/W3` 等待的混合 GitHub/GitCode Workflow，使队列同时覆盖 Blue/Yellow 共享与不共享 Pool。用 控制面网页 对 `W3` 连续执行 `3→2→1`，并用旧 `queue_version`、重复 `op_id`、单端断连、同 attempt 晚发现和回队 case 重试。 | 控制面网页返回 `202` 与真实 `op_id`；Blue/Yellow command receipt 分 Pool/类型显示 `APPLIED/NOOP/CONFLICT/FAILED`；旧版本返回 `409`；重复 op 幂等；两端 `workflow_order`、`queue_rank` 与 控制面 `/workflows` 顺序一致；晚发现/回队沿用顺位。保存管理 API、command receipt、两端 `unified-jobs.json` 和队列事件。 |
+| **`INT-08` / `REQ-18` / `E2E-03` / `E2E-09`** | 在控制面网页对 Yellow Pool/Node/DeviceGroup 执行 `DRAIN`，期间验证活动租约、排队引用和隔离阻断删除，再执行 `RESUME`；重新 `DRAIN` 后清零引用并执行第二步删除；暂停 16P 半节点并重启 Yellow。 | `DRAIN` 后唯一依赖目标的排队 case 取消，在途租约沿用快照；未清零删除返回对应 `409`；恢复删除后配置不含 `paused:false`；重启后 `pools-active.json`、revision、回执和健康状态一致。 |
+| **`INT-10` / `E2E-12`** | 先用 Node.js/SQLite + lite-actions.ooguy.com 前端与 API 同源部署跑匿名掩码、管理员登录、冷块读写和无 Cron 心跳，再将 Yellow `control_center.url` 改为 Node 24（`scripts/start-node-server.mjs`）地址并重启，重复同一组心跳、快照、取消和读接口。 | Node.js/SQLite 与 Node 24/SQLite 返回结构、Cookie/IP 锁定、冷块 SHA、`dbSizeBytes()`、SPA/API 404、取消推进和报文大小完全一致；只修改 `control_center.url`，业务代码和 Worker 运行逻辑不变。 |
+| **`E2E-07` / `REL-03`** | 在维护窗口停止 控制面网页/服务 30 分钟，保持 Yellow 平台出口可用，恢复后观察快照对账；构造 SQLite 水位超过 80%，再模拟写额度耗尽。 | 控制面不可用期间 Yellow 仍执行和回报；恢复后零重复对账；容量按完整 Workflow 从 80% 滚删至 70%；管理写返回 `503 WRITE_QUOTA_EXHAUSTED`，Worker Outbox 后续补发。 |
 
 - [x] **`INT-01`** `★ P0` 公网匿名读取、IP 掩码、缓存头与四级权限全矩阵验证（v1.1 已过；v1.5 需对新增 `/workflows` 与增强 `/cluster` 补跑脱敏回归）
 - [x] **`INT-02`** `★ P0` 双 Worker 心跳、90s 离线、事件去重/缺口检测、分片快照对账与断网 30 分钟恢复验证（v1.1 已过）
-- [x] **`INT-03`** `★ P0` 全部节点 2 分钟 `npu-smi` 可见性探测（含暂停/`enabled: false` Pool；1–4 异常 / 5 次已离线 / 最近在线时间不改写 / 重放不重计）+ 空闲三态叠加验证。`health-ingest.test.ts` 已通过 D1 Worker IP 事件、暂停 Pool、5 次离线、最近在线时间和重复轮次回放验证；Yellow `.25` 实机 round 138–144 已完成 WARN 1–4、OFFLINE 第 5 次、恢复 ONLINE，`last_online_at` 在失败阶段保持不变并在恢复时更新。
-- [x] **`INT-04`** 耗时中位数与排期虚线投影 API 集成验证：`schedule-projection.test.ts` 覆盖 0、5、10+ 可靠样本、超时、无估算和未知外部占用，`schedule-api.test.ts` 通过真实 D1 Worker `/public/timeline` 验证 5 个可靠样本的中位数排期投影；FAIL 与 `timing_reliable=0` 样本不进入估算。
-- [x] **`INT-05`** `★ P0` 全链路上传报文 `< 2,000` 字节门禁验证（isolated fixture + UT）：`control-center/tests/integration/run.py --runtime=d1` 与 `--runtime=node` 本地隔离夹具验证均通过——GitHub Actions Linux CI（Run `45134291763`）实测 `d1` 80 请求 / `node` 81 请求，本机 macOS 实测 `d1` 79 请求 / `node` 86 请求（总请求数随实时心跳轮询时序在 ~79–86 之间小幅波动，均含 8 次合成 Yellow 平台写请求对本地 `201` stub，确定性峰值 1,795 B `< 2,000` B）；`test_upload_intercept.py`（含 `PARTIAL_APPLIED`）全绿。真实 Yellow 主机外发证据另见 `REL-01`。
+- [x] **`INT-03`** `★ P0` 全部节点 2 分钟 `npu-smi` 可见性探测（含暂停/`enabled: false` Pool；1–4 异常 / 5 次已离线 / 最近在线时间不改写 / 重放不重计）+ 空闲三态叠加验证。`health-ingest.test.ts` 已通过 SQLite Worker IP 事件、暂停 Pool、5 次离线、最近在线时间和重复轮次回放验证；Yellow `.25` 实机 round 138–144 已完成 WARN 1–4、OFFLINE 第 5 次、恢复 ONLINE，`last_online_at` 在失败阶段保持不变并在恢复时更新。
+- [x] **`INT-04`** 耗时中位数与排期虚线投影 API 集成验证：`schedule-projection.test.ts` 覆盖 0、5、10+ 可靠样本、超时、无估算和未知外部占用，`schedule-api.test.ts` 通过真实 SQLite Worker `/public/timeline` 验证 5 个可靠样本的中位数排期投影；FAIL 与 `timing_reliable=0` 样本不进入估算。
+- [x] **`INT-05`** `★ P0` 全链路上传报文 `< 2,000` 字节门禁验证（isolated fixture + UT）：`control-center/tests/integration/run.py` 本地隔离夹具验证均通过——CI 与本机 Node 24 集成请求均含 8 次合成 Yellow 平台写请求对本地 `201` stub，确定性峰值 1,795 B `< 2,000` B；`test_upload_intercept.py`（含 `PARTIAL_APPLIED`）全绿。真实 Yellow 主机外发证据另见 `REL-01`。
 - [ ] **`INT-06`** `★ P0` GitHub & GitCode 整次 Workflow 取消端到端闭环（含原生作业、2 分钟 `force-cancel`、**双 Worker 断连网站但通平台仍停机**、清理失败进隔离） 当前会话没有可用的 GitCode Actions dispatch 接口或触发凭据，GitCode 侧真实 Workflow 暂标阻塞，未勾选。 GitHub 侧实测返回 400 APP_NOT_INSTALLED，控制面配置的 GitHub App 未安装到 depeng1994/lite-actions；当前集成无法代为安装或管理该 App，GitHub 侧真实取消暂标阻塞，未勾选。
 - [ ] **`INT-07`** `★ P0` Workflow 级跨区（Blue/Yellow）版本化插队联调（`3→2→1`、队首/在途、共享/不共享队列、晚发现/回队沿用顺位、并发/过期冲突、单端离线）+ 虚拟时钟验证 `train` 72h 排队超时（71h59m vs 72h01m）
   - [x] Yellow 单节点可验证子集：r15 DRAIN 后 4 条 yellow-a5 全部 QUEUED；op1 3→2 返回 202、queue_version 19→20，Yellow command APPLIED；op2 2→1 返回 202、20→21，Yellow command APPLIED；旧 queue_version 返回 409 QUEUE_VERSION_CONFLICT；重复 idempotency_key 返回同一 op_id 且无第二个操作；r16 RESUME 后 W3(#62) 首先执行，随后其余 3 条均 PASS、exit_code=0、cleanup_verified=true，4 个 case 全部 REPORTED。
-  - [ ] Blue/GitCode 跨区、16P 和多节点部分阻塞，当前仅完成 Yellow 单节点子集。/admin/workflows 在队列项消费后显示旧 queue_version 与 queue_pos，属于后端投影缺陷而非浏览器缓存，已由 bb4a8eb 修复为读取 workflow_queue_meta 并新增回归测试。 queue_version 修复已推送于 bb4a8eb，但生产后端尚未部署；当前缺少 Cloudflare API token 或已授权部署通道，线上仍返回 0 的状态不计为已修复。 已提供 .github/workflows/deploy-control-center.yml 手动部署入口，等待用户在仓库 Actions Secrets 配置 CLOUDFLARE_API_TOKEN 与 CLOUDFLARE_ACCOUNT_ID；GitHub App 安装仍待用户完成。
+  - [ ] Blue/GitCode 跨区、16P 和多节点部分阻塞，当前仅完成 Yellow 单节点子集。/admin/workflows 在队列项消费后显示旧 queue_version 与 queue_pos，属于后端投影缺陷而非浏览器缓存，已由 bb4a8eb 修复为读取 workflow_queue_meta 并新增回归测试。 queue_version 修复已推送于 bb4a8eb，但生产后端尚未部署；当前缺少 personal server API token 或已授权部署通道，线上仍返回 0 的状态不计为已修复。 已提供 .github/workflows/deploy-control-center.yml 手动部署入口，等待用户在仓库 Actions Secrets 配置 SERVER_API_TOKEN 与 SERVER_ACCOUNT_ID；GitHub App 安装仍待用户完成。
 - [x] **`INT-08`** `★ P0` 集群配置热加载全场景（Pool `enabled: false` 与节点/组 `paused: true` 统一暂停语义不报错、16P 半节点暂停、在途快照隔离、`preflight.py` 实机校验、**两步先排空再删除（排空中可恢复，活动/排队/隔离未清零拒删）**、双 Worker 单端失败状态展示、回滚、重启/自动更新保留） Yellow 实机证据：r13 DRAIN Pool 后 applied_rev=13、命令 APPLIED、enabled=false；r14 RESUME 后 applied_rev=14、enabled=true、sha 与 r10 一致；修复版 01f0c205 重启后 service active、revision=14、pools-active 的 config_json 与 sha 一致、source_sha256 保留、.25 环境配置保持、站点 Yellow applied_rev=14/offline=false/error=null。16P 半节点与多节点删除场景因当前仅 .25 可调度，保留为阻塞项。
-- [ ] **`INT-09`** `★ P0` 单 SQLite/D1 热冷分层（103 个历史 Workflow 按 50/50/3 跨 30 天翻页、第 31 天冷解压、1 年过期、80%→70% 按完整 Workflow 滚删与提示、同一次写额度熔断触发管理写 503 + Worker 暂存恢复）
+- [ ] **`INT-09`** `★ P0` 单 SQLite/SQLite 热冷分层（103 个历史 Workflow 按 50/50/3 跨 30 天翻页、第 31 天冷解压、1 年过期、80%→70% 按完整 Workflow 滚删与提示、同一次写额度熔断触发管理写 503 + Worker 暂存恢复）
 - [x] **`INT-09B`** `★ P0` 统一 Workflow 表汇总口径专项验证：`workflows-board.test.ts` 已验证混合活动/已结束子用例只保留活动表并标 `0`、全结束历史固定负序号、调度结果三态、运行总卡时 16 卡 38 分钟 = `10.13` 卡·小时、截至当前和统计不完整标记；线上 `/public/workflows` 已返回真实历史数据。
-- [ ] **`INT-10`** `★ P0` 可迁移性 DT 拦截与双运行时对等联调（`portability-intercept.test.ts` + `sites-parity.test.ts` + `build-sites.mjs` 产物包校验 + 同一份代码与 SQLite 迁移分别在 Cloudflare Workers/D1 与个人服务器 Node 24/`node:sqlite` 上跑通双 Worker 心跳、无 Cron 取消推进、冷块 BLOB 读写与防爆破 IP 识别）
-  - [x] 本地与隔离夹具对等子集（isolated fixture evidence）：4 层 `portability-intercept.test.ts`（静态防锁死扫描 + 反向自证 + Node 24/SQLite 对等 + 强校验非空 `SITES_PROJECT_ID`/`CONTROL_CENTER_API_ORIGIN` 注入与代理实测）与直传原始 `D1Database` binding 的 `sites-parity.test.ts` 全绿；`control-center/tests/integration/run.py --runtime=d1` 与 `--runtime=node` 本地双 Worker + 本地 TLS Proxy 隔离夹具验证均通过（Linux CI Run `45134291763`：`d1` 80 请求 / `node` 81 请求；本机 macOS：`d1` 79 请求 / `node` 86 请求；峰值均 1,795 B `< 2,000` B，其中平台写请求为本地 stub，非外部真实平台）。
-  - [ ] 真实生产基础设施双运行时对等（未完成，等待现场执行）：线上最新 Cloudflare Worker/D1（含 `0010` 迁移）与 ChatGPT Sites（注入生产 `SITES_PROJECT_ID` / `CONTROL_CENTER_API_ORIGIN`）部署核验，以及真实主机将 Worker `control_center.url` 切至 Node 24 自建实例后的实机对等验收（见 `E2E-12` / `REL-00`）。
+- [ ] **`INT-10`** `★ P0` 可迁移性 DT 拦截与双运行时对等联调（`node-runtime.test.ts` + `node-runtime.test.ts` + `scripts/start-node-server.mjs` 产物包校验 + 同一份代码与 SQLite 迁移分别在 Node.js 24/SQLite 与个人服务器 Node 24/`node:sqlite` 上跑通双 Worker 心跳、无 Cron 取消推进、冷块 BLOB 读写与防爆破 IP 识别）
+  - [x] 本地与隔离夹具对等子集（isolated fixture evidence）：Node 24/SQLite 单测与 `control-center/tests/integration/run.py` 双 Worker + 本地 TLS Proxy 验证均通过，峰值 1,795 B `< 2,000` B，其中平台写请求为本地 stub，非外部真实平台。
+  - [ ] 真实生产基础设施双运行时对等（未完成，等待现场执行）：线上最新 Node.js 24/SQLite（含 `0010` 迁移）与 lite-actions.ooguy.com（注入生产 `CONTROL_CENTER_DOMAIN` / `CONTROL_CENTER_ORIGIN`）部署核验，以及真实主机将 Worker `control_center.url` 切至 Node 24 自建实例后的实机对等验收（见 `E2E-12` / `REL-00`）。
 
 #### 7.2 全栈端到端联调（浏览器 + 正式前端 + 控制面 + 双 Worker，`⏳ 依赖 Phase 5.5 + FE-01~05 标绿`）
 - [ ] **`E2E-01`** **`★ P0 关键必通`** 公网匿名看板读取、服务端 IP 掩码、缓存隔离与四级权限/账号生命周期闭环
 - [ ] **`E2E-02`** **`★ P0 关键必通`** 全栈操作下的双 Worker 实时抓包 `< 2,000` 字节硬门禁验证
 - [ ] **`E2E-03`** **`★ P0 关键必通`** 设备组 5 次探测离线 + 最近在线时间 + 16P 半节点暂停热加载与重启保留闭环 16P 半节点暂停与重启闭环需要可调度的 16P 资源，当前阻塞，未勾选。
 - [ ] **`E2E-04`** **`★ P0 关键必通`** 统一 Workflow 表格全交互闭环（`-3,-2,-1,0,1,2...` 序号、50 条上方历史分页/折叠恢复、12 列筛选排序、调度结果三态、运行总卡时、冷归档详情）
-  - [x] Site v31 浏览器子集：默认全部模型与 38/38 历史、单模型筛选后清除、历史折叠/展开、12 列表头、Actions 运行标题、真实开始/结束时间与耗时。
+  - [x] 旧前端版本 v31 浏览器子集：默认全部模型与 38/38 历史、单模型筛选后清除、历史折叠/展开、12 列表头、Actions 运行标题、真实开始/结束时间与耗时。
   - [ ] 仍需 103 条 `50/50/3` 冷热分页、冷归档详情、组合列筛选/排序和完整管理员浏览器会话证据。
 - [ ] **`E2E-05`** **`★ P0 关键必通`** Workflow 级跨区（Blue/Yellow）插队端到端闭环（含筛选态按真实队列交换、多端回执、晚发现沿用、排期同步刷新） Blue/GitCode/16P 跨区部分当前阻塞，Yellow 单节点子集已在 INT-07 记录，未勾选。
 - [ ] **`E2E-06`** **`★ P0 关键必通`** GitHub & GitCode 整次 Workflow 取消端到端闭环（含原生作业、2 分钟 `force-cancel`、断连网站仍停机、清理失败隔离） GitHub 侧因 APP_NOT_INSTALLED 阻塞，GitCode 侧无 dispatch 入口，未勾选。
-- [ ] **`E2E-07`** **`★ P0 关键必通`** 网站宕机 30 分钟故障隔离 + 恢复快照对账 + 单库 80%→70% 滚删 + 写额度耗尽降级演练 当前缺少 D1 容量水位和写额度操作权限，演练阻塞，未勾选。
+- [ ] **`E2E-07`** **`★ P0 关键必通`** 网站宕机 30 分钟故障隔离 + 恢复快照对账 + 单库 80%→70% 滚删 + 写额度耗尽降级演练 当前缺少 SQLite 容量水位和写额度操作权限，演练阻塞，未勾选。
 - [ ] **`E2E-08`** `P1` Pools 时间轴 16P 双框独立点击与去重计卡 + 零卡探针不占行 + 0/<10/≥10 耗时样本与排期虚线边界 16P 双框与多机资源当前不可调度，阻塞，未勾选。
 - [ ] **`E2E-09`** `P1` 集群新增资产（粘贴 `preflight.py` 片段与指纹报错回退）、**两步先排空再删除（排空中可恢复 + 阻断条件校验）**、双 Worker 部分生效与版本回滚全栈闭环 16P/多节点真实资产与跨区部分当前不可执行，阻塞，未勾选。
 - [ ] **`E2E-10`** `P1` `train` 72 小时排队超时与 `npu_smoke` 无超时边界验证
 - [ ] **`E2E-11`** `P1` 30 秒页面自动刷新、浅/深色主题、切回后台标签页刷新与缓存时效一致性
-  - [x] Site v31 已在浏览器完成深浅主题切换，正式源码包含 30 秒定时刷新、`document.hidden` 后台暂停和 `visibilitychange` 切回刷新。
+  - [x] 旧前端版本 v31 已在浏览器完成深浅主题切换，正式源码包含 30 秒定时刷新、`document.hidden` 后台暂停和 `visibilitychange` 切回刷新。
   - [ ] 仍需浏览器计时抓包确认 30 秒请求间隔及后台/切回网络请求序列。
-- [ ] **`E2E-12`** **`★ P0 关键必通`** ChatGPT Sites 产物包验证 + 个人服务器（Node 24 + SQLite）零业务改动迁移切换演练（含 Worker 仅改 `control_center.url` 重连对账、SPA 刷新回退、反代 IP 限流与 `portability_intercept` DT 全绿）
+- [ ] **`E2E-12`** **`★ P0 关键必通`** lite-actions.ooguy.com 产物包验证 + 个人服务器（Node 24 + SQLite）零业务改动迁移切换演练（含 Worker 仅改 `control_center.url` 重连对账、SPA 刷新回退、反代 IP 限流与 `node-runtime` DT 全绿）
 
 #### 7.3 生产上线前置实机签收（对应 PRD v1.5 §12 全部 5 条前提）
-- [ ] **`REL-00`** **`★ 上线必过`** 初期 ChatGPT Sites 前端代理 + CF Worker/D1 实机核验（验证 `.openai/hosting.json` 保持 `d1: null`/`r2: null`、部署时注入 `SITES_PROJECT_ID` 与 `CONTROL_CENTER_API_ORIGIN` 反代同源 `/api/v1/*`、CF Worker/D1 Secret 注入与出站 `fetch()` 调 GitHub/GitCode API 及域名接入）
+- [ ] **`REL-00`** **`★ 上线必过`** 初期 lite-actions.ooguy.com 前端与 API 同源部署 + Node.js/SQLite 实机核验（验证 `control-center/deploy/Caddyfile.personal-server.example` 保持 `Node.js 24 + SQLite`/``、部署时注入 `CONTROL_CENTER_DOMAIN` 与 `CONTROL_CENTER_ORIGIN` 反代同源 `/api/v1/*`、Node.js/SQLite Secret 注入与出站 `fetch()` 调 GitHub/GitCode API 及域名接入）
 - [x] **`REL-01`** **`★ 上线必过`** 真实 Yellow 主机通过批准域名完成心跳、取令、拉配置、回执，满足出口放行与每日字节预算（待定 1）
   - 实机证据（2026-11-20）：Yellow `offline=false`、`applied_rev=6`；`test_upload_intercept.py` 4/4 通过；`http-egress.json` 中 control 路径均 `rejected=0`、`sent_violations=0`，最大请求 1,828 B，日上传量 1,254,020 / 67,108,864。
 - [ ] **`REL-02`** **`★ 上线必过`** 已装 App 的 GitHub 测试仓 + 配好 Token 的 GitCode 测试仓各完成一次含原生作业和双区用例的真实整次取消 GitCode 侧真实 Workflow 触发当前阻塞，原因是本会话没有可用的 GitCode dispatch 接口或触发凭据，未勾选。 GitHub 侧实测返回 400 APP_NOT_INSTALLED，GitHub App 安装阻塞；GitCode 侧触发同样阻塞，未勾选。
-- [ ] **`REL-03`** **`★ 上线必过`** 实际免费托管实例（ChatGPT Sites / D1 或 Cloudflare Workers Free + D1 Free）实测容量水位监控、80%→70% 滚删、CPU 预算与额度耗尽行为 当前缺少免费托管实例容量水位与写额度操作权限，实机 80%→70% 滚删和额度耗尽演练阻塞。
+- [ ] **`REL-03`** **`★ 上线必过`** 实际免费托管实例（lite-actions.ooguy.com / SQLite 或 personal server Node.js 24 + SQLite）实测容量水位监控、80%→70% 滚删、CPU 预算与额度耗尽行为 当前缺少免费托管实例容量水位与写额度操作权限，实机 80%→70% 滚删和额度耗尽演练阻塞。
 - [ ] **`REL-04`** **`★ 上线必过`** 真实双 Worker 环境联调一次 Workflow 级跨区插队（管理接口 → 两端应用回执 → 排期刷新），并回归原有调度规则 Blue/GitCode/16P 跨区部分当前阻塞，Yellow 单节点子集已在 INT-07 记录，未勾选。
 
 ---
@@ -181,7 +178,7 @@
 
 ### 2.1 ★ 8 条 P0 关键必须打通的核心用例（Release Blocker 总览）
 
-> 端到端联调必须覆盖全部功能路径；其中以下 **8 条 `★ P0 关键必通`** 对应系统的安全红线、出口合规、核心主视图、两大调度控制能力、故障容错底线与初期 Sites 部署/后期迁移个人服务器防锁死红线，**任意一条未打通均不得进入生产发布**：
+> 端到端联调必须覆盖全部功能路径；其中以下 **8 条 `★ P0 关键必通`** 对应系统的安全红线、出口合规、核心主视图、两大调度控制能力、故障容错底线与初期 server 部署/后期迁移个人服务器防锁死红线，**任意一条未打通均不得进入生产发布**：
 
 | 必通编号 | 对应 E2E / INT 用例 | 必须打通的核心链路 | 为何是不可妥协的红线（一票否决理由） |
 |---|---|---|---|
@@ -192,15 +189,15 @@
 | **★ P0-5** | `E2E-05` (`INT-07`) | Workflow 级跨区（Blue/Yellow）版本化插队 + 共享/不共享队列分端回执 + 晚发现/回队沿用顺位 + 排期刷新 | PRD v1.5 最大调度协议升级（从 case 级改为 Workflow 级），必须验证与 Unified Router 零冲突 |
 | **★ P0-6** | `E2E-06` (`INT-06`) | GitHub（含 2 分钟 `force-cancel`）& GitCode 整次取消 + 2 分钟内两区停机释放 + 断连网站仍生效 + 清理失败进隔离 | 线上卡死/误触任务止损的唯一一键入口，必须保证绝不遗漏原生作业或留下僵尸占卡 |
 | **★ P0-7** | `E2E-07` (`INT-02` + `INT-09`) | 网站宕机 30 分钟 CI 照常跑 + 恢复分片快照对账 + 单库 80%→70% 滚删 + 写额度耗尽降级 | 保证零费用免费套餐下的架构底线：“网站挂了或额度耗尽，CI 照常跑” |
-| **★ P0-8** | `E2E-12` (`INT-10`) | `portability_intercept` DT 4 层门禁 + ChatGPT Sites 前端代理产物包校验 + 同套业务零改动切换个人服务器（Node 24 + `node:sqlite`） | 保障“初期 ChatGPT Sites 前端代理 + CF Workers/D1 后端、代码全入 GitHub 仓、后期无痛迁个人服务器”架构承诺，杜绝任何隐式云商 API 锁死 |
+| **★ P0-8** | `E2E-12` (`INT-10`) | `node-runtime` DT 4 层门禁 + lite-actions.ooguy.com 前端与 API 同源部署产物包校验 + 同套业务零改动切换个人服务器（Node 24 + `node:sqlite`） | 保障“初期 lite-actions.ooguy.com 前端与 API 同源部署 + Node.js/SQLite 后端、代码全入 GitHub 仓、后期无痛迁个人服务器”架构承诺，杜绝任何隐式云商 API 锁死 |
 
 ### 2.2 本地联调与集成测试拓扑
 
-沿用并扩展 [control-center/tests/integration/run.py](../tests/integration/run.py) 一键拉起零外部网络依赖的**本地隔离夹具（isolated fixture）**闭环环境（支持按 `--runtime=d1|node` 分别验证两套运行时；平台写请求由本地 TLS Proxy stub 返回 `201`，不替代真实外部平台与线上主机验收）：
+沿用并扩展 [control-center/tests/integration/run.py](../tests/integration/run.py) 一键拉起零外部网络依赖的**本地隔离夹具（isolated fixture）**闭环环境（支持按 `--runtime=node` 分别验证两套运行时；平台写请求由本地 TLS Proxy stub 返回 `201`，不替代真实外部平台与线上主机验收）：
 1. **控制面服务（双运行时共用 `control-center/dist/client/` 与 `migrations/*.sql`）**：
-   - **运行时 A（CF Workers / D1 模式，`--runtime=d1`）**：`wrangler dev --local`（本地 Miniflare workerd + D1；正式前端静态与代理另由 ChatGPT Sites 产物包承载）；
+   - **运行时 A（Node.js / SQLite 模式，`--runtime=node`）**：`systemctl dev --local`（本地 Miniflare Node.js + SQLite；正式前端静态与代理另由 lite-actions.ooguy.com 产物包承载）；
    - **运行时 B（个人服务器自建模式，`--runtime=node`）**：Node.js 24 运行 `control-center/worker/scripts/start-node-server.mjs`（底层复用 `src/adapters/nodeServer.ts` + 本地 SQLite 文件 `node:sqlite`）+ `control-center/web/dist/client/` 静态目录。
-   - 两套运行时均支持相同环境变量覆写：`DB_LIMIT_BYTES`（兼容 `D1_LIMIT_BYTES`）、`DB_DAILY_WRITE_LIMIT`、`FORCE_CANCEL_WAIT_SECONDS`、`HEARTBEAT_OFFLINE_SECONDS`、`PROBE_INTERVAL_SECONDS`、`TRUST_PROXY_HEADERS`。
+   - 两套运行时均支持相同环境变量覆写：`DB_LIMIT_BYTES`（兼容 `DB_LIMIT_BYTES`）、`DB_DAILY_WRITE_LIMIT`、`FORCE_CANCEL_WAIT_SECONDS`、`HEARTBEAT_OFFLINE_SECONDS`、`PROBE_INTERVAL_SECONDS`、`TRUST_PROXY_HEADERS`。
 2. **Mock 平台服务**：本地 HTTP Server 同时模拟 GitHub REST API（含 App JWT/Installation Token、`cancel`/`force-cancel`、commit comments、原生作业状态）与 GitCode v5/v8 API（含 `/actions/runs/{id}/stop`）。
 3. **双 Worker 进程**：同时启动真实的 `unified_router.py`（`blue` 与 `yellow` 两个独立子进程，隔离的 `LITE_ACTIONS_STATE_DIR`、独立 `worker-id` 与 `pools-active.json`，仅将远端 SSH/NPU 执行与 `npu-smi` 替换为可控模拟桩）。
 4. **TLS 抓包代理**：透明拦截两个 Worker 全部出站 HTTPS 请求（网站 + 平台），逐帧核算真实 HTTP/1.1 线序字节 `< 2,000` B 与脱敏边界。
@@ -213,14 +210,14 @@
 | **INT-01** | `★ P0` | 公网读取、掩码、缓存与四级权限矩阵 | `REQ-02`, `REQ-03`, `REQ-09`, `REQ-16` | 1. 匿名请求 `/api/v1/public/{overview,timeline,models,workflows,cluster,tasks/:uid}`。<br>2. 匿名调用所有管理写、用户管理、Worker 接口。<br>3. 普通管理员登录读 `/admin/timeline`、`/admin/workflows`、`/admin/cluster` 并尝试访问 `/admin/users`。<br>4. Super 新建/重置/删除管理员，用旧密钥与旧 Cookie 访问管理接口；错误密钥连错 5 次。 | 1. 公开接口 200 且 `Cache-Control: public, max-age=10`；全部 IP 为 `X.xxx.xxx.Y:P`，全文扫描无真实 `host_id`、`node_ip`、`container_id`、Token、密钥、日志。<br>2. 所有非法写/Worker 接口 401/403，DB 零变更。<br>3. 管理员读接口 `private, no-store` 且含完整 `host_id`；访问 `/users` 403。<br>4. 密钥仅创建/重置返回 1 次；重置/删除后旧 Cookie 即刻 401，审计保留；第 6 次登录 429 锁 10 分钟。 |
 | **INT-02** | `★ P0` | 双 Worker 心跳、90s 离线、去重与断网 30 分钟对账 | `REQ-04`, `REQ-06` | 1. 状态目录预置 5 条上线前已 `REPORTED` 任务 + 1 条 `RUNNING` 任务后首次启动。<br>2. 推进任务全周期并重放重复事件；制造序号缺口。<br>3. 断开 Blue 到控制面网络 >95s 期间产生 20+ 状态变化，随后恢复。 | 1. 历史 5 条不导入；活动任务入库且 `timing_reliable=0`。<br>2. 重放严格幂等；跳号回包 `need_snapshot=true` 触发分片对账。<br>3. 90s 后标 Worker 离线；断网不阻塞平台回报，恢复后全量一致零重复。 |
 | **INT-03** | `★ P0` | 全部节点 2 分钟 `npu-smi` 5 次离线 + 最近在线时间 + 空闲三态叠加 | `REQ-07`, `REQ-15` | 1. 初始无探测查设备组状态（包含初始 `enabled: false` 的暂停 Pool 节点，如 `a5_shared_yellow`）。<br>2. 模拟查到全部卡且无进程 → 再模拟连续缺卡/报错 4 次（期间重放同一探测轮次事件 1 次）→ 第 5 次缺卡 → 第 6 次恢复全部卡。<br>3. 模拟外部进程占用、超时 30 分钟无新鲜巡检、暂停调度/排空中、隔离、Worker 心跳离线叠加；暂停与排空状态下继续做在线探测。 | 1. 初始 `待探测`；`enabled: false` 暂停 Pool 的节点同样参与探测不跳过。<br>2. 首次成功变 `在线` 并记 `last_online_at`；1–4 次显示 `探测异常 X/5`（重放不重复计数）、`last_online_at` 不变；第 5 次变 `已离线`、`last_online_at` 仍不变；第 6 次恢复 `在线` 且刷新 `last_online_at`；节点/Pool 汇总正确呈现 `部分离线`/`已离线`。<br>3. 外部占卡/超时显示红色 `未知占用`（无外部 PID/用户）；暂停调度与排空中显示黄色且继续更新在线探测；`/cluster` 与 `/timeline` 输出一致。 |
-| **INT-04** | `P1` | 耗时中位数（0/<10/≥10 样本）与排期虚线投影 API | `REQ-08`, `REQ-09` | 在同一 D1 测试集准备 0 / 5 / 12 条可靠 `PASS` 样本 + 2 条 `FAIL` + 1 条 `timing_reliable=0`，验证 API 返回的中位数、超时标记、无估算级联阻断与未知占用 `WAITING_EXTERNAL`。 | 仅取最近 10 条可靠 `PASS` 计算中位数（排除 `FAIL` 与不可靠样本）；超时标 `EXCEEDED`；无估算 case 及同队列后续均标 `NO_ESTIMATE`；仅落未知占用组标 `WAITING_EXTERNAL`。 |
+| **INT-04** | `P1` | 耗时中位数（0/<10/≥10 样本）与排期虚线投影 API | `REQ-08`, `REQ-09` | 在同一 SQLite 测试集准备 0 / 5 / 12 条可靠 `PASS` 样本 + 2 条 `FAIL` + 1 条 `timing_reliable=0`，验证 API 返回的中位数、超时标记、无估算级联阻断与未知占用 `WAITING_EXTERNAL`。 | 仅取最近 10 条可靠 `PASS` 计算中位数（排除 `FAIL` 与不可靠样本）；超时标 `EXCEEDED`；无估算 case 及同队列后续均标 `NO_ESTIMATE`；仅落未知占用组标 `WAITING_EXTERNAL`。 |
 | **INT-05** | `★ P0` | 全链路上传报文 `< 2,000` 字节门禁（含 v1.5 扩展字段） | `REQ-04`, `REQ-05`, `REQ-15`, `REQ-16`, `REQ-17` | 1. 运行 `python3 -m unittest tests/test_upload_intercept.py -v`（覆盖 v1.5 新增 `TU.sub/wn`、`IP.pr/v/mc/lo`、`SWAP_WORKFLOW` 回执及最大长度输入）。<br>2. 在集成环境 TLS 代理抓包双 Worker 完整运行周期（含 50 条积压事件、50 任务长队列、大快照、Workflow 插队回执）。 | 1. UT 全绿，AST 写路径审计零漏登。<br>2. TLS 代理捕获的 100% 网站请求（Blue/Yellow）及 Yellow 平台写请求真实 HTTP/1.1 线序字节均严格 `< 2,000` B，零违规。 |
 | **INT-06** | `★ P0` | GitHub & GitCode 整次 Workflow 取消闭环 | `REQ-10` | GitHub 与 GitCode 各建 1 个含原生作业、Blue/Yellow 排队与在途用例的 run；覆盖：重复点击、GitHub `if: always()` 2 分钟 `force-cancel`、晚发现、旧 attempt 拒绝、**双 Worker 断开网站但连通平台仍取消**、清理失败进隔离、平台取消接口报错。 | 重复点击返同单；两平台原生作业与双区用例 2 分钟内全停并释放设备、回报 `CANCELLED`，已结束用例保原态；断连网站时 Worker 仍靠平台轮询停机并在重连后补发事件；清理失败进隔离不可调度；平台报错记录原因且任务继续跑。 |
 | **INT-07** | `★ P0` | Workflow 级跨区插队 + `train` 72h 排队超时 | `REQ-11`, `REQ-17` | 1. 排入 4 个待调度 Workflow（`W0` 在途标 `0`，`W1/W2/W3` 待调度标 `1/2/3`，混含 GitHub/GitCode 且横跨 Blue/Yellow 共享与不共享队列）。<br>2. 对 `W3` 连续插队两次（`3→2→1`），验证队首 `1` 与在途 `0`、过期 `queue_version`、重复同 `op_id`、单端离线、同 attempt 晚发现/回队用例、重启保留。<br>3. 虚拟时钟推进调度循环 71h59m 与 72h01m。 | 1. 两次交换后 `W3` 移至 `1`，只交换涉及双方相对顺位、保留同 Workflow 内子用例顺序与不共享队列原状；分 Worker/Pool/类型返回准确回执；过期 `queue_version` 返 409；重复 `op_id` 幂等返原回执；晚发现/回队同 attempt 用例沿用新顺位；在途租约与多机组合不受影响。<br>2. `train` 71h59m 仍排队、72h01m 报 `RESOURCE_TIMEOUT`；`npu_smoke` 超 72h 仍排队。 |
 | **INT-08** | `★ P0` | 集群配置热加载、统一暂停语义与两步排空删除 | `REQ-12`, `REQ-13`, `REQ-18` | 1. 向 `enabled: false` 的 Pool 入队任务验证继续排队不报 `POOL_DISABLED`；暂停 16P 节点 `:153` 的 `0-7`（有在途任务）→ 恢复（验无 `paused: false`）。<br>2. `preflight.py --export-node-snippet` 新增与指纹报错回退。<br>3. **两步删除**：先发 `DRAIN` 进入排空中（验证有活动租约/排队引用/隔离时 `DELETE` 返回 409；验证排空中可 `RESUME` 取消排空；验证确认排空取消唯一依赖排队用例 + 等在途跑完且无隔离后再发 `DELETE` 移除资产）。<br>4. 双 Worker 一端成功一端失败 → 回滚 → 重启及更换代码目录。 | 1. Pool `enabled: false` 与节点/组 `paused: true` 行为完全统一（不发新租约、排队不报错）；`0-7` 及含其跨机组合停发新租约，`8-15` 正常，在途沿用分配快照跑完。<br>2. 指纹校验失败保持旧版并回执原因。<br>3. 未排空或存在活动租约/排队引用/隔离时 `DELETE` 均返 409；全部清零后第二步 `DELETE` 生效且历史记录保留节点身份。<br>4. 双端部分生效准确展示两端版本与失败原因；回滚发 `N+1`；重启与自动更新切目录后仍加载 `pools-active.json`。 |
-| **INT-09** | `★ P0` | 单 D1 热冷分层、跨 30 天分页、80%→70% 滚删与写额度降级 | `REQ-14`, `REQ-16` | D1 构造 103 个已完成 Workflow（60 个 0–30 天热库 + 43 个 31–360 天）+ 5 个满 366 天 + 2 个活动 Workflow + 审计/账号；依次验证每日归档 Cron、3 页 50/50/3 翻页与第 31 天冷详情、推过 80% 滚删至 <70%、同一次 D1 日写额度耗尽熔断下管理写 503 与 Worker 本地暂存恢复。 | 热转冷先写后校再删；3 页分别 50/50/3 个完整 Workflow 且无重无漏，第 31 天详情可打开；滚删以完整 Workflow 粒度清理最早历史至 <70%，活动任务/命令/取消单/账号/审计零丢失，末尾返 `truncated_by_capacity=true`；写额度耗尽管理写 503，Worker 本地暂存恢复后补发。 |
+| **INT-09** | `★ P0` | 单 SQLite 热冷分层、跨 30 天分页、80%→70% 滚删与写额度降级 | `REQ-14`, `REQ-16` | SQLite 构造 103 个已完成 Workflow（60 个 0–30 天热库 + 43 个 31–360 天）+ 5 个满 366 天 + 2 个活动 Workflow + 审计/账号；依次验证每日归档 Cron、3 页 50/50/3 翻页与第 31 天冷详情、推过 80% 滚删至 <70%、同一次 SQLite 日写额度耗尽熔断下管理写 503 与 Worker 本地暂存恢复。 | 热转冷先写后校再删；3 页分别 50/50/3 个完整 Workflow 且无重无漏，第 31 天详情可打开；滚删以完整 Workflow 粒度清理最早历史至 <70%，活动任务/命令/取消单/账号/审计零丢失，末尾返 `truncated_by_capacity=true`；写额度耗尽管理写 503，Worker 本地暂存恢复后补发。 |
 | **INT-09B** | `★ P0` | 统一 Workflow 表汇总口径专项验证 | `REQ-16` | 构造：① 1 个同时含运行中与已结束子用例的混合 Workflow；② 1 个 16 卡执行 38 分钟的用例；③ 1 个含无开始时间子用例的不完整计量 Workflow；④ 1 个含 1 PASS + 1 CANCELLED 的已结束 Workflow。 | ① 混合 Workflow 留在活动队列标 `0`，展开可见全部运行中与已结束子用例，不重复出现在历史表；② 运行总卡时精确为 `10.13` 卡·小时（多组同用例不重复计）；③ 标 `card_hours_partial=true`；④ 调度结果独立字段返回 `FAIL`（前端显示“失败”），各子用例保留各自终态。 |
-| **INT-10** | `★ P0` | `portability_intercept` DT 与双运行时对等联调 | `REQ-20` | 1. 运行 `npm run test:portability --prefix control-center/worker` 与 `SITES_PROJECT_ID=... CONTROL_CENTER_API_ORIGIN=... node control-center/scripts/build-sites.mjs --require-origin`。<br>2. 分别以 `--runtime=d1`（Cloudflare workerd + 原始 D1 binding / Wrangler D1）和 `--runtime=node`（Node 24 `node:sqlite` + `scripts/start-node-server.mjs`）运行同一套核心契约与双 Worker 集成回归。<br>3. 不触发任何外部 Cron，仅通过 30s Worker 心跳与查询流量验证取消单跟踪与每日维护节流推进。 | 1. 静态扫描 0 平台专有 API/付费绑定/硬编码域名/个人 `project_id`/仓外私有路径违规；Sites 前端代理产物 `dist/client/index.html`、`dist/server/index.js`、`dist/.openai/hosting.json`（非空注入 `project_id`、`d1: null, r2: null`）完整可加载且验证运行时代理。<br>2. 两套运行时对静态 SPA 回退 vs `/api/*` JSON 404、公开脱敏、管理员登录与无 `CF-Connecting-IP` 防爆破、冷块 gzip BLOB 读写与 `dbSizeBytes()`、无 Cron 惰性取消跟踪结果 100% 一致。<br>3. Worker 仅修改 `control_center.url` 即可从运行时 A 无缝切至运行时 B 并快照对账，零超包。 |
+| **INT-10** | `★ P0` | `node-runtime` DT 与双运行时对等联调 | `REQ-20` | 1. 运行 `npm run test:runtime --prefix control-center/worker` 与 `CONTROL_CENTER_DOMAIN=... CONTROL_CENTER_ORIGIN=... node control-center/worker/scripts/start-node-server.mjs --require-origin`。<br>2. 分别以 `--runtime=node`（personal server Node.js + 原始 SQLite binding / Node.js SQLite）和 `--runtime=node`（Node 24 `node:sqlite` + `scripts/start-node-server.mjs`）运行同一套核心契约与双 Worker 集成回归。<br>3. 不触发任何外部 Cron，仅通过 30s Worker 心跳与查询流量验证取消单跟踪与每日维护节流推进。 | 1. 静态扫描 0 平台专有 API/付费绑定/硬编码域名/个人 `domain`/仓外私有路径违规；前端与 API 同源部署产物 `dist/client/index.html`、`dist/server/index.js`、`dist/control-center/deploy/Caddyfile.personal-server.example`（非空注入 `domain`、`Node.js 24 + SQLite`）完整可加载且验证运行时代理。<br>2. 两套运行时对静态 SPA 回退 vs `/api/*` JSON 404、公开脱敏、管理员登录与无 `X-Forwarded-For` 防爆破、冷块 gzip BLOB 读写与 `dbSizeBytes()`、无 Cron 惰性取消跟踪结果 100% 一致。<br>3. Worker 仅修改 `control_center.url` 即可从运行时 A 无缝切至运行时 B 并快照对账，零超包。 |
 
 ### 2.4 全栈端到端联调用例（`E2E-01` ~ `E2E-12`，`⏳ 依赖 Phase 5.5 + FE-01~05 标绿`）
 
@@ -232,21 +229,21 @@
 | **E2E-04** | **`★ P0 关键必通`** | 统一 Workflow 表格全交互、上方历史 50 条分页/折叠与汇总口径 | `FE-02`, `FE-05` | 1. 打开代码仓任务看板，核对默认显示全部模型仓及全部 12 列顺序，选择单个模型后再清除筛选。<br>2. 核对混合在途+排队 Workflow 序号 `0`、等待队列 `1, 2...`。<br>3. 点表顶「加载 50 个历史 Workflow」→ 验证滚动定位交界 `-2, -1, 0, 1` → 继续加载 103 条验证 `50/50/3` 且更早批次插在顶部 → 展开若干子用例 → 点「折叠历史」再点「展开历史」。<br>4. 对多列组合筛选、数值比较（如 `>=16`）、升/降序排序后点「恢复队列顺序」。<br>5. 核对 16 卡 38 分钟显示 `10.13` 卡·小时、调度结果仅三值、子用例列名为「耗时」、点开第 31 天冷归档任务详情与 Actions ID 跳转。 | 1. 页面初始模型筛选为空并显示全部模型仓，选择单个模型后仅显示该模型，清除后恢复全部；`lite-actions` 无特殊分类，跨平台 `torchtitan-npu` 归同模型保留完整仓名。<br>2. 历史按 `... -2, -1, 0, 1, 2` 展示在队列上方，103 条分页 50/50/3 无重无漏；折叠再展开完整恢复已加载批次、子用例展开状态及固定负序号。<br>3. 筛选与排序不改原始序号，恢复默认回到实时队列。<br>4. 调度结果仅取 `成功/失败/排队中`；卡时精确 `10.13`（活动标“截至当前”）；第 31 天冷归档详情无日志且标“归档”；末尾有清理提示时正确展示。 |
 | **E2E-05** | **`★ P0 关键必通`** | Workflow 级跨区（Blue/Yellow）插队端到端闭环 | `FE-01`, `FE-02`, `FE-03`, `FE-05` | 1. 管理员先对表格应用自定义排序或模型筛选，再对原序号 `3` 的跨区 Workflow（GitHub / GitCode 各测一次）点「插队」查看确认弹窗并确认。<br>2. 观察新队列顺序与「插队回执」弹窗中 Blue/Yellow 各 Pool/任务类型状态。<br>3. 再次点击把 `2` 移到 `1`，验证 `1` 置灰与 `0` 无插队按钮。<br>4. 模拟另一浏览器窗口同时使用旧 `queue_version` 发起插队。<br>5. 触发该 Workflow 同 attempt 晚发现子用例与回队子用例，切回 Pools 时间轴检查排期虚线刷新。 | 1. 确认弹窗展示真实顺位 `3 → 2`（不受当前前端筛选/排序影响）及排队子用例；确认后自动切回默认队列顺序展示 `3` 与 `2` 互换。<br>2. 回执分 Worker/Pool/任务类型展示 `已应用`/`无变化`/`待受理`/`失败`；再次点击移至 `1` 后按钮置灰。<br>3. 过期 `queue_version` 提示冲突并自动刷新。<br>4. 同 attempt 晚发现/回队用例沿用新顺位；在途租约与多机组合不受影响；Pools 虚线同步更新。 |
 | **E2E-06** | **`★ P0 关键必通`** | GitHub & GitCode 整次 Workflow 取消端到端闭环 | `FE-02`, `FE-03`, `FE-05` | 1. 管理员分别在 GitHub（含原生 `if: always()` 作业 + 两区用例）与 GitCode 活动 Workflow 行点「取消 Workflow」，核对确认弹窗（仓库/run/attempt）并确认。<br>2. 重复点击取消按钮；打开「取消进度」弹窗跟踪平台结论、两区停止进度与设备释放。<br>3. 另测：未装 App 的 GitHub 仓按钮置灰；断连 Worker 与网站但通平台时发起取消；模拟清理失败进隔离。 | 1. GitHub 与 GitCode 均可发起取消（不再限制仅 GitHub）；2 分钟内两区排队与在途用例全停释放设备（GitHub 超 2 分钟触发 `force-cancel`），已结束用例保原结果。<br>2. 重复点击返同取消单；未装 App 仓取消按钮置灰。<br>3. 断连网站仍能停机且恢复后进度闭合；清理未确认设备在集群管理与时间轴标为 `隔离`。 |
-| **E2E-07** | **`★ P0 关键必通`** | 网站宕机故障隔离 + D1 容量滚删 + 写额度耗尽降级 | `FE-01`~`FE-05` | 1. 停止控制面服务 30 分钟，期间两区 Worker 照常接单执行并回报平台；随后重启控制面刷新浏览器。<br>2. 推高 D1 容量过 80% 触发滚删，在浏览器翻阅历史至末尾。<br>3. 触发 D1 日写额度耗尽，分别测试匿名看看板、管理员点取消/插队/暂停、Worker 上报及次日恢复。 | 1. 停服期间原 CI 100% 正常无报错；控制面恢复 1–2 个心跳后页面完整对账一致。<br>2. 历史翻到底显示“更早的记录已因容量清理”，活动任务与审计/账号完好。<br>3. 写额度耗尽时页面对管理写操作给出明确 503 提示，匿名只读看板仍可用，Worker 本地暂存事件恢复后自动补发。 |
+| **E2E-07** | **`★ P0 关键必通`** | 网站宕机故障隔离 + SQLite 容量滚删 + 写额度耗尽降级 | `FE-01`~`FE-05` | 1. 停止控制面服务 30 分钟，期间两区 Worker 照常接单执行并回报平台；随后重启控制面刷新浏览器。<br>2. 推高 SQLite 容量过 80% 触发滚删，在浏览器翻阅历史至末尾。<br>3. 触发 SQLite 日写额度耗尽，分别测试匿名看看板、管理员点取消/插队/暂停、Worker 上报及次日恢复。 | 1. 停服期间原 CI 100% 正常无报错；控制面恢复 1–2 个心跳后页面完整对账一致。<br>2. 历史翻到底显示“更早的记录已因容量清理”，活动任务与审计/账号完好。<br>3. 写额度耗尽时页面对管理写操作给出明确 503 提示，匿名只读看板仍可用，Worker 本地暂存事件恢复后自动补发。 |
 | **E2E-08** | `P1` | Pools 时间轴 16P 双框、零卡探针与耗时排期边界 | `FE-01`, `FE-05` | 1. 调度 1 个 16P Yellow 租约（占 `0-7`、`8-15` 两组）+ 1 个多机 16P Blue 租约 + 1 个 0 卡探针。<br>2. 分别点击 16P 租约的两个框及下方排队表行。<br>3. 观察 0 / 5 / 10+ 样本耗时、超时「已超过预计」、无估算阻断同队列后续及「等待外部释放」。 | 16P 租约在两组行各画独立框，点任一框打开同一用例详情，模型仓总卡时与卡数只计一次；零卡探针不占设备行；时间轴下方排队表筛选与排期估算状态完全准确。 |
 | **E2E-09** | `P1` | 集群新增资产、两步先排空再删除、单端生效与回滚 | `FE-04`, `FE-05` | 1. 粘贴 `preflight.py --export-node-snippet` 输出并核对解析预览新增节点（先测指纹错误被 Worker 拒绝，再测正确生效）。<br>2. **两步删除**：先点「排空删除」进入黄色 `排空中`（验证排空中可点「恢复」退出）；重新排空并验证在活动租约/排队引用/隔离未清零时「删除」按钮置灰并提示原因；待清零后点击「删除」移除节点。<br>3. 模拟仅一端 Worker 生效后，再执行历史版本回滚并查看操作审计。 | 实机指纹不匹配回执失败原因且保留旧版；排空态下可恢复、未清零前阻止第二步删除、清零后确认删除生效且保留历史节点身份；版本栏准确展示双端不同生效版本；回滚发布新版本并全部记录审计。 |
 | **E2E-10** | `P1` | `train` 72 小时排队超时与 `npu_smoke` 无超时 | `FE-02`, `FE-05` | 通过虚拟时钟验证 `train` 用例排队 71h59m 仍显示排队中、72h01m 转为 `RESOURCE_TIMEOUT`（调度结果归“失败”），同池 `npu_smoke` 超 72h 仍排队。 | 与 PRD §8 规则完全一致，模型仓与时间轴状态同步。 |
 | **E2E-11** | `P1` | 30 秒自动刷新、后台暂停、浅/深色主题与北京时间 | `FE-01`~`FE-05` | 验证页面每 30 秒静默刷新数据、切至后台标签页暂停并在切回时立即刷新、浅/深色主题持久化、全部时间按北京时间（UTC+8）展示。 | 刷新不丢失用户展开的子用例、筛选/排序与历史折叠状态；主题持久化生效。 |
-| **E2E-12** | **`★ P0 关键必通`** | ChatGPT Sites 前端代理产物验证与个人服务器零改动迁移切换演练 | `FE-05`, `REQ-20` | 1. 基于 GitHub 仓全量源码注入 `SITES_PROJECT_ID` 与 `CONTROL_CENTER_API_ORIGIN` 执行一键构建，验证 `control-center/dist/{client,server,.openai/hosting.json}`（`d1: null, r2: null`）在 ChatGPT Sites 前端代理 + CF Workers/D1 后端下完整加载（含深链接刷新回退 `/index.html`、`/api/v1/*` 代理转发与 `/api/v1/unknown` 返回 JSON 404）。<br>2. 在同一份前后端源码零改动前提下，使用 `seed.mjs --sqlite` + `scripts/start-node-server.mjs` 启动个人服务器实例，将双 Worker `control_center.url` 指向个人服务器地址并重启。<br>3. 浏览器访问个人服务器域名完成匿名看掩码、管理员登录与按反代 IP 防爆破、Workflow 表格与冷详情、取消与插队，并全程跑绿 `portability_intercept` DT。 | 1. Sites 产物包无任何硬编码绝对 API 域名或仓外私有路径，SPA 路由刷新不 404，`/api/*` 404 不被错转为 HTML。<br>2. 个人服务器（Node 24 + `node:sqlite`）零业务修改直接运行，双 Worker 仅改 `control_center.url` 即完成快照对账且报文 `< 2,000` B，全量页面功能与 CF Workers/D1 运行时 100% 一致。 |
+| **E2E-12** | **`★ P0 关键必通`** | lite-actions.ooguy.com 前端与 API 同源部署产物验证与个人服务器零改动迁移切换演练 | `FE-05`, `REQ-20` | 1. 基于 GitHub 仓全量源码注入 `CONTROL_CENTER_DOMAIN` 与 `CONTROL_CENTER_ORIGIN` 执行一键构建，验证 `control-center/dist/{client,server,control-center/deploy/Caddyfile.personal-server.example}`（`Node.js 24 + SQLite`）在 lite-actions.ooguy.com 前端与 API 同源部署 + Node.js/SQLite 后端下完整加载（含深链接刷新回退 `/index.html`、`/api/v1/*` 代理转发与 `/api/v1/unknown` 返回 JSON 404）。<br>2. 在同一份前后端源码零改动前提下，使用 `seed.mjs --sqlite` + `scripts/start-node-server.mjs` 启动个人服务器实例，将双 Worker `control_center.url` 指向个人服务器地址并重启。<br>3. 浏览器访问个人服务器域名完成匿名看掩码、管理员登录与按反代 IP 防爆破、Workflow 表格与冷详情、取消与插队，并全程跑绿 `node-runtime` DT。 | 1. 发布产物包无任何硬编码绝对 API 域名或仓外私有路径，SPA 路由刷新不 404，`/api/*` 404 不被错转为 HTML。<br>2. 个人服务器（Node 24 + `node:sqlite`）零业务修改直接运行，双 Worker 仅改 `control_center.url` 即完成快照对账且报文 `< 2,000` B，全量页面功能与 Node.js/SQLite 运行时 100% 一致。 |
 
 ### 2.5 生产上线前置实机签收（对应 PRD v1.5 §12 全部 5 条前提）
 
 | 签收 ID | 级别 | 验收目标 | 实机执行方式 | 通过门槛 |
 |---|---|---|---|---|
-| **REL-00** | `★ 上线必过` | 初期 ChatGPT Sites 前端代理 + CF Worker/D1 实机核验 | 将 `control-center/dist/` 前端代理包部署至 ChatGPT Sites（注入 `SITES_PROJECT_ID` 与 `CONTROL_CENTER_API_ORIGIN`，`.openai/hosting.json` 保持 `d1: null`/`r2: null`），配合 CF Worker/D1 后端核验同源代理、Secret 注入、出站 `fetch()` 调 GitHub/GitCode API 及域名接入 | 全项达标即以 Sites 前端代理 + CF Worker/D1 正式上线；后期迁移至个人服务器（Node 24 + `node:sqlite`）时复用同一份核心业务与迁移 SQL，零业务返工。 |
+| **REL-00** | `★ 上线必过` | 初期 lite-actions.ooguy.com 前端与 API 同源部署 + Node.js/SQLite 实机核验 | 将 `control-center/dist/` 前端与 API 同源部署包部署至 lite-actions.ooguy.com（注入 `CONTROL_CENTER_DOMAIN` 与 `CONTROL_CENTER_ORIGIN`，`control-center/deploy/Caddyfile.personal-server.example` 保持 `Node.js 24 + SQLite`/``），配合 Node.js/SQLite 后端核验同源代理、Secret 注入、出站 `fetch()` 调 GitHub/GitCode API 及域名接入 | 全项达标即以 前端与 API 同源部署 + Node.js/SQLite 正式上线；后期迁移至个人服务器（Node 24 + `node:sqlite`）时复用同一份核心业务与迁移 SQL，零业务返工。 |
 | **REL-01** | `★ 上线必过` | 真实 Yellow 出口连通与预算达标 | 在真实 Yellow 主机配置批准域名，完成心跳、取令、拉配置、回执与事件上报 | 真实 Yellow 出口放行，本地 `http-egress.json` 中 `sent_violations=0`、`max_request_bytes < 2,000`，符合待定 1 出口预算策略。 |
 | **REL-02** | `★ 上线必过` | 双平台真实整次取消 | 在已安装公开 GitHub App 的测试仓与已配置专用 Token 的 GitCode 测试仓，各触发 1 次含原生作业 + 双区用例的 run 并从正式网站点取消 | 两平台原生作业与双区排队/在途 case 均在 2 分钟内停下并释放设备，平台结论与取消进度页一致。 |
-| **REL-03** | `★ 上线必过` | 免费托管实例实测容量与配额 | 在实际免费托管实例（ChatGPT Sites / D1 或 Cloudflare Workers Free + D1 Free）验证水位监控、80%→70% 滚删与写额度耗尽降级 | 实测容量水位准确触发滚删、单次维护满足平台 CPU 预算、零额外费用产生。 |
+| **REL-03** | `★ 上线必过` | 免费托管实例实测容量与配额 | 在实际免费托管实例（lite-actions.ooguy.com / SQLite 或 personal server Node.js 24 + SQLite）验证水位监控、80%→70% 滚删与写额度耗尽降级 | 实测容量水位准确触发滚删、单次维护满足平台 CPU 预算、零额外费用产生。 |
 | **REL-04** | `★ 上线必过` | 真实双 Worker Workflow 级插队闭环 | 在真实 Blue/Yellow 测试环境通过正式网站执行 Workflow 级插队，观察两区回执、本地排队执行顺位与排期刷新 | 管理接口、Worker 持久化应用、两端回执和排期刷新 100% 闭环，原有 Router 调度/锁/隔离规则零回归。 |
 
 ---
@@ -262,14 +259,14 @@ flowchart TB
         ADM["管理员 / Super"]
     end
 
-    subgraph HOST["托管控制面（初期 ChatGPT Sites / 可零改动迁个人服务器 Node 24 + SQLite 或 CF Workers Free）"]
-        ADAPTER["运行时薄适配层（CF Workers/D1 index.ts 或 个人服务器 start-node-server.mjs/nodeServer.ts）"]
+    subgraph HOST["托管控制面（初期 lite-actions.ooguy.com / 可零改动迁个人服务器 Node 24 + SQLite 或 Workers Free）"]
+        ADAPTER["运行时薄适配层（Node.js/SQLite index.ts 或 个人服务器 start-node-server.mjs/nodeServer.ts）"]
         ASSETS["静态前端与 SPA 回退（control-center/dist/client，FE-05）"]
         PUB_API["Public Read API (/api/v1/public/*, 掩码 + max-age=10)"]
         ADM_API["Admin & Auth API (/api/v1/auth/*, /api/v1/admin/*, private,no-store)"]
         W_API["Worker Gateway API (/api/v1/worker/*, Worker Token HMAC)"]
         MAINT["维护调度（Cron / Node 定时器 / 无 Cron 心跳节流惰性触发）"]
-        DB[("单库 SQLite / D1（SqlStore 抽象：热表 + 压缩冷块 + 索引）")]
+        DB[("单库 SQLite / SQLite（SqlStore 抽象：热表 + 压缩冷块 + 索引）")]
     end
 
     subgraph Workers["Blue / Yellow Pull Workers (仅出不进)"]
@@ -345,30 +342,30 @@ lite-actions/
     │   ├── api-contract.md            # 前后端共享 REST API 契约文档（v1.5）
     │   └── backend-validation.md      # 后端回归验收与多托管部署指南
     ├── scripts/
-    │   └── build-sites.mjs            # [v1.5 新增] 一键构建 ChatGPT Sites 完整产物包并校验
+    │   └── scripts/start-node-server.mjs            # [v1.5 新增] 一键构建 lite-actions.ooguy.com 完整产物包并校验
     ├── deploy/
     │   ├── Dockerfile                 # [v1.5 新增] 个人服务器零原生依赖 Node 24 镜像模板
     │   └── control-center.service.example # [v1.5 新增] 个人服务器 systemd + Caddy/Nginx 模板
     ├── worker/                        # 控制面服务端工程 (TypeScript，运行时无关核心 + 薄适配层)
-    │   ├── wrangler.toml              # Cloudflare / Miniflare 本地与备选部署配置（禁 R2/KV/DO）
-    │   ├── package.json               # 零运行期第三方依赖；含 test / test:portability / build-sites
+    │   ├── control-center/deploy/control-center.service.example              # personal server / Miniflare 本地与备选部署配置（禁 R2/KV/DO）
+    │   ├── package.json               # 零运行期第三方依赖；含 test / test:runtime / start-node-server
     │   ├── tsconfig.json
-    │   ├── vitest.config.ts           # Workers/D1 运行时测试配置
-    │   ├── vitest.portability.config.ts # [v1.5 新增] Node 24 portability_intercept DT 独立配置
+    │   ├── vitest.config.ts           # Workers/SQLite 运行时测试配置
+    │   ├── vitest.portability.config.ts # [v1.5 新增] Node 24 node-runtime DT 独立配置
     │   ├── config/model_repos.json    # 逻辑模型页签、平台仓库与 repo_scope 映射
     │   ├── migrations/
-    │   │   ├── 0001_init.sql          # [已落地] 单库 SQLite/D1 v1.1 基线表结构与索引
+    │   │   ├── 0001_init.sql          # [已落地] 单库 SQLite/SQLite v1.1 基线表结构与索引
     │   │   └── 0002_v15_workflow_and_health.sql # [v1.5 新增] 设备在线探测、workflow_runs 汇总、Workflow 队列版本、排空目标表
     │   ├── scripts/
-    │   │   └── seed.mjs               # 支持 --local / --remote (D1) 与 --sqlite <path> (个人服务器)
+    │   │   └── seed.mjs               # 支持 --local / --remote (SQLite) 与 --sqlite <path> (个人服务器)
     │   ├── src/
     │   │   ├── app.ts                 # [v1.5 新增] 纯标准 Web Fetch 核心调度器（含 SPA 回退与无 Cron 惰性维护）
-    │   │   ├── index.ts               # ChatGPT Sites / CF Workers 薄入口适配器
+    │   │   ├── index.ts               # lite-actions.ooguy.com / Workers 薄入口适配器
     │   │   ├── router.ts              # 轻量路由分发（依赖 SqlStore，零平台专有类型）
     │   │   ├── storage/
     │   │   │   └── sqlStore.ts        # [v1.5 新增] 运行时无关 SqlStore 抽象与通用 BLOB 解码
     │   │   ├── adapters/
-    │   │   │   ├── d1.ts              # [v1.5 新增] Sites / Cloudflare D1 适配器
+    │   │   │   ├── nodeSqlite.ts              # [v1.5 新增] server / personal server SQLite 适配器
     │   │   │   ├── nodeSqlite.ts      # [v1.5 新增] 个人服务器 Node 24 内置 node:sqlite 适配器
     │   │   │   └── nodeServer.ts      # [v1.5 新增] 个人服务器 HTTP + 静态托管 + 定时器入口
     │   │   ├── types/api.ts           # 前后端共享类型定义（v1.5 冻结版）
@@ -378,12 +375,12 @@ lite-actions/
     │   │   └── utils/                 # crypto(纯JS恒定比对/HMAC/RS256) / mask / gzip / microCache / taskIdentity / validate
     │   └── tests/
     │       ├── helpers/portabilitySuite.ts # [v1.5 新增] 双运行时共享的核心行为对等断言套件
-    │       ├── portability-intercept.test.ts # [v1.5 新增] portability_intercept DT 4 层拦截门禁（Node 24 运行）
-    │       ├── sites-parity.test.ts   # [v1.5 新增] Sites/D1 运行时对等套件（workerd 运行）
+    │       ├── node-runtime.test.ts # [v1.5 新增] node-runtime DT 4 层拦截门禁（Node 24 运行）
+    │       ├── node-runtime.test.ts   # [v1.5 新增] Node.js/SQLite 运行时对等套件（Node.js 运行）
     │       └── *.test.ts              # Vitest + Miniflare 单元测试套件
     ├── web/                           # [全量源码必须合入 GitHub 仓 · 前端 Agent] 正式前端工程（以 demo @ cd770ce 为基线）
-    ├── dist/                          # [构建产物，.gitignore 忽略，CI 必测] client/ + server/index.js + .openai/hosting.json
-    └── tests/integration/             # 本地双 Worker + Mock 平台 + 双运行时（Sites/D1 & Node/SQLite）集成测试夹具
+    ├── dist/                          # [构建产物，.gitignore 忽略，CI 必测] client/ + server/index.js + control-center/deploy/Caddyfile.personal-server.example
+    └── tests/integration/             # 本地双 Worker + Mock 平台 + 双运行时（Node.js/SQLite & Node/SQLite）集成测试夹具
 ```
 
 ### 3.3 需求 ID 总览与改动量估算
@@ -405,11 +402,11 @@ lite-actions/
 | **REQ-13** | Worker Pools 持久化、实机校验与调度间隙热加载 | §9, §11 | Worker | ⚠ v1.1 已落地，统一暂停见 `REQ-18` | 1 新增 + 6 修改 | ~790 行 | Phase 4 |
 | **REQ-14** | 单库热转冷（30d）、1 年清理、80%→70% 滚删与写额度降级 | §1, §6, §11 | 服务端 | ✅ 已落地（Workflow 滚删见 `REQ-16`，抽象见 `REQ-20`） | 4 新增 + 3 修改 | ~820 行 | Phase 5 |
 | **REQ-15** | **v1.5 增量**：全部节点 2 分钟 `npu-smi` 5 次离线探测（含暂停/`enabled: false`）与 `/cluster`/`/timeline` 健康融合 | §1, §3, §4.1, §5, §11 | Worker + 服务端 | ✅ 已实现；INT-03 的完整 5 次实机故障演练待补 | 1 新增 + 8 修改 | ~620 行 | **Phase 5.5** |
-| **REQ-16** | **v1.5 增量**：统一 Workflow 表（`/workflows`）、50 Workflow 游标分页、汇总口径与 `/timeline` 零 N+1 增强 | §1, §3, §6, §11 | Worker + 服务端 | ✅ **已实现并通过本地 D1 门禁** | 2 新增 + 7 修改 | ~840 行 | **Phase 5.5** |
+| **REQ-16** | **v1.5 增量**：统一 Workflow 表（`/workflows`）、50 Workflow 游标分页、汇总口径与 `/timeline` 零 N+1 增强 | §1, §3, §6, §11 | Worker + 服务端 | ✅ **已实现并通过本地 SQLite 门禁** | 2 新增 + 7 修改 | ~840 行 | **Phase 5.5** |
 | **REQ-17** | **v1.5 升级**：Workflow 级版本化跨区插队（`SWAP_WORKFLOW`）+ 晚发现/回队沿用顺位 + 多端回执 | §1, §8, §11, §12 | Worker + 服务端 | ⚠ **实现与单测通过，待真实双 Worker 跨区闭环** | 3 新增 + 7 修改 | ~760 行 | **Phase 5.5** |
 | **REQ-18** | **v1.5 增量**：集群两步「先排空再删除」状态机与统一 `enabled`/`paused` 暂停调度语义 | §1, §9.4, §9.5, §11 | Worker + 服务端 | ⚠ **实现与单测通过，待双端实机闭环** | 0 新增 + 8 修改 | ~420 行 | **Phase 5.5** |
 | **REQ-19** | **v1.5 增量**：TypeScript 契约冻结（`types/api.ts` + `model_repos.json` 含 `repo_scope`）与正式前端基线对齐 | §3, §7–§10 | 服务端 + 契约 | ✅ **已完成**（`cb58ecd`） | 0 新增 + 3 修改 | ~150 行 | **Phase 5.5** |
-| **REQ-20** | **v1.5 增量**：托管解耦（`SqlStore`/去锁死/无 Cron 兜底）、ChatGPT Sites 打包、个人服务器 Node 24 运行时与 `portability_intercept` DT | §1, §2, §6, §11, §12 | 服务端 + 工程/QA | ⚠ **Sites/Node 子集实现并通过 smoke，完整双运行时门禁待补** | 12 新增 + 13 修改 | ~1,230 行 | **Phase 5.5** |
+| **REQ-20** | **v1.5 增量**：托管解耦（`SqlStore`/去锁死/无 Cron 兜底）、lite-actions.ooguy.com 打包、个人服务器 Node 24 运行时与 `node-runtime` DT | §1, §2, §6, §11, §12 | 服务端 + 工程/QA | ⚠ **Node.js/SQLite 子集实现并通过 smoke，完整双运行时门禁待补** | 12 新增 + 13 修改 | ~1,230 行 | **Phase 5.5** |
 | **INT / E2E** | 集成测试夹具升级（补齐 `INT-03/04/05/06/07/08/09/09B/10` 双运行时）与全栈 E2E 脚本 | §11, §12 | 联调/QA | ⏳ 部分已过，待补齐 | 2 新增 + 1 修改 | ~720 行（增量） | Phase 7 |
 | **FE-00 ~ 05** | Demo（`cd770ce` 已确认）全量源码合入 GitHub `control-center/web/` 对接真实 API + 统一构建 `dist/client/` | §1–§3, §7–§10 | **正式前端** | `FE-00/01/02/04/05` ✅ / `FE-03` ⏳ | 前端独立估算 | 前端独立估算 | Phase 6 |
 | **v1.5 增量合计（不含前端）** | — | — | — | — | **20 新增 / 47 修改次** | **~4,740 行（后端/Worker ~4,020 + 联调 ~720）** | **Phase 5.5 + 7** |
@@ -420,19 +417,19 @@ lite-actions/
 
 ---
 
-### REQ-01：控制面工程底座、单 D1 Schema 与逻辑模型仓映射
+### REQ-01：控制面工程底座、单 SQLite Schema 与逻辑模型仓映射
 
 - **对应 PRD**：§1（存储/托管与迁移/刷新）、§2（边界）、§3（模型仓页签映射）、§6（单库存储）
-- **状态**：✅ v1.1 基线已落地；⚠ **v1.5 托管解耦（ChatGPT Sites 打包、个人服务器 Node 24 + SQLite 运行时与 `SqlStore` 抽象）见下方 `REQ-20`**。
+- **状态**：✅ v1.1 基线已落地；⚠ **v1.5 托管解耦（lite-actions.ooguy.com 打包、个人服务器 Node 24 + SQLite 运行时与 `SqlStore` 抽象）见下方 `REQ-20`**。
 
 #### 1. 详细技术方案
 
-1. **托管与零费用配置（`control-center/worker/wrangler.toml`）**
-   - 仅绑定 1 个 D1 数据库（`DB`）与 Static Assets（`directory = "./public"`）；**严禁配置 R2、KV、Durable Objects、Queues 等可能产生超额费用的绑定**。
+1. **托管与零费用配置（`control-center/worker/control-center/deploy/control-center.service.example`）**
+   - 仅绑定 1 个 SQLite 数据库（`DB`）与 Static Assets（`directory = "./public"`）；**严禁配置 R2、KV、Durable Objects、Queues 等可能产生超额费用的绑定**。
    - Cron Triggers 配置两条免费定时任务：
      - `* * * * *`（每分钟）：执行活跃取消单状态轮询与 GitHub 2 分钟 `force-cancel` 检查（无活跃取消单时仅 1 次空索引读，0 写入）。
      - `0 2 * * *`（每日 UTC 02:00）：执行满 30 天热转冷归档、满 1 年清理与容量水位巡检。
-   - Secrets 清单（通过 `wrangler secret put` 注入，绝不进代码库）：`SUPER_SECRET`、`KEY_PEPPER`、`WORKER_BLUE_KEY_HASH`、`WORKER_YELLOW_KEY_HASH`、`GITHUB_APP_ID`、`GITHUB_APP_PRIVATE_KEY`（PKCS#8）、`GITCODE_CANCEL_TOKEN`。
+   - Secrets 清单（通过 `systemctl secret put` 注入，绝不进代码库）：`SUPER_SECRET`、`KEY_PEPPER`、`WORKER_BLUE_KEY_HASH`、`WORKER_YELLOW_KEY_HASH`、`GITHUB_APP_ID`、`GITHUB_APP_PRIVATE_KEY`（PKCS#8）、`GITCODE_CANCEL_TOKEN`。
 
 2. **逻辑模型仓映射配置（`control-center/worker/config/model_repos.json`）**
    ```json
@@ -467,7 +464,7 @@ lite-actions/
    ```
    - 所有配置的模型无条件生成页签；未映射的新接入仓自动兜底按 `repo.split('/')[1]` 归入动态页签并保留原 `(provider, repo)`。
 
-3. **单 D1 数据库核心表结构（`migrations/0001_init.sql`）**
+3. **单 SQLite 数据库核心表结构（`migrations/0001_init.sql`）**
    - `workers(worker_id PK, instance_id, applied_rev, code_sha, health_ok, active_count, queued_count, last_heartbeat_at, last_idle_probe_at, last_egress_used, need_snapshot, updated_at)`
    - `worker_ingest_state(worker_id PK, instance_id, last_seq, updated_at)`：用于事件连续性校验与去重。
    - `worker_event_dedup(worker_id, instance_id, seq, received_at, PK(worker_id, instance_id, seq))`：按 7 天滑动清理，保证重放绝对幂等。
@@ -492,12 +489,12 @@ lite-actions/
 
 | 文件路径 | 操作 | 核心内容 | 预计改动量 |
 |---|---|---|---:|
-| `control-center/worker/package.json` | 新增 | 依赖（`wrangler`, `typescript`, `vitest`, `@cloudflare/vitest-pool-workers`）与脚本 | +45 行 |
+| `control-center/worker/package.json` | 新增 | 依赖（`systemctl`, `typescript`, `vitest`, `vitest`）与脚本 | +45 行 |
 | `control-center/worker/tsconfig.json` | 新增 | Strict TS 配置 | +25 行 |
-| `control-center/worker/wrangler.toml` | 新增 | Workers Free + 单 D1 + Cron + Assets 配置（无付费绑定） | +40 行 |
+| `control-center/worker/control-center/deploy/control-center.service.example` | 新增 | Workers Free + 单 SQLite + Cron + Assets 配置（无付费绑定） | +40 行 |
 | `control-center/worker/config/model_repos.json` | 新增 | 逻辑模型仓映射与默认页签配置 | +35 行 |
 | `control-center/worker/migrations/0001_init.sql` | 新增 | 18 张表 DDL 及核心索引 | +260 行 |
-| `control-center/worker/src/index.ts` | 新增 | Fetch / Scheduled 入口框架 | +65 行 |
+| `control-center/worker/src/adapters/nodeServer.ts` | 新增 | Fetch / Scheduled 入口框架 | +65 行 |
 | `control-center/worker/src/router.ts` | 新增 | 轻量零依赖路径参数路由器 | +85 行 |
 | `control-center/worker/src/types/api.ts` | 新增 | 前后端共享核心 DTO / Enum 类型（阶段 0 冻结） | +110 行 |
 | `control-center/worker/src/utils/modelMap.ts` | 新增 | 仓库→逻辑模型解析、页签列表构造 | +55 行 |
@@ -505,15 +502,15 @@ lite-actions/
 | **小计** | **10 新增** | — | **~800 行** |
 
 #### 3. 验收标准
-- `npx wrangler d1 migrations apply DB --local` 零报错完成 18 张表创建。
-- `npm test -- schema.test.ts` 通过：验证 `cann-framework/torchtitan-npu` 与 `cann/torchtitan-npu` 归入同一 `torchtitan-npu` 页签、模型仓 API 保留 `vllm-ascend` 的默认元数据标记、正式 Site 页面默认显示全部模型仓、`lite-actions` 为普通页签、`wrangler.toml` 不含 R2/KV 付费绑定。
+- `node control-center/worker/scripts/seed.mjs --sqlite /var/lib/lite-actions/control-center.sqlite` 零报错完成 18 张表创建。
+- `npm test -- schema.test.ts` 通过：验证 `cann-framework/torchtitan-npu` 与 `cann/torchtitan-npu` 归入同一 `torchtitan-npu` 页签、模型仓 API 保留 `vllm-ascend` 的默认元数据标记、正式控制面网页 页面默认显示全部模型仓、`lite-actions` 为普通页签、`control-center/deploy/control-center.service.example` 不含 R2/KV 付费绑定。
 
 ---
 
 ### REQ-02：账号体系、会话管理、防爆破与操作审计
 
 - **对应 PRD**：§1（账号）、§3（身份与审计）、§10（账号全流程）
-- **状态**：✅ v1.1 基线已落地；⚠ **v1.5 可迁移改造（用纯 JS 恒定时间比对替换 CF 专有 `crypto.subtle.timingSafeEqual`，用适配器注入 `context.clientIp` 替换硬编码 `CF-Connecting-IP`）见下方 `REQ-20`**。
+- **状态**：✅ v1.1 基线已落地；⚠ **v1.5 可迁移改造（用纯 JS 恒定时间比对替换 专有 `crypto.subtle.timingSafeEqual`，用适配器注入 `context.clientIp` 替换硬编码 `X-Forwarded-For`）见下方 `REQ-20`**。
 
 #### 1. 详细技术方案
 
@@ -522,11 +519,11 @@ lite-actions/
    - 哈希存储：`HMAC-SHA256(key = env.KEY_PEPPER, msg = raw_secret)`，登录校验使用恒定时间比对（`crypto.subtle.timingSafeEqual`）。
    - Super 登录：用户名固定为 `super`（或环境变量 `SUPER_USERNAME`，默认 `super`），密钥直接与 `env.SUPER_SECRET` 做 HMAC 后恒定时间比对；不存库。
 2. **登录与会话 Cookie**
-   - `POST /api/v1/auth/login`：`{ username, secret }` → 校验防爆破桶 → 验密 → 写入 `sessions`（`expires_at = now + 7 * 86400`）→ 下发 `Set-Cookie: la_session=<session_id>; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=604800`（本地 HTTP 开发可通过 `DEV_INSECURE_COOKIE=1` 豁免 `Secure`）。
+   - `POST /api/v1/auth/login`：`{ username, secret }` → 校验防爆破桶 → 验密 → 写入 `sessions`（`expires_at = now + 7 * 86400`）→ 下发 `Set-Cookie: la_session=<session_id>; Path=/; HttpOnly; Secure; Same控制面网页=Strict; Max-Age=604800`（本地 HTTP 开发可通过 `DEV_INSECURE_COOKIE=1` 豁免 `Secure`）。
    - `POST /api/v1/auth/logout`：将 `sessions.revoked_at = now` 并清除 Cookie。
    - `GET /api/v1/auth/me`：始终返回 `Cache-Control: private, no-store`，返回 `{ authenticated, username?, role? }`。
 3. **防爆破限流**
-   - 以 `bucket_key = sha256(username.toLowerCase() + '|' + client_ip)`（`CF-Connecting-IP`）查 `login_attempts`：
+   - 以 `bucket_key = sha256(username.toLowerCase() + '|' + client_ip)`（`X-Forwarded-For`）查 `login_attempts`：
      - 若 `locked_until > now`：直接返回 `429 Too Many Requests` + `Retry-After`（不泄漏账号是否存在）。
      - 登录失败：若 `now - window_start_at > 600` 则重置窗口 `fail_count = 1`；否则 `fail_count += 1`，达到 `5` 次时置 `locked_until = now + 600`。
      - 登录成功：清除该桶失败计数。
@@ -548,13 +545,13 @@ lite-actions/
 | `control-center/worker/src/services/audit.ts` | 新增 | 审计写入与游标分页查询 | +75 行 |
 | `control-center/worker/src/routes/auth.ts` | 新增 | `/api/v1/auth/{login,logout,me}` | +85 行 |
 | `control-center/worker/src/routes/users.ts` | 新增 | Super `/api/v1/admin/users*` 与 `/api/v1/admin/audits` | +135 行 |
-| `control-center/worker/src/index.ts` | 修改 | 挂载 auth / users / audits 路由 | +20 行 |
+| `control-center/worker/src/adapters/nodeServer.ts` | 修改 | 挂载 auth / users / audits 路由 | +20 行 |
 | `control-center/worker/tests/auth.test.ts` | 新增 | Super/管理员登录、密钥一次性返回、重置/删除立即失效、5 次锁定 10 分钟、审计留存单测 | +165 行 |
 | **小计** | **6 新增 + 1 修改** | — | **~740 行** |
 
 #### 3. 验收标准
 - `npm test -- auth.test.ts` 全绿：
-  - 创建管理员返回的 `secret_once` 含 32 字节熵，后续 `GET /users` 响应与 D1 表内均无明文密钥。
+  - 创建管理员返回的 `secret_once` 含 32 字节熵，后续 `GET /users` 响应与 SQLite 表内均无明文密钥。
   - 重置密钥与删除管理员后，原 Cookie 和原密钥的下一次请求立即返回 `401`，`audit_logs` 保留历史记录。
   - 同用户名+IP 连续错 5 次，第 6 次即使密钥正确仍返回 `429`，10 分钟后自动解锁。
 
@@ -575,7 +572,7 @@ lite-actions/
    - 公共视图节点行键：使用 `node_ref = "n_" + HMAC-SHA256(KEY_PEPPER, host_id).slice(0, 12)`，既保证匿名端两个同首尾段节点不撞键，又不可逆推真实 IP。
    - **出站敏感字段守卫**：所有 `/api/v1/public/*` 序列化前经统一投影函数构造白名单 DTO，并附带深度防御断言（测试态与生产态均过滤禁止键名集合：`host_id`（仅在 public 替换为 `display_host_id` + `node_ref`）、`node_ip`、`ssh`、`host_ssh`、`broadcast_ssh`、`container_id`、`last_20_lines`、`diagnostics`、`log_locator`、`token`、`secret`、`key_hash`）。
 3. **缓存策略**
-   - `/api/v1/public/*`：响应头固定 `Cache-Control: public, max-age=10`；同时在 Worker Isolate 内提供 5 秒轻量内存微缓存（按 URL key，上限 32 条），显著降低 `workers.dev`（边缘 `caches.default` 无效场景）上的 D1 行读消耗。
+   - `/api/v1/public/*`：响应头固定 `Cache-Control: public, max-age=10`；同时在 Worker Isolate 内提供 5 秒轻量内存微缓存（按 URL key，上限 32 条），显著降低 `lite-actions.ooguy.com`（边缘 `caches.default` 无效场景）上的 SQLite 行读消耗。
    - `/api/v1/admin/*`、`/api/v1/auth/*`、`/api/v1/worker/*`：响应头固定 `Cache-Control: private, no-store`，绝不进共享缓存或 Isolate 内存缓存。
 
 #### 2. 改动文件与预计改动量
@@ -585,7 +582,7 @@ lite-actions/
 | `control-center/worker/src/utils/mask.ts` | 新增 | `maskHostId()`、`nodeRef()`、公开响应深度脱敏白名单校验 | +95 行 |
 | `control-center/worker/src/middleware/access.ts` | 新增 | `requireAdmin`、`requireSuper`、`requireWorker`、响应头缓存策略注入 | +145 行 |
 | `control-center/worker/src/utils/microCache.ts` | 新增 | 仅限 `/api/v1/public/*` 的 5s Isolate 内存微缓存 | +60 行 |
-| `control-center/worker/src/index.ts` | 修改 | 接入权限与缓存中间件链 | +30 行 |
+| `control-center/worker/src/adapters/nodeServer.ts` | 修改 | 接入权限与缓存中间件链 | +30 行 |
 | `control-center/worker/src/router.ts` | 修改 | 支持路由组级中间件声明 | +25 行 |
 | `control-center/worker/tests/access-matrix.test.ts` | 新增 | 4 种身份 × 全部路由组权限与缓存头矩阵单测 | +120 行 |
 | `control-center/worker/tests/masking.test.ts` | 新增 | IP 掩码边界、非可逆 `node_ref` 及敏感字段防泄漏单测 | +95 行 |
@@ -609,7 +606,7 @@ lite-actions/
    - `/etc/lite-actions/deployment.json` 下 `workers.<zone>` 新增可选块 `control_center`：
      ```json
      "control_center": {
-       "url": "https://lite-actions-control.xxx.workers.dev",
+       "url": "https://lite-actions-control.xxx.lite-actions.ooguy.com",
        "ci_reserve_bytes": 262144,
        "proxy": "http://<proxy-user>:<proxy-password>@<proxy-host>:<proxy-port>"
      }
@@ -619,7 +616,7 @@ lite-actions/
 2. **线程解耦与唤醒机制**
    - `ControlClient` 在独立后台 daemon 线程运行（心跳周期 **30s**，事件刷新间隔 **5s** / 最多 30s 攒批一次）。
    - `unified_router.py` 主循环改用 `wake_event.wait(timeout=poll_seconds)` 替代硬 `time.sleep(60)`；当 `ControlClient` 拉到待执行命令（`MOVE_UP` / `SYNC_CONFIG`）后立即持久化到 `${LITE_ACTIONS_STATE_DIR}/control-commands.json` 并调用 `wake_event.set()`，唤醒主线程**仅执行命令处理与 `pump()`**，绝不额外触发受 `next_discovery` 限制的平台发现轮询。
-   - 控制面任何网络异常、5xx、超时、D1 写额度耗尽（503）仅记录 warning 并按指数退避（30s → 60s → 120s → 最大 300s）重试，**绝不抛异常影响 `router.tick()` 或平台回报**。
+   - 控制面任何网络异常、5xx、超时、SQLite 写额度耗尽（503）仅记录 warning 并按指数退避（30s → 60s → 120s → 最大 300s）重试，**绝不抛异常影响 `router.tick()` 或平台回报**。
 3. **小报文协议与最坏字节预算（硬上限 `< 2,000` 字节）**
    - HTTP/1.1 头部 + `http.client` 框架余量（沿用 `ci_core/egress_policy.py:303-310` 的保守公式：`request_line + host_line + headers + 2 + 128`）在 80 字符域名 + 64 字符 Bearer Token 下约 **460–520 字节**。
    - 因此所有发往 `/api/v1/worker/*` 的 POST 请求采用动态整包预算器 `estimate_http1_bytes(request)`，设定打包目标水位 `1,880` 字节、硬熔断上限 `< 2,000` 字节（超限拒绝发送并拆包）。
@@ -725,7 +722,7 @@ lite-actions/
      - 校验批次中每条事件的 `(worker_id, instance_id, seq)`：
        - 若已存在于 `worker_event_dedup`：直接跳过（幂等）。
        - 若 `seq > last_seq + 1`（发生缺口）：拒绝后续乱序事件，置 `workers.need_snapshot = 1`，返回 `{ ok: true, need_snapshot: true, expected_seq: last_seq + 1 }`。
-       - 顺序合法事件在 D1 `batch()` 事务内按类型落地：
+       - 顺序合法事件在 SQLite `batch()` 事务内按类型落地：
          - `TU`：`UPSERT tasks_active`（根据 `model_repos.json` 解析 `logical_model`）；
          - `TP`：更新阶段与对应阶段时间戳（支持回队 `QUEUED` 清空租约）；
          - `TL`：更新 `allocation_json`（租约分配或释放）；
@@ -734,13 +731,13 @@ lite-actions/
          - `QP`：更新 `queue_orders`（队列顺序与候选组，见 `REQ-08`）。
    - `POST /api/v1/worker/snapshots`：
      - 将分片写入 `snapshot_staging(worker_id, snap_id, part_no, total_parts, payload_json)`。
-     - 当该 `(worker_id, snap_id)` 已收齐 `1..total_parts` 全部切片时，在单个 D1 事务中原子对账：
+     - 当该 `(worker_id, snap_id)` 已收齐 `1..total_parts` 全部切片时，在单个 SQLite 事务中原子对账：
        - 对比快照中的活动任务集与 `tasks_active`（本 Worker）：补充缺失活动任务、更新已有任务阶段/租约、对快照中已消失但未终态的残留任务标记为对账结束（若未收到 `TF` 则记 `INFRA_ERROR / reconciled` 且 `timing_reliable=0`，**绝不覆盖已有 `task_index` 终态**）；
        - 覆盖本 Worker 的 `queue_orders` 与 `device_group_states`；
        - 重置 `worker_ingest_state.last_seq = snap.seq`、`workers.need_snapshot = 0`，清理该 `snap_id` 暂存分片。
    - `GET /api/v1/worker/configs/:revision`：返回指定不可变版本 `{ revision, sha256, config }`（支持 ETag/Immutable，严禁泄露其他 Worker 秘钥）。
 2. **离线判定**
-   - 读取视图实时判定：`offline = (now - workers.last_heartbeat_at) > 90`（连续 3 次 30s 心跳未收到）；无需定时写库，0 额外 D1 写入。
+   - 读取视图实时判定：`offline = (now - workers.last_heartbeat_at) > 90`（连续 3 次 30s 心跳未收到）；无需定时写库，0 额外 SQLite 写入。
 
 #### 2. 改动文件与预计改动量
 
@@ -749,12 +746,12 @@ lite-actions/
 | `control-center/worker/src/services/ingest.ts` | 新增 | 事件去重/缺口检测、`TU/TP/TL/TF/IP/QP` 事务落地、分片快照重组与原子对账 | +390 行 |
 | `control-center/worker/src/routes/worker.ts` | 新增 | 6 个 `/api/v1/worker/*` 路由处理与 Schema 参数校验 | +210 行 |
 | `control-center/worker/src/utils/taskIdentity.ts` | 新增 | 规范化 `task_uid` / `short_tid` / 平台 Actions 链接拼接工具 | +65 行 |
-| `control-center/worker/src/index.ts` | 修改 | 挂载 `/api/v1/worker/*` 路由 | +15 行 |
+| `control-center/worker/src/adapters/nodeServer.ts` | 修改 | 挂载 `/api/v1/worker/*` 路由 | +15 行 |
 | `control-center/worker/tests/worker-ingest.test.ts` | 新增 | 心跳/90s 离线/仅待办取令/事件去重/缺口触发快照/多分片对账/不导入历史单测 | +220 行 |
 | **小计** | **4 新增 + 1 修改** | — | **~900 行** |
 
 #### 3. 验收标准
-- `npm test -- worker-ingest.test.ts` 全绿：覆盖重放去重、跳号触发 `need_snapshot=true`、3 分片快照乱序到达后末片触发原子对账、心跳超时 90s 离线标记、单次心跳仅 1 行 D1 写入。
+- `npm test -- worker-ingest.test.ts` 全绿：覆盖重放去重、跳号触发 `need_snapshot=true`、3 分片快照乱序到达后末片触发原子对账、心跳超时 90s 离线标记、单次心跳仅 1 行 SQLite 写入。
 
 ---
 
@@ -772,7 +769,7 @@ lite-actions/
      - 表尾完整、卡覆盖完整且该组芯片 0 进程 → `idle`；
      - 该组存在任意进程 → `busy`（**仅上报布尔结果 `busy`，绝不上报外部 PID、进程名或用户名**）；
      - SSH 超时/失败、输出被截断或格式无法识别 → `probe_error`（按 PRD 决策树等同无空闲证据，展现为“未知占用”）。
-   - **D1 写入优化**：仅当某设备组巡检状态相对上一轮发生变化（如 `busy → idle` 或 `idle → busy`）时，才生成 `IP` 事件推入 Outbox；若本轮全部设备组状态稳定不变，仅通过每 30 秒心跳中的 `idle_ts`（本轮巡检全部完成时间戳）刷新新鲜度，**将巡检的稳态 D1 写入降至 0 行/次**！
+   - **SQLite 写入优化**：仅当某设备组巡检状态相对上一轮发生变化（如 `busy → idle` 或 `idle → busy`）时，才生成 `IP` 事件推入 Outbox；若本轮全部设备组状态稳定不变，仅通过每 30 秒心跳中的 `idle_ts`（本轮巡检全部完成时间戳）刷新新鲜度，**将巡检的稳态 SQLite 写入降至 0 行/次**！
 2. **服务端三态决策树（`src/services/deviceState.ts`）**
    - 对当前生效 `pools_configs` 展开的所有设备组 `(worker_id, pool_name, host_id, devices)`：
      1. 查 `tasks_active` 是否有租约覆盖该设备组任一芯片 → 若有：状态为 `LEASED`（展示对应 case）；
@@ -875,7 +872,7 @@ lite-actions/
    - **零卡探针处理**：`kind == 'worker_probe'`（`nodes=0, devices=0`）不占任何设备组行，返回在顶级 `zero_card_tasks[]`。
    - 公开态下，节点仅返回 `node_ref` 与 `display_host_id`（`113.xxx.xxx.205:153`）；登录态下增加完整 `host_id`。
 3. **`GET /api/v1/{public,admin}/models`**
-   - 返回 `model_repos.json` 全部逻辑模型页签（无任务亦返回），带 `default: true` 元数据标记（当前为 `vllm-ascend`）、各页签当前活动任务数与支持取消状态（基于 GitHub App 安装缓存与 GitCode Token 就绪态）。正式 Site 的代码仓任务看板页面不使用该元数据做初始筛选，打开页面时默认显示全部模型仓。
+   - 返回 `model_repos.json` 全部逻辑模型页签（无任务亦返回），带 `default: true` 元数据标记（当前为 `vllm-ascend`）、各页签当前活动任务数与支持取消状态（基于 GitHub App 安装缓存与 GitCode Token 就绪态）。正式控制面网页 的代码仓任务看板页面不使用该元数据做初始筛选，打开页面时默认显示全部模型仓。
 4. **`GET /api/v1/{public,admin}/models/:slug/runs?cursor=<base64>&limit=50`**
    - **活动区**（默认返回全部）：从 `tasks_active` 查该 `logical_model` 全部活动任务（`QUEUED/RESERVED/STAGING/RUNNING/CLEANING`），按 `(provider, repo, run_id, attempt)` 分组；每条含 PR 作者、触发者、触发来源类型（PR/手动/定时）、PR 编号、Workflow、case、申请/实际区与卡型/节点数/卡数、展开节点（匿名掩码/登录完整 `host_id`）及设备 ID、是否可取消/是否可插队（队首标 `can_move_up: false`）。
    - **历史区**（分页加载，默认每次 **50 条**，上限 50）：查 `task_index WHERE logical_model = ? AND (finished_at < ? OR (finished_at = ? AND task_uid < ?)) ORDER BY finished_at DESC, task_uid DESC LIMIT 51`（多查 1 条判断 `has_more`）；**热冷数据同表统一翻页**，按 run 分组返回。
@@ -894,7 +891,7 @@ lite-actions/
 | `control-center/worker/src/routes/publicBoard.ts` | 新增 | `/api/v1/public/*` 路由 + 微缓存 + 强制脱敏投影 | +135 行 |
 | `control-center/worker/src/routes/adminBoard.ts` | 新增 | `/api/v1/admin/{overview,timeline,models*,tasks/*}` 路由（完整 `host_id`） | +110 行 |
 | `control-center/worker/src/utils/cursor.ts` | 新增 | `(finished_at, task_uid)` 游标编解码与合法性校验 | +55 行 |
-| `control-center/worker/src/index.ts` | 修改 | 挂载 publicBoard 与 adminBoard 路由 | +20 行 |
+| `control-center/worker/src/adapters/nodeServer.ts` | 修改 | 挂载 publicBoard 与 adminBoard 路由 | +20 行 |
 | `control-center/worker/tests/board-read.test.ts` | 新增 | 时间轴与模型仓一致性、多机不重计卡、零卡不占行、103 条 50/50/3 翻页、冷详情读取与零日志断言单测 | +270 行 |
 | **小计** | **5 新增 + 1 修改** | — | **~970 行** |
 
@@ -943,7 +940,7 @@ lite-actions/
 | `control-center/worker/src/utils/githubApp.ts` | 新增 | Web Crypto RS256 JWT（含 PKCS#1→PKCS#8 包装）、Installation 查询与 Token 缓存 | +175 行 |
 | `control-center/worker/src/services/cancellation.ts` | 新增 | 取消单幂等创建、双平台状态核对、GitHub cancel/force-cancel、GitCode stop、关联进度聚合与 1 分钟 Cron 推进 | +340 行 |
 | `control-center/worker/src/routes/cancellations.ts` | 新增 | `POST/GET /api/v1/admin/cancellations*` 与审计记录 | +120 行 |
-| `control-center/worker/src/index.ts` | 修改 | 挂载取消路由并在 `* * * * *` Cron 触发跟踪 | +25 行 |
+| `control-center/worker/src/adapters/nodeServer.ts` | 修改 | 挂载取消路由并在 `* * * * *` Cron 触发跟踪 | +25 行 |
 | `ci_core/gitcode.py` | 修改 | `workflow_status()` 兼容 `CANCELLED`/`STOPPED` 及 `attempt` 规范化 | +15 行 |
 | `control-center/worker/tests/cancellations.test.ts` | 新增 | GitHub/GitCode 正常取消、2 分钟 `force-cancel`、重复点击幂等、旧 attempt 拒绝、未装 App、平台报错、清理失败隔离单测 | +290 行 |
 | **小计** | **4 新增 + 2 修改** | — | **~965 行** |
@@ -992,7 +989,7 @@ lite-actions/
 | `ci_core/job_state.py` | 修改 | 新增原子 `move_up(key)`、`ordered_queue_keys()` 与 `queue_rank` 持久化维护 | +115 行 |
 | `ci_core/router.py` | 修改 | `pump()` 使用 `queue_rank` 排序；消费 `MOVE_UP` 命令并回执/发 `QP`；`train` 排队超时改为 `259200s` | +75 行 |
 | `control-center/worker/src/routes/moveUp.ts` | 新增 | `POST /api/v1/admin/tasks/:uid/move-up` 校验、建令与审计 | +115 行 |
-| `control-center/worker/src/index.ts` | 修改 | 挂载插队路由 | +10 行 |
+| `control-center/worker/src/adapters/nodeServer.ts` | 修改 | 挂载插队路由 | +10 行 |
 | `tests/test_move_up.py` | 新增 | 连续 3 次插队、GitCode 插队、队首 `NOOP`、已租约 `CONFLICT`、重启顺位保持、train 72h 超时边界单测 | +210 行 |
 | `control-center/worker/tests/move-up.test.ts` | 新增 | 服务端鉴权、并发建令、队首/冲突校验单测 | +120 行 |
 | **小计** | **3 新增 + 3 修改** | — | **~645 行** |
@@ -1011,7 +1008,7 @@ lite-actions/
 #### 1. 详细技术方案
 
 1. **配置唯一发布源与乐观锁**
-   - 网站 D1 `pools_configs` 是生产 Pools 配置的唯一发布源；首次部署提供初始化脚本/接口从仓库 `config/pools.json` 灌入 `revision = 1`。
+   - 网站 SQLite `pools_configs` 是生产 Pools 配置的唯一发布源；首次部署提供初始化脚本/接口从仓库 `config/pools.json` 灌入 `revision = 1`。
    - 所有变更请求必须携带 `base_revision`：若 `base_revision !== current_latest_revision`，直接返回 `409 Conflict (REVISION_CONFLICT)` 防止并发覆盖。
    - **回滚**：`POST /api/v1/admin/cluster/rollback` 指定 `target_revision` 与 `base_revision`，服务端读取历史版本内容并作为**全新递增版本 `revision = latest + 1`** 发布并下发 `SYNC_CONFIG`。
 2. **结构化编辑操作（支持预览与发布两段式）**
@@ -1040,7 +1037,7 @@ lite-actions/
 | `control-center/worker/src/utils/poolsValidator.ts` | 新增 | 与 `ci_core/config.py` 同构的 Pools 静态校验、查重、三级 `paused` 语义校验与规范化 SHA-256 | +220 行 |
 | `control-center/worker/src/services/cluster.ts` | 新增 | 预览影响计算（跨机组合/排空取消集/活动租约/隔离拒删/跨 Worker 迁移守卫）、乐观锁发布与回滚 | +340 行 |
 | `control-center/worker/src/routes/cluster.ts` | 新增 | `/api/v1/{public,admin}/cluster`、`/preview`、`/publish`、`/rollback` | +165 行 |
-| `control-center/worker/src/index.ts` | 修改 | 挂载集群管理路由 | +15 行 |
+| `control-center/worker/src/adapters/nodeServer.ts` | 修改 | 挂载集群管理路由 | +15 行 |
 | `scripts/preflight.py` | 修改 | 新增 `--export-node-snippet` 只读输出标准新增节点 JSON 片段 | +75 行 |
 | `control-center/worker/tests/cluster-config.test.ts` | 新增 | 并发版本冲突、16P 半节点暂停/恢复删键、查重、隔离拒删、排空计算、跨 Worker 迁移守卫、回滚单测 | +230 行 |
 | `tests/test_preflight_export.py` | 新增 | `preflight.py --export-node-snippet` 只读探查与输出 Schema 单测 | +85 行 |
@@ -1114,16 +1111,16 @@ lite-actions/
 
 ---
 
-### REQ-14：单 D1 热冷分层存储、自动归档、80%→70% 滚删与日写额度降级
+### REQ-14：单 SQLite 热冷分层存储、自动归档、80%→70% 滚删与日写额度降级
 
 - **对应 PRD**：§1（存储/托管与迁移）、§6（数据存储与留存全节）、§11（存储验收）
 - **状态**：✅ v1.1 基线已落地；⚠ **v1.5 完整 Workflow 粒度滚删见 `REQ-16`，`SqlStore.dbSizeBytes()` 抽象、统一 BLOB 解码与无 Cron 节流惰性维护见下方 `REQ-20`**。
 
 #### 1. 详细技术方案
 
-1. **单 D1 热冷分层归档（每日 Cron `0 2 * * *`）**
+1. **单 SQLite 热冷分层归档（每日 Cron `0 2 * * *`）**
    - **热转冷（满 30 天）**：
-     - 查询 `task_index WHERE storage_tier = 'hot' AND finished_at < now - 30*86400`，按 `(logical_model, finish_day)` 分组，每次 Cron 最多处理 5 组、每块上限 100 条（保证每次 Worker 调用远低于 Cloudflare Free 10ms CPU 预算；若仍有积压则下次 Cron 继续，或由小批循环控制单次 CPU < 5ms）。
+     - 查询 `task_index WHERE storage_tier = 'hot' AND finished_at < now - 30*86400`，按 `(logical_model, finish_day)` 分组，每次 Cron 最多处理 5 组、每块上限 100 条（保证每次 Worker 调用远低于 personal server Free 10ms CPU 预算；若仍有积压则下次 Cron 继续，或由小批循环控制单次 CPU < 5ms）。
      - 将该批 `task_details_hot` 组装为 `{ task_uid: detail_obj }` JSON，经 Web Streams `CompressionStream("gzip")` 压缩为 `Uint8Array`，计算压缩后 `sha256` 与条数。
      - **先写后校验再删热表**：
        1. 写入 `task_details_cold(chunk_id, logical_model, finish_day, min_finished_at, max_finished_at, record_count, sha256, gzip_blob, ...)`；
@@ -1133,18 +1130,18 @@ lite-actions/
      - 删除 `finished_at < now - 365*86400` 的 `task_index` 与 `task_details_hot` 行；因冷块按 `(logical_model, finish_day)` 分桶，凡 `max_finished_at < now - 365*86400` 的整块冷数据可直接整行 `DELETE FROM task_details_cold`，无需解压重写。
      - 同步清理超过 7 天的 `worker_event_dedup`、`sessions` 已过期记录与 `snapshot_staging` 孤儿切片。
 2. **80%→70% 容量水位监控与滚动删除**
-   - **容量获取**：Cloudflare D1 每次执行返回 `result.meta.size_after`（单位字节）；将最新值缓存写入 `system_meta.last_db_size_bytes`（仅变化超过 1 MB 时更新，省写入）。
-   - 阈值配置：生产默认上限 `D1_LIMIT_BYTES = 500 * 1024 * 1024`（500 MB），告警/清理触发线 `80% = 400 MB`，目标水位 `70% = 350 MB`（支持通过环境变量覆写以便集成测试压测）。
+   - **容量获取**：personal server SQLite 每次执行返回 `result.meta.size_after`（单位字节）；将最新值缓存写入 `system_meta.last_db_size_bytes`（仅变化超过 1 MB 时更新，省写入）。
+   - 阈值配置：生产默认上限 `DB_LIMIT_BYTES = 500 * 1024 * 1024`（500 MB），告警/清理触发线 `80% = 400 MB`，目标水位 `70% = 350 MB`（支持通过环境变量覆写以便集成测试压测）。
    - **滚删逻辑**：当检测到 `size_after > 0.80 * limit` 时（Cron 定时检查 + 写入路径高频门控触发）：
      - 严格按 `(finished_at ASC, task_uid ASC)` 从最早结束的任务分批（每批 200 条）删除：同步删除 `task_index` 行、关联的 `task_details_hot` 行，以及若某 `cold_chunk_id` 在 `task_index` 中已无任何引用则删除该 `task_details_cold` 行；
      - 更新 `system_meta.capacity_purged_before_ts = max_deleted_finished_at`（驱动历史列表翻到底提示“更早的记录已因容量清理”），并写一条 `audit_logs` 容量清理告警（`action = 'CAPACITY_PURGE'`）；
      - 持续迭代直到 `meta.size_after < 0.70 * limit`（或单次 Cron 达到安全步数上限待下一轮继续）。
      - **受保护表（绝不参与滚删）**：`tasks_active`、未终态 `commands`、未终态 `cancellations`、`users`、`sessions`、`audit_logs`、`pools_configs`、`workers`。
-3. **D1 每日写额度（10 万行）耗尽降级保护**
-   - 封装统一的 D1 写执行器 `execWrite(db, stmt)`：
-     - 捕获 D1 写限额错误（错误码/消息匹配 `quota` / `exceeded` / `limit`）或本地可配置测试熔断标志 `quota_exhausted_day == utc_today`；
+3. **SQLite 每日写额度（10 万行）耗尽降级保护**
+   - 封装统一的 SQLite 写执行器 `execWrite(db, stmt)`：
+     - 捕获 SQLite 写限额错误（错误码/消息匹配 `quota` / `exceeded` / `limit`）或本地可配置测试熔断标志 `quota_exhausted_day == utc_today`；
      - 标记内存与状态为当天写额度耗尽：
-       - **管理写接口**（取消/插队/集群发布/用户管理）：中间件立即拒绝并返回 `503 Service Unavailable { code: "WRITE_QUOTA_EXHAUSTED", message: "D1 每日写入额度已用尽，管理写操作暂停，CI 正常运行" }`；
+       - **管理写接口**（取消/插队/集群发布/用户管理）：中间件立即拒绝并返回 `503 Service Unavailable { code: "WRITE_QUOTA_EXHAUSTED", message: "SQLite 每日写入额度已用尽，管理写操作暂停，CI 正常运行" }`；
        - **公开只读接口**：照常服务（读额度 500 万行/天独立不受写额度影响）；
        - **Worker 上报接口**：返回 `503 Service Unavailable` + `Retry-After`，Worker 侧 `ControlClient` 将事件留在本地 Outbox 按退避重试，次日 UTC 0 点额度恢复后自动补发或快照对账，**CI 调度与平台回报完全不受影响**。
 
@@ -1154,8 +1151,8 @@ lite-actions/
 |---|---|---|---:|
 | `control-center/worker/src/utils/gzip.ts` | 新增 | 基于 Web Streams `CompressionStream`/`DecompressionStream` 的冷块压/解压与 SHA-256 校验 | +75 行 |
 | `control-center/worker/src/services/retention.ts` | 新增 | 30 天热转冷（写-校-删）、1 年过期清理、80%→70% 滚删与尾部提示标记 | +330 行 |
-| `control-center/worker/src/middleware/quota.ts` | 新增 | D1 写额度耗尽检测与 503 降级拦截中间件 | +85 行 |
-| `control-center/worker/src/index.ts` | 修改 | 在 `0 2 * * *` Cron 接入归档/滚删，挂载写额度降级中间件 | +30 行 |
+| `control-center/worker/src/middleware/quota.ts` | 新增 | SQLite 写额度耗尽检测与 503 降级拦截中间件 | +85 行 |
+| `control-center/worker/src/adapters/nodeServer.ts` | 修改 | 在 `0 2 * * *` Cron 接入归档/滚删，挂载写额度降级中间件 | +30 行 |
 | `control-center/worker/src/services/boardRead.ts` | 修改 | 历史翻到底读取 `capacity_purged_before_ts` 输出清理提示 | +20 行 |
 | `control-center/worker/src/services/ingest.ts` | 修改 | 写入后采样 `meta.size_after` 更新水位并在超 80% 时触发告警/清理标记 | +25 行 |
 | `control-center/worker/tests/retention-storage.test.ts` | 新增 | 跨 30 天压缩与校验、第 31 天冷解压、满 1 年清理、80%→70% 滚删与保护表不受损、写额度耗尽拒管理写/不阻 Worker 本地缓存单测 | +255 行 |
@@ -1183,11 +1180,11 @@ lite-actions/
        - 若 `set(group.devices).issubset(visible_chips)` → 本轮可见性成功：`consecutive_failures = 0`，`last_online_at = now`，`vis = "online"`；
        - 若 SSH/命令失败、输出截断或缺失任一配置卡 → 本轮可见性失败：`consecutive_failures = min(prev + 1, 5)`，`vis = "offline" if consecutive_failures >= 5 else "warn"`，**保持原 `last_online_at` 不变**。
      - **占用存在性校验（仅未租用设备组适用）**：沿用既有 `_process_rows(..., require_exclusive=False)` 判定 `idle / busy / probe_error`（绝不透出外部 PID/用户名）。
-   - **去重与零多余 D1 写入**：
+   - **去重与零多余 SQLite 写入**：
      - Worker 在本地状态持久化单调递增轮次 `probe_round`（重启延续）以及每组的 `(vis, consecutive_failures, last_online_at, occupancy)`；
      - 仅当某组 `vis`、`consecutive_failures` 或 `occupancy` 发生变化时才发 `IP` 事件：`{"t":"IP","ts":now,"pool":...,"h":...,"d":[...],"pr":probe_round,"v":0|1|2,"mc":0..5,"lo":last_online_at,"st":"idle"|"busy"|"probe_error"}`；
-     - 若整轮所有设备组稳态无变化（如全在线且空闲），通过 30s 心跳的 `probe_ts`（本轮可见性成功时间）和 `idle_ts`（未租用组空闲时间）刷新新鲜度，**稳态 0 额外 D1 行写入**。
-2. **D1 迁移（`migrations/0002_v15_workflow_and_health.sql`）**
+     - 若整轮所有设备组稳态无变化（如全在线且空闲），通过 30s 心跳的 `probe_ts`（本轮可见性成功时间）和 `idle_ts`（未租用组空闲时间）刷新新鲜度，**稳态 0 额外 SQLite 行写入**。
+2. **SQLite 迁移（`migrations/0002_v15_workflow_and_health.sql`）**
    - `device_group_states` 新增列：`visibility_state TEXT NOT NULL DEFAULT 'pending' CHECK(visibility_state IN ('pending','online','warn','offline'))`、`consecutive_failures INTEGER NOT NULL DEFAULT 0`、`last_online_at INTEGER`、`last_probe_round INTEGER NOT NULL DEFAULT 0`。
    - `workers` 新增列：`last_visibility_probe_at INTEGER`（对应心跳 `probe_ts`）。
    - 服务端 `ingest.ts` 处理 `IP` 事件时校验 `pr > last_probe_round`（或 `pr == last_probe_round` 时幂等忽略），**防止重复投递导致 `consecutive_failures` 重复递增**；仅 `v === 0` 时更新 `last_online_at = MAX(COALESCE(last_online_at,0), lo)`，失败/配置发布/页面刷新绝不改写 `last_online_at`。
@@ -1233,13 +1230,13 @@ lite-actions/
 1. **Worker 侧零额外请求补采 `submitted_at` 与 `workflow_name`（`ci_core/control_client.py`）**
    - `task_descriptor()` 从已有 `run["created_at"]` 解析 Unix 秒填入 `sub`（若缺失回退 `queued_at`），从已有 `run["name"]` 截取 ≤ 64B 填入 `wn`；**0 新增平台 API 请求**。
    - 重核最坏单条 `TU` 载荷：新增 `sub`(16B) + `wn`(70B) ≈ +86 B，单条最坏仍 ≤ 1,620 B < 1,880 B（由 `test_upload_intercept.py` 强制门禁）。
-2. **D1 新增 `workflow_runs` 物化汇总表（`migrations/0002_v15_workflow_and_health.sql`）**
+2. **SQLite 新增 `workflow_runs` 物化汇总表（`migrations/0002_v15_workflow_and_health.sql`）**
    - `tasks_active` 与 `task_index` 新增列：`submitted_at INTEGER`、`workflow_name TEXT`、`run_number INTEGER`；`task_index.started_at INTEGER` 保存归档前的首次执行时间，旧 PASS 记录按 `finished_at - duration_sec` 回填。
    - 新增 `workflow_runs` 表：
      - 主键：`(provider, repo, run_id, attempt)`；
      - 字段：`logical_model, submitted_at, workflow_name, workflow_file, pr_number, pr_author, trigger_actor, event_type, is_active (0|1), has_in_flight (0|1), has_waiting_resource_case (0|1), active_case_count, total_case_count, queue_order_rank INTEGER, first_started_at, finished_at, result_state ('QUEUED'|'PASS'|'FAIL'), pools_json, max_cards, card_seconds_finished INTEGER, has_unmeasured_allocated (0|1), updated_at`；
      - 索引：`idx_wf_active_queue(is_active, has_in_flight, queue_order_rank, submitted_at)`、`idx_wf_history_page(is_active, finished_at DESC, provider, repo, run_id, attempt)`、`idx_wf_model_history(logical_model, is_active, finished_at DESC)`。
-   - **事务一致性维护（`ingest.ts`）**：每次 `TU / TP / TL / TF / Snapshot` 落库后，在同 D1 `batch()` 内刷新受影响 `(provider, repo, run_id, attempt)` 的 `workflow_runs` 汇总行：
+   - **事务一致性维护（`ingest.ts`）**：每次 `TU / TP / TL / TF / Snapshot` 落库后，在同 SQLite `batch()` 内刷新受影响 `(provider, repo, run_id, attempt)` 的 `workflow_runs` 汇总行：
      - 只要 `tasks_active` 中该 run 仍有 ≥ 1 条任务 → `is_active = 1`，`result_state = 'QUEUED'`，`finished_at = NULL`；
      - `has_in_flight = EXISTS(tasks_active WHERE phase IN ('RESERVED','STAGING','RUNNING','CLEANING'))`；
      - 当该 run 的全部子用例均已进入 `task_index`（`active_case_count == 0`）→ `is_active = 0`，`finished_at = MAX(task_index.finished_at)`，`result_state = (所有子用例均为 'PASS' ? 'PASS' : 'FAIL')`。
@@ -1288,7 +1285,7 @@ lite-actions/
 
 #### 1. 详细技术方案
 
-1. **D1 版本化队列与多端回执表（`migrations/0002_v15_workflow_and_health.sql`）**
+1. **SQLite 版本化队列与多端回执表（`migrations/0002_v15_workflow_and_health.sql`）**
    - `workflow_queue_meta(id PK CHECK(id=1), queue_version INTEGER NOT NULL DEFAULT 1, updated_at INTEGER)`；
    - `workflow_priority_ops(op_id PK, idempotency_key UNIQUE, queue_version_before, queue_version_after, target_wf_json, swapped_wf_json, from_seq, to_seq, requested_by, created_at)`；
    - `commands` 表扩展 `cmd_type` 约束支持 `'SWAP_WORKFLOW'`（兼容保留 `'MOVE_UP'` 与 `'SYNC_CONFIG'`），新增 `op_id TEXT` 索引关联同一次插队下发给 Blue / Yellow 的多条 Worker 命令。
@@ -1301,7 +1298,7 @@ lite-actions/
        - 不在等待队列（已进入 `0` 在途、已结束或仅含零卡探针）→ `409 WORKFLOW_NOT_WAITING`；
        - 已在等待队首（`index === 0`，序号 `1`）→ `200 { status: "NOOP", reason: "ALREADY_AT_HEAD" }`；
        - 否则确定紧邻前一位 `predecessor = queue[index - 1]`，**完全依据后端真实队列，绝不受前端筛选或自定义排序影响**！
-     - 单 D1 `batch()` 原子执行：
+     - 单 SQLite `batch()` 原子执行：
        1. 物化当前等待队列的连续 `queue_order_rank` 并交换 `target` 与 `predecessor` 的 `queue_order_rank`；
        2. 递增 `workflow_queue_meta.queue_version`（带 `WHERE queue_version = ?` 乐观锁防并发）；
        3. 写入 `workflow_priority_ops` 与 `audit_logs`；
@@ -1365,7 +1362,7 @@ lite-actions/
      - `ci_core/scheduler.py:candidates(case, pools, *, include_paused=False)`：当 `include_paused=False` 时，将 `pool.get("enabled") is False or pool.get("paused") is True` 统一视为 Pool 暂停并返回 `[]`，使 `Router.claim()` 返回 `None` 保持任务 `QUEUED` 继续排队，而不报 `INFRA_ERROR`；
      - `ci_core/router.py` / `board.ts` / `deviceState.ts`：`paused = (pool.enabled === false) || Boolean(pool.paused) || Boolean(node.paused) || Boolean(group.paused)`，且 `paused_scopes` 准确标明暂停层级。
 2. **两步「先排空、再删除」状态机（对齐 Demo 确认交互）**
-   - **D1 迁移（`migrations/0002_v15_workflow_and_health.sql`）**：新增 `cluster_drain_targets(target_key PK, worker_id, scope, pool_name, host_id, devices_json, revision, requested_by, created_at)` 记录处于「排空中」的目标。
+   - **SQLite 迁移（`migrations/0002_v15_workflow_and_health.sql`）**：新增 `cluster_drain_targets(target_key PK, worker_id, scope, pool_name, host_id, devices_json, revision, requested_by, created_at)` 记录处于「排空中」的目标。
    - **第一步 `DRAIN`（预览 → 发布）**：
      - 管理员对 Pool / Node / DeviceGroup 发起 `POST /admin/cluster/preview` & `/publish`（`operation.op = "DRAIN"`）；
      - 预览返回受影响设备组、跨机组合、当前活动租约（`active_leases`）及**只能落在该目标上的排队用例**（`drain_cancel_tasks`）；
@@ -1427,100 +1424,53 @@ lite-actions/
 
 ---
 
-### REQ-20（v1.5 增量）：托管解耦、ChatGPT Sites 打包、个人服务器迁移适配与 `portability_intercept` DT 拦截门禁
+### REQ-20：个人服务器控制面、lite-actions.ooguy.com 入口与 Node 24/SQLite 运行时
 
-- **对应 PRD**：§1（托管与迁移/存储）、§2（边界：初期 ChatGPT Sites 前端代理 + CF Workers/D1 后端、代码全入 GitHub 仓、支持迁个人服务器）、§6（维护触发与容量检测）、§11（可迁移性与 Sites 打包 `portability_intercept` DT）、§12（上线前提 1 与待定 2）
-- **状态**：✅ 代码与本地/隔离夹具门禁已完成（4 类平台锁死已剥离并接入 CI 拦截门禁；线上部署切换验收见 `INT-10` / `E2E-12` / `REL-00`）
+- **对应 PRD**：§1（个人服务器部署）、§2（安全边界）、§6（单库热冷存储）、§11（联调）
+- **状态**：代码已切换为 Node.js 24 + 内置 `node:sqlite`。生产迁移目标为 `https://lite-actions.ooguy.com`，当前按 `INT-10`、`E2E-12`、`REL-00` 跟踪实机证据。
 
-#### 1. 改造前 v1.1 代码实审识别出的 4 类锁死与缺口（均已在 `REQ-20` 中消除）
+#### 1. 运行时与部署约束
 
-对原 v1.1 仓库 `control-center/worker/src/`、`scripts/seed.mjs` 与 `wrangler.toml` 逐行核查，识别出以下 4 处会阻断多运行时可迁移性（ChatGPT Sites 前端代理 + CF Workers/D1 后端与个人服务器 Node 24/`node:sqlite` 双运行时对等）的实现耦合，并在本需求中彻底剥离：
-1. **Cloudflare 专有非标准 Web Crypto API（`src/utils/crypto.ts:24`）**：`safeHashEqual()` 直接调用 `crypto.subtle.timingSafeEqual(...)`——该 API 为 Cloudflare Workers 私有扩展，**在标准 Node.js Web Crypto 中不存在**，迁到个人服务器后首次登录/Worker 鉴权即抛 `TypeError`。
-2. **硬编码 Cloudflare 专属请求头（`src/services/auth.ts:10`）**：`clientIp()` 写死 `request.headers.get("CF-Connecting-IP") ?? "unknown"`。在个人服务器（直连或经过 Caddy/Nginx 反代）上全部访客均退化为 `"unknown"`，任意用户输错 5 次密钥将把全站管理员一并锁死 10 分钟（同时 `auth.ts:17` 需兼容本地 `127.0.0.1` 与 `localhost` 联调 Cookie）。
-3. **D1 类型、私有元数据与 BLOB 形态耦合（`src/router.ts:4`、`middleware/quota.ts:5`、`services/{retention,board,ingest,cancellations,schedule}.ts`）**：
-   - 业务服务直接依赖 Cloudflare `D1Database` / `D1PreparedStatement` 类型，且 `retention.ts:88` 依赖 D1 专有的 `response.meta.size_after` 获取库容量；
-   - `board.ts:171-173` 与 `retention.ts:52` 假定 SQLite BLOB 返回 `number[]` 或 `ArrayBuffer`（在 `board.ts:173` 若遇到 `ArrayBuffer` 调用 `Uint8Array.from(ab)` 甚至会得到空字节数组），而 Node 24 内置 `node:sqlite` 返回 `Uint8Array`；
-   - `scripts/seed.mjs` 仅支持调用 `wrangler d1 execute --local|--remote`，无法直接初始化个人服务器本地 SQLite 文件。
-4. **缺少静态资产托管、SPA 回退与无 Cron 托管兜底（`src/index.ts`）**：
-   - 原 v1.1 的 `src/index.ts` 对非 `/api/*` 路径一律返回 JSON 404，当时尚未实现静态资产托管与 HTML SPA 路由回退；**现已在 `src/app.ts`（统一静态资产 + SPA 回退，同时保证 `/api/*` 和非 GET 请求绝不被错转为 `index.html`）与双适配层中实现并由 `sites-parity.test.ts` / `portability-intercept.test.ts` 验证**；
-   - 原取消跟踪（1 分钟 / GitHub 2 分钟 `force-cancel`）与每日热冷归档/滚删完全依赖 Cloudflare `scheduled()` Cron；为保证在无独立 Cron 的托管或轻量自建环境中仍可收敛，需在心跳与读/写流量中保留节流惰性维护兜底。
+1. `control-center/worker/src/app.ts`、路由、服务和迁移文件是唯一业务实现，运行在 Node.js 24 的 `node:http` 入口上。
+2. `src/adapters/nodeSqlite.ts` 使用 `node:sqlite`，启用 WAL、外键和忙等待，所有事务通过 `BEGIN IMMEDIATE` 原子提交。
+3. `scripts/start-node-server.mjs` 托管静态前端和 `/api/v1/*`，前端路由回退 `/index.html`，未知 `/api/*` 始终返回 JSON 404。
+4. `control-center/deploy/control-center.service.example` 提供 systemd 服务模板，`control-center/deploy/Caddyfile.personal-server.example` 提供 `lite-actions.ooguy.com` 的 HTTPS 反代模板。Node 进程只绑定 `127.0.0.1:8788`。
+5. Blue/Yellow Worker 只需把 `/etc/lite-actions/deployment.json` 的 `control_center.url` 改为 `https://lite-actions.ooguy.com` 并重启，报文协议和 `<2,000` B 预算不变。
+6. 管理凭据只通过 `/etc/lite-actions/control-center.env` 注入，文件保持 `root:root`、`0600`。管理员会话不迁移，迁移后重新登录。
 
-#### 2. 详细技术方案
+#### 2. 个人服务器发布清单
 
-1. **运行时无关的核心层与最小 `SqlStore` 抽象（零业务逻辑改动）**
-   - **`control-center/worker/src/storage/sqlStore.ts`**（~55 行）：定义与 D1 方法签名 100% 兼容的 `SqlStore` / `SqlStatement` 接口（`prepare().bind().first/all/run()`、`batch()` + `dbSizeBytes(): Promise<number>`），以及通用 `toArrayBuffer(blob: unknown): ArrayBuffer`（统一兼容 `ArrayBuffer`、`ArrayBufferView`/`Uint8Array` 与 `number[]`）。
-   - **消除 4 处锁死**：
-     - `src/utils/crypto.ts`：`safeHashEqual()` 改为纯 JS 恒定时间逐字节异或比对（`diff |= a[i] ^ b[i]`，不依赖 `crypto.subtle.timingSafeEqual`）；
-     - `src/services/auth.ts`：`clientIp(context)` 改为读取由适配层注入的 `context.clientIp ?? "unknown"`；
-     - 业务服务全部将 `D1Database` / `D1PreparedStatement` 替换为 `SqlStore` / `SqlStatement`，`retention.ts:databaseSize()` 调用 `db.dbSizeBytes()`；
-     - **`src/app.ts`**：抽离纯标准 Web Fetch 处理函数 `handleRequest(request, runtimeEnv, options)`，接收适配层传入的 `{ store, staticAssets?, clientIp, scheduleBackground }`：
-       - `/api/v1/*` 走现有认证、限流、微缓存与路由分发（绝不回退 HTML）；
-       - 其他 `GET`/`HEAD` 请求先尝试 `staticAssets.fetch(request)`，若返回 404 且 `Accept` 包含 `text/html`（非带扩展名的静态资源路径），回退返回 `/index.html`（沿用 Demo `worker/index.js` 经验证的 SPA 规则）。
-   - **无 Cron 托管环境的节流惰性维护兜底**：
-     - 保留 `scheduled()`（CF Workers Cron）与 Node `setInterval`（个人服务器定时器）作为首选；
-     - 同时在 `app.ts` 接入节流惰性维护钩子（通过 `scheduleBackground` 异步执行，不阻塞响应）：
-       - 收到 Worker 心跳（每 30s）或 `GET /admin/cancellations*` 时，若存在活跃取消单且距 `system_meta.last_cancel_tick` ≥ 30s，立即推进 `trackCancellations(context)`（确保无 Cron 时 GitHub 2 分钟 `force-cancel` 与终态收敛照常在 2 分钟内完成）；
-       - 收到写流量且 `system_meta.last_archive_day !== utcToday` 时，异步触发 `retention(context)`（日级单次节流）；超 80% 容量探针沿用 60s 节流。
-2. **双运行时薄适配层（完全复用同一 `app.ts` 与同一套 `migrations/*.sql`）**
-   - **适配器 A：Cloudflare Workers + D1 后端（`src/adapters/d1.ts` + `src/index.ts`）**：
-     - `createD1Store(env.DB)`：包装原始 `D1Database` binding，`dbSizeBytes()` 读取 `SELECT 1` 的 `meta.size_after`；
-     - `src/index.ts`：注入 `clientIp = request.headers.get("CF-Connecting-IP") ?? "unknown"`、可选 `staticAssets = env.ASSETS`、`scheduleBackground = p => execution?.waitUntil(p)`，并保留 `scheduled()` 供 CF Workers Cron 使用。
-   - **适配器 B：个人服务器独立运行（`src/adapters/nodeSqlite.ts` + `src/adapters/nodeServer.ts` + `scripts/start-node-server.mjs`）**：
-     - **零第三方原生编译依赖**：直接基于 Node.js 24 内置 `node:sqlite`（`DatabaseSync`）实现 `SqlStore`：启用 `PRAGMA journal_mode = WAL`、`PRAGMA busy_timeout = 5000`、`PRAGMA foreign_keys = ON`；`bind()` 自动将 `ArrayBuffer` 归一化为 `Uint8Array`（与 D1 行为对等）；`batch()` 用 `BEGIN IMMEDIATE ... COMMIT`（异常 `ROLLBACK`）保证原子性；`dbSizeBytes()` 通过 `PRAGMA page_count` × `PRAGMA page_size` 精确获取库容量（字节）。
-     - `nodeServer.ts`：基于 `node:http` 转换标准 Web `Request`/`Response`；静态文件直接读 `STATIC_DIR`（默认 `control-center/web/dist/client`，带路径穿越防护、MIME 与 `Cache-Control`）；`clientIp` 默认取 `socket.remoteAddress`，仅在显式配置 `TRUST_PROXY_HEADERS=1`（部署在 Caddy/Nginx 反代后）时读取 `X-Forwarded-For` 最左合法 IP 或 `X-Real-IP`；内置 60s 取消跟踪定时器与每日归档定时器；支持 `SIGTERM`/`SIGINT` 优雅关闭数据库。
-     - `scripts/seed.mjs` 扩展 `--sqlite <dbPath>`：按文件名顺序自动执行 `migrations/*.sql` 并幂等写入 `pools_configs(revision=1)` 与初始 `SYNC_CONFIG` 命令。
-     - `control-center/deploy/Dockerfile`（基于 `node:24-slim`，通过 `npm run build:node` 产出无 `node_modules` 运行时包）与 `control-center/deploy/control-center.service.example`（含 Caddy 自动 HTTPS 反代配置示例）。
-3. **GitHub 全仓源码规范与 ChatGPT Sites 前端代理打包（决策 2-A，`control-center/scripts/build-sites.mjs`）**
-   - 所有前端源码合入 GitHub 仓 `control-center/web/`（彻底消除对仓外目录 `lite-actions-demo-handoff` / `lite-actions-control-center-demo` 的任何依赖）。
-   - `build-sites.mjs` 执行：① **强校验部署期环境变量 `SITES_PROJECT_ID`**（缺失或格式非法立即失败退出，禁止产出空 `project_id` 的不可部署包），并在传入 `--require-origin` 时校验 `CONTROL_CENTER_API_ORIGIN` 为合法裸 `http(s)` origin；② 构建 `control-center/web/` 输出静态资源至 `control-center/dist/client/`；③ 通过 `control-center/web/scripts/prepare-sites-build.mjs` 生成同源前端代理入口 `control-center/dist/server/index.js`（将 `/api/v1/*` 转发至运行时 `env.CONTROL_CENTER_API_ORIGIN`，未配置时返回 `503 CONTROL_CENTER_API_NOT_CONFIGURED`，其余 `/api/*` 返回 JSON 404，前端路由执行 SPA 回退）；④ 生成 `control-center/dist/.openai/hosting.json`（固定 `"d1": null`、`"r2": null`，写入已校验的 `SITES_PROJECT_ID`）；⑤ 动态导入 `dist/server/index.js` 验证运行时 `env.CONTROL_CENTER_API_ORIGIN` 代理转发，并复核产物零硬编码 `workers.dev`/`chatgpt.site` 或后端源地址。
-   - **后端部署解耦**：Cloudflare Workers + D1 后端由 `control-center/worker/`（`src/index.ts` + `wrangler.toml`）独立部署；个人服务器自建模式由 `start-node-server.mjs` 直接同进程托管静态前端与 API；迁移托管地址时，Blue/Yellow Worker 仅需修改 `/etc/lite-actions/deployment.json` 中的 `control_center.url` 并重启，出站报文格式与 `< 2,000` B 约束完全不变。
-4. **新增 DT 拦截手段：`portability_intercept` DT（4 层强制门禁，接入 GitHub Actions CI）**
-   - 对标 `upload_intercept` UT 的硬拦截理念，新增 **`control-center/worker/tests/portability-intercept.test.ts`**（独立 Node 24 Vitest 配置 `vitest.portability.config.ts`，通过 `npm run test:portability` 运行）与 **`control-center/worker/tests/sites-parity.test.ts`**（在 workerd 上直接传入原始 `D1Database` binding 运行），两者共享同一断言套件 `tests/helpers/portabilitySuite.ts`，并在 `.github/workflows/control-center.yml` 中设为必跑阻断步骤：
-     - **第 1 层｜静态源码与配置防锁死扫描（Static Vendor-Lock Guard）**：
-       - 扫描 `control-center/worker/src/`（仅豁免显式适配器白名单 `src/adapters/*` 与薄入口 `src/index.ts`）：发现任何调用 `crypto.subtle.timingSafeEqual`、`CF-Connecting-IP`、`caches.default`、`HTMLRewriter`、`WebSocketPair`、`DurableObject`、`R2Bucket`、`KVNamespace`、直接 import `@cloudflare/*` / `cloudflare:*` / `node:*` / `better-sqlite3`、或直接引用 `D1Database`/`D1PreparedStatement`/`ExecutionContext`/`ScheduledController`/`Fetcher` → **立即失败并精准报出文件名与行号**；
-       - 扫描 `control-center/worker/wrangler.toml` 与 Sites `hosting.json` 模板：禁止出现 `r2_buckets` / `kv_namespaces` / `durable_objects` / `queues`、非空 `"r2"` / `"d1"` 或硬编码个人 `project_id`（`appgprj_*`）；
-       - 扫描 `control-center/web/src/`、`control-center/worker/src/` 与打包脚本：禁止硬编码托管域名（`workers.dev`、`chatgpt.site`、`chatgpt.com`、`openai.com`）以及本机私有路径（`/Users/`、`lite-actions-demo-handoff`、`lite-actions-control-center-demo`）。
-     - **第 2 层｜双运行时同契约行为对等实测（Dual-Runtime Parity Smoke）**：
-       - 同一套 `portabilitySuite.ts` 分别跑在 **运行时 A（CF workerd + 原始 `D1Database` binding：`sites-parity.test.ts`）** 与 **运行时 B（个人服务器：`portability-intercept.test.ts` on Node 24 `node:sqlite` + 真实本地 HTTP + 静态目录）**，应用完全相同的 `migrations/*.sql`，断言以下 7 项行为 100% 等价：
-         1. 静态资源返回正确 MIME；SPA 前端路径（如 `/models`）在 `Accept: text/html` 下返回 `/index.html`；`/api/v1/does-not-exist` 与 `POST /unknown` 严格返回 JSON 404（绝不回退 HTML）；
-         2. 匿名 `GET /api/v1/public/overview` & `/timeline` 返回掩码 IP 与 `Cache-Control: public, max-age=10`；
-         3. Super/管理员登录（无 `crypto.subtle.timingSafeEqual`）签发 Cookie、会话校验与**无 `CF-Connecting-IP` 头时按独立客户端 IP 触发 5 次锁定 429**（验证不同 IP 互不误伤）；
-         4. Worker 心跳、事件去重、分片快照对账与命令拉取回执（含 `PARTIAL_APPLIED`）闭环；
-         5. **无 Cron 惰性维护实测**：不触发任何 Cron，仅通过心跳流量验证活跃取消单自动推进收敛；
-         6. **冷块 gzip BLOB 跨运行时读写**：写入压缩冷块 → 读回并校验 SHA-256 与明文 JSON（覆盖 `Uint8Array` / `ArrayBuffer` / `number[]`）；
-         7. `store.dbSizeBytes()` 返回大于 0 的有限整数并在超限阈值时准确触发 80%→70% 滚删。
-     - **第 3 层｜ChatGPT Sites 前端代理产物包与 GitHub 仓完整性校验（Packaging & Repo Completeness Gate）**：
-       - 先验证缺少 `SITES_PROJECT_ID` 时 `build-sites.mjs` 立即失败、以及传 `--require-origin` 但缺少 `CONTROL_CENTER_API_ORIGIN` 时立即失败；再在临时目录注入非空 `SITES_PROJECT_ID` 与 `CONTROL_CENTER_API_ORIGIN` 执行 `build-sites.mjs --require-origin`，验证产出 `dist/client/index.html`、`dist/server/index.js`（动态 ESM import 校验默认导出 `fetch` 函数，验证 `/` 与 `/models` SPA 回退、未配 `CONTROL_CENTER_API_ORIGIN` 返回 `503 CONTROL_CENTER_API_NOT_CONFIGURED`、注入 `env.CONTROL_CENTER_API_ORIGIN` 时将 `/api/v1/public/overview` 实际代理至目标 origin、`/api/unknown` 返回 JSON 404）、`dist/.openai/hosting.json` 合法 JSON 且 `project_id` 为非空注入值、`d1 === null`、`r2 === null`；
-       - 扫描构建出的客户端 JS 与服务端产物，断言零硬编码 `workers.dev`/`chatgpt.site`/`appgprj_` 或固化上游域名（确保前端严格同源相对路径 `/api/v1/*`，上游地址仅在运行时注入）。
-     - **第 4 层｜Worker 迁移 URL 预算联动门禁**：
-       - 复用 `tests/test_upload_intercept.py` 与 `ci_core/egress_policy.py`，确保任意最长 80 字符的自定义 HTTPS 域名（ChatGPT Sites 域名、个人服务器自有域名或 `workers.dev`）下，全部 Worker 上传报文依然严格 `< 2,000` B，零代码修改即可切换。
+```bash
+npm ci --prefix control-center/worker
+npm ci --prefix control-center/web
+npm run lint --prefix control-center/worker
+npm test --prefix control-center/worker
+npm test --prefix control-center/web
+npm run build:node --prefix control-center/worker
+npm run build --prefix control-center/web
+python3 control-center/tests/integration/run.py
+```
 
-#### 3. 改动文件与预计改动量
+服务器发布后必须核对：
 
-| 文件路径 | 操作 | 核心内容 | 预计改动量 |
-|---|---|---|---:|
-| `control-center/worker/src/storage/sqlStore.ts` | 新增 | 运行时无关 `SqlStore` / `SqlStatement` 接口与通用 `toArrayBuffer()` BLOB 解码器 | +55 行 |
-| `control-center/worker/src/app.ts` | 新增 | 纯标准 Web Fetch 核心调度器（含静态资产 + SPA 回退、注入 `clientIp`、`scheduleBackground` 与无 Cron 节流惰性维护） | +150 行 |
-| `control-center/worker/src/adapters/d1.ts` | 新增 | ChatGPT Sites / Cloudflare D1 适配器（包装 `D1Database` + `meta.size_after`） | +45 行 |
-| `control-center/worker/src/adapters/nodeSqlite.ts` | 新增 | 个人服务器 Node 24 内置 `node:sqlite` 适配器（零第三方原生依赖、`BEGIN IMMEDIATE` 事务 `batch()`、`PRAGMA` 库大小） | +110 行 |
-| `control-center/worker/src/adapters/nodeServer.ts` | 新增 | 个人服务器独立 HTTP 入口（`node:http` ↔ Web Fetch、静态目录 + SPA 回退、受控反代 IP 解析、定时器与优雅停机） | +165 行 |
-| `control-center/worker/src/index.ts` | 修改 | 瘦身为 ChatGPT Sites / CF Workers 薄适配器（包装 `createD1Store`、`CF-Connecting-IP`、`env.ASSETS`、`waitUntil` 与 `scheduled()`） | +45 行 |
-| `control-center/worker/src/utils/crypto.ts`、`services/auth.ts`、`router.ts`、`middleware/quota.ts`、`services/{board,retention,ingest,cancellations,schedule}.ts`（9 文件） | 修改 | 消除 4 处平台锁死：纯 JS 恒定时间比对替换 `timingSafeEqual`、`context.clientIp` 替换 `CF-Connecting-IP`、`D1Database`→`SqlStore`、统一 BLOB 解码 | +85 行 |
-| `control-center/worker/scripts/seed.mjs` | 修改 | 新增 `--sqlite <path>` 模式：一键对个人服务器 SQLite 应用 `migrations/*.sql` 并幂等灌入 `revision = 1` | +45 行 |
-| `control-center/scripts/build-sites.mjs` | 新增 | 一键产出标准 ChatGPT Sites 产物包（`dist/client/`、`dist/server/index.js`、`dist/.openai/hosting.json`）与产物自检 | +95 行 |
-| `control-center/deploy/Dockerfile`、`control-center/deploy/control-center.service.example`（2 文件） | 新增 | 个人服务器零原生依赖 Node 24 容器与 systemd / 反代部署模板 | +75 行 |
-| `control-center/worker/tests/helpers/portabilitySuite.ts`、`tests/portability-intercept.test.ts`、`tests/sites-parity.test.ts`、`vitest.portability.config.ts`（4 文件） | 新增 | `portability_intercept` DT 4 层拦截套件（静态防锁死扫描 + 双运行时对等实测 + Sites 产物包与仓完整性校验） | +340 行 |
-| `.github/workflows/control-center.yml`、`control-center/worker/package.json`（2 文件） | 修改 | 接入 `npm run test:portability` 与 Sites 产物校验为 CI 必跑阻断门禁 | +20 行 |
-| **小计** | **12 新增 + 13 修改** | — | **~1,230 行** |
+- `systemctl is-active lite-actions-control-center.service`；
+- `curl -fsS https://lite-actions.ooguy.com/api/v1/public/overview`；
+- `curl -fsS https://lite-actions.ooguy.com/api/v1/public/cluster`；
+- 深链接 `/models` 返回 SPA HTML，未知 `/api/v1/unknown` 返回 JSON 404；
+- Blue/Yellow 在 `/public/overview` 中 `offline=false`，`applied_rev` 与本地 `pools-active.json` 对齐；
+- 服务器日志、`http-egress.json`、Workflow run 与取消回执被保存到验收记录，禁止写入密钥、Cookie 或未脱敏地址。
 
-#### 4. 验收标准
-- `npm run lint --prefix control-center/worker`、`npm test --prefix control-center/worker`、`npm run test:portability --prefix control-center/worker` 与 `SITES_PROJECT_ID=... CONTROL_CENTER_API_ORIGIN=... node control-center/scripts/build-sites.mjs --require-origin` 全部绿灯。
-- **反向自证（验收必做，对标 `upload_intercept`）**：
-  1. 在 `control-center/worker/src/services/` 任意文件临时加入 `CF-Connecting-IP`、`crypto.subtle.timingSafeEqual` 或 `import ... from "node:fs"`，运行 `npm run test:portability` 必须立即失败并精准打印文件名与行号；
-  2. 在 `wrangler.toml` 临时加入 `[[r2_buckets]]` 或在前端临时硬编码 `https://xxx.workers.dev`，运行 `npm run test:portability` 必须立即失败；
-  3. 使用 `seed.mjs --sqlite /tmp/test.sqlite` + `scripts/start-node-server.mjs` 启动个人服务器，在不开启任何外部 Cron 的前提下跑通匿名掩码读取、管理员登录、按独立 IP 5 次防爆破、冷块压缩读回与心跳推进取消单全链路。
+#### 3. 迁移数据与回滚
 
----
+迁移前先做 SQLite 在线备份并校验 SHA-256，再执行 `seed.mjs --sqlite` 和数据导入。迁移失败时停用新服务、恢复最近一份 SQLite 备份、将两个 Worker 的 `control_center.url` 切回旧地址并重启，记录切换时间和两端 applied revision。空库种子只用于开发和隔离测试，不能作为正式数据迁移结果。
+
+#### 4. 验收门禁
+
+- Node 24/SQLite 单元测试、前端测试、`python3 control-center/tests/integration/run.py` 和 `tests/test_upload_intercept.py` 全绿；
+- 服务器实机完成匿名读取、管理员登录、独立反代 IP 防爆破、冷块读回、无外部 Cron 的取消推进和双 Worker 心跳；
+- Yellow 通过 Issue #49 完成新域名 GET/POST 可达性预验证后，再执行 URL 切换和至少三轮心跳/探测复核；
+- 每个已完成联调项在本节 Phase 7 checklist 旁标注 `lite-actions.ooguy.com已验证`，仅局部证据不得替代完整门禁。
+
 
 ## 5. 附录：Demo（`cd770ce`）交接对齐与正式前端改造清单（最终定稿，供前端 Agent 执行）
 
@@ -1540,4 +1490,4 @@ lite-actions/
 | **2** | Super 用户管理表每行有「查看完整密钥」可反复查看明文，且无「重置密钥」 | 服务端只存 HMAC-SHA256 哈希不可逆；**移除重复查看密钥，提供「重置密钥」+「删除」**；仅在创建或重置响应中一次性弹窗展示 `secret_once` 并强提示复制（关闭后不再显示）。 |
 | **3** | 未登录与登录后均明文显示节点 IP（`192.0.2.31:22`），且有手写节点别名 `blue-a3-01` | 未登录调 `/api/v1/public/*` 渲染服务端掩码 `display_host_id`（`113.xxx.xxx.205:153`）；`/auth/me` 登录态下切 `/api/v1/admin/*` 渲染完整 `host_id`；**不设节点别名，全站直接以 `host_id`（掩码或完整）作为节点名称呈现**。 |
 | **4** | 集群管理：① 新增资产为纯表单手填；② 无历史版本回滚入口；③ 设备组硬编码显示“8P / 8 卡” | ① 新增资产采用「粘贴 `preflight.py --export-node-snippet` JSON 片段 + 前端解析展示只读摘要预览」；② 补齐历史配置版本列表与 `POST /admin/cluster/rollback` 回滚入口；③ Pool `enabled: false` 与节点/组 `paused: true` 统一展示黄色「暂停调度」；④ 保留两步「先排空、再删除」（对接 `DRAIN` / `RESUME` / `DELETE_*`）；⑤ 设备组卡数按 `group.devices.length` 动态渲染。 |
-| **5** | 顶部有「模拟数据」徽章、登录框带演示账号按钮、无 30s 自动轮询，源码位于仓外 Demo 目录 | 全量前端源码合入 GitHub 仓 `control-center/web/`（零仓外路径引用）；生产构建移除模拟徽章与演示账号按钮；页面每 **30 秒**静默轮询（`document.hidden` 暂停、切回立即刷新，不丢展开/筛选/折叠状态）；构建产物统一输出至 `control-center/dist/client/`（供 ChatGPT Sites 打包、个人服务器静态目录与 CF Workers 共用）；严格使用相对路径 `/api/v1/*`（零硬编码绝对后端地址，受 `portability_intercept` DT 拦截校验），保障同源 `HttpOnly; Secure; SameSite=Strict` Cookie。 |
+| **5** | 顶部有「模拟数据」徽章、登录框带演示账号按钮、无 30s 自动轮询，源码位于仓外 Demo 目录 | 全量前端源码合入 GitHub 仓 `control-center/web/`（零仓外路径引用）；生产构建移除模拟徽章与演示账号按钮；页面每 **30 秒**静默轮询（`document.hidden` 暂停、切回立即刷新，不丢展开/筛选/折叠状态）；构建产物统一输出至 `control-center/dist/client/`（供 lite-actions.ooguy.com 打包、个人服务器静态目录与 Workers 共用）；严格使用相对路径 `/api/v1/*`（零硬编码绝对后端地址，受 `node-runtime` DT 拦截校验），保障同源 `HttpOnly; Secure; Same控制面网页=Strict` Cookie。 |
