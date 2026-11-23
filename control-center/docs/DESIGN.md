@@ -108,6 +108,8 @@
 > **2026-11-23 线上 Site 浏览器/HTTP 复核（Site v31）**：正式 Site `https://lite-actions-yellow-control-center.promisingdace3.chatgpt.site` 的匿名 HTTP smoke 已通过，`/`、`/models`、`/cluster` 均返回 SPA HTML，`/api/v1/public/overview` 与 `/api/v1/public/workflows?history_limit=0` 返回 JSON，未知 `/api/*` 返回 JSON 404。浏览器复核默认模型筛选为「全部模型」，显示 `38 / 38` 条真实历史 Workflow；选择 `vllm-ascend` 后显示 `2 / 2`，清除筛选恢复 `38 / 38`；历史 Workflow 可折叠/展开，表头包含 12 列，Actions ID 同时呈现运行标题（例如 `Lite Actions self smoke: cpu-only`），展开子用例可见真实开始/结束时间与耗时。该证据补齐 `E2E-04` 的正式 Site 子集，不等同于 103 条冷热分页、冷归档详情和完整管理员生命周期验收。浏览器还验证了深浅主题切换，源码复核确认 30 秒静默刷新、后台暂停与切回立即刷新逻辑。
 > **当前线上边界**：Site v31 已上线，但 Cloudflare 控制面仍需发布当前 PR #44 的 Worker/D1 迁移版本；线上 `/public/overview` 当前 Blue/Yellow 均为 `offline=true`，因此不把 Site 可访问性误记为 Worker 心跳或生产发布通过。Cloudflare D1 控制台只读数据为约 `1.4 MB / 5 GB`，当日写入约 `106.85k / 100k`，说明当前实例已触及免费写入上限，但尚未完成可控 `503 WRITE_QUOTA_EXHAUSTED` 与 Worker Outbox 补发演练。PR #44 最新控制面 CI 为 Run `45148768196`，提交 `ee666f9`，全量 Worker、前端、portability 和 D1/Node 双运行时隔离门禁通过。当前本机重新执行 `run.py --runtime=d1` 与 `--runtime=node` 均通过，各捕获 111 个 TLS 请求，含 8 次 Yellow 平台 stub 写请求，峰值 1,795 B `< 2,000` B。
 
+> **Phase 7 任务计数（2026-11-23）**：本节 28 个顶层联调/上线门禁中，8 个已按证据勾选，20 个仍未完成。20 个未完成项为 `INT-06/07/09/10`、`E2E-01`~`E2E-12`、`REL-00/02/03/04`。其中多个项目已有隔离夹具、Yellow 单节点或 Site 浏览器子集证据，未将局部证据提升为全量通过；需现场补齐的核心依赖集中在 Cloudflare 最新 Worker/D1 发布、GitHub App/GitCode 取消凭据、Blue/Yellow 跨区 16P 与多节点资源、D1 配额演练和 Node 24 实机切换。
+
 
 #### 7.1 后端 + Worker 集成验证（不依赖前端，Phase 5.5 完成后立即跑绿）
 > 说明：v1.1 回归证据见 [backend-validation.md](backend-validation.md)；下列为补齐 v1.1 遗留项并升级至 v1.5 全量口径后的最新状态。
