@@ -74,7 +74,8 @@ export function LoginForm({ close, login }) {
   return <Dialog title="登录" subtitle="使用用户名和网站登录密钥执行管理操作。" close={close}>
     <form onSubmit={async (event) => {
       event.preventDefault();
-      if (!(await login(name.trim(), key))) setError("用户名或登录密钥有误。");
+      const result = await login(name.trim(), key);
+      if (result?.ok !== true && result !== true) setError(result?.message || "用户名或登录密钥有误。");
     }}>
       <div className="form-fields">
         <label>用户名<input required autoComplete="username" value={name} onChange={(event) => setName(event.target.value)} placeholder="输入用户名" /></label>

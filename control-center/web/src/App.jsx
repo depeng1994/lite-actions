@@ -239,13 +239,17 @@ export function App() {
     if (dataMode !== "live") { notify("控制面尚未连接"); return false; }
     try {
       const remote = await apiLogin(name, key);
-      if (!remote?.authenticated) return false;
+      if (!remote?.authenticated) return {ok: false};
       setAccounts((previous) => previous.some((account) => account.name === remote.username) ? previous : [...previous, {name: remote.username, role: remote.role === "super" ? "Super" : "管理员", key: "", userId: remote.user_id}]);
       setSignedIn(remote.username);
       close();
       notify(`已登录为 ${remote.role === "super" ? "Super" : remote.username}`);
-      return true;
-    } catch (error) { notify(error.message); return false; }
+      return {ok: true};
+    } catch (error) {
+      if (error.code === "WRITE_QUOTA_EXHAUSTED") return {ok: false, message: error.message};
+      notify(error.message);
+      return {ok: false};
+    }
   };
   const logout = async () => {
     if (dataMode === "live") await apiLogout().catch(() => undefined);
