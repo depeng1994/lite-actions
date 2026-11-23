@@ -447,7 +447,6 @@ def integration(root):
     environment = os.environ | {
         "LITE_ACTIONS_CONTROL_CA_FILE": str(cert),
         "NODE_ENV": "test",
-        "CONTROL_CENTER_DOMAIN": "lite-actions.ooguy.com",
     }
     import sqlite3
 

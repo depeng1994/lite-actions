@@ -8,7 +8,7 @@
 
 > **Linux CI 与本机 macOS Python 回归证据（2026-11-23，PR #44，GitHub Actions Run `45134291763`）**：在 Linux CI（`ubuntu-latest`、Python 3.12.16 + Node 24）执行 `python -m unittest discover -s tests`，**`233 tests OK (skipped=3)`**（0 failures，0 errors）；同一提交在 macOS 本机（Python 3.12）运行全量 `unittest discover -s tests` 为 `233 tests` 中 `5 failures / 3 errors`（均因 macOS 缺少 `/etc/os-release`、`/proc`、`systemctl` 及 `/var`→`/private/var` 路径解析差异，不能以 Linux CI 绿灯掩盖本机运行差异，Linux 专属用例需以 Linux CI/YCY 为准）。历史 2026-11-20 在 Blue YCY 主机执行为 `215 tests` 全绿。
 
-v1.1 实现基线运行在 personal server control plane + 单 SQLite 库；完成 `REQ-20` 托管解耦与决策 2-A 收敛后，初期正式采用 **lite-actions.ooguy.com 前端与 API 同源部署（`Node.js 24 + SQLite，部署期注入 `CONTROL_CENTER_DOMAIN` 与运行时 `CONTROL_CENTER_ORIGIN`）+ Node.js 24 + SQLite 后端**，后期同一套核心业务与 `migrations/*.sql` 可零业务改动迁移至 **个人服务器（Node.js 24 + 内置 `node:sqlite`）**。Blue 和 Yellow Worker 仅通过 HTTPS 出站接入，迁移时只改 `control_center.url`。
+v1.1 实现基线运行在 personal server control plane + 单 SQLite 库；完成 `REQ-20` 托管解耦与决策 2-A 收敛后，初期正式采用 **lite-actions.ooguy.com 前端与 API 同源部署（`Node.js 24 + SQLite，部署期注入 `Caddy 域名配置` 与运行时 `Node 同进程 API`）+ Node.js 24 + SQLite 后端**，后期同一套核心业务与 `migrations/*.sql` 可零业务改动迁移至 **个人服务器（Node.js 24 + 内置 `node:sqlite`）**。Blue 和 Yellow Worker 仅通过 HTTPS 出站接入，迁移时只改 `control_center.url`。
 
 ## 验收命令
 
@@ -25,8 +25,7 @@ npm run lint --prefix control-center/worker
 npm test --prefix control-center/worker
 npm test --prefix control-center/web
 npm run test:runtime --prefix control-center/worker
-CONTROL_CENTER_DOMAIN=lite-actions.ooguy.com CONTROL_CENTER_ORIGIN=https://control-center-ci.example \
-  node control-center/worker/scripts/start-node-server.mjs --require-origin
+npm run build --prefix control-center/web && node --experimental-strip-types control-center/worker/scripts/start-node-server.mjs
 python3 control-center/tests/integration/run.py
 ```
 
@@ -45,7 +44,7 @@ python3 control-center/tests/integration/run.py
 | INT-07 | `move-up.test.ts`、`test_move_up.py`、`test_smoke_queue.py`（⏳ **v1.5 需按 `REQ-17` 升级为 Workflow 级跨区插队联调，并补齐虚拟时钟 71h59m/72h01m 超时实测**） |
 | INT-08 | `cluster-config.test.ts`（新增 DRAIN→RESUME、删除前四项门禁与 `enabled: false` 断言）、`test_preflight_export.py`、`test_pools_hot_reload.py`（⏳ **仍需补齐 Worker 侧排空取消、双 Worker 单端失败、实机重启与自动更新闭环**） |
 | INT-09 | `retention-storage.test.ts` 和 `board-read.test.ts`（⏳ 待补齐同一次配额熔断触发 Worker 暂存恢复，并按 `REQ-16` 升级为 50 Workflow 跨 30 天分页验证） |
-| INT-10 | `node-runtime.test.ts`（4 层防锁死扫描 + 反向自证 + Node 24/SQLite 对等 + `CONTROL_CENTER_DOMAIN`/`CONTROL_CENTER_ORIGIN` 强校验注入与代理实测）、直传原始 `SQLiteDatabase` binding 的 `node-runtime.test.ts`、`scripts/start-node-server.mjs --require-origin` 与 `run.py`（✅ 本地与隔离夹具对等子集全绿；⏳ 真实线上 personal server SQLite 部署与真实主机切至 Node 24 自建实例验收仍待现场执行，见 `DESIGN.md` `INT-10` / `E2E-12` / `REL-00`） |
+| INT-10 | `node-runtime.test.ts`、Node.js 24/SQLite 本地 HTTP smoke、`scripts/start-node-server.mjs` 与 `run.py`（✅ 本地与隔离夹具对等子集全绿；⏳ 真实线上个人服务器部署与真实主机切换验收仍待现场执行，见 `DESIGN.md` `INT-10` / `E2E-12` / `REL-00`） |
 
 lite-actions.ooguy.com 实机能力核验、真实硬件、真实平台测试仓及在线免费套餐的验收对应 `REL-00` 至 `REL-04`。浏览器端验收依赖正式前端集成（`FE-01` ~ `FE-05`）。
 
@@ -57,10 +56,8 @@ lite-actions.ooguy.com 实机能力核验、真实硬件、真实平台测试仓
 # 本地 Node.js / SQLite 开发
 node control-center/worker/scripts/seed.mjs --sqlite /var/lib/lite-actions/control-center.sqlite
 
-# 初期 lite-actions.ooguy.com 前端与 API 同源部署打包（决策 2-A：必须注入非空 CONTROL_CENTER_DOMAIN 与运行时上游地址 CONTROL_CENTER_ORIGIN）
-CONTROL_CENTER_DOMAIN=lite-actions.ooguy.com \
-  CONTROL_CENTER_ORIGIN=https://lite-actions.ooguy.com \
-  node control-center/worker/scripts/start-node-server.mjs --require-origin
+# 初期 lite-actions.ooguy.com 前端与 API 同源部署打包（决策 2-A：使用 Caddy 域名与 Node 同进程 API）
+npm run build --prefix control-center/web && node --experimental-strip-types control-center/worker/scripts/start-node-server.mjs
 # 产出 control-center/web/dist/ 与 control-center/deploy/Caddyfile.personal-server.example（Node.js 24 + SQLite）
 
 # 后期迁移个人服务器（Node.js 24 + 内置 node:sqlite，零第三方原生依赖）
@@ -72,6 +69,6 @@ DB_PATH=/var/lib/lite-actions/control-center.sqlite \
   node --experimental-strip-types control-center/worker/scripts/start-node-server.mjs
 ```
 
-部署初期后端（Node.js 24 + SQLite）时，应用远端迁移与种子（另提供 `.github/workflows/deploy-control-center.yml` 一键执行远端 SQLite 迁移、Worker 部署及 前端与 API 同源部署打包核验），lite-actions.ooguy.com 前端运行时注入 `CONTROL_CENTER_ORIGIN` 代理同源 `/api/v1/*`；迁移至个人服务器时使用 `seed.mjs --sqlite <path>` 初始化本地 SQLite，通过 `scripts/start-node-server.mjs`（或 `control-center/deploy/Dockerfile`）启动并配 Caddy/Nginx HTTPS 反代。两种后端方式均通过环境变量 / 服务端 Secret 配置相同凭据：`KEY_PEPPER`、`SUPER_SECRET`、`WORKER_BLUE_KEY_HASH`、`WORKER_YELLOW_KEY_HASH`（使用相同 pepper 做 HMAC-SHA256 保存为小写十六进制）、`GITHUB_APP_ID`、`GITHUB_APP_PRIVATE_KEY` 和 `GITCODE_CANCEL_TOKEN`。
+部署初期后端（Node.js 24 + SQLite）时，应用远端迁移与种子（另提供 `.github/workflows/deploy-control-center.yml` 一键执行远端 SQLite 迁移、Worker 部署及 前端与 API 同源部署打包核验），lite-actions.ooguy.com 前端运行时注入 `Node 同进程 API` 代理同源 `/api/v1/*`；迁移至个人服务器时使用 `seed.mjs --sqlite <path>` 初始化本地 SQLite，通过 `scripts/start-node-server.mjs`（或 `control-center/deploy/Dockerfile`）启动并配 Caddy/Nginx HTTPS 反代。两种后端方式均通过环境变量 / 服务端 Secret 配置相同凭据：`KEY_PEPPER`、`SUPER_SECRET`、`WORKER_BLUE_KEY_HASH`、`WORKER_YELLOW_KEY_HASH`（使用相同 pepper 做 HMAC-SHA256 保存为小写十六进制）、`GITHUB_APP_ID`、`GITHUB_APP_PRIVATE_KEY` 和 `GITCODE_CANCEL_TOKEN`。
 
 通过 Worker 现有部署配置为选定区域添加 `control_center.url`，并通过 Worker 环境注入 `LITE_ACTIONS_CONTROL_TOKEN`（托管从 lite-actions.ooguy.com 迁至个人服务器时，Worker 仅需更新 `control_center.url`，零代码修改）。Yellow 可配置 `control_center.ci_reserve_bytes` 为 CI 回报保留每日额度。现场若必须经代理，额外在 root:root、0600 的 `deployment.json` 本地增加 `control_center.proxy`，格式使用占位符 `http://<proxy-user>:<proxy-password>@<proxy-host>:<proxy-port>`；客户端不会读取环境代理，日志和异常不输出完整 URL。机器接口注册在 `/api/v1/worker`，健康检查与公开视图可调用 `/api/v1/public/overview`。接口字段见 [API 契约](api-contract.md)。

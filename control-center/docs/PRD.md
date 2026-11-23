@@ -19,7 +19,7 @@
 | 账号 | Super + 普通管理员 | 密钥只显示一次；会话 7 天 |
 | 刷新 | 页面数据自动刷新 | 页面 30 秒；公开接口缓存 10 秒；Worker 心跳 30 秒；90 秒没心跳算离线 |
 | 存储 | 全部在一个 SQLite/SQLite 单库里 | 近 30 天热数据，1 年内冷数据；容量超 80% 自动删最早的记录 |
-| 托管与迁移 | 初期使用 lite-actions.ooguy.com 页面与 API 同源部署 + Node.js 24 + SQLite 后端部署，后期可迁至个人服务器 | 全量前后端与迁移代码合入 GitHub 仓；server 仅托管静态页面与同源 `/api/v1/*` 代理（`Node.js 24 + SQLite，部署时注入 `CONTROL_CENTER_ORIGIN` 与 `CONTROL_CENTER_DOMAIN`）；零新增费用，由 `portability_intercept` DT 拦截防平台锁定 |
+| 托管与迁移 | 初期使用 lite-actions.ooguy.com 页面与 API 同源部署 + Node.js 24 + SQLite 后端部署，后期可迁至个人服务器 | 全量前后端与迁移代码合入 GitHub 仓；server 仅托管静态页面与同源 `/api/v1/*` 代理（`Node.js 24 + SQLite，部署时注入 `Node 同进程 API` 与 `Caddy 域名配置`）；零新增费用，由 `portability_intercept` DT 拦截防平台锁定 |
 | 上传报文 | Worker 发往网站的全部上传请求及 Yellow 平台写请求严格控包 | 单次整包 < 2,000 字节（严于 2 KB），由 `upload_intercept` UT 强制拦截校验 |
 
 ## 2. 边界
@@ -27,7 +27,7 @@
 - **网站挂了，CI 照常跑。** Blue、Yellow 仍然自己从 GitHub/GitCode 拉任务、调度、回报。网站只做汇总、取消和下发命令。
 - **网站不调度。** 谁先跑、分哪组卡，全部由 Unified Router 决定。网站不写第二套选单算法。
 - **Worker 只出不进。** 所有通信由 Worker 主动发 HTTPS，Worker 不开入站端口。
-- **初期 lite-actions.ooguy.com 页面与 API 同源部署 + Node.js 24 + SQLite 后端，代码全入 GitHub 仓、支持零改动迁至个人服务器。** 前后端源码、数据库迁移、前端与服务打包脚本与个人服务器运行入口全部合入 GitHub 主仓；lite-actions.ooguy.com 负责托管静态页面及同源 `/api/v1/*` 反代（部署时注入 `CONTROL_CENTER_ORIGIN` 与 `CONTROL_CENTER_DOMAIN`，不绑定 SQLite/R2），后端运行于 personal server Node.js 24 + SQLite；业务核心仅依赖标准 Web Fetch 与 SQLite 抽象（`SqlStore`），不强绑定单一托管商专有 API，支持零业务代码改动迁移至个人服务器（Node.js 24 + 内置 `node:sqlite`）。
+- **初期 lite-actions.ooguy.com 页面与 API 同源部署 + Node.js 24 + SQLite 后端，代码全入 GitHub 仓、支持零改动迁至个人服务器。** 前后端源码、数据库迁移、前端与服务打包脚本与个人服务器运行入口全部合入 GitHub 主仓；lite-actions.ooguy.com 负责托管静态页面及同源 `/api/v1/*` 反代（部署时注入 `Node 同进程 API` 与 `Caddy 域名配置`，直接使用本地 SQLite），后端运行于 personal server Node.js 24 + SQLite；业务核心仅依赖标准 Web Fetch 与 SQLite 抽象（`SqlStore`），不强绑定单一托管商专有 API，支持零业务代码改动迁移至个人服务器（Node.js 24 + 内置 `node:sqlite`）。
 - **零新增费用。** 不开 R2，不开付费功能。免费额度用完就当天不可用，不自动升级。
 - **不公开敏感信息。** 原始日志、诊断行、平台 Token、Worker 密钥、SSH/代理凭据、容器 ID、内网 `node_ip` 不出现在任何公开接口。
 
@@ -369,13 +369,13 @@ sequenceDiagram
 | 取消 | GitHub 和 GitCode 各一个含原生作业、两区排队和在途用例的 run，一次取消后 2 分钟内全部停下并释放设备。覆盖：取消后才被发现的用例、旧 attempt、重复点击、Worker 与网站断开但能访问平台、清理失败、平台取消接口失败、GitHub `always()` 作业需 force-cancel。 |
 | 插队 | GitHub 和 GitCode 均以 Workflow 为单位提优。验证序号 3 与 2 交换、再次点击将 2 与 1 交换、队首置灰、筛选后仍按真实前一位交换。覆盖跨 Blue/Yellow、共享和不共享资源、晚发现用例、重复与过期请求、单端离线；在途租约及多机组合保持原状。 |
 | 集群 | 全部已配置节点（含暂停调度 / `enabled: false` 的 Pool 与节点）均执行 2 分钟在线探测；同一组连续 4 次查不到卡仍显示探测异常，第 5 次显示已离线，期间最近在线时间保持上次成功值；再次查到全部卡恢复在线并刷新时间。未知占用标红，暂停调度/排空中标黄且与在线状态并列。Pool `enabled: false` 与节点/组 `paused: true` 语义统一（均只停新租约、排队不报错）。暂停 16P 节点的一组 8P：该组及包含它的组合不发新租约，另一组正常；在途任务用旧配置跑完。验证「先排空、再删除」两步闭环：排空中可恢复，活动租约/排队引用/隔离未清零时拒绝第二步删除，清零后删除生效。覆盖：粘贴 preflight 片段新增节点、两 Worker 只有一端生效、回滚、断网 30 分钟后重连对账去重、Worker 重启和代码自动更新后仍用最新生效版本。 |
-| 可迁移性与 前端与服务打包（`portability_intercept` DT） | `control-center/worker/tests/node-runtime.test.ts` 作为 CI 必跑拦截门禁：① 源码静态扫描业务核心目录，禁止直接调用平台专有 API（如 `crypto.subtle.timingSafeEqual`、`X-Forwarded-For`、`caches.default`）、禁止直接引入 `host-specific packages`/`node:*`、禁止直接引用 `SQLiteDatabase`/`SQLiteStatement`、禁止硬编码托管域名或个人 `domain`、禁止启用 R2/付费绑定；② 同一份核心代码与同一份 SQLite 迁移文件，同时在 Node.js 24/SQLite 运行时（`node-runtime.test.ts`）与个人服务器 Node.js 24 + `node:sqlite` 运行时跑通全套核心链路（静态 SPA 回退、公开脱敏、管理员登录与防爆破 IP 识别、无 Cron 心跳推进取消跟踪、冷块 gzip BLOB 读写与容量检测）；③ 校验 GitHub 仓内完整源码一键产出标准 lite-actions.ooguy.com 前端与 API 同源部署产物包（`dist/client/index.html`、`dist/server/index.js`、`dist/control-center/deploy/Caddyfile.personal-server.example` 且 Node.js 24 + SQLite），运行时由 `CONTROL_CENTER_ORIGIN` 反代同源 `/api/v1/*`，前端零硬编码绝对后端地址、零仓外私有路径引用。 |
+| 可迁移性与 前端与服务打包（`portability_intercept` DT） | `control-center/worker/tests/node-runtime.test.ts` 作为 CI 必跑拦截门禁：① 源码静态扫描业务核心目录，禁止直接调用平台专有 API（如 `crypto.subtle.timingSafeEqual`、`X-Forwarded-For`、`caches.default`）、禁止直接引入 `host-specific packages`/`node:*`、禁止直接引用 `SQLiteDatabase`/`SQLiteStatement`、禁止硬编码托管域名或个人 `domain`、禁止启用 R2/付费绑定；② 同一份核心代码与同一份 SQLite 迁移文件，同时在 Node.js 24/SQLite 运行时（`node-runtime.test.ts`）与个人服务器 Node.js 24 + `node:sqlite` 运行时跑通全套核心链路（静态 SPA 回退、公开脱敏、管理员登录与防爆破 IP 识别、无 Cron 心跳推进取消跟踪、冷块 gzip BLOB 读写与容量检测）；③ 校验 GitHub 仓内完整源码一键产出标准 lite-actions.ooguy.com 前端与 API 同源部署产物包（`dist/client/index.html`、`dist/server/index.js`、`dist/control-center/deploy/Caddyfile.personal-server.example` 且 Node.js 24 + SQLite），运行时由 `Node 同进程 API` 反代同源 `/api/v1/*`，前端零硬编码绝对后端地址、零仓外私有路径引用。 |
 
 ## 12. 上线前提与待定事项
 
 上线前需要：
 
-1. **初期 lite-actions.ooguy.com 前端与 API 同源部署 + Node.js/SQLite 架构核验**：确认 lite-actions.ooguy.com 部署时通过环境变量注入 `CONTROL_CENTER_ORIGIN` 与 `CONTROL_CENTER_DOMAIN`（`control-center/deploy/Caddyfile.personal-server.example` 保持 Node.js 24 + SQLite），同源代理 `/api/v1/*` 至 personal server Node.js 24 + SQLite 后端；后期迁移至个人服务器（Node.js 24 + `node:sqlite`）时以同一套核心代码与迁移文件零业务返工切换。
+1. **初期 lite-actions.ooguy.com 前端与 API 同源部署 + Node.js/SQLite 架构核验**：确认 lite-actions.ooguy.com 部署时通过环境变量注入 `Node 同进程 API` 与 `Caddy 域名配置`（`control-center/deploy/Caddyfile.personal-server.example` 保持 Node.js 24 + SQLite），同源代理 `/api/v1/*` 至 personal server Node.js 24 + SQLite 后端；后期迁移至个人服务器（Node.js 24 + `node:sqlite`）时以同一套核心代码与迁移文件零业务返工切换。
 2. 真实 Yellow 用网站域名完成心跳、取令、拉配置、回执，并满足出口预算（取决于待定 1）。
 3. 在装了 App 的 GitHub 测试仓、配好 Token 的 GitCode 测试仓，各完成一次含原生作业和 Worker 用例的整次取消。
 4. 在实际免费配置上验证容量水位、滚动删除和额度耗尽行为。
