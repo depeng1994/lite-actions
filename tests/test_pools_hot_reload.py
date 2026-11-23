@@ -154,7 +154,12 @@ class PoolReloadTests(unittest.TestCase):
         self.assertTrue(failed["paused"])
         self.assertTrue(failed["probe_unavailable"])
         self.assertIn("PHYSICAL_NODE_IDENTITY_CHANGED", failed["probe_reason"])
-        self.router.control.complete.assert_called_once_with("cmd-1", "APPLIED", rev=1)
+        self.router.control.complete.assert_called_once()
+        args, kwargs = self.router.control.complete.call_args
+        self.assertEqual(args, ("cmd-1", "PARTIAL_APPLIED"))
+        self.assertEqual(kwargs["rev"], 1)
+        self.assertIn(HOST, kwargs["err"])
+        self.assertIn("PHYSICAL_NODE_IDENTITY_CHANGED", kwargs["err"])
 
     def test_failed_probe_isolates_node_and_keeps_verified_nodes(self):
         newer = copy.deepcopy(self.pools)
@@ -188,6 +193,9 @@ class PoolReloadTests(unittest.TestCase):
         self.assertFalse(failed_node["allocation_groups"][0]["verified"])
         self.assertFalse(verified_node.get("paused", False))
         self.assertFalse(verified_node.get("probe_unavailable", False))
+        self.assertEqual(len(applied["unavailable_nodes"]), 1)
+        self.assertEqual(applied["unavailable_nodes"][0]["host_id"], HOST)
+        self.assertIn("Permission denied", applied["unavailable_nodes"][0]["reason"])
         self.assertEqual(applied["source_sha256"], command["payload"]["sha256"])
         self.assertEqual(
             hashlib.sha256(applied["config_json"].encode()).hexdigest(),
@@ -268,3 +276,60 @@ class PoolReloadTests(unittest.TestCase):
         self.router.state.update("active", quarantined=False)
         self.assertTrue(self.router.sync_pools(command))
         self.assertEqual(self.router.pools_revision, 1)
+
+    def test_drain_sync_cancels_uniquely_dependent_queued_cases_and_unprobed_device_is_pending(
+        self,
+    ):
+        # Before first probe completes, control_view must not default to v=2 (OFFLINE) or emit reason.
+        initial_view = self.router.control_view()
+        for dev in initial_view["devices"]:
+            self.assertNotIn("v", dev)
+            self.assertNotIn("reason", dev)
+
+        # Seed a queued task in pool "test" and publish DRAIN (enabled=False) with drain_cancel_keys.
+        self.router.state.admit(
+            [
+                (
+                    "drain-key",
+                    {
+                        "phase": "QUEUED",
+                        "run": {
+                            "id": "101",
+                            "_ci_provider": "github",
+                            "_ci_repo": "depeng1994/lite-actions",
+                            "run_attempt": 1,
+                            "head_sha": "a" * 40,
+                            "path": ".github/workflows/smoke.yml",
+                        },
+                        "item": {
+                            "case_id": "case_000_drain",
+                            "test_id": "drain",
+                            "worker": "blue",
+                            "label": "drain case",
+                            "kind": "npu_smoke",
+                            "target_pool": "test",
+                            "resources": {"nodes": 1, "devices_per_node": 8},
+                            "docker": None,
+                            "command": "true",
+                            "env_vars": {},
+                            "order": 0,
+                            "execution_timeout_seconds": 60,
+                        },
+                        "digest": "d" * 64,
+                        "defaults": {},
+                        "queued_at": 1000,
+                    },
+                )
+            ]
+        )
+        draining = copy.deepcopy(self.pools)
+        draining["test"]["enabled"] = False
+        command = self.request(draining)
+        command["payload"]["drain_action"] = "DRAIN"
+        command["payload"]["drain_cancel_keys"] = ["drain-key"]
+        self.verify(command)
+        self.assertTrue(self.router.sync_pools(command))
+        rec = self.router.state.read()["drain-key"]
+        self.assertEqual(rec["phase"], "PENDING_REPORT")
+        self.assertEqual(rec["report"]["status"], "CANCELLED")
+        self.router.control.complete.assert_called_once_with("cmd-1", "APPLIED", rev=1)

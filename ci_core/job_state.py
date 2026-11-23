@@ -49,28 +49,55 @@ def workflow_order_key(identity):
     )
 
 
+_TERMINAL_PHASES = {"PENDING_REPORT", "REPORTED"}
+
+
+def _prune_workflow_order(current, order, *, keep=()):
+    keep_set = set(keep)
+    has_active = set()
+    has_any = set()
+    for key, record in current.items():
+        if key == _META:
+            continue
+        wf = workflow_identity(record)
+        has_any.add(wf)
+        if record.get("phase") not in _TERMINAL_PHASES:
+            has_active.add(wf)
+    pruned = []
+    seen = set()
+    for wf in order:
+        if wf in seen:
+            continue
+        if wf in keep_set or wf in has_active or wf not in has_any:
+            pruned.append(wf)
+            seen.add(wf)
+    return pruned[-128:]
+
+
 def apply_workflow_order(current, meta):
-    order = {key: index for index, key in enumerate(meta.get("workflow_order", []))}
+    raw_order = meta.get("workflow_order", [])
+    if not raw_order:
+        return
+    pruned = _prune_workflow_order(current, raw_order)
+    meta["workflow_order"] = pruned
+    order = {key: index for index, key in enumerate(pruned)}
     if not order:
         return
+    schedule = ordered_queued(current)
     queues = {}
-    for key, record in current.items():
-        if (
-            key == _META
-            or record.get("phase") != "QUEUED"
-            or record.get("item", {}).get("kind") == "worker_probe"
-        ):
+    for key, record in schedule:
+        if record.get("item", {}).get("kind") == "worker_probe":
             continue
         queues.setdefault(queue_identity(record), []).append((key, record))
     for members in queues.values():
-        members.sort(
-            key=lambda pair: (
-                order.get(workflow_identity(pair[1]), 10**9),
-                pair[1].get("queue_rank", 10**9),
-                pair[1].get("admission_seq", 10**9),
+        indexed = list(enumerate(members))
+        indexed.sort(
+            key=lambda entry: (
+                order.get(workflow_identity(entry[1][1]), 10**9),
+                entry[0],
             )
         )
-        for rank, (_, record) in enumerate(members, 1):
+        for rank, (_, (_, record)) in enumerate(indexed, 1):
             record["queue_rank"] = rank
 
 
@@ -286,70 +313,121 @@ class JobState:
                     return applied[operation]
                 target = workflow_order_key(payload.get("a", {}))
                 predecessor = workflow_order_key(payload.get("b", {}))
-                queues = {}
+
+                # Detect CONFLICT when target has already left QUEUED on this
+                # worker (e.g. entered in-flight or finished) with no remaining
+                # queued non-probe cases.
+                target_queued = False
+                target_non_queued_pools = []
                 for key, record in current.items():
                     if (
                         key == _META
-                        or record.get("phase") != "QUEUED"
                         or record.get("item", {}).get("kind") == "worker_probe"
+                        or workflow_identity(record) != target
                     ):
                         continue
+                    if record.get("phase") == "QUEUED":
+                        target_queued = True
+                    else:
+                        pool, kind = queue_identity(record)
+                        if (pool, kind) not in target_non_queued_pools:
+                            target_non_queued_pools.append((pool, kind))
+                if not target_queued and target_non_queued_pools:
+                    result = {
+                        "status": "CONFLICT",
+                        "pools": [
+                            {"p": pool, "k": kind, "st": "CONFLICT", "c": 0}
+                            for pool, kind in target_non_queued_pools
+                        ],
+                    }
+                    applied[operation] = result
+                    applied[command] = result
+                    self._write(current)
+                    return result
+
+                schedule = ordered_queued(current)
+                queues = {}
+                for key, record in schedule:
+                    if record.get("item", {}).get("kind") == "worker_probe":
+                        continue
                     queues.setdefault(queue_identity(record), []).append((key, record))
+
+                # Seed workflow_order with all currently active non-probe
+                # workflows in their existing relative order BEFORE swapping so
+                # earlier workflows (e.g. W1) are never demoted on requeue.
+                order = _prune_workflow_order(
+                    current,
+                    meta.get("workflow_order", []),
+                    keep=(target, predecessor),
+                )
+                in_flight = sorted(
+                    (
+                        (k, r)
+                        for k, r in current.items()
+                        if k != _META
+                        and r.get("phase") not in (_TERMINAL_PHASES | {"QUEUED"})
+                        and r.get("item", {}).get("kind") != "worker_probe"
+                    ),
+                    key=lambda pair: (
+                        pair[1].get("queue_rank", 10**9),
+                        pair[1].get("admission_seq", 10**9),
+                    ),
+                )
+                for _, record in [*in_flight, *schedule]:
+                    if record.get("item", {}).get("kind") == "worker_probe":
+                        continue
+                    wf = workflow_identity(record)
+                    if wf not in order:
+                        order.append(wf)
+                if predecessor in order:
+                    if target not in order or order.index(target) > order.index(
+                        predecessor
+                    ):
+                        if target in order:
+                            order.remove(target)
+                        order.insert(order.index(predecessor), target)
+                elif target in order:
+                    order.insert(order.index(target) + 1, predecessor)
+                else:
+                    order.extend([target, predecessor])
+                meta["workflow_order"] = order
+
                 receipts = []
                 changed = False
                 for (pool, kind), members in queues.items():
-                    members.sort(
-                        key=lambda pair: pair[1].get(
-                            "queue_rank", pair[1].get("admission_seq", 0)
-                        )
-                    )
+                    target_indices = [
+                        i
+                        for i, (_, row) in enumerate(members)
+                        if workflow_identity(row) == target
+                    ]
+                    pred_indices = [
+                        i
+                        for i, (_, row) in enumerate(members)
+                        if workflow_identity(row) == predecessor
+                    ]
+                    if not target_indices or not pred_indices:
+                        receipts.append({"p": pool, "k": kind, "st": "NOOP", "c": 0})
+                        continue
+                    if max(target_indices) < min(pred_indices):
+                        receipts.append({"p": pool, "k": kind, "st": "NOOP", "c": 0})
+                        continue
+                    slots = sorted(target_indices + pred_indices)
+                    placed = [members[i] for i in target_indices] + [
+                        members[i] for i in pred_indices
+                    ]
+                    for slot, pair in zip(slots, placed):
+                        members[slot] = pair
                     for rank, (_, row) in enumerate(members, 1):
                         row["queue_rank"] = rank
-                    target_rows = [
-                        pair for pair in members if workflow_identity(pair[1]) == target
-                    ]
-                    predecessor_rows = [
-                        pair
-                        for pair in members
-                        if workflow_identity(pair[1]) == predecessor
-                    ]
-                    if not target_rows or not predecessor_rows:
-                        receipts.append({"p": pool, "k": kind, "st": "NOOP", "c": 0})
-                        continue
-                    target_rank = min(
-                        row.get("queue_rank", 0) for _, row in target_rows
-                    )
-                    predecessor_rank = min(
-                        row.get("queue_rank", 0) for _, row in predecessor_rows
-                    )
-                    if target_rank < predecessor_rank:
-                        receipts.append({"p": pool, "k": kind, "st": "NOOP", "c": 0})
-                        continue
-                    for _, row in target_rows:
-                        row["queue_rank"] = predecessor_rank
-                    for _, row in predecessor_rows:
-                        row["queue_rank"] = target_rank
                     changed = True
                     receipts.append(
                         {
                             "p": pool,
                             "k": kind,
                             "st": "APPLIED",
-                            "c": len(target_rows) + len(predecessor_rows),
+                            "c": len(placed),
                         }
                     )
-                order = [
-                    item
-                    for item in meta.setdefault("workflow_order", [])
-                    if item not in {target, predecessor}
-                ]
-                try:
-                    index = order.index(predecessor)
-                except ValueError:
-                    index = len(order)
-                order.insert(index, target)
-                order.insert(index + 1, predecessor)
-                meta["workflow_order"] = order
                 result = {"status": "APPLIED" if changed else "NOOP", "pools": receipts}
                 applied[operation] = result
                 applied[command] = result

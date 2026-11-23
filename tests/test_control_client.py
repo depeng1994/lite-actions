@@ -260,3 +260,44 @@ class ControlTests(unittest.TestCase):
         with patch.object(client, "_send", side_effect=self.send):
             client.snapshot(base, {"queue": pages}, 1)
         self.assertGreater(len(self.calls), 1)
+
+    def test_steady_state_probe_rounds_emit_zero_extra_ip_events(self):
+        client = self.client()
+        round1 = [
+            {
+                "pool": "pool_blue",
+                "h": "198.51.100.1:22",
+                "d": [0, 1],
+                "st": "idle",
+                "ts": 1000,
+                "pr": 1,
+                "v": 0,
+                "mc": 0,
+                "lo": 1000,
+                "qu": 0,
+                "qid": None,
+            }
+        ]
+        round2 = [{**round1[0], "ts": 1120, "pr": 2, "lo": 1120}]
+        round3 = [{**round1[0], "ts": 1240, "pr": 3, "lo": 1240}]
+        round4_warn = [
+            {
+                **round1[0],
+                "st": "probe_error",
+                "ts": 1360,
+                "pr": 4,
+                "v": 1,
+                "mc": 1,
+                "lo": 1240,
+            }
+        ]
+        client._capture_devices(round1)
+        self.assertEqual(len(client.outbox.view()["events"]), 1)
+        client._capture_devices(round2)
+        client._capture_devices(round3)
+        # Steady-state rounds 2 and 3 must emit ZERO additional IP events.
+        self.assertEqual(len(client.outbox.view()["events"]), 1)
+        client._capture_devices(round4_warn)
+        self.assertEqual(len(client.outbox.view()["events"]), 2)
+        self.assertEqual(client.outbox.view()["events"][-1]["v"], 1)
+        self.assertEqual(client.outbox.view()["events"][-1]["mc"], 1)

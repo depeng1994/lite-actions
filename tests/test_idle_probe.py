@@ -80,4 +80,28 @@ class IdleProbeTests(unittest.TestCase):
         self.assertEqual(previous[key]["v"], 2)
         self.assertEqual(previous[key]["mc"], 5)
         self.assertIsNotNone(previous[key]["lo"])
+
+    def test_missing_card_in_one_group_does_not_fail_healthy_sibling_group(self):
+        # Card 1 (chips 2,3) is present and idle; card 0 (chips 0,1) is absent.
+        output = "\n".join(
+            [
+                "| NPU Chip | Process id | Process name | Process memory(MB) | Process id in container |",
+                "| No running processes found in NPU 1 |",
+                "+======================================================================================+",
+            ]
+        )
+        execute = Mock(return_value=SimpleNamespace(stdout=output))
+        results, completed, health = observe_health(
+            "blue", self.pools, {}, execute=execute, probe_round=1
+        )
+        execute.assert_called_once_with("node", "npu-smi info", timeout=20)
         self.assertIsNone(completed)
+        bad_key = '["test","198.51.100.1:22",[0,1]]'
+        good_key = '["test","198.51.100.1:22",[2,3]]'
+        self.assertEqual(health[bad_key]["v"], 1)
+        self.assertEqual(health[bad_key]["mc"], 1)
+        self.assertEqual(health[good_key]["v"], 0)
+        self.assertEqual(health[good_key]["mc"], 0)
+        self.assertIsNotNone(health[good_key]["lo"])
+        self.assertEqual(results[("test", "198.51.100.1:22", (0, 1))][0], "probe_error")
+        self.assertEqual(results[("test", "198.51.100.1:22", (2, 3))][0], "idle")

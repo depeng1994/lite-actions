@@ -97,28 +97,35 @@ def observe_health(
         for node in pool["nodes"]:
             host = node["host_id"]
             groups = [group["devices"] for group in node.get("allocation_groups", [])]
-            all_devices = sorted({device for group in groups for device in group})
             try:
                 output = execute(
                     node.get("host_ssh") or node["ssh"], "npu-smi info", timeout=20
                 ).stdout
-                processes = _process_rows(
-                    output,
-                    all_devices,
-                    indexing=pool["process_indexing"],
-                    require_exclusive=False,
-                    require_end=True,
-                    require_coverage=True,
-                )
-                occupied = {chip for chip, _, _ in processes}
-                visible = True
             except Exception:
-                occupied = None
-                visible = False
+                output = None
                 complete = False
             for devices in groups:
                 key = _health_key(pool_name, host, devices)
                 old = previous.get(key, {})
+                if output is None:
+                    occupied = None
+                    visible = False
+                else:
+                    try:
+                        processes = _process_rows(
+                            output,
+                            devices,
+                            indexing=pool["process_indexing"],
+                            require_exclusive=False,
+                            require_end=True,
+                            require_coverage=True,
+                        )
+                        occupied = {chip for chip, _, _ in processes}
+                        visible = True
+                    except Exception:
+                        occupied = None
+                        visible = False
+                        complete = False
                 failures = 0 if visible else min(int(old.get("mc", 0)) + 1, 5)
                 visibility = 0 if visible else (2 if failures >= 5 else 1)
                 last_online = now if visible else old.get("lo")

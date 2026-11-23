@@ -95,6 +95,9 @@ def _allocation(record):
     ]
 
 
+TASK_DESCRIPTOR_BUDGET = 1240
+
+
 def task_descriptor(key, record):
     run, item = record["run"], record["item"]
     result = {
@@ -105,7 +108,7 @@ def task_descriptor(key, record):
         "att": int(run.get("run_attempt", 1)),
         "did": run.get("_ci_dispatch_id"),
         "cid": item["case_id"],
-        "lbl": _bounded(item.get("label") or item["case_id"], 115),
+        "lbl": _bounded(item.get("label") or item["case_id"], 80),
         "k": item["kind"],
         "pool": item.get("target_pool") or "",
         "req": [item["resources"]["nodes"], item["resources"]["devices_per_node"]],
@@ -113,19 +116,35 @@ def task_descriptor(key, record):
         "pa": _login(run.get("_ci_pr_author")),
         "tr": _actor(run.get("triggering_actor") or run.get("actor")),
         "et": _bounded(run.get("event"), 40),
-        "wf": _bounded(run.get("path"), 100),
+        "wf": _bounded(run.get("path"), 80),
         "sub": _submitted_at(run, record.get("queued_at")),
-        "wn": _bounded(run.get("name"), 64),
+        "wn": _bounded(run.get("name"), 48),
         "rn": run.get("run_number")
         if type(run.get("run_number")) is int and run["run_number"] > 0
         else None,
-        "dt": _bounded(run.get("display_title") or run.get("run_name"), 128),
+        "dt": _bounded(run.get("display_title") or run.get("run_name"), 64),
         "ph": record["phase"] if record["phase"] in ACTIVE else "QUEUED",
         "ts": int(record.get("queued_at", 0)),
         "tm": record.get("phase_timestamps", {}),
         "reliable": int(bool(record.get("phase_timestamps", {}).get("QUEUED"))),
     }
-    return {name: value for name, value in result.items() if value is not None}
+    compact = {name: value for name, value in result.items() if value is not None}
+    # Under worst-case identity lengths + 80-char origin + 64-char Bearer token,
+    # trim optional display fields dynamically so one TU / snapshot task item
+    # always fits well under TARGET_BYTES (1,880 B) and the hard <2,000 B gate.
+    for field, floor in (("dt", 0), ("wn", 0), ("wf", 0), ("lbl", 16)):
+        overflow = len(_encode(compact)) - TASK_DESCRIPTOR_BUDGET
+        if overflow <= 0:
+            break
+        if field not in compact:
+            continue
+        current_bytes = len(compact[field].encode())
+        target_bytes = max(floor, current_bytes - overflow)
+        if target_bytes == 0:
+            compact.pop(field, None)
+        else:
+            compact[field] = _bounded(compact[field], target_bytes)
+    return compact
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -418,24 +437,30 @@ class ControlClient:
             seen = data.setdefault("devices", {})
             for group in devices:
                 key = json.dumps([group["pool"], group["h"], group["d"]])
+                # Compare only business state fields; steady-state probe_round
+                # and last_online_at refresh via heartbeat probe_ts/idle_ts so
+                # unchanged rounds emit zero extra IP events.
                 state = [
                     group.get("st"),
                     group.get("qu"),
                     group.get("qid"),
-                    group.get("pr", 0),
-                    group.get("v", 2),
-                    group.get("mc", 0),
-                    group.get("lo"),
+                    group.get("v"),
+                    group.get("mc"),
                 ]
-                # A skipped group has no fresh reading. A quarantine change still
-                # needs reporting independently of whether there is a reading.
+                # A skipped group has no fresh reading. A quarantine or
+                # visibility change still needs reporting independently.
                 previous = seen.get(key)
-                if group["st"] is None and previous:
+                if group.get("st") is None and previous:
                     state[0] = previous[0]
+                payload = {
+                    name: value
+                    for name, value in group.items()
+                    if value is not None or name == "ts"
+                }
                 if state != previous and self.outbox.append(
                     data,
                     {
-                        **group,
+                        **payload,
                         "t": "IP",
                         "ts": group.get("ts"),
                     },

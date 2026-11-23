@@ -319,8 +319,7 @@ class Router:
                     resources = resource_keys([{"host_id": host, "devices": ids}])
                     state, ts = probe.get(group_id(pool_name, host, ids), (None, None))
                     health = visibility.get(
-                        json.dumps([pool_name, host, ids], separators=(",", ":")),
-                        {"v": 2, "mc": 0, "lo": None, "pr": probe_round},
+                        json.dumps([pool_name, host, ids], separators=(",", ":"))
                     )
                     keys = sorted(
                         {
@@ -337,27 +336,32 @@ class Router:
                     unavailable = bool(node.get("probe_unavailable"))
                     if unavailable:
                         state = "probe_error"
+                        base_health = health or {}
                         health = {
-                            **health,
+                            "pr": max(int(base_health.get("pr", probe_round)), 1),
                             "v": 2,
-                            "mc": max(int(health.get("mc", 0)), 1),
+                            "mc": max(int(base_health.get("mc", 0)), 1),
+                            "lo": base_health.get("lo"),
                         }
-                    devices.append(
-                        {
-                            "pool": pool_name,
-                            "h": host,
-                            "d": ids,
-                            "st": state,
-                            "ts": ts,
-                            "pr": health.get("pr", probe_round),
-                            "v": health.get("v", 2),
-                            "mc": health.get("mc", 0),
-                            "lo": health.get("lo"),
-                            "qu": int(bool(keys) or unavailable),
-                            "qid": qid,
-                            "reason": node.get("probe_reason") if unavailable else None,
-                        }
-                    )
+                    entry = {
+                        "pool": pool_name,
+                        "h": host,
+                        "d": ids,
+                        "st": state,
+                        "ts": ts,
+                        "qu": int(bool(keys) or unavailable),
+                        "qid": qid,
+                    }
+                    if health is not None:
+                        entry.update(
+                            {
+                                "pr": health.get("pr", probe_round),
+                                "v": health.get("v"),
+                                "mc": health.get("mc", 0),
+                                "lo": health.get("lo"),
+                            }
+                        )
+                    devices.append(entry)
         return {
             "records": records,
             "sha": self.self_sha or os.environ.get("LITE_ACTIONS_RELEASE_SHA", ""),
@@ -420,6 +424,7 @@ class Router:
             if saved.get("source_sha256", saved["sha256"]) != payload["sha256"]:
                 raise ValueError("POOL_REVISION_MISMATCH")
             cancelled = saved.get("drain_pending", [])
+            unavailable = saved.get("unavailable_nodes", [])
         else:
             if not self.config_verification:
                 if not self.config_executor:
@@ -473,19 +478,43 @@ class Router:
                     eligible_topologies(new_case, next_pools, include_paused=True)
                 except ValueError:
                     cancelled.append(key)
+            for key in payload.get("drain_cancel_keys") or []:
+                if key in cancelled:
+                    continue
+                record = records.get(key)
+                if not record or record.get("phase") != "QUEUED":
+                    continue
+                item = record["item"]
+                if item.get("kind") == "worker_probe":
+                    continue
+                try:
+                    new_case = runtime_case(item, next_pools, self.worker)
+                    eligible_topologies(new_case, next_pools, include_paused=False)
+                except ValueError:
+                    cancelled.append(key)
             doc.update(applied_at=int(time.time()), drain_pending=cancelled)
+            unavailable = doc.get("unavailable_nodes", [])
             write_json(path, doc)
             with self.config_lock:
                 self.pools, self.pools_revision = next_pools, target
             self.config_verification = None
             self.draining = set()
         current = self.state.read()
+        cancel_reason = (
+            "Resource draining by cluster configuration"
+            if payload.get("drain_action") == "DRAIN"
+            else "Resource removed by cluster configuration"
+        )
         for key in cancelled:
             if current.get(key, {}).get("phase") == "QUEUED":
-                self.finish(
-                    key, "CANCELLED", 130, ["Resource removed by cluster configuration"]
-                )
-        self.control.complete(cmd, "APPLIED", rev=target)
+                self.finish(key, "CANCELLED", 130, [cancel_reason])
+        if unavailable:
+            summary = "; ".join(
+                f"{entry['host_id']}: {entry['reason']}" for entry in unavailable
+            )[:200]
+            self.control.complete(cmd, "PARTIAL_APPLIED", rev=target, err=summary)
+        else:
+            self.control.complete(cmd, "APPLIED", rev=target)
         return True
 
     def client_for(self, run):

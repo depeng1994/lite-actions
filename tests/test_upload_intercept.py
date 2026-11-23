@@ -221,15 +221,28 @@ class UploadTests(unittest.TestCase):
             long_record["item"].update(
                 case_id="case_000_" + "z" * 80, label="🐱" * 40, target_pool="p" * 64
             )
+            long_record["phase_timestamps"] = {
+                "QUEUED": 1795056000,
+                "RESERVED": 1795056010,
+                "STAGING": 1795056020,
+                "RUNNING": 1795056030,
+                "CLEANING": 1795056040,
+            }
             long_record["run"].update(
                 {
                     "_ci_repo": "a" * 39 + "/" + "r" * 88,
                     "id": "n" * 128,
+                    "run_attempt": 99,
                     "_ci_dispatch_id": "d" * 128,
+                    "_ci_pr_number": 99999,
                     "path": "w" * 180,
                     "actor": {"login": "a" * 40},
                     "_ci_pr_author": "b" * 40,
                     "event": "workflow_dispatch",
+                    "created_at": "2026-11-20T00:00:00Z",
+                    "name": "W" * 64,
+                    "run_number": 2147483647,
+                    "display_title": "D" * 128,
                 }
             )
             item = task_descriptor("key", long_record)
@@ -254,6 +267,7 @@ class UploadTests(unittest.TestCase):
                         "act": 30,
                         "q": 50,
                         "idle_ts": 1795055999,
+                        "probe_ts": 1795055999,
                         "eu": 42000,
                     },
                 )
@@ -261,14 +275,53 @@ class UploadTests(unittest.TestCase):
                     "command-receipts",
                     {"cmd_id": "cmd_" + "x" * 36, "status": "FAILED", "err": "x" * 200},
                 )
-                events = [{"t": "TU", **item}] + [
+                client._send(
+                    "command-receipts",
+                    {
+                        "cmd_id": "cmd_" + "p" * 36,
+                        "status": "PARTIAL_APPLIED",
+                        "rev": 99,
+                        "err": "198.51.100.11:22: " + "e" * 182,
+                        "ts": 1795056004,
+                    },
+                )
+                client._send(
+                    "command-receipts",
+                    {
+                        "cmd_id": "cmd_" + "y" * 36,
+                        "status": "APPLIED",
+                        "pools": [
+                            {"p": "p" * 64, "k": "npu_smoke", "st": "APPLIED", "c": 4},
+                            {"p": "q" * 64, "k": "train", "st": "NOOP", "c": 0},
+                        ],
+                        "ts": 1795056005,
+                    },
+                )
+                events = [
+                    {"t": "TU", **item},
+                    {
+                        "s": 1,
+                        "t": "IP",
+                        "pool": "p" * 64,
+                        "h": "255.255.255.255:65535",
+                        "d": list(range(16)),
+                        "st": "probe_error",
+                        "ts": 1795056000,
+                        "pr": 999999,
+                        "v": 2,
+                        "mc": 5,
+                        "lo": 1795056000,
+                        "qu": 1,
+                        "qid": "t_" + "a" * 32,
+                    },
+                ] + [
                     {
                         "s": i,
                         "t": ["TP", "TL", "TF", "IP", "QP"][i % 5],
                         "tid": f"{i:012x}",
                         "a": [{"h": "198.51.100.42:153", "d": list(range(16))}],
                     }
-                    for i in range(1, 51)
+                    for i in range(2, 52)
                 ]
                 for batch in client.packets(
                     "events", events, lambda rows: {**base, "ev": rows}

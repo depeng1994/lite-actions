@@ -44,12 +44,14 @@ def verify(worker, workers, old, envelope, command):
         for node in pool["nodes"]
     }
     failed = False
+    unavailable = []
 
     def reason(error):
-        value = str(error).strip().replace("\\n", " ")
+        value = str(error).strip().replace("\n", " ")
         return (value or type(error).__name__)[:200]
 
     def mark_unavailable(node, failure_reason):
+        unavailable.append({"host_id": node["host_id"], "reason": failure_reason})
         node["paused"] = True
         node["probe_paused"] = True
         node["probe_unavailable"] = True
@@ -127,6 +129,8 @@ def verify(worker, workers, old, envelope, command):
         doc["pools"] = new
         doc["config_json"] = effective_json
         doc["sha256"] = hashlib.sha256(effective_json.encode()).hexdigest()
+    if unavailable:
+        doc["unavailable_nodes"] = unavailable
     return doc
 
 
