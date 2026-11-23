@@ -41,7 +41,11 @@ test("timeline API projects the median duration from reliable samples", async ()
   }>();
   const projection = timeline.projections.find(({task_uid}) => task_uid === "schedule-task");
   expect(projection).toMatchObject({task_uid: "schedule-task", projection_status: "SCHEDULED", uncertain_release: false});
-  expect(projection?.est_start).toBeGreaterThanOrEqual(now);
-  expect(projection?.est_start).toBeLessThanOrEqual(now + 1);
-  expect(projection?.est_end).toBe(projection?.est_start + 5);
+  const estStart = projection?.est_start;
+  const estEnd = projection?.est_end;
+  expect(estStart).toBeGreaterThanOrEqual(now);
+  expect(estStart).toBeLessThanOrEqual(now + 1);
+  expect(estEnd).toBeDefined();
+  if (estStart === undefined || estEnd === undefined) throw new Error("missing schedule projection timestamps");
+  expect(estEnd).toBe(estStart + 5);
 });
