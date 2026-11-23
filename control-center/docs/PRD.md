@@ -19,7 +19,7 @@
 | 账号 | Super + 普通管理员 | 密钥只显示一次；会话 7 天 |
 | 刷新 | 页面数据自动刷新 | 页面 30 秒；公开接口缓存 10 秒；Worker 心跳 30 秒；90 秒没心跳算离线 |
 | 存储 | 全部在一个 SQLite/D1 单库里 | 近 30 天热数据，1 年内冷数据；容量超 80% 自动删最早的记录 |
-| 托管与迁移 | 初期使用 ChatGPT Sites 直接部署，后期可迁至个人服务器 | 全量前后端与迁移代码合入 GitHub 仓；零新增费用，由 `portability_intercept` DT 拦截防平台锁定 |
+| 托管与迁移 | 初期使用 ChatGPT Sites 前端代理 + Cloudflare Workers/D1 免费后端部署，后期可迁至个人服务器 | 全量前后端与迁移代码合入 GitHub 仓；Sites 仅托管静态页面与同源 `/api/v1/*` 代理（`d1: null`, `r2: null`，部署时注入 `CONTROL_CENTER_API_ORIGIN` 与 `SITES_PROJECT_ID`）；零新增费用，由 `portability_intercept` DT 拦截防平台锁定 |
 | 上传报文 | Worker 发往网站的全部上传请求及 Yellow 平台写请求严格控包 | 单次整包 < 2,000 字节（严于 2 KB），由 `upload_intercept` UT 强制拦截校验 |
 
 ## 2. 边界
@@ -27,7 +27,7 @@
 - **网站挂了，CI 照常跑。** Blue、Yellow 仍然自己从 GitHub/GitCode 拉任务、调度、回报。网站只做汇总、取消和下发命令。
 - **网站不调度。** 谁先跑、分哪组卡，全部由 Unified Router 决定。网站不写第二套选单算法。
 - **Worker 只出不进。** 所有通信由 Worker 主动发 HTTPS，Worker 不开入站端口。
-- **初期 ChatGPT Sites 直出，代码全入 GitHub 仓、支持迁至个人服务器。** 前后端源码、数据库迁移、Sites 打包脚本与个人服务器运行入口全部合入 GitHub 主仓；业务核心仅依赖标准 Web Fetch 与 SQLite 抽象，不强绑定单一托管商专有 API，支持零业务代码改动迁移至个人服务器（Node.js + SQLite）或 Cloudflare Workers Free + D1 Free。
+- **初期 ChatGPT Sites 前端代理 + Cloudflare Workers/D1 免费后端，代码全入 GitHub 仓、支持零改动迁至个人服务器。** 前后端源码、数据库迁移、Sites 打包脚本与个人服务器运行入口全部合入 GitHub 主仓；ChatGPT Sites 负责托管静态页面及同源 `/api/v1/*` 反代（部署时注入 `CONTROL_CENTER_API_ORIGIN` 与 `SITES_PROJECT_ID`，不绑定 D1/R2），后端运行于 Cloudflare Workers Free + D1 Free；业务核心仅依赖标准 Web Fetch 与 SQLite 抽象（`SqlStore`），不强绑定单一托管商专有 API，支持零业务代码改动迁移至个人服务器（Node.js 24 + 内置 `node:sqlite`）。
 - **零新增费用。** 不开 R2，不开付费功能。免费额度用完就当天不可用，不自动升级。
 - **不公开敏感信息。** 原始日志、诊断行、平台 Token、Worker 密钥、SSH/代理凭据、容器 ID、内网 `node_ip` 不出现在任何公开接口。
 
@@ -133,7 +133,7 @@ Worker 在队列变化时上报每个 (Pool, 任务类型) 队列的顺序，以
 |---|---|
 | `POST /heartbeat` | 每 30 秒一次。带实例、健康、已应用配置版本、最近一轮巡检完成时间。回包：待办命令数和最新配置版本。连续 3 次没收到（90 秒）标离线。 |
 | `GET /commands` | 只在心跳说有待办时调用。只返回本 Worker 的命令。不缓存，读取不算受理。 |
-| `POST /command-receipts` | 按命令 ID 回报：受理、完成、冲突、失败。 |
+| `POST /command-receipts` | 按命令 ID 回报：受理（`ACKED`）、完成（`APPLIED`）、部分生效（`PARTIAL_APPLIED`，`SYNC_CONFIG` 健康节点生效且不可达节点本地隔离并附原因）、无变化（`NOOP`）、冲突（`CONFLICT`）、失败（`FAILED`）。 |
 | `POST /events` | 状态变化攒批，有变化才发，最多 30 秒一次。设备可见性、连续探测失败次数和最近在线时间变化也走这里。 |
 | `POST /snapshots` | 首次连接、重连、发现事件缺口时分片上报当前资源、活动任务和队列，网站以此对账。 |
 | `GET /configs/{revision}` | 收到配置同步命令后拉配置。 |
@@ -282,9 +282,11 @@ flowchart TD
     C -->|确认| D[发布 revision N+1，给 Worker 下同步命令]
     D --> E[Worker 拉配置]
     E --> F{本地校验<br/>格式、归属、指纹、容器绑定}
-    F -->|通过| G[调度间隙原子切换，持久化，回执]
-    F -->|失败| H[保留原版本，回执失败原因]
-    G --> I[页面显示已生效]
+    F -->|全部通过| G[调度间隙原子切换，持久化，回执 APPLIED]
+    F -->|部分节点探针失败| P[健康节点生效，失败节点本地隔离暂停，持久化并回执 PARTIAL_APPLIED 及原因]
+    F -->|静态校验/版本/隔离删节失败| H[保留原版本，回执 FAILED 及失败原因]
+    G --> I[页面显示已同步]
+    P --> K[页面显示部分生效，管理员可见不可达节点原因]
     H --> J[页面显示失败原因，期望版本与当前版本不一致]
 ```
 
@@ -367,13 +369,13 @@ sequenceDiagram
 | 取消 | GitHub 和 GitCode 各一个含原生作业、两区排队和在途用例的 run，一次取消后 2 分钟内全部停下并释放设备。覆盖：取消后才被发现的用例、旧 attempt、重复点击、Worker 与网站断开但能访问平台、清理失败、平台取消接口失败、GitHub `always()` 作业需 force-cancel。 |
 | 插队 | GitHub 和 GitCode 均以 Workflow 为单位提优。验证序号 3 与 2 交换、再次点击将 2 与 1 交换、队首置灰、筛选后仍按真实前一位交换。覆盖跨 Blue/Yellow、共享和不共享资源、晚发现用例、重复与过期请求、单端离线；在途租约及多机组合保持原状。 |
 | 集群 | 全部已配置节点（含暂停调度 / `enabled: false` 的 Pool 与节点）均执行 2 分钟在线探测；同一组连续 4 次查不到卡仍显示探测异常，第 5 次显示已离线，期间最近在线时间保持上次成功值；再次查到全部卡恢复在线并刷新时间。未知占用标红，暂停调度/排空中标黄且与在线状态并列。Pool `enabled: false` 与节点/组 `paused: true` 语义统一（均只停新租约、排队不报错）。暂停 16P 节点的一组 8P：该组及包含它的组合不发新租约，另一组正常；在途任务用旧配置跑完。验证「先排空、再删除」两步闭环：排空中可恢复，活动租约/排队引用/隔离未清零时拒绝第二步删除，清零后删除生效。覆盖：粘贴 preflight 片段新增节点、两 Worker 只有一端生效、回滚、断网 30 分钟后重连对账去重、Worker 重启和代码自动更新后仍用最新生效版本。 |
-| 可迁移性与 Sites 打包（`portability_intercept` DT） | `control-center/worker/tests/portability-intercept.test.ts` 作为 CI 必跑拦截门禁：① 源码静态扫描业务核心目录，禁止直接调用平台专有 API（如 `crypto.subtle.timingSafeEqual`、`CF-Connecting-IP`、`caches.default`）、禁止直接引入 `@cloudflare/*`/`node:*`、禁止硬编码托管域名、禁止启用 R2/付费绑定；② 同一份核心代码与同一份 SQLite 迁移文件，同时在 ChatGPT Sites/D1 运行时与个人服务器 Node.js + SQLite 运行时跑通全套核心链路（静态 SPA 回退、公开脱敏、管理员登录与防爆破 IP 识别、无 Cron 心跳推进取消跟踪、冷块 gzip BLOB 读写与容量检测）；③ 校验 GitHub 仓内完整源码一键产出标准 ChatGPT Sites 产物包（`dist/client/index.html`、`dist/server/index.js`、`dist/.openai/hosting.json`），且前端零硬编码绝对后端地址、零仓外私有路径引用。 |
+| 可迁移性与 Sites 打包（`portability_intercept` DT） | `control-center/worker/tests/portability-intercept.test.ts` 作为 CI 必跑拦截门禁：① 源码静态扫描业务核心目录，禁止直接调用平台专有 API（如 `crypto.subtle.timingSafeEqual`、`CF-Connecting-IP`、`caches.default`）、禁止直接引入 `@cloudflare/*`/`node:*`、禁止直接引用 `D1Database`/`D1PreparedStatement`、禁止硬编码托管域名或个人 `project_id`、禁止启用 R2/付费绑定；② 同一份核心代码与同一份 SQLite 迁移文件，同时在 Cloudflare Workers/D1 运行时（`sites-parity.test.ts`）与个人服务器 Node.js 24 + `node:sqlite` 运行时跑通全套核心链路（静态 SPA 回退、公开脱敏、管理员登录与防爆破 IP 识别、无 Cron 心跳推进取消跟踪、冷块 gzip BLOB 读写与容量检测）；③ 校验 GitHub 仓内完整源码一键产出标准 ChatGPT Sites 前端代理产物包（`dist/client/index.html`、`dist/server/index.js`、`dist/.openai/hosting.json` 且 `d1: null`、`r2: null`），运行时由 `CONTROL_CENTER_API_ORIGIN` 反代同源 `/api/v1/*`，前端零硬编码绝对后端地址、零仓外私有路径引用。 |
 
 ## 12. 上线前提与待定事项
 
 上线前需要：
 
-1. **初期 ChatGPT Sites 托管实机核验**：核验 ChatGPT Sites 环境对 `.openai/hosting.json` 的 D1 持久化绑定、服务端 Secret 注入、出站 `fetch()` 访问 GitHub/GitCode API 及 Sites 域名接入的实际能力边界；若其中某项受平台限制，直接以同一套可迁移代码切换部署至个人服务器（Node.js + SQLite）或 Cloudflare Workers Free + D1 Free，零业务返工。
+1. **初期 ChatGPT Sites 前端代理 + CF Worker/D1 架构核验**：确认 ChatGPT Sites 部署时通过环境变量注入 `CONTROL_CENTER_API_ORIGIN` 与 `SITES_PROJECT_ID`（`.openai/hosting.json` 保持 `d1: null`、`r2: null`），同源代理 `/api/v1/*` 至 Cloudflare Workers Free + D1 Free 后端；后期迁移至个人服务器（Node.js 24 + `node:sqlite`）时以同一套核心代码与迁移文件零业务返工切换。
 2. 真实 Yellow 用网站域名完成心跳、取令、拉配置、回执，并满足出口预算（取决于待定 1）。
 3. 在装了 App 的 GitHub 测试仓、配好 Token 的 GitCode 测试仓，各完成一次含原生作业和 Worker 用例的整次取消。
 4. 在实际免费配置上验证容量水位、滚动删除和额度耗尽行为。

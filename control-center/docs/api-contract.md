@@ -4,8 +4,8 @@
 
 > **实现状态说明**
 > - **已落地（v1.1 基线）**：认证与用户管理、公开/管理员脱敏与缓存隔离、Worker 接入协议底座、取消 Workflow、集群配置发布与热加载、D1 热冷归档与滚删、旧版 `/models/:slug/runs` 与 case 级 `/tasks/:taskUid/move-up`。
-> - **v1.5 增量/升级（`REQ-15` ~ `REQ-20`，部分已落地）**：全部节点 2 分钟在线探测与 5 次离线健康模型（`/timeline` & `/cluster`）、统一 Workflow 表 `GET /workflows`、Workflow 级插队 `POST /workflows/move-up` & `GET /workflow-priority-ops/:opId`、集群两步「先排空再删除」与统一 `enabled`/`paused` 暂停调度语义、`/timeline` 内嵌 `tasks_by_uid` 与 `queued_by_pool`、Worker `TU.sub/wn` 与 `IP.pr/v/mc/lo` 字段及 `SWAP_WORKFLOW` 命令，以及托管解耦（ChatGPT Sites 打包、个人服务器 Node 24 + `node:sqlite` 运行时与 `portability_intercept` DT 门禁）。完整 `workflow_runs` 物化汇总、冷热分页/滚删、真实双 Worker 与双运行时证据仍按 `DESIGN.md` 的未勾选门禁跟踪。
-> - **托管与迁移契约（`REQ-20`）**：全部页面统一通过同源相对路径 `/api/v1/*` 访问后端（零硬编码托管域名），静态 SPA 路由刷新回退 `/index.html`，`/api/*` 404 始终返回 JSON 错误体（绝不返回 HTML）；Blue/Yellow Worker 仅通过配置中的 `control_center.url` 指向当前托管域名（初期 ChatGPT Sites，后期可零代码修改迁至个人服务器或 Cloudflare Workers Free）。
+> - **v1.5 增量/升级（`REQ-15` ~ `REQ-20`，代码与本地/隔离夹具门禁已完成）**：全部节点 2 分钟在线探测与 5 次离线健康模型（`/timeline` & `/cluster`）、统一 Workflow 表 `GET /workflows` 与 `workflow_runs` 增量汇总/50 条游标分页、Workflow 级插队 `POST /workflows/move-up` & `GET /workflow-priority-ops/:opId`、集群两步「先排空再删除」/统一 `enabled`/`paused` 暂停调度语义与实机复核 `PARTIAL_APPLIED` 回执、`/timeline` 内嵌 `tasks_by_uid` 与 `queued_by_pool`、Worker `TU.sub/wn` 与 `IP.pr/v/mc/lo` 字段及 `SWAP_WORKFLOW` 命令，以及托管解耦（ChatGPT Sites 前端代理打包、个人服务器 Node 24 + `node:sqlite` 运行时、4 层 `portability_intercept` DT、raw-D1 `sites-parity.test.ts` 与本地隔离夹具 `run.py --runtime=d1/node`）。真实生产部署与线上 Sites↔Node 切换、真实 Blue/Yellow 跨区 16P 联调、真实 GitHub/GitCode 整次取消及线上 D1 80%→70% 写额度/容量演练仍按 `DESIGN.md` Phase 7 的未勾选门禁跟踪。
+> - **托管与迁移契约（`REQ-20`）**：初期采用 **ChatGPT Sites 前端代理 + Cloudflare Workers/D1 后端** 架构：Sites 产物包保持 `d1: null`、`r2: null`，部署时注入 `SITES_PROJECT_ID` 与 `CONTROL_CENTER_API_ORIGIN`；全部页面统一通过同源相对路径 `/api/v1/*` 访问后端（零硬编码托管域名），静态 SPA 路由刷新回退 `/index.html`，`/api/*` 404 始终返回 JSON 错误体（绝不返回 HTML）；后期迁移至个人服务器（Node.js 24 + `node:sqlite`）时复用同一核心业务与 SQLite 迁移，Blue/Yellow Worker 仅修改配置中的 `control_center.url`。
 > - 类型定义基准：[types/api.ts](../worker/src/types/api.ts)（`REQ-19` 同步更新为 v1.5 冻结类型）。
 
 ## 认证、账号和缓存
@@ -57,7 +57,7 @@
 |---|---|
 | `POST /worker/heartbeat` | `{w,i,ts,rev,sha,ok,act,q,idle_ts,probe_ts?,eu}`，返回 `{ok,pending_commands,latest_revision,need_snapshot}`。稳态巡检无变化时以 `probe_ts`/`idle_ts` 刷新在线与空闲新鲜度，不额外写设备表。 |
 | `GET /worker/commands` | 返回 `{commands:[{cmd_id,cmd_type,payload}]}`，`cmd_type` 支持 `SYNC_CONFIG`、`SWAP_WORKFLOW`（v1.5）及兼容 `MOVE_UP`。读取不改状态。 |
-| `POST /worker/command-receipts` | `{cmd_id,status,rev?,pos?,pools?,err?,ts}`。`SWAP_WORKFLOW` 回执携带紧凑按池结果 `pools: [{p,k,st,c?}]`（整包 `< 2,000` B）。 |
+| `POST /worker/command-receipts` | `{cmd_id,status,rev?,pos?,pools?,err?,ts}`。`status` 支持 `ACKED`/`APPLIED`/`PARTIAL_APPLIED`/`NOOP`/`CONFLICT`/`FAILED`。当 `SYNC_CONFIG` 实机复核存在部分节点不可达/探针失败时，健康节点生效且失败节点本地隔离暂停，Worker 回报 `PARTIAL_APPLIED`（带 `rev` 与 `err` 不可达原因，更新 `applied_rev`，不再伪造 `APPLIED`；`err` 仅管理员可见，公开接口不泄露真实 IP）。`SWAP_WORKFLOW` 回执携带紧凑按池结果 `pools: [{p,k,st,c?}]`（整包 `< 2,000` B）。 |
 | `POST /worker/events` | `{w,i,ev:[{s,t,ts,...}]}`，返回 `{ok,need_snapshot,expected_seq?}`。每包最多 6 条事件，按 `1,880` B 目标自动拆包。 |
 | `POST /worker/snapshots` | `{w,i,sid,p,n,seq,kind,items}`，返回 `{ok,complete}`。分片类型含 `task`、`lease`、`device`、`queue`（v1.5 含 `wf_order`），同快照共序号。 |
 | `GET /worker/configs/:revision` | `{revision,sha256,config,config_json}`，SHA-256 按 `config_json` UTF-8 字节计算，支持 `ETag`。 |

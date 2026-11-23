@@ -25,20 +25,33 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install backend and lint dependencies
+      - name: Install backend, frontend, and lint dependencies
         run: |
           npm ci --prefix control-center/worker
+          npm ci --prefix control-center/web
           python -m pip install -r requirements-dev.txt
       - name: Worker tests and wire upload gate
         run: |
           python scripts/lint.py
           python -m unittest tests/test_upload_intercept.py -v
           python -m unittest discover -s tests
-      - name: Control Center SDK and D1 tests
+      - name: Frontend build, Sites packaging, and unit tests
+        run: |
+          npm run build --prefix control-center/web
+          npm test --prefix control-center/web
+          SITES_PROJECT_ID=sites_ci_fixture_project CONTROL_CENTER_API_ORIGIN=https://control-center-ci.example \
+            node control-center/scripts/build-sites.mjs --require-origin
+      - name: Control Center SDK, D1, and dual-runtime portability gates
         working-directory: control-center/worker
         run: |
           npm run lint
           npx wrangler d1 migrations apply DB --local
           npm test
-      - name: Dual Worker API integration
-        run: python control-center/tests/integration/run.py
+          npm run test:portability
+          npm run test:node-sqlite
+          npm run test:node-server
+          npm run test:node-control-center
+      - name: Dual Worker API integration (D1 & Node 24 SQLite parity)
+        run: |
+          python control-center/tests/integration/run.py --runtime=d1
+          python control-center/tests/integration/run.py --runtime=node
