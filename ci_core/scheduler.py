@@ -42,6 +42,28 @@ def candidates(case: dict, pools: dict, *, include_paused=False) -> list[list[di
             if group.get("verified") and len(devices) == ngpu:
                 eligible.append({"host_id": host["host_id"], "devices": list(devices)})
     if nodes == 1:
+        if not eligible:
+            for host in sorted(
+                pool["nodes"],
+                key=lambda node: (node.get("priority", 0), node["host_id"]),
+            ):
+                if host.get("probe_unavailable"):
+                    continue
+                if host.get("paused") and not include_paused:
+                    continue
+                groups = host.get("allocation_groups", [])
+                if len(groups) < 2 or not all(
+                    group.get("verified")
+                    and not group.get("probe_unavailable")
+                    and (not group.get("paused") or include_paused)
+                    for group in groups
+                ):
+                    continue
+                combined = sorted({d for g in groups for d in g["devices"]})
+                if len(combined) == ngpu and combined == sorted(
+                    host.get("device_ids", [])
+                ):
+                    eligible.append({"host_id": host["host_id"], "devices": combined})
         # Round-robin verified groups across hosts before taking a second
         # group on one host. This works even when two workers allocate at the
         # same instant, before either has persisted its state record.

@@ -782,3 +782,81 @@ class GitCodeWorkflowTests(unittest.TestCase):
                             )
                         finally:
                             router.close()
+
+    def test_train_case_without_init_ckpt_and_suite_dispatch_job_names(self):
+        from ci_core.gitcode import source_dispatch
+        from ci_core.registry import validate_case_environment
+
+        defaults = {
+            "worker": "blue",
+            "target_pool": "a3_shared_blue",
+            "docker": "cann_master_torchtitan_master_xyj",
+        }
+        train_env = validate_case_environment(
+            {
+                "ASCEND_SET_ENV_PATH": "/usr/local/Ascend/ascend-toolkit/set_env.sh",
+                "HF_ASSETS_PATH": "/data/models/deepseek_v4_tokenizer_only",
+            },
+            kind="train",
+        )
+        self.assertEqual(
+            train_env["HF_ASSETS_PATH"], "/data/models/deepseek_v4_tokenizer_only"
+        )
+        with self.assertRaisesRegex(ValueError, "HF_ASSETS_PATH"):
+            validate_case_environment(
+                {
+                    "ASCEND_SET_ENV_PATH": "/usr/local/Ascend/ascend-toolkit/set_env.sh",
+                    "HF_ASSETS_PATH": "relative/tokenizer",
+                },
+                kind="train",
+            )
+        case = normalize(
+            SimpleNamespace(
+                test_name="dsv4_flash_a3_16p_cp2_ep8_eager",
+                test_descr="base_01: DSV4 Flash A3 1x16P",
+                nnodes=1,
+                ngpu=16,
+                ci_kind="train",
+                ci_overrides={},
+                timeout=14400,
+                env_vars=train_env,
+            ),
+            defaults,
+            0,
+        )
+        run_ctx = {
+            "_ci_provider": "gitcode",
+            "id": "run_suite_1",
+            "run_attempt": 1,
+            "head_sha": "f" * 40,
+        }
+        plan = create_plan(
+            [case],
+            run_id=run_ctx["id"],
+            attempt=1,
+            sha=run_ctx["head_sha"],
+            workflow="per_pr_alltest.yml",
+            defaults=defaults,
+            repo="cann/torchtitan-npu",
+            provider="gitcode",
+        )
+        parsed = parse_plan(
+            plan, run_ctx, "per_pr_alltest.yml", repo="cann/torchtitan-npu"
+        )
+        self.assertEqual(parsed[0]["resources"], {"nodes": 1, "devices_per_node": 16})
+        for job_name in ("Per-PR Alltest", "Nightly Alltest"):
+            details = {
+                "stages": [
+                    {
+                        "jobs": [
+                            {
+                                "name": job_name,
+                                "status": "RUNNING",
+                                "last_dispatch_id": "disp_1",
+                                "start_time": 1767225600000,
+                            }
+                        ]
+                    }
+                ]
+            }
+            self.assertEqual(source_dispatch(details), "disp_1_1767225600000")

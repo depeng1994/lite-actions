@@ -72,6 +72,11 @@ def source_plan(rows, run, repo):
     return plan
 
 
+DISPATCH_JOB_NAMES = frozenset(
+    {"Dispatcher Smoke", "Per-PR Alltest", "Nightly Alltest"}
+)
+
+
 def source_dispatch(details):
     stages = details.get("stages")
     if not isinstance(stages, list) or any(
@@ -85,7 +90,7 @@ def source_dispatch(details):
         job
         for stage in stages
         for job in stage.get("jobs", [])
-        if job.get("name") == "Dispatcher Smoke"
+        if job.get("name") in DISPATCH_JOB_NAMES
     ]
     if len(jobs) != 1 or jobs[0].get("status") != "RUNNING":
         raise RunChanged("smoke execution job unavailable or ambiguous")
@@ -307,7 +312,7 @@ class GitCodeClient:
                     for job in (stage.get("jobs") or [])
                     if isinstance(job, dict)
                 ]
-                if any(job.get("name") == "Dispatcher Smoke" for job in jobs):
+                if any(job.get("name") in DISPATCH_JOB_NAMES for job in jobs):
                     try:
                         dispatch = source_dispatch(details)
                     except RunChanged:

@@ -1078,3 +1078,25 @@ class Rfc24RecoveryTests(unittest.TestCase):
             pc.assert_not_called()
             self.assertFalse(marker.exists())
             self.assertEqual(service.results()[0]["status"], "PASS")
+
+    def test_single_node_full_host_allocation_combines_verified_groups(self):
+        from ci_core.config import load
+        from ci_core.scheduler import candidates
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_workspace(root)
+            _, pools = load(root, "blue")
+            case = {
+                "pool": "pool_blue",
+                "resources": {"nodes": 1, "devices_per_node": 4},
+            }
+            allocs = candidates(case, pools)
+            self.assertEqual(len(allocs), 2)
+            self.assertEqual(allocs[0][0]["devices"], [0, 1, 2, 3])
+            pools["pool_blue"]["nodes"][0]["allocation_groups"][1]["paused"] = True
+            allocs_after_pause = candidates(case, pools)
+            self.assertEqual(len(allocs_after_pause), 1)
+            self.assertEqual(allocs_after_pause[0][0]["host_id"], "192.0.2.11:22")
+            pools["pool_blue"]["nodes"][1]["allocation_groups"][1]["verified"] = False
+            self.assertEqual(candidates(case, pools), [])
