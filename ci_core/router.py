@@ -996,38 +996,48 @@ class Router:
                     locator=locator,
                 )
                 return
-            with tempfile.TemporaryDirectory(prefix="lite-definition-") as tmp:
-                source_repo = run.get("_ci_repo", REPO)
-                archive = model_archive(
-                    run.get("_ci_execution_sha", run["head_sha"]),
-                    Path(tmp),
-                    source_repo=source_repo,
-                    provider=run.get("_ci_provider", "github"),
-                    fallback_repo=run.get("_ci_source_repo"),
-                    source_pr=(
-                        run["_ci_pr_number"]
-                        if run.get("_ci_source", {}).get("mode") == "merge_result"
-                        else None
-                    ),
-                )
-                definition = verify_definition(
-                    archive, item, r["defaults"], repo=source_repo
-                )
-            if run.get("_ci_provider") == "gitcode":
-                self.client_for(run).validate_current(run)
+            if "env_vars" in item:
+                raw_env = item["env_vars"]
+                if run.get("_ci_provider") == "gitcode":
+                    self.client_for(run).validate_current(run)
+            else:
+                with tempfile.TemporaryDirectory(prefix="lite-definition-") as tmp:
+                    source_repo = run.get("_ci_repo", REPO)
+                    archive = model_archive(
+                        run.get("_ci_execution_sha", run["head_sha"]),
+                        Path(tmp),
+                        source_repo=source_repo,
+                        provider=run.get("_ci_provider", "github"),
+                        fallback_repo=run.get("_ci_source_repo"),
+                        source_pr=(
+                            run["_ci_pr_number"]
+                            if run.get("_ci_source", {}).get("mode") == "merge_result"
+                            else None
+                        ),
+                    )
+                    definition = verify_definition(
+                        archive, item, r["defaults"], repo=source_repo
+                    )
+                if run.get("_ci_provider") == "gitcode":
+                    self.client_for(run).validate_current(run)
+                raw_env = definition["env_vars"]
             from ci_core.registry import validate_case_environment
 
-            environment = validate_case_environment(
-                definition["env_vars"], kind=item["kind"]
-            )
-            # The model selects values; only the deployment may authorize them.
+            environment = validate_case_environment(raw_env, kind=item["kind"])
+            # The model selects values; only the deployment may authorize
+            # ASCEND_SET_ENV_PATH and any explicitly constrained keys.
             rules = (
                 self.workers[self.worker]
                 .get("case_environments", {})
                 .get(item["docker"], {})
             )
+            approved_setup = rules.get("ASCEND_SET_ENV_PATH")
+            if type(approved_setup) is not list or (
+                environment.get("ASCEND_SET_ENV_PATH") not in approved_setup
+            ):
+                raise ValueError("MODEL_ENV_NOT_APPROVED")
             if any(
-                type(rules.get(k)) is not list or v not in rules[k]
+                k in rules and (type(rules[k]) is not list or v not in rules[k])
                 for k, v in environment.items()
             ):
                 raise ValueError("MODEL_ENV_NOT_APPROVED")

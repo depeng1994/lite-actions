@@ -9,12 +9,13 @@ import unittest
 import urllib.error
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from ci_core.contract import digest, normalize
+from ci_core.contract import create_plan, digest, normalize, parse_plan
 from ci_core.gitcode import GitCodeClient, MultiPlatformClient, source_plan
 from ci_core.router import Router
-from tests.scenarios import Service, definition, write_workspace
+from tests.scenarios import Service, completed_execution, definition, write_workspace
 
 
 class GitCodeWorkflowTests(unittest.TestCase):
@@ -67,6 +68,7 @@ class GitCodeWorkflowTests(unittest.TestCase):
         }
         with (
             patch.dict(os.environ, {"LITE_ACTIONS_GITCODE_SOURCE_WORKFLOWS": ""}),
+            patch.object(client, "validate_current"),
             patch.object(client, "request", return_value={"artifacts": [artifact]}),
             patch("urllib.request.build_opener", return_value=Redirect()),
             patch("urllib.request.urlopen", side_effect=download),
@@ -353,3 +355,414 @@ class GitCodeWorkflowTests(unittest.TestCase):
                 finally:
                     release.set()
                     router.close()
+
+    def test_gitcode_dispatcher_smoke_multi_case_request_artifact_without_catalog(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_workspace(root)
+            gitcode = GitCodeClient("unused-token", "cann/torchtitan-npu")
+            defaults = {
+                "worker": "blue",
+                "target_pool": "pool_blue",
+                "docker": "training",
+            }
+            env_vars = {
+                "ASCEND_SET_ENV_PATH": "/usr/local/Ascend/ascend-toolkit/set_env.sh",
+                "TORCH_NPU_EXTRA": "1",
+            }
+            cases = [
+                normalize(
+                    SimpleNamespace(
+                        test_name="dispatch_smoke_8p",
+                        test_descr="8P smoke",
+                        nnodes=1,
+                        ngpu=2,
+                        ci_kind="npu_smoke",
+                        ci_overrides={},
+                        timeout=75,
+                        env_vars=env_vars,
+                    ),
+                    defaults,
+                    0,
+                ),
+                normalize(
+                    SimpleNamespace(
+                        test_name="dispatch_smoke_16p",
+                        test_descr="16P smoke",
+                        nnodes=2,
+                        ngpu=2,
+                        ci_kind="npu_smoke",
+                        ci_overrides={},
+                        timeout=75,
+                        env_vars=env_vars,
+                    ),
+                    defaults,
+                    1,
+                ),
+                normalize(
+                    SimpleNamespace(
+                        test_name="dispatch_smoke_8p",
+                        test_descr="8P smoke",
+                        nnodes=1,
+                        ngpu=2,
+                        ci_kind="npu_smoke",
+                        ci_overrides={},
+                        timeout=75,
+                        env_vars=env_vars,
+                    ),
+                    defaults,
+                    2,
+                ),
+            ]
+            run_id = "run_multi_1"
+            sha = "c" * 40
+            plan = create_plan(
+                cases,
+                run_id=run_id,
+                attempt=1,
+                sha=sha,
+                workflow="dispatcher_smoke.yml",
+                defaults=defaults,
+                repo=gitcode.repo,
+                provider="gitcode",
+            )
+            details = {
+                "workflow_run_id": run_id,
+                "attempt": 1,
+                "event": "MR",
+                "workflow_name": "lite-ci-dispatcher-smoke",
+                "status": "RUNNING",
+                "head_sha": sha,
+                "head_branch": "master",
+                "file_path": ".gitcode/workflows/dispatcher_smoke.yml",
+                "pull_request_id": "1344",
+                "actor": {"login": "depeng1994"},
+                "start_time": 1767225600,
+                "run_number": 1,
+                "stages": [
+                    {
+                        "jobs": [
+                            {
+                                "name": "Dispatcher Smoke",
+                                "status": "RUNNING",
+                                "last_dispatch_id": "dispatch_99",
+                                "start_time": 1767225600000,
+                            }
+                        ]
+                    }
+                ],
+            }
+            pr = {
+                "number": 1344,
+                "state": "open",
+                "head": {
+                    "ref": "master",
+                    "sha": sha,
+                    "repo": {"full_name": "depeng1994/torchtitan-npu"},
+                },
+                "base": {"repo": {"full_name": gitcode.repo}},
+            }
+            artifact_ready = False
+            comments = []
+            seen_envs = []
+
+            def request(method, path, **kwargs):
+                if path.startswith("/actions/runs?"):
+                    return {"workflow_runs": [details]}
+                if path == f"/actions/runs/{run_id}":
+                    return details
+                if path == "/pulls/1344":
+                    return pr
+                if path == f"/actions/runs/{run_id}/artifacts?per_page=100":
+                    return {
+                        "artifacts": (
+                            [
+                                {
+                                    "id": "req_zip_1",
+                                    "name": "lite-ci-request-1",
+                                    "workflow_run_id": run_id,
+                                    "size_bytes": 1500,
+                                }
+                            ]
+                            if artifact_ready
+                            else []
+                        )
+                    }
+                raise AssertionError((method, path))
+
+            def download_zip(artifact_id, limit, *, category=None):
+                self.assertEqual(artifact_id, "req_zip_1")
+                buf = io.BytesIO()
+                with zipfile.ZipFile(buf, "w") as archive:
+                    archive.writestr(
+                        "tmp/lite-ci-request/ci-request.json", json.dumps(plan)
+                    )
+                return buf.getvalue()
+
+            def execute(selected, current, **kwargs):
+                seen_envs.append(selected["verified_env"])
+                current["_ci_phase_callback"]("LAUNCHING")
+                return completed_execution(root, selected, current)
+
+            def send(target_sha, body, **kwargs):
+                entry = {
+                    "id": len(comments) + 1,
+                    "body": body,
+                    "user": {"login": "reporter"},
+                }
+                comments.append(entry)
+                return entry
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "LITE_ACTIONS_GITCODE_ALLOWED_ACTORS": "depeng1994",
+                        "LITE_ACTIONS_GITCODE_ALLOWED_BRANCHES": "master",
+                        "LITE_ACTIONS_GITCODE_WORKFLOWS": "dispatcher_smoke.yml",
+                        "LITE_ACTIONS_STATE_DIR": "",
+                        "LITE_ACTIONS_RESOURCE_LOCK_ROOT": str(root / "locks"),
+                    },
+                ),
+                patch.object(gitcode, "request", side_effect=request),
+                patch.object(
+                    gitcode, "_download_artifact_zip", side_effect=download_zip
+                ),
+                patch.object(
+                    gitcode,
+                    "workflow_status",
+                    return_value={"status": "in_progress", "run_attempt": 1},
+                ),
+                patch.object(
+                    gitcode,
+                    "commit_comments",
+                    side_effect=lambda *args, **kwargs: comments,
+                ),
+                patch.object(gitcode, "send_result", side_effect=send),
+                patch(
+                    "ci_core.router.verify_definition",
+                    side_effect=AssertionError("unexpected catalog check"),
+                ),
+                patch(
+                    "ci_core.registry.inspect_archive",
+                    side_effect=AssertionError("unexpected archive inspect"),
+                ),
+                patch("ci_core.router.execute", side_effect=execute),
+            ):
+                router = Router(
+                    root,
+                    "blue",
+                    MultiPlatformClient(None, {gitcode.repo: gitcode}),
+                    "reporter",
+                )
+                try:
+                    router.tick()
+                    self.assertEqual(router.state.read(), {})
+                    artifact_ready = True
+                    router.tick()
+                    for _ in range(20):
+                        for future, _, _ in list(router.active.values()):
+                            future.result(10)
+                        router.pump()
+                        router.flush()
+                        if (
+                            not router.active
+                            and len(router.state.read()) == 3
+                            and all(
+                                r["phase"] == "REPORTED"
+                                for r in router.state.read().values()
+                            )
+                        ):
+                            break
+                    records = list(router.state.read().values())
+                    self.assertEqual(len(records), 3)
+                    self.assertTrue(
+                        all(r["report"]["status"] == "PASS" for r in records)
+                    )
+                    self.assertEqual(seen_envs, [env_vars] * 3)
+                    results = [
+                        json.loads(c["body"].split("\n", 1)[1])
+                        for c in comments
+                        if c["body"].startswith("Lite-CI-V3 ")
+                    ]
+                    self.assertEqual(
+                        [r["case_id"] for r in results],
+                        [
+                            "case_000_dispatch_smoke_8p",
+                            "case_001_dispatch_smoke_16p",
+                            "case_002_dispatch_smoke_8p",
+                        ],
+                    )
+                finally:
+                    router.close()
+
+    def test_gitcode_request_artifact_rejects_worker_probe_and_unsafe_env(self):
+        defaults = {
+            "worker": "blue",
+            "target_pool": "pool_blue",
+            "docker": "training",
+        }
+        with self.assertRaisesRegex(ValueError, "probe cannot define environment"):
+            normalize(
+                SimpleNamespace(
+                    test_name="worker_os_blue",
+                    test_descr="probe",
+                    nnodes=0,
+                    ngpu=0,
+                    ci_kind="worker_probe",
+                    ci_overrides={"worker": "blue"},
+                    timeout=90,
+                    env_vars={"FOO": "bar"},
+                ),
+                defaults,
+                0,
+            )
+
+        run_ctx = {
+            "_ci_provider": "gitcode",
+            "id": "run_bad_env",
+            "run_attempt": 1,
+            "head_sha": "d" * 40,
+        }
+        for bad_env in (
+            {"ASCEND_SET_ENV_PATH": "/fixture/cann", "ASCEND_RT_VISIBLE_DEVICES": "0"},
+            {"ASCEND_SET_ENV_PATH": "/fixture/cann", "BASH_ENV": "/tmp/evil"},
+            {"ASCEND_SET_ENV_PATH": "/fixture/cann", "LD_PRELOAD": "/tmp/lib.so"},
+            {"ASCEND_SET_ENV_PATH": "/fixture/cann\nrm -rf /"},
+            {"ASCEND_SET_ENV_PATH": "relative/set_env.sh"},
+        ):
+            with self.subTest(bad_env=bad_env):
+                raw_case = normalize(
+                    SimpleNamespace(
+                        test_name="smoke_bad",
+                        test_descr="bad",
+                        nnodes=1,
+                        ngpu=2,
+                        ci_kind="npu_smoke",
+                        ci_overrides={},
+                        timeout=90,
+                    ),
+                    defaults,
+                    0,
+                )
+                raw_case["env_vars"] = bad_env
+                plan = {
+                    "schema": 3,
+                    "repo": "cann/torchtitan-npu",
+                    "workflow": "dispatcher_smoke.yml",
+                    "run_id": run_ctx["id"],
+                    "attempt": 1,
+                    "sha": run_ctx["head_sha"],
+                    "defaults": defaults,
+                    "cases": [raw_case],
+                }
+                plan["plan_digest"] = digest(plan)
+                with self.assertRaises(ValueError):
+                    parse_plan(
+                        plan,
+                        run_ctx,
+                        "dispatcher_smoke.yml",
+                        repo="cann/torchtitan-npu",
+                    )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_workspace(root)
+            gitcode = GitCodeClient("unused-token", "cann/torchtitan-npu")
+            for unapproved_env in (
+                {"ASCEND_SET_ENV_PATH": "/unapproved/set_env.sh"},
+                {
+                    "ASCEND_SET_ENV_PATH": "/fixture/cann",
+                    "HF_ASSETS_PATH": "/unapproved/model",
+                },
+            ):
+                with self.subTest(unapproved_env=unapproved_env):
+                    case = normalize(
+                        SimpleNamespace(
+                            test_name="smoke_unapproved",
+                            test_descr="unapproved",
+                            nnodes=1,
+                            ngpu=2,
+                            ci_kind="npu_smoke",
+                            ci_overrides={},
+                            timeout=90,
+                            env_vars=unapproved_env,
+                        ),
+                        defaults,
+                        0,
+                    )
+                    run = {
+                        "_ci_provider": "gitcode",
+                        "_ci_repo": gitcode.repo,
+                        "id": "run_unapproved",
+                        "run_attempt": 1,
+                        "head_sha": "e" * 40,
+                        "path": ".gitcode/workflows/dispatcher_smoke.yml",
+                        "event": "Manual",
+                        "status": "in_progress",
+                        "head_branch": "master",
+                        "actor": {"login": "maintainer"},
+                        "created_at": "2026-01-01T00:00:00Z",
+                        "name": "lite-ci-dispatcher-smoke",
+                        "run_number": 1,
+                    }
+                    plan = create_plan(
+                        [case],
+                        run_id=run["id"],
+                        attempt=1,
+                        sha=run["head_sha"],
+                        workflow="dispatcher_smoke.yml",
+                        defaults=defaults,
+                        repo=gitcode.repo,
+                        provider="gitcode",
+                    )
+                    comments = []
+                    with (
+                        patch.dict(
+                            os.environ,
+                            {
+                                "LITE_ACTIONS_GITCODE_ALLOWED_ACTORS": "maintainer",
+                                "LITE_ACTIONS_STATE_DIR": "",
+                                "LITE_ACTIONS_RESOURCE_LOCK_ROOT": str(root / "locks"),
+                            },
+                        ),
+                        patch.object(gitcode, "running_workflows", return_value=[run]),
+                        patch.object(gitcode, "ci_request", return_value=plan),
+                        patch.object(gitcode, "validate_current"),
+                        patch.object(
+                            gitcode,
+                            "workflow_status",
+                            return_value={"status": "in_progress", "run_attempt": 1},
+                        ),
+                        patch.object(
+                            gitcode,
+                            "commit_comments",
+                            side_effect=lambda *args, **kwargs: comments,
+                        ),
+                        patch.object(
+                            gitcode,
+                            "send_result",
+                            side_effect=lambda *a, **kw: {"id": 1},
+                        ),
+                        patch("ci_core.router.execute") as execute_mock,
+                    ):
+                        router = Router(
+                            root,
+                            "blue",
+                            MultiPlatformClient(None, {gitcode.repo: gitcode}),
+                            "reporter",
+                        )
+                        try:
+                            router.tick()
+                            for future, _, _ in list(router.active.values()):
+                                future.result(10)
+                            router.pump()
+                            router.flush()
+                            execute_mock.assert_not_called()
+                            records = list(router.state.read().values())
+                            self.assertEqual(len(records), 1)
+                            self.assertEqual(
+                                records[0]["report"]["status"], "INFRA_ERROR"
+                            )
+                        finally:
+                            router.close()

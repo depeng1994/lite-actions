@@ -8,6 +8,7 @@ import tarfile
 import tempfile
 import threading
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -62,29 +63,12 @@ def profile():
     ]
 
 
-def source_archive(root, rows):
-    """Fixture model repository whose real inspect entrypoint returns the profile."""
-    archive_path = root / "model.tar.gz"
-    from tests.scenarios import write_catalog
-
-    with tarfile.open(archive_path, "w:gz") as tar:
-        write_catalog(tar, rows)
-        data = b"raise RuntimeError('model code executed on Worker')"
-        info = tarfile.TarInfo(
-            "tests/integration_tests/tools/lite_actions/entrypoint.py"
-        )
-        info.size = len(data)
-        tar.addfile(info, io.BytesIO(data))
-    return archive_path
-
-
 class SourceProfileTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
         write_workspace(self.root)
-        self.archive = source_archive(self.root, profile())
         self.client = GitCodeClient("fixture-token", "cann/torchtitan-npu")
         self.job = {
             "name": "Dispatcher Smoke",
@@ -132,6 +116,11 @@ class SourceProfileTests(unittest.TestCase):
             patch.object(self.client, "request", side_effect=self.api),
             patch.object(
                 self.client,
+                "_download_artifact_zip",
+                side_effect=self.request_zip,
+            ),
+            patch.object(
+                self.client,
                 "commit_comments",
                 side_effect=lambda *args, **kwargs: self.comments,
             ),
@@ -145,6 +134,17 @@ class SourceProfileTests(unittest.TestCase):
             return {"workflow_runs": [self.run]}
         if path == "/actions/runs/run_1":
             return self.run
+        if path == "/actions/runs/run_1/artifacts?per_page=100":
+            return {
+                "artifacts": [
+                    {
+                        "id": "artifact_1",
+                        "name": f"lite-ci-request-{self.run['attempt']}",
+                        "workflow_run_id": "run_1",
+                        "size_bytes": 1024,
+                    }
+                ]
+            }
         if path == "/pulls/17":
             return self.pr
         if (
@@ -153,6 +153,15 @@ class SourceProfileTests(unittest.TestCase):
         ):
             return self.merge_ref
         raise AssertionError((method, path))
+
+    def request_zip(self, artifact_id, limit, *, category=None):
+        self.assertEqual(artifact_id, "artifact_1")
+        run = self.client.running_workflows()[0]
+        plan = source_plan(profile(), run, self.client.repo)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as archive:
+            archive.writestr("ci-request.json", json.dumps(plan))
+        return buf.getvalue()
 
     def send(self, sha, body, **kwargs):
         row = {
@@ -173,12 +182,10 @@ class SourceProfileTests(unittest.TestCase):
 
     # 看护模型仓完整用例计划在不同 Worker 按归属分发，手动和 PR 使用同一来源。
     def test_profile_discovery_routes_all_cases_to_their_own_worker(self):
-        with patch(
-            "ci_core.ssh_runner.model_archive", return_value=self.archive
-        ) as archive:
+        with patch("ci_core.ssh_runner.model_archive") as archive:
             run = self.client.running_workflows()[0]
             plan = self.client.ci_request(run)
-            self.assertEqual(archive.call_args.args[0], "a" * 40)
+            archive.assert_not_called()
             self.assertEqual(
                 [c["test_id"] for c in plan["cases"]], [r["test_id"] for r in profile()]
             )
@@ -221,11 +228,9 @@ class SourceProfileTests(unittest.TestCase):
     def test_mr_merge_sha_admits_and_reports_on_the_verified_pr_head(self):
         _, head, merge = self.dual_sha_fixture()
         (run,) = self.client.running_workflows()
-        with patch(
-            "ci_core.ssh_runner.model_archive", return_value=self.archive
-        ) as archive:
+        with patch("ci_core.ssh_runner.model_archive") as archive:
             plan = self.client.ci_request(run)
-            self.assertEqual(archive.call_args.args[0], head)
+            archive.assert_not_called()
             self.assertEqual(plan["sha"], head)
             for worker, count in (("blue", 4), ("yellow", 1)):
                 router = self.router(worker)
@@ -270,8 +275,7 @@ class SourceProfileTests(unittest.TestCase):
         self.dual_sha_fixture()
         (run,) = self.client.running_workflows()
         router = self.router("yellow")
-        with patch("ci_core.ssh_runner.model_archive", return_value=self.archive):
-            plan = self.client.ci_request(run)
+        plan = self.client.ci_request(run)
         with patch.object(self.client, "ci_request", return_value=plan):
             self.pr["head"]["sha"] = "e" * 40
             with self.assertRaises(RunChanged):
@@ -283,8 +287,7 @@ class SourceProfileTests(unittest.TestCase):
         _, old_head, _ = self.dual_sha_fixture()
         (run,) = self.client.running_workflows()
         router = self.router("yellow")
-        with patch("ci_core.ssh_runner.model_archive", return_value=self.archive):
-            router._receive_one(run)
+        router._receive_one(run)
         self.pr["head"]["sha"] = "f" * 40
         with patch.object(router, "pump"):
             router.tick()
@@ -304,8 +307,7 @@ class SourceProfileTests(unittest.TestCase):
     def test_dual_sha_refuses_a_rehashed_plan_for_the_run_sha(self):
         _, _, merge = self.dual_sha_fixture()
         (run,) = self.client.running_workflows()
-        with patch("ci_core.ssh_runner.model_archive", return_value=self.archive):
-            plan = self.client.ci_request(run)
+        plan = self.client.ci_request(run)
         plan["sha"] = merge
         del plan["plan_digest"]
         plan["plan_digest"] = digest(plan)
@@ -330,18 +332,17 @@ class SourceProfileTests(unittest.TestCase):
 
     # 看护 Fork PR 的 Head 改变后，旧版本排队用例被取消。
     def test_changed_fork_head_cancels_queued_cases(self):
-        with patch("ci_core.ssh_runner.model_archive", return_value=self.archive):
-            run = self.client.running_workflows()[0]
-            router = self.router("blue")
-            router.receive([run])
-            self.pr["head"]["sha"] = "b" * 40
-            router.tick()
-            self.assertTrue(
-                all(
-                    r["report"]["status"] == "CANCELLED"
-                    for r in router.state.read().values()
-                )
+        run = self.client.running_workflows()[0]
+        router = self.router("blue")
+        router.receive([run])
+        self.pr["head"]["sha"] = "b" * 40
+        router.tick()
+        self.assertTrue(
+            all(
+                r["report"]["status"] == "CANCELLED"
+                for r in router.state.read().values()
             )
+        )
 
     # 看护运行中探针收到取消时不能报告成功。
     def test_recovered_model_probe_is_refused_before_source_or_commands(self):
@@ -381,50 +382,49 @@ class SourceProfileTests(unittest.TestCase):
     def test_rerun_cancels_old_cases_and_uses_distinct_result_and_execution_identity(
         self,
     ):
-        with patch("ci_core.ssh_runner.model_archive", return_value=self.archive):
-            first = self.client.running_workflows()[0]
-            router = self.router("blue")
-            router.receive([first])
-            self.job["start_time"] += 1000
-            second = self.client.running_workflows()[0]
-            with patch.object(router, "pump"):
-                router.tick()
-            records = list(router.state.read().values())
-            old = [
-                r
-                for r in records
-                if r["run"]["_ci_dispatch_id"] == "dispatch_1_1767225600000"
-            ]
-            new = [
-                r
-                for r in records
-                if r["run"]["_ci_dispatch_id"] == "dispatch_1_1767225601000"
-            ]
-            self.assertEqual((len(old), len(new)), (4, 4))
-            self.assertTrue(all(r["report"]["status"] == "CANCELLED" for r in old))
-            self.assertTrue(all(r["phase"] == "QUEUED" for r in new))
-            self.assertTrue(
-                any(
-                    c["body"].startswith("Lite-CI-V3 run_1:1:dispatch_1_1767225600000:")
-                    for c in self.comments
-                )
+        first = self.client.running_workflows()[0]
+        router = self.router("blue")
+        router.receive([first])
+        self.job["start_time"] += 1000
+        second = self.client.running_workflows()[0]
+        with patch.object(router, "pump"):
+            router.tick()
+        records = list(router.state.read().values())
+        old = [
+            r
+            for r in records
+            if r["run"]["_ci_dispatch_id"] == "dispatch_1_1767225600000"
+        ]
+        new = [
+            r
+            for r in records
+            if r["run"]["_ci_dispatch_id"] == "dispatch_1_1767225601000"
+        ]
+        self.assertEqual((len(old), len(new)), (4, 4))
+        self.assertTrue(all(r["report"]["status"] == "CANCELLED" for r in old))
+        self.assertTrue(all(r["phase"] == "QUEUED" for r in new))
+        self.assertTrue(
+            any(
+                c["body"].startswith("Lite-CI-V3 run_1:1:dispatch_1_1767225600000:")
+                for c in self.comments
             )
-            case = next(r["item"] for r in old if r["item"]["kind"] == "npu_smoke")
+        )
+        case = next(r["item"] for r in old if r["item"]["kind"] == "npu_smoke")
 
-            def instance(run):
-                return {
-                    **run,
-                    "_ci_test_id": case["test_id"],
-                    "_ci_case_id": case["case_id"],
-                }
+        def instance(run):
+            return {
+                **run,
+                "_ci_test_id": case["test_id"],
+                "_ci_case_id": case["case_id"],
+            }
 
-            self.assertNotEqual(
-                task_dir(instance(first), self.root),
-                task_dir(instance(second), self.root),
-            )
-            self.assertNotEqual(
-                remote_task_name(instance(first)), remote_task_name(instance(second))
-            )
+        self.assertNotEqual(
+            task_dir(instance(first), self.root),
+            task_dir(instance(second), self.root),
+        )
+        self.assertNotEqual(
+            remote_task_name(instance(first)), remote_task_name(instance(second))
+        )
 
     # 看护目标仓无法读取指定提交时，从 PR 来源仓获取相同提交。
     def test_fetch_falls_back_to_fork_and_returns_requested_commit(self):

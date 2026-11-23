@@ -610,3 +610,122 @@ class Rfc24Boundaries(unittest.TestCase):
         self.assertTrue(decoded["cleanup_verified"])
         self.assertEqual(decoded["last_20_lines"], [])
         self.assertLess(len(req.data), len(payload))
+
+    def test_gitcode_request_artifact_passes_yellow_egress_without_running_python(
+        self,
+    ):
+        import zipfile
+        from types import SimpleNamespace
+
+        from ci_core.contract import create_plan
+        from ci_core.gitcode import GitCodeClient
+
+        repo = "cann/torchtitan-npu"
+        sha = "a" * 40
+        defaults = {
+            "worker": "yellow",
+            "target_pool": "pool_yellow",
+            "docker": "training",
+        }
+        case = normalize(
+            SimpleNamespace(
+                test_name="dispatch_smoke_8p",
+                test_descr="8P smoke",
+                nnodes=1,
+                ngpu=2,
+                ci_kind="npu_smoke",
+                ci_overrides={},
+                timeout=75,
+                env_vars={"ASCEND_SET_ENV_PATH": "/fixture/cann"},
+            ),
+            defaults,
+            0,
+        )
+        run = {
+            "_ci_provider": "gitcode",
+            "_ci_repo": repo,
+            "id": "run_yellow_1",
+            "run_attempt": 1,
+            "head_sha": sha,
+            "head_branch": "master",
+            "path": ".gitcode/workflows/dispatcher_smoke.yml",
+            "event": "Manual",
+            "name": "lite-ci-dispatcher-smoke",
+        }
+        plan = create_plan(
+            [case],
+            run_id=run["id"],
+            attempt=1,
+            sha=sha,
+            workflow="dispatcher_smoke.yml",
+            defaults=defaults,
+            repo=repo,
+            provider="gitcode",
+        )
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("ci-request.json", json.dumps(plan))
+        zip_bytes = buf.getvalue()
+
+        details = {
+            "workflow_run_id": run["id"],
+            "attempt": 1,
+            "head_sha": sha,
+            "head_branch": "master",
+            "file_path": run["path"],
+            "event": "Manual",
+            "workflow_name": run["name"],
+            "status": "RUNNING",
+        }
+        artifacts = {
+            "artifacts": [
+                {
+                    "id": "art_1",
+                    "name": "lite-ci-request-1",
+                    "workflow_run_id": run["id"],
+                    "size_bytes": len(zip_bytes),
+                }
+            ]
+        }
+
+        class Response:
+            def __init__(self, body):
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self, n=-1):
+                return self.body if n < 0 else self.body[:n]
+
+        class Opener:
+            def open(self, req, timeout=20):
+                if req.full_url.endswith("/actions/runs/run_yellow_1"):
+                    return Response(json.dumps(details).encode())
+                if req.full_url.endswith(
+                    "/actions/runs/run_yellow_1/artifacts?per_page=100"
+                ):
+                    return Response(json.dumps(artifacts).encode())
+                if req.full_url.endswith("/actions/artifacts/art_1/zip"):
+                    raise urllib.error.HTTPError(
+                        req.full_url,
+                        302,
+                        "redirect",
+                        {"Location": "https://storage.invalid/ci-request.zip"},
+                        None,
+                    )
+                if req.full_url == "https://storage.invalid/ci-request.zip":
+                    return Response(zip_bytes)
+                raise AssertionError(req.full_url)
+
+        client = GitCodeClient("fixture-token", repo, policy=self.policy())
+        with (
+            patch(
+                "subprocess.Popen", side_effect=AssertionError("unexpected subprocess")
+            ),
+            patch("urllib.request.build_opener", return_value=Opener()),
+        ):
+            self.assertEqual(client.ci_request(run), plan)
