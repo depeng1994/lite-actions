@@ -286,7 +286,7 @@ function ClusterRow({ target, status, nodes, config, canManage, open, node, grou
   const quarantined = Boolean(group ? node.quarantinedGroups?.includes(group) : node?.quarantinedGroups?.length);
   return <tr>
     <td><button className={`resource-link ${group ? "group-link" : node ? "node-link" : ""}`} onClick={() => open({ type: "resource", target })}>
-      {group ? `设备组 ${group}` : node ? <span className="mono">{displayNodeHost(node)}</span> : `Pool ${target.pool}`} <CaretRight size={13} />
+      {group ? <><span className="mono">{displayNodeHost(node)}</span> 设备组 {group}</> : node ? <span className="mono">{displayNodeHost(node)}</span> : `Pool ${target.pool}`} <CaretRight size={13} />
     </button></td>
     <td>{node ? <span className="mono">{displayNodeHost(node)}</span> : <span className="subtle">—</span>}</td>
     <td>{group ? `${groupCardCount(node, group)} 卡` : node ? `${node.cards} 卡 · ${node.groups.length} 组` : `${nodes.length} 节点 · ${nodes.reduce((sum, member) => sum + member.cards, 0)} 卡`}</td>
@@ -367,7 +367,10 @@ function ClusterPool({ target, members, config, canManage, open }) {
   const properties = { config, canManage, open };
   return <>
     <ClusterRow {...properties} target={target} nodes={members} status={config.flags[target.id]} />
-    {members.map((node) => <ClusterNode key={node.id} {...properties} node={node} />)}
+    {members.flatMap((node) => node.groups.length
+      ? node.groups.map((group) => <ClusterRow key={`${node.id}/${group}`} {...properties} node={node} group={group}
+          target={targetFor(node, group)} status={flagFor(config, node, group)} />)
+      : [<ClusterRow key={node.id} {...properties} node={node} target={targetFor(node)} status={flagFor(config, node)} />])}
   </>;
 }
 
