@@ -119,7 +119,7 @@ function LeaseBar({ item, run, rows, config, nodes, clockState, selected, onClic
     left: marker(visibleStart),
     width: marker(timelineStart + total),
   };
-  return resourceRowsList.map((row) => <button key={row.key} className={`lease ${item.worker.toLowerCase()} ${selected ? "lease-selected" : ""} ${item.status === "已取消" ? "lease-ended" : ""}`}
+  return resourceRowsList.map((row) => <button key={row.key} className={`lease ${item.worker.toLowerCase()} ${selected ? "lease-selected" : ""} ${ended ? "lease-ended" : ""}`}
     aria-label={`${run.repo} #${run.pr ?? run.id} · ${item.name} · ${item.status} · ${displayNodeHost(row.node)} 设备组 ${row.group}`}
     aria-pressed={selected} onClick={onClick} style={{ ...style, top: row.top + 6, height: row.height - 12 }}>
     {!queued && <span className="lease-actual" />}
