@@ -384,7 +384,14 @@ class ReclaimTests(unittest.TestCase):
                 stack.enter_context(patch("ci_core.executor.time.sleep"))
                 stack.enter_context(
                     patch(
-                        "ci_core.ssh_runner.allocations", return_value=[{"position": 0}]
+                        "ci_core.ssh_runner.allocations",
+                        return_value=[
+                            {
+                                "position": 0,
+                                "ssh": self.container_ssh,
+                                "host_id": "host-ssh:22",
+                            }
+                        ],
                     )
                 )
                 stack.enter_context(patch("ci_core.ssh_runner.owned_processes_gone"))

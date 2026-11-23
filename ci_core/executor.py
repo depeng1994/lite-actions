@@ -1029,11 +1029,19 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
                 from ci_core.ssh_runner import (
                     DEST_ROOT,
                     allocations,
+                    cancel as cancel_owned,
                     owned_processes_gone,
                 )
 
                 for attempt in range(3):
                     try:
+                        if child_started:
+                            for node in allocations(case, pools):
+                                destination = (
+                                    f"{DEST_ROOT}/{remote_task_name(run)}"
+                                    f"/node{node['position']}"
+                                )
+                                cancel_owned(node, destination, log_dir.name)
                         remote_preflight(
                             case,
                             pools,
