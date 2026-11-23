@@ -110,6 +110,8 @@
 
 > **Phase 7 任务计数（2026-11-23）**：本节 28 个顶层联调/上线门禁中，8 个已按证据勾选，20 个仍未完成。20 个未完成项为 `INT-06/07/09/10`、`E2E-01`~`E2E-12`、`REL-00/02/03/04`。其中多个项目已有隔离夹具、Yellow 单节点或 Site 浏览器子集证据，未将局部证据提升为全量通过；需现场补齐的核心依赖集中在 Cloudflare 最新 Worker/D1 发布、GitHub App/GitCode 取消凭据、Blue/Yellow 跨区 16P 与多节点资源、D1 配额演练和 Node 24 实机切换。
 
+> **2026-11-23 Yellow 现场复核（Issue #49）**：`lite-actions-yellow.service` 当前进程为 active，但因 `/etc/lite-actions/yellow.env` 缺少 `LITE_ACTIONS_CONTROL_TOKEN`，ControlClient 在启动构造阶段报 `INVALID_CONTROL_MACHINE_TOKEN`，IdleProbe 与控制面心跳均未启动；Yellow 自 `09:21:58` 起 `offline=true`。本地 `pools-active.json` 为 revision 16，控制面 desired/latest 为 18/19，且目标配置把 `a5_shared_yellow` 设为 `enabled=false`。现场仅有 1×8P 可用，16P 双设备组和第二节点不存在；`.25` 正被 ttnpu 专线占用，正式 `a5_ci_214` 容器名缺失。该复核未改动服务或配置，已将修复顺序写入 Issue #49：先由正式 Site 恢复 A5 调度目标态，再恢复 Yellow 控制 token 和心跳，保留 ttnpu 专线，确认备份容器未被占用后才恢复 smoke 容器名，最后做 3 轮探测与同 `probe_round` 重放。该现场状态使 `INT-07` 的 Yellow 子集、`INT-08` 的当前复核和 `REL-01` 的当前心跳恢复仍需补跑，历史通过证据继续保留但不覆盖本次失联。
+
 
 #### 7.1 后端 + Worker 集成验证（不依赖前端，Phase 5.5 完成后立即跑绿）
 > 说明：v1.1 回归证据见 [backend-validation.md](backend-validation.md)；下列为补齐 v1.1 遗留项并升级至 v1.5 全量口径后的最新状态。
