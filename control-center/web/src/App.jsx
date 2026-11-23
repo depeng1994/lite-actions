@@ -3,17 +3,33 @@ import { useEffect, useRef, useState } from "react";
 import { ClusterView, PoolsView, UsersView } from "./Views.jsx";
 import { ModelsView } from "./ModelsView.jsx";
 import {
-  AddNodeDialog, CancelDialog, CancellationReceipt, CaseDialog, ConfigDialog, DeleteUserDialog, ExpediteDialog,
+  AddNodeDialog, buildClusterOperation, CancelDialog, CancellationReceipt, CaseDialog, ConfigDialog, DeleteUserDialog, ExpediteDialog,
   HistoryDialog, LoginForm, NewUserDialog, PriorityReceipt, ResourceDialog, ResetUserKeyDialog, UserKeyDialog,
 } from "./Dialogs.jsx";
-import { history, impactOf, initialCases, initialNodes, initialQueueOrder, poolId, repositories, runs, workflowKey } from "./formal-data.js";
-import { currentWorkflowQueue, moveWorkflow, queuedChildren } from "./workflows.js";
-import { cancelWorkflow as apiCancelWorkflow, cancellationDetail as apiCancellationDetail, clusterPreview, clusterPublish, clusterRollback, createUser as apiCreateUser, deleteUser as apiDeleteUser, getSession, listUsers, loadControlCenter, loadMoreHistory as apiLoadMoreHistory, login as apiLogin, logout as apiLogout, moveWorkflowUp as apiMoveWorkflowUp, resetUserKey as apiResetUserKey } from "./control-api.js";
+import { dateTimeSecondFormatter, history, initialCases, initialNodes, initialQueueOrder, poolId, repositories, runs, workflowKey } from "./formal-data.js";
+import { currentWorkflowQueue, queuedChildren } from "./workflows.js";
+import {
+  cancelWorkflow as apiCancelWorkflow,
+  cancellationDetail as apiCancellationDetail,
+  clusterPreview,
+  clusterPublish,
+  clusterRollback,
+  createUser as apiCreateUser,
+  deleteUser as apiDeleteUser,
+  getSession,
+  listAudits,
+  listUsers,
+  loadControlCenter,
+  loadMoreHistory as apiLoadMoreHistory,
+  login as apiLogin,
+  logout as apiLogout,
+  moveWorkflowUp as apiMoveWorkflowUp,
+  priorityOpDetail as apiPriorityOpDetail,
+  resetUserKey as apiResetUserKey,
+} from "./control-api.js";
 
 const pages = [["pools", "Pools任务看板"], ["models", "代码仓任务看板"], ["cluster", "集群管理"]];
 const defaultModel = "";
-// Until the first control-center snapshot arrives, show an empty configuration
-// instead of carrying over values from the interactive prototype.
 const initialConfig = { desired: 0, applied: {}, flags: {}, pending: null };
 
 function readRoute() {
@@ -32,6 +48,21 @@ function useTheme() {
     localStorage.setItem("lite-actions-theme", theme);
   }, [theme]);
   return [theme, setTheme];
+}
+
+function mapAuditRecord(record) {
+  const area = record.target_type === "user" ? "users"
+    : record.target_type === "configuration" || record.target_type === "storage" ? "cluster"
+      : "workflow";
+  return {
+    id: String(record.audit_id),
+    actor: record.actor_username,
+    time: record.created_at ? dateTimeSecondFormatter.format(record.created_at * 1000) : "—",
+    area,
+    action: record.action,
+    target: record.target_id,
+    result: record.error_msg ? `${record.result} (${record.error_msg})` : record.result,
+  };
 }
 
 function Header({ page, session, theme, setTheme, open, logout, live }) {
@@ -67,6 +98,9 @@ export function App() {
   const [queueVersion, setQueueVersion] = useState(0);
   const [historyCursor, setHistoryCursor] = useState(null);
   const [historyHasMore, setHistoryHasMore] = useState(false);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [truncatedByCapacity, setTruncatedByCapacity] = useState(false);
+  const [purgedNotice, setPurgedNotice] = useState(null);
   const [, setHistoryVersion] = useState(0);
   const [accounts, setAccounts] = useState([]);
   const [signedIn, setSignedIn] = useState(null);
@@ -83,6 +117,7 @@ export function App() {
   const session = signedIn && accounts.find(({ name }) => name === signedIn);
   const isSuper = session?.role === "Super";
   const canManage = Boolean(session);
+  const access = signedIn ? "admin" : "public";
 
   const applySnapshot = (snapshot) => {
     if (!snapshot) return;
@@ -92,13 +127,27 @@ export function App() {
     setCases(snapshot.cases);
     setWorkflowOrder(snapshot.workflowOrder);
     setQueueVersion(snapshot.queueVersion || 0);
-    setHistoryCursor(snapshot.historyCursor || null);
-    setHistoryHasMore(Boolean(snapshot.historyHasMore));
+    setTruncatedByCapacity(Boolean(snapshot.truncatedByCapacity));
+    setPurgedNotice(snapshot.purgedNotice || null);
     if (snapshot.clusterConfig) setConfig(snapshot.clusterConfig);
     setDataMode("live");
   };
 
+  const refreshAudits = () => {
+    if (!signedIn) return;
+    listAudits(50)
+      .then((payload) => { if (payload?.records) setAudit(payload.records.map(mapAuditRecord)); })
+      .catch(() => undefined);
+  };
+
   useEffect(() => {
+    // Switching between public and admin changes IP masking; reset loaded history so it reloads with matching visibility.
+    history.splice(0, history.length);
+    setHistoryCursor(null);
+    setHistoryHasMore(false);
+    setHistoryLoaded(false);
+    setHistoryVersion((version) => version + 1);
+
     let cancelled = false;
     const refresh = async () => {
       const snapshot = await loadControlCenter(signedIn ? "admin" : "public");
@@ -118,6 +167,18 @@ export function App() {
   }, [signedIn]);
 
   useEffect(() => {
+    if (!canManage || dataMode !== "live") {
+      if (!canManage) setAudit([]);
+      return undefined;
+    }
+    let cancelled = false;
+    listAudits(50).then((payload) => {
+      if (!cancelled && payload?.records) setAudit(payload.records.map(mapAuditRecord));
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [canManage, dataMode, signedIn]);
+
+  useEffect(() => {
     let cancelled = false;
     getSession().then((remote) => {
       if (!cancelled && remote?.authenticated) {
@@ -135,7 +196,7 @@ export function App() {
       if (cancelled || !payload?.users) return;
       setAccounts((previous) => {
         const superAccount = previous.find((account) => account.role === "Super") || {name: signedIn, role: "Super", key: ""};
-        return [superAccount, ...payload.users.map((user) => ({name: user.username, userId: user.user_id, role: "管理员", created: new Date(user.created_at * 1000).toLocaleString("zh-CN"), key: ""}))];
+        return [superAccount, ...payload.users.map((user) => ({name: user.username, userId: user.user_id, role: "管理员", created: new Date(user.created_at * 1000).toLocaleString("zh-CN", {timeZone: "Asia/Shanghai"}), key: ""}))];
       });
     }).catch(() => undefined);
     return () => { cancelled = true; };
@@ -193,51 +254,85 @@ export function App() {
     if (route.page === "users") go("pools");
     notify("已退出登录");
   };
-  const log = (area, action, target, result) => {
-    const time = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", hour12: false, timeStyle: "medium" }).format(new Date());
-    const entry = { id: crypto.randomUUID(), actor: session.name, time, area, action, target, result };
-    setAudit((entries) => [entry, ...entries]);
-  };
 
   const queue = currentWorkflowQueue(cases, workflowOrder);
 
   const loadMoreHistory = async () => {
-    if (!historyHasMore || !historyCursor || dataMode !== "live") return;
+    if (dataMode !== "live") return;
+    if (historyLoaded && (!historyHasMore || !historyCursor)) return;
     try {
-      const page = await apiLoadMoreHistory(signedIn ? "admin" : "public", historyCursor);
+      const page = await apiLoadMoreHistory(access, historyLoaded ? historyCursor : null);
       setHistoryCursor(page.cursor);
       setHistoryHasMore(page.hasMore);
+      setHistoryLoaded(true);
+      setTruncatedByCapacity(Boolean(page.truncatedByCapacity));
+      setPurgedNotice(page.purgedNotice || null);
       setHistoryVersion((version) => version + 1);
     } catch (error) { notify(error.message); }
   };
 
+  const pollPriorityOp = async (run, opId, attempts = 0) => {
+    const key = workflowKey(run);
+    try {
+      const detail = await apiPriorityOpDetail(opId);
+      const terminal = ["APPLIED", "NOOP", "CONFLICT", "FAILED"].includes(detail.status);
+      setPriorities((previous) => ({
+        ...previous,
+        [key]: {
+          opId: detail.op_id,
+          status: detail.status,
+          from: detail.from_seq,
+          to: detail.to_seq,
+          commands: detail.commands || [],
+        },
+      }));
+      if (terminal || attempts >= 40) {
+        const snapshot = await loadControlCenter(access);
+        applySnapshot(snapshot);
+        refreshAudits();
+      } else {
+        later(() => pollPriorityOp(run, opId, attempts + 1), 2000);
+      }
+    } catch {
+      if (attempts < 40) later(() => pollPriorityOp(run, opId, attempts + 1), 3000);
+    }
+  };
+
   const expedite = async (run) => {
     const key = workflowKey(run);
-    const children = queuedChildren(cases, run);
     if (!canManage || dataMode !== "live" || cancellations[key]) return;
-    const updated = moveWorkflow(cases, workflowOrder, key);
-    if (!updated) return;
     let response;
-    try { response = await apiMoveWorkflowUp(run, queueVersion); } catch (error) {
+    try {
+      response = await apiMoveWorkflowUp(run, queueVersion);
+    } catch (error) {
       if (error.status === 409) {
-        const snapshot = await loadControlCenter(signedIn ? "admin" : "public");
+        const snapshot = await loadControlCenter(access);
         applySnapshot(snapshot);
-        notify("队列版本已更新，已刷新正式顺序");
+        notify("队列版本或状态已更新，已刷新正式顺序");
       } else notify(error.message);
       return;
     }
-    if (response?.status !== "PENDING" && response?.status !== "APPLIED") {
-      notify(`控制面返回 ${response?.status || "未知状态"}`);
+    if (response?.status === "NOOP") {
+      notify("该 Workflow 已在等待队首");
+      close();
       return;
     }
-    const positions = new Map(updated.cases.map((item) => [item.id, item.position]));
-    const receipt = { from: updated.from, to: updated.to, entries: children.map((item) => ({ ...item, newPosition: positions.get(item.id) })) };
-    setCases(updated.cases);
-    setWorkflowOrder(updated.order);
+    const receipt = {
+      opId: response.op_id,
+      status: response.status || "PENDING",
+      from: response.from_seq,
+      to: response.to_seq,
+      commands: response.commands || [],
+    };
     if (response.queue_version_after != null) setQueueVersion(response.queue_version_after);
     setPriorities((previous) => ({ ...previous, [key]: receipt }));
-    log("workflow", "Workflow 插队", `${run.repo} #${run.id} · 尝试 ${run.attempt}`, "控制面已受理 MOVE_UP");
-    open({ type: "priority-receipt", runKey: workflowKey(run) });
+    open({ type: "priority-receipt", runKey: key });
+    const snapshot = await loadControlCenter(access);
+    applySnapshot(snapshot);
+    refreshAudits();
+    if (response.op_id && response.status === "PENDING") {
+      later(() => pollPriorityOp(run, response.op_id, 0), 1500);
+    }
   };
 
   const cancelRun = async (run) => {
@@ -250,6 +345,7 @@ export function App() {
       update({cancelId: cancellation?.cancel_id, platform: cancellation?.status || "已提交取消", done: ["COMPLETED", "FAILED"].includes(cancellation?.status), release: "等待控制面回执", workers: {Blue: "等待受理", Yellow: "等待受理"}});
       open({type: "cancel-receipt", runKey: workflowKey(run)});
       notify("取消请求已提交到控制面");
+      refreshAudits();
       if (cancellation?.cancel_id) pollCancellation(run, cancellation.cancel_id);
     } catch (error) { notify(error.message); }
   };
@@ -271,32 +367,32 @@ export function App() {
     } catch { later(() => pollCancellation(run, cancelId), 5000); }
   };
 
-  const publishConfig = async (target, action, addedNode) => {
+  const publishConfig = async (target, action, addedNode, precomputedHash = null) => {
     if (!canManage || dataMode !== "live" || config.pending) return;
-    const devices = target.group?.match(/\d+/g)?.map(Number);
-    const scope = target.group ? "device_group" : target.node ? "node" : "pool";
     const operation = addedNode
       ? {op: "ADD_NODE", pool: addedNode.pool, value: addedNode.value}
-      : action === "暂停" || action === "恢复"
-      ? {op: action === "暂停" ? "PAUSE" : "RESUME", scope, pool: target.pool, ...(target.node ? {host_id: target.node} : {}), ...(devices ? {devices} : {})}
-      : action === "排空"
-        ? {op: "DRAIN", scope, pool: target.pool, ...(target.node ? {host_id: target.node} : {}), ...(devices ? {devices} : {})}
-        : {op: target.group ? "DELETE_DEVICE_GROUP" : target.node ? "DELETE_NODE" : "DELETE_POOL", pool: target.pool, ...(target.node ? {host_id: target.node} : {}), ...(devices ? {devices} : {})};
+      : buildClusterOperation(target, action);
     setConfig((previous) => ({...previous, pending: target.worker}));
     close();
     try {
-      const preview = await clusterPreview(config.desired, operation);
-      if (preview.blocking_reasons?.length) {
-        setConfig((previous) => ({...previous, pending: null}));
-        notify(`控制面拒绝${action}：${preview.blocking_reasons.join("、")}`);
-        return;
+      let previewHash = precomputedHash;
+      if (!previewHash) {
+        const preview = await clusterPreview(config.desired, operation);
+        if (preview.blocking_reasons?.length) {
+          setConfig((previous) => ({...previous, pending: null}));
+          notify(`控制面拒绝${action}：${preview.blocking_reasons.join("、")}`);
+          return;
+        }
+        previewHash = preview.preview_hash;
       }
-      const sync = await clusterPublish(config.desired, operation, preview.preview_hash);
+      const sync = await clusterPublish(config.desired, operation, previewHash);
       setConfig((previous) => ({...previous, desired: sync.revision, pending: null,
         workerStatus: {...previous.workerStatus, [target.worker]: {...previous.workerStatus?.[target.worker], desired: sync.revision}},
       }));
-      log("cluster", action, target.label, "控制面已发布配置");
       notify(`配置 r${sync.revision} 已提交，等待 Worker 应用`);
+      const snapshot = await loadControlCenter(access);
+      applySnapshot(snapshot);
+      refreshAudits();
     } catch (error) {
       setConfig((previous) => ({...previous, pending: null}));
       notify(error.message);
@@ -309,8 +405,10 @@ export function App() {
     try {
       const sync = await clusterRollback(config.desired, targetRevision);
       setConfig((previous) => ({...previous, desired: sync.revision, pending: null}));
-      log("cluster", "回滚配置", `r${targetRevision}`, "控制面已发布新版本");
       notify(`已基于 r${targetRevision} 发布配置 r${sync.revision}`);
+      const snapshot = await loadControlCenter(access);
+      applySnapshot(snapshot);
+      refreshAudits();
     } catch (error) {
       setConfig((previous) => ({...previous, pending: null}));
       notify(error.message);
@@ -323,10 +421,10 @@ export function App() {
     let account;
     try {
       const issued = await apiCreateUser(name);
-      account = {name: issued.username, userId: issued.user_id, role: "管理员", key: issued.secret_once, created: new Date().toLocaleString("zh-CN")};
+      account = {name: issued.username, userId: issued.user_id, role: "管理员", key: issued.secret_once, created: new Date().toLocaleString("zh-CN", {timeZone: "Asia/Shanghai"})};
     } catch (error) { notify(error.message); return; }
     setAccounts((previous) => [...previous, account]);
-    log("users", "新增管理员", name, "已创建");
+    refreshAudits();
     open({ type: "user-key", name });
   };
 
@@ -337,7 +435,7 @@ export function App() {
       try { await apiDeleteUser(account.userId); } catch (error) { notify(error.message); return; }
     }
     setAccounts((previous) => previous.filter((account) => account.name !== name));
-    log("users", "删除管理员", name, "账号及会话已撤销");
+    refreshAudits();
     close();
     notify(`管理员 ${name} 已删除`);
   };
@@ -349,15 +447,19 @@ export function App() {
     try {
       const issued = await apiResetUserKey(account.userId);
       setAccounts((previous) => previous.map((item) => item.name === name ? {...item, key: issued.secret_once} : item));
-      log("users", "重置管理员密钥", name, "旧会话已撤销");
+      refreshAudits();
       open({type: "user-key", name});
     } catch (error) { notify(error.message); }
   };
 
-  const viewProps = { nodes, clusterPools, clusterHistory, cases, config, queueVersion, historyHasMore, loadMoreHistory, rollbackCluster, canManage, open, go, audit, live: dataMode === "live" };
+  const viewProps = {
+    nodes, clusterPools, clusterHistory, cases, config, queueVersion,
+    historyHasMore, historyLoaded, truncatedByCapacity, purgedNotice, loadMoreHistory,
+    rollbackCluster, canManage, access, open, go, audit, live: dataMode === "live",
+  };
   const item = modal?.caseId && cases.find(({ id }) => id === modal.caseId);
-  const run = modal?.runKey && runs.find((run) => workflowKey(run) === modal.runKey);
-  const historicalRun = modal?.historyId && history.find((run) => workflowKey(run) === modal.runKey);
+  const run = modal?.runKey && runs.find((candidate) => workflowKey(candidate) === modal.runKey);
+  const historicalRun = modal?.historyId && history.find((candidate) => workflowKey(candidate) === modal.runKey);
   const historicalCase = historicalRun && historicalRun.cases.find(({ historyId }) => historyId === modal.historyId);
   const user = modal?.name && accounts.find(({ name }) => name === modal.name);
   const dialogProps = { ...viewProps, close };
@@ -372,17 +474,17 @@ export function App() {
       : <main className="standard-view"><h1>用户管理</h1><p className="subtle">此页面需要 Super 登录。</p>
         {!canManage && <button className="button" onClick={() => open({ type: "login" })}>登录</button>}</main>)}
 
-    {modal?.type === "login" && <LoginForm close={close} login={login} accounts={accounts} />}
+    {modal?.type === "login" && <LoginForm close={close} login={login} />}
     {modal?.type === "case" && item && <CaseDialog item={item} {...dialogProps} />}
-    {modal?.type === "history" && historicalCase && <HistoryDialog run={historicalRun} item={historicalCase} close={close} />}
+    {modal?.type === "history" && historicalCase && <HistoryDialog run={historicalRun} item={historicalCase} access={access} live={dataMode === "live"} close={close} />}
     {modal?.type === "resource" && <ResourceDialog target={modal.target} {...dialogProps} />}
-    {modal?.type === "cancel" && canManage && <CancelDialog run={run} cases={cases} close={close} confirm={() => cancelRun(run)} />}
+    {modal?.type === "cancel" && canManage && run && <CancelDialog run={run} cases={cases} close={close} confirm={() => cancelRun(run)} />}
     {modal?.type === "cancel-receipt" && run && cancellations[workflowKey(run)] && <CancellationReceipt run={run} receipt={cancellations[workflowKey(run)]} close={close} />}
-    {modal?.type === "expedite" && canManage && run && <ExpediteDialog run={run} cases={queuedChildren(cases, run)} position={queue.indexOf(workflowKey(run)) + 1} close={close} confirm={() => expedite(run)} />}
+    {modal?.type === "expedite" && canManage && run && <ExpediteDialog run={run} cases={queuedChildren(cases, run)} position={typeof run.sequence === "number" ? run.sequence : (queue.indexOf(workflowKey(run)) + 1)} close={close} confirm={() => expedite(run)} />}
     {modal?.type === "priority-receipt" && run && priorities[workflowKey(run)] && <PriorityReceipt run={run}
       receipt={priorities[workflowKey(run)]} close={close} />}
     {modal?.type === "config" && canManage && <ConfigDialog {...dialogProps} target={modal.target} action={modal.action}
-      confirm={() => publishConfig(modal.target, modal.action)} />}
+      confirm={(previewHash) => publishConfig(modal.target, modal.action, null, previewHash)} />}
     {modal?.type === "add-node" && canManage && <AddNodeDialog worker={modal.worker} nodes={nodes} close={close}
       save={(node) => publishConfig({ id: poolId(node.worker, node.pool), worker: node.worker, label: node.id }, "新增", node)} />}
     {modal?.type === "new-user" && isSuper && <NewUserDialog accounts={accounts} create={createUser} close={close} />}

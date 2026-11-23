@@ -9,12 +9,16 @@ import workflowRunsMigration from "../migrations/0006_v15_workflow_runs.sql?raw"
 import taskStartedAtMigration from "../migrations/0007_v15_task_started_at.sql?raw";
 import runNumberMigration from "../migrations/0008_v15_run_number.sql?raw";
 import runDisplayTitleMigration from "../migrations/0009_v15_run_display_title.sql?raw";
+import partialAppliedMigration from "../migrations/0010_v15_partial_applied.sql?raw";
+import {createD1Store} from "../src/adapters/d1";
 import type {Env} from "../src/router";
 import worker from "../src/index";
 
-export const db = (env as unknown as Env).DB;
+export const rawDb = (env as unknown as {DB: D1Database}).DB;
+export const db = createD1Store(rawDb);
 export const bindings: Env = {DB: db, SUPER_SECRET: "test-super-secret", KEY_PEPPER: "test-pepper"};
-export const migrate = () => applyD1Migrations(db, [{
+export const workerBindings = {DB: rawDb, SUPER_SECRET: "test-super-secret", KEY_PEPPER: "test-pepper"};
+export const migrate = () => applyD1Migrations(rawDb, [{
   name: "0001_init.sql", queries: migration.split(";").filter(query => query.trim()),
 }, {
   name: "0002_v15_health.sql", queries: healthMigration.split(";").filter(query => query.trim()),
@@ -32,10 +36,12 @@ export const migrate = () => applyD1Migrations(db, [{
   name: "0008_v15_run_number.sql", queries: runNumberMigration.split(";").filter(query => query.trim()),
 }, {
   name: "0009_v15_run_display_title.sql", queries: runDisplayTitleMigration.split(";").filter(query => query.trim()),
+}, {
+  name: "0010_v15_partial_applied.sql", queries: partialAppliedMigration.split(";").filter(query => query.trim()),
 }], "d1_test_migrations");
 export async function request(path: string, opts: {
   method?: string; data?: unknown; cookie?: string; headers?: HeadersInit;
-} = {}, config = bindings) {
+} = {}, config: typeof workerBindings | Env = workerBindings) {
   const headers = new Headers(opts.headers);
   if (opts.cookie) headers.set("Cookie", opts.cookie);
   return worker.fetch(new Request("https://example.test/api/v1" + path, {

@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import {test} from "node:test";
-import {now, workflowKey} from "../src/formal-data.js";
-import {currentWorkflowQueue, groupActiveRuns, moveWorkflow, summarizeRun} from "../src/workflows.js";
-import {resourceHealth} from "../src/resource-health.js";
+import {beijingClock, displayNodeHost, now, plannedTime, workflowKey} from "../src/formal-data.js";
+import {commandStatusLabel, commandStatusTone} from "../src/command-status.js";
+import {currentWorkflowQueue, groupActiveRuns, moveWorkflow, summarizeRun, workflowResultLabel} from "../src/workflows.js";
+import {lastSeenDateTime, resourceHealth} from "../src/resource-health.js";
 
 const runA = {id: "run-a", platform: "GitHub", repo: "org/model", attempt: 1, action: "Smoke", model: "vllm-ascend"};
 const runB = {id: "run-b", platform: "GitCode", repo: "org/model", attempt: 1, action: "Smoke", model: "vllm-ascend"};
@@ -85,4 +86,58 @@ test("Workflow results preserve individual outcomes", () => {
   assert.equal(result("成功", "成功"), "成功");
   assert.equal(result("成功", "失败"), "失败");
   assert.equal(result("成功", "已取消"), "失败");
+});
+
+test("dynamic Beijing clock, direct host display, full timestamp formatting, and projection status handling", () => {
+  const sampleClock = beijingClock(new Date("2026-11-23T02:15:00Z")); // 10:15 UTC+8
+  assert.equal(sampleClock.currentDate, "2026-11-23");
+  assert.equal(sampleClock.now, 10 * 60 + 15);
+  assert.equal(displayNodeHost({id: "node-ref-1", displayHost: "113.xxx.xxx.205:153"}), "113.xxx.xxx.205:153");
+  assert.equal(lastSeenDateTime("2026-11-22 23:59:59"), "2026-11-22 23:59:59");
+  assert.equal(
+    plannedTime({planned: 600, projectionStatus: "WAITING_EXTERNAL", plannedNode: "n1", plannedGroups: ["0–7"]}, {flags: {}}, [{id: "n1", worker: "Blue", pool: "A3"}]),
+    null,
+  );
+  assert.equal(
+    plannedTime({planned: 600, projectionStatus: "SCHEDULED", plannedNode: "n1", plannedGroups: ["0–7"]}, {flags: {}}, [{id: "n1", worker: "Blue", pool: "A3"}]),
+    600,
+  );
+});
+
+test("summarizeRun prefers formal backend resultLabel/result even when cases are empty or incomplete", () => {
+  const emptyFailedHistory = summarizeRun({result: "FAIL", resultLabel: "失败", sequence: -1, cases: []});
+  assert.equal(emptyFailedHistory.active, false);
+  assert.equal(emptyFailedHistory.result, "失败");
+
+  const partialPassingCasesFailedRun = summarizeRun({
+    result: "FAIL",
+    resultLabel: "失败",
+    cases: [{historyId: "h1", status: "成功", worker: "Blue", pool: "A3", cards: 8, allocatedCards: 8}],
+  });
+  assert.equal(partialPassingCasesFailedRun.active, false);
+  assert.equal(partialPassingCasesFailedRun.result, "失败");
+
+  const mixedQueuedFromBackend = summarizeRun({
+    result: "QUEUED",
+    cases: [{historyId: "h2", status: "成功", worker: "Blue", pool: "A3", cards: 8, allocatedCards: 8}],
+  });
+  assert.equal(mixedQueuedFromBackend.active, true);
+  assert.equal(mixedQueuedFromBackend.result, "排队中");
+
+  assert.equal(workflowResultLabel("PASS"), "成功");
+  assert.equal(workflowResultLabel("FAIL"), "失败");
+  assert.equal(workflowResultLabel("QUEUED"), "排队中");
+});
+
+test("command status helpers map PARTIAL_APPLIED and all protocol statuses consistently", () => {
+  assert.equal(commandStatusLabel("PARTIAL_APPLIED"), "部分生效");
+  assert.equal(commandStatusTone("PARTIAL_APPLIED"), "amber");
+  assert.equal(commandStatusLabel("APPLIED"), "已应用");
+  assert.equal(commandStatusTone("APPLIED"), "teal");
+  assert.equal(commandStatusLabel("FAILED"), "失败");
+  assert.equal(commandStatusTone("FAILED"), "red");
+  assert.equal(commandStatusLabel("CONFLICT"), "冲突");
+  assert.equal(commandStatusTone("CONFLICT"), "red");
+  assert.equal(commandStatusLabel("NOOP"), "无变化");
+  assert.equal(commandStatusTone("NOOP"), "gray");
 });

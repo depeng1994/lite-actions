@@ -10,7 +10,3 @@ database_id = "498b7766-6478-4ac6-9f39-844391d02d9a"
 
 [triggers]
 crons = ["* * * * *", "0 2 * * *"]
-
-[assets]
-directory = "./public"
-run_worker_first = ["/api/*"]

@@ -1,7 +1,7 @@
-/** Runtime-neutral SQL primitives used by the application boundary.
+/** Runtime-neutral SQL and asset primitives used across all business services.
  *
- * D1 and a local SQLite adapter can both satisfy these structural contracts.
- * Business services do not need to import either provider's concrete types.
+ * Cloudflare D1 and Node 24's built-in node:sqlite both satisfy SqlStore so
+ * core application code stays free of provider-specific types and APIs.
  */
 export interface SqlRunResult {
   meta: {changes: number; last_row_id?: number; size_after?: number};
@@ -23,6 +23,10 @@ export interface SqlStore {
   prepare(query: string): SqlStatement;
   batch<T = unknown>(statements: readonly SqlStatement[]): Promise<Array<SqlRunResult & {results?: T[]}>>;
   dbSizeBytes(): Promise<number>;
+}
+
+export interface StaticAssets {
+  fetch(request: Request): Promise<Response>;
 }
 
 /** Normalize BLOB values returned by D1, SQLite adapters, or test doubles. */

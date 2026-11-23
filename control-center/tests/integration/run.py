@@ -339,9 +339,19 @@ def platform_wire(root, proxy, cert):
     policy = Egress(
         "yellow", {"state_dir": str(root), "daily_upload_bytes": 1_000_000}, clock=now
     )
+    real_build_opener = urllib.request.build_opener
+    tls_context = ssl.create_default_context(cafile=str(cert))
+
+    def build_opener_with_ca(*handlers):
+        return real_build_opener(
+            urllib.request.HTTPSHandler(context=tls_context),
+            *handlers,
+        )
+
     with (
         patch("socket.create_connection", side_effect=connect),
         patch("urllib.request.getproxies", return_value={}),
+        patch("urllib.request.build_opener", side_effect=build_opener_with_ca),
         patch.dict(os.environ, {"SSL_CERT_FILE": str(cert)}),
     ):
         clients = [
@@ -394,7 +404,7 @@ def fini(proc):
             proc.wait()
 
 
-def integration(root):
+def integration(root, runtime="d1"):
     pools = workspace(root)
     cert, key = root / "cert.pem", root / "private.key"
     subprocess.run(
@@ -426,39 +436,103 @@ def integration(root):
         port = sock.getsockname()[1]
     base = f"http://127.0.0.1:{port}"
     python = sys.executable
-    wrangler = [str(BACKEND / "node_modules/.bin/wrangler")]
-    storage = ["--local", "--persist-to", str(root / "d1")]
     config = encode(pools)
     sha = hashlib.sha256(config.encode()).hexdigest()
-    migration = root / "seed.sql"
-    migration.write_text(
-        f"INSERT INTO pools_configs(revision,sha256,config_json,created_by,created_at) VALUES(1,'{sha}','{config}','fixture',1);"
-    )
-    subprocess.run(
-        [*wrangler, "d1", "migrations", "apply", "DB", *storage],
-        cwd=BACKEND,
-        check=True,
-        capture_output=True,
-    )
-    subprocess.run(
-        [*wrangler, "d1", "execute", "DB", *storage, "--file", str(migration), "--yes"],
-        cwd=BACKEND,
-        check=True,
-        capture_output=True,
-    )
-    key_args = [
-        item
+    wrangler_cfg = root / "wrangler-config"
+    wrangler_cfg.mkdir(exist_ok=True)
+    worker_hashes = {
+        f"WORKER_{zone.upper()}_KEY_HASH": hmac.new(
+            PEPPER.encode(), token.encode(), hashlib.sha256
+        ).hexdigest()
         for zone, token in TOKENS.items()
-        for item in [
-            "--var",
-            f"WORKER_{zone.upper()}_KEY_HASH:"
-            + hmac.new(PEPPER.encode(), token.encode(), hashlib.sha256).hexdigest(),
-        ]
-    ]
+    }
     environment = os.environ | {
         "LITE_ACTIONS_CONTROL_CA_FILE": str(cert),
         "NODE_ENV": "test",
+        "XDG_CONFIG_HOME": str(wrangler_cfg),
+        "WRANGLER_LOG": "none",
     }
+    if runtime == "d1":
+        wrangler = [str(BACKEND / "node_modules/.bin/wrangler")]
+        storage = ["--local", "--persist-to", str(root / "d1")]
+        migration = root / "seed.sql"
+        migration.write_text(
+            f"INSERT INTO pools_configs(revision,sha256,config_json,created_by,created_at) VALUES(1,'{sha}','{config}','fixture',1);"
+        )
+        subprocess.run(
+            [*wrangler, "d1", "migrations", "apply", "DB", *storage],
+            cwd=BACKEND,
+            env=environment,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            [
+                *wrangler,
+                "d1",
+                "execute",
+                "DB",
+                *storage,
+                "--file",
+                str(migration),
+                "--yes",
+            ],
+            cwd=BACKEND,
+            env=environment,
+            check=True,
+            capture_output=True,
+        )
+        key_args = [
+            item
+            for env_name, env_val in worker_hashes.items()
+            for item in ["--var", f"{env_name}:{env_val}"]
+        ]
+        backend_cmd = [
+            *wrangler,
+            "dev",
+            *storage,
+            "--ip",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--var",
+            "KEY_PEPPER:" + PEPPER,
+            "--var",
+            "SUPER_SECRET:" + SUPER,
+            *key_args,
+        ]
+        backend_env = environment
+    elif runtime == "node":
+        import sqlite3
+
+        db_path = root / "control-center.sqlite"
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA foreign_keys=ON;")
+        for sql_file in sorted((BACKEND / "migrations").glob("*.sql")):
+            conn.executescript(sql_file.read_text())
+        conn.execute(
+            "INSERT INTO pools_configs(revision,sha256,config_json,created_by,created_at) VALUES(1,?,?,?,1)",
+            (sha, config, "fixture"),
+        )
+        conn.commit()
+        conn.close()
+        backend_cmd = [
+            "node",
+            "--experimental-strip-types",
+            str(BACKEND / "scripts/start-node-server.mjs"),
+        ]
+        backend_env = environment | {
+            "HOST": "127.0.0.1",
+            "PORT": str(port),
+            "DB_PATH": str(db_path),
+            "KEY_PEPPER": PEPPER,
+            "SUPER_SECRET": SUPER,
+            "DISABLE_TIMERS": "1",
+            **worker_hashes,
+        }
+    else:
+        raise ValueError(f"Unsupported runtime: {runtime}")
     states = {zone: JobState(root / zone) for zone in ZONES}
     cases = {
         zone: [seed_case(states[zone], zone, i) for i in range(4)] for zone in ZONES
@@ -512,22 +586,9 @@ def integration(root):
     with ExitStack() as stack:
         output = stack.enter_context((root / "backend.log").open("wb"))
         proc = subprocess.Popen(
-            [
-                *wrangler,
-                "dev",
-                *storage,
-                "--ip",
-                "127.0.0.1",
-                "--port",
-                str(port),
-                "--var",
-                "KEY_PEPPER:" + PEPPER,
-                "--var",
-                "SUPER_SECRET:" + SUPER,
-                *key_args,
-            ],
+            backend_cmd,
             cwd=BACKEND,
-            env=environment,
+            env=backend_env,
             stdout=output,
             stderr=output,
         )
@@ -564,8 +625,21 @@ def integration(root):
             for node in pool["nodes"]
             for g in node["device_groups"]
         ), pub
+        status, pub_models, _ = http("/public/models")
+        assert status == 200 and pub_models.get("default_model") == "vllm-ascend", (
+            pub_models
+        )
+        status, pub_wf, _ = http("/public/workflows?history_limit=0")
+        assert (
+            status == 200 and len(pub_wf["active"]) == 8 and pub_wf["history"] == []
+        ), pub_wf
+        status, pub_cluster, _ = http("/public/cluster")
+        assert status == 200 and "192.0.2." not in encode(pub_cluster), pub_cluster
+        assert pub_cluster["config"]["pool_blue"]["health"]["status"] == "ONLINE", (
+            pub_cluster
+        )
         print(
-            "INT-01/03  public/admin cache isolation, masking, dual Worker census",
+            f"INT-01/03 ({runtime})  public/admin cache isolation, masking, workflows/cluster health, dual Worker census",
             flush=True,
         )
         by_zone = [task for task in active if task["worker_id"] == "blue"]
@@ -700,10 +774,21 @@ def integration(root):
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--worker":
         worker(sys.argv[2], Path(sys.argv[3]), sys.argv[4])
-    elif len(sys.argv) == 2:
-        destination = Path(sys.argv[1]).resolve()
-        destination.mkdir(parents=True, exist_ok=False)
-        integration(destination)
     else:
-        with tempfile.TemporaryDirectory(prefix="lite-control-integration-") as scratch:
-            integration(Path(scratch))
+        runtime = "d1"
+        args = sys.argv[1:]
+        filtered = []
+        for arg in args:
+            if arg.startswith("--runtime="):
+                runtime = arg.split("=", 1)[1]
+            else:
+                filtered.append(arg)
+        if filtered:
+            destination = Path(filtered[0]).resolve()
+            destination.mkdir(parents=True, exist_ok=False)
+            integration(destination, runtime=runtime)
+        else:
+            with tempfile.TemporaryDirectory(
+                prefix=f"lite-control-integration-{runtime}-"
+            ) as scratch:
+                integration(Path(scratch), runtime=runtime)

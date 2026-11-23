@@ -1,8 +1,9 @@
 import {type Context, HttpError} from "../router";
 import {putMeta} from "../services/retention";
+import type {SqlStore} from "../storage/sqlStore";
 
 const DAY = 86400;
-const exhausted = new WeakMap<D1Database, number>();
+const exhausted = new WeakMap<SqlStore, number>();
 const quota = (now: number) => new HttpError(503, "WRITE_QUOTA_EXHAUSTED",
   "D1 每日写入额度已用尽，写操作暂停，CI 正常运行", {"Retry-After": String(DAY - now % DAY)});
 

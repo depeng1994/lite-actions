@@ -1,5 +1,6 @@
 import {logicalModel} from "../modelMap";
 import {type Context, HttpError} from "../router";
+import type {SqlStatement, SqlStore} from "../storage/sqlStore";
 import {taskIdentity} from "../utils/taskIdentity";
 import {
   array, CASE_ID, devices, hostId, integer, invalid, member, nullableInt, nullableString, object,
@@ -7,7 +8,7 @@ import {
 } from "../utils/validate";
 
 type Input = Record<string, unknown>;
-type Statement = D1PreparedStatement;
+type Statement = SqlStatement;
 type Cursor = {instance_id: string; last_seq: number; last_snapshot_id: string | null};
 export const TASK_META = [
   "task_uid", "worker_id", "provider", "repo", "logical_model", "run_id", "attempt", "dispatch_id",
@@ -20,31 +21,49 @@ const TIMES = ["queued_at", "reserved_at", "staging_at", "running_at", "cleaning
 const INSTANCE = /^[a-f0-9]{8}$/;
 const SNAPSHOT_ID = /^[a-f0-9]{10}$/;
 
-/** Rebuild the compact Workflow identity projection inside the ingest transaction. */
-function refreshWorkflowRuns(db: D1Database, now: number): Statement[] {
+export type WorkflowIdentity = {provider: string; repo: string; run_id: string; attempt: number};
+
+function uniqueWorkflows(identities: readonly WorkflowIdentity[]): WorkflowIdentity[] {
+  const seen = new Map<string, WorkflowIdentity>();
+  for (const item of identities) {
+    seen.set(JSON.stringify([item.provider, item.repo, item.run_id, item.attempt]), item);
+  }
+  return [...seen.values()];
+}
+
+/** Incrementally refresh only affected Workflow summaries inside the ingest transaction. */
+export function refreshWorkflowRuns(db: SqlStore, identities: readonly WorkflowIdentity[], now: number): Statement[] {
+  const keys = uniqueWorkflows(identities);
+  if (!keys.length) return [];
+  const encoded = JSON.stringify(keys);
   return [
-    db.prepare("DELETE FROM workflow_runs"),
     db.prepare(`
-    WITH all_cases AS (
-      SELECT provider,repo,run_id,attempt,logical_model,submitted_at,workflow_name,run_number,display_title,workflow_file,
-        pr_number,pr_author,trigger_actor,event_type,phase,NULL AS status,
-        (SELECT q.queue_pos FROM queue_orders q WHERE q.task_uid=tasks_active.task_uid
-          AND q.worker_id=tasks_active.worker_id AND q.pool_name=tasks_active.target_pool AND q.kind=tasks_active.kind) AS queue_pos,
-        queued_at,reserved_at,
-        COALESCE(running_at,reserved_at) AS started_at,
-        running_at,NULL AS finished_at,NULL AS duration_sec,req_nodes,req_devices,timing_reliable,
-        allocation_json,kind,target_pool,1 AS active
-      FROM tasks_active
+    WITH keys AS (
+      SELECT json_extract(value,'$.provider') AS provider,
+        json_extract(value,'$.repo') AS repo,
+        json_extract(value,'$.run_id') AS run_id,
+        json_extract(value,'$.attempt') AS attempt
+      FROM json_each(?)
+    ), all_cases AS (
+      SELECT a.provider,a.repo,a.run_id,a.attempt,a.logical_model,a.submitted_at,a.workflow_name,a.run_number,a.display_title,a.workflow_file,
+        a.pr_number,a.pr_author,a.trigger_actor,a.event_type,a.phase,NULL AS status,
+        a.queued_at,a.reserved_at,
+        COALESCE(a.running_at,a.reserved_at) AS started_at,
+        a.running_at,NULL AS finished_at,NULL AS duration_sec,a.req_nodes,a.req_devices,a.timing_reliable,
+        a.allocation_json,a.kind,a.target_pool,1 AS active
+      FROM tasks_active a JOIN keys k
+        ON a.provider=k.provider AND a.repo=k.repo AND a.run_id=k.run_id AND a.attempt=k.attempt
       UNION ALL
-      SELECT provider,repo,run_id,attempt,logical_model,submitted_at,workflow_name,run_number,display_title,workflow_file,
-        pr_number,pr_author,trigger_actor,event_type,NULL AS phase,status,NULL AS queue_pos,NULL AS queued_at,
-        NULL AS reserved_at,started_at,NULL AS running_at,finished_at,duration_sec,req_nodes,req_devices,timing_reliable,
-        actual_allocation_json AS allocation_json,kind,target_pool,0 AS active
-      FROM task_index
+      SELECT i.provider,i.repo,i.run_id,i.attempt,i.logical_model,i.submitted_at,i.workflow_name,i.run_number,i.display_title,i.workflow_file,
+        i.pr_number,i.pr_author,i.trigger_actor,i.event_type,NULL AS phase,i.status,NULL AS queued_at,
+        NULL AS reserved_at,i.started_at,NULL AS running_at,i.finished_at,i.duration_sec,i.req_nodes,i.req_devices,i.timing_reliable,
+        i.actual_allocation_json AS allocation_json,i.kind,i.target_pool,0 AS active
+      FROM task_index i JOIN keys k
+        ON i.provider=k.provider AND i.repo=k.repo AND i.run_id=k.run_id AND i.attempt=k.attempt
     ), grouped AS (
       SELECT provider,repo,run_id,attempt,
         MAX(logical_model) AS logical_model,
-        MIN(submitted_at) AS submitted_at,
+        MIN(COALESCE(submitted_at,queued_at)) AS submitted_at,
         MAX(workflow_name) AS workflow_name,
         MAX(run_number) AS run_number,
         MAX(display_title) AS display_title,
@@ -58,7 +77,6 @@ function refreshWorkflowRuns(db: D1Database, now: number): Statement[] {
         MAX(CASE WHEN active=1 AND phase='QUEUED' AND kind!='worker_probe' THEN 1 ELSE 0 END) AS has_waiting_resource_case,
         SUM(active) AS active_case_count,
         COUNT(*) AS total_case_count,
-        MIN(CASE WHEN active=1 AND phase='QUEUED' AND kind!='worker_probe' THEN queue_pos END) AS queue_order_rank,
         MIN(started_at) AS first_started_at,
         MAX(finished_at) AS finished_at,
         MAX(CASE WHEN active=0 AND status IS NOT NULL AND status!='PASS' THEN 1 ELSE 0 END) AS has_failed,
@@ -76,12 +94,61 @@ function refreshWorkflowRuns(db: D1Database, now: number): Statement[] {
       max_cards,card_seconds_finished,has_unmeasured_allocated,updated_at)
     SELECT provider,repo,run_id,attempt,logical_model,submitted_at,workflow_name,run_number,display_title,workflow_file,
       pr_number,pr_author,trigger_actor,event_type,is_active,has_in_flight,has_waiting_resource_case,
-      active_case_count,total_case_count,queue_order_rank,first_started_at,
+      active_case_count,total_case_count,NULL,first_started_at,
       CASE WHEN is_active=1 THEN NULL ELSE finished_at END,
       CASE WHEN is_active=1 THEN 'QUEUED' WHEN has_failed=1 THEN 'FAIL' ELSE 'PASS' END,
       pools_json,COALESCE(max_cards,0),card_seconds_finished,has_unmeasured_allocated,?
-    FROM grouped
-  `).bind(now),
+    FROM grouped WHERE 1
+    ON CONFLICT(provider,repo,run_id,attempt) DO UPDATE SET
+      logical_model=excluded.logical_model,
+      submitted_at=COALESCE(excluded.submitted_at,workflow_runs.submitted_at),
+      workflow_name=COALESCE(excluded.workflow_name,workflow_runs.workflow_name),
+      run_number=COALESCE(excluded.run_number,workflow_runs.run_number),
+      display_title=COALESCE(excluded.display_title,workflow_runs.display_title),
+      workflow_file=COALESCE(excluded.workflow_file,workflow_runs.workflow_file),
+      pr_number=COALESCE(excluded.pr_number,workflow_runs.pr_number),
+      pr_author=COALESCE(excluded.pr_author,workflow_runs.pr_author),
+      trigger_actor=COALESCE(excluded.trigger_actor,workflow_runs.trigger_actor),
+      event_type=COALESCE(excluded.event_type,workflow_runs.event_type),
+      is_active=excluded.is_active,
+      has_in_flight=excluded.has_in_flight,
+      has_waiting_resource_case=excluded.has_waiting_resource_case,
+      active_case_count=excluded.active_case_count,
+      total_case_count=excluded.total_case_count,
+      queue_order_rank=CASE
+        WHEN excluded.is_active=1 AND excluded.has_in_flight=0 AND excluded.has_waiting_resource_case=1
+          THEN workflow_runs.queue_order_rank
+        ELSE NULL
+      END,
+      first_started_at=excluded.first_started_at,
+      finished_at=excluded.finished_at,
+      result_state=excluded.result_state,
+      pools_json=excluded.pools_json,
+      max_cards=excluded.max_cards,
+      card_seconds_finished=excluded.card_seconds_finished,
+      has_unmeasured_allocated=excluded.has_unmeasured_allocated,
+      updated_at=excluded.updated_at
+  `).bind(encoded, now),
+    db.prepare(`
+      DELETE FROM workflow_runs
+      WHERE EXISTS (
+        SELECT 1 FROM json_each(?) k
+        WHERE workflow_runs.provider=json_extract(k.value,'$.provider')
+          AND workflow_runs.repo=json_extract(k.value,'$.repo')
+          AND workflow_runs.run_id=json_extract(k.value,'$.run_id')
+          AND workflow_runs.attempt=json_extract(k.value,'$.attempt')
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM tasks_active a
+        WHERE a.provider=workflow_runs.provider AND a.repo=workflow_runs.repo
+          AND a.run_id=workflow_runs.run_id AND a.attempt=workflow_runs.attempt
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM task_index i
+        WHERE i.provider=workflow_runs.provider AND i.repo=workflow_runs.repo
+          AND i.run_id=workflow_runs.run_id AND i.attempt=workflow_runs.attempt
+      )
+    `).bind(encoded),
   ];
 }
 
@@ -128,7 +195,7 @@ async function task(context: Context, input: Input) {
   };
 }
 
-function taskUpsert(db: D1Database, tasks: Awaited<ReturnType<typeof task>>[], snapshot: boolean): Statement {
+function taskUpsert(db: SqlStore, tasks: Awaited<ReturnType<typeof task>>[], snapshot: boolean): Statement {
   const columns = TASK_ACTIVE.join(",");
   const values = TASK_ACTIVE.map(column => `json_extract(value,'$.${column}')`).join(",");
   return db.prepare(`
@@ -208,7 +275,7 @@ function device(context: Context, input: Input) {
 }
 type DeviceWrite = ReturnType<typeof device>;
 
-function deviceUpsert(db: D1Database, rows: DeviceWrite[]): Statement {
+function deviceUpsert(db: SqlStore, rows: DeviceWrite[]): Statement {
   const columns = ["worker_id", "pool_name", "host_id", "devices_json", "occupancy_state", "probe_at",
     "quarantined", "quarantine_task_uid", "visibility_state", "consecutive_failures", "last_online_at", "last_probe_round", "updated_at"];
   return db.prepare(`
@@ -256,7 +323,7 @@ function queuePage(context: Context, input: Input) {
 }
 
 type QueueWrite = ReturnType<typeof queuePage>;
-function queueUpsert(db: D1Database, pages: QueueWrite[]): Statement {
+function queueUpsert(db: SqlStore, pages: QueueWrite[]): Statement {
   return db.prepare(`
     INSERT INTO queue_orders(worker_id,pool_name,kind,task_uid,queue_pos,candidate_group_idxs_json,queue_ver,updated_at)
     SELECT t.worker_id,json_extract(p.value,'$.pool'),json_extract(p.value,'$.kind'),t.task_uid,
@@ -384,7 +451,7 @@ function guard(context: Context, instance: string, seq: number, prior: Cursor): 
     context.workerId, instance, prior.last_snapshot_id ?? "", seq, context.now);
 }
 
-async function guardedBatch(db: D1Database, statements: Statement[]) {
+async function guardedBatch(db: SqlStore, statements: Statement[]) {
   try {
     await db.batch(statements);
   } catch (error) {
@@ -410,12 +477,29 @@ export async function ingestEvents(context: Context, input: Input) {
   }
   if (fresh.length) {
     const db = context.env.DB;
+    const affected: WorkflowIdentity[] = [];
+    const touchedTids = new Set<string>();
+    for (const event of fresh) {
+      if (event.t === "TU") {
+        const parsed = await task(context, event);
+        affected.push({provider: parsed.provider, repo: parsed.repo, run_id: parsed.run_id, attempt: parsed.attempt});
+      } else if (event.t === "TP" || event.t === "TL" || event.t === "TF") {
+        touchedTids.add(string(event.tid, "tid", 12, TID));
+      }
+    }
+    if (touchedTids.size) {
+      const existing = await db.prepare(`
+        SELECT DISTINCT provider,repo,run_id,attempt FROM tasks_active
+        WHERE worker_id=? AND short_tid IN (SELECT value FROM json_each(?))
+      `).bind(context.workerId, JSON.stringify([...touchedTids])).all<WorkflowIdentity>();
+      affected.push(...existing.results);
+    }
     const writes = (await Promise.all(fresh.map(event => eventWrites(context, event)))).flat();
     if (writes.length > 46) invalid("too many event mutations in packet");
     await guardedBatch(db, [
       guard(context, instance, Number(fresh[0].s), previous),
       ...writes,
-      ...refreshWorkflowRuns(db, context.now),
+      ...refreshWorkflowRuns(db, affected, context.now),
       db.prepare(`INSERT INTO worker_event_dedup(worker_id,instance_id,seq,received_at)
         SELECT ?,?,value,? FROM json_each(?)`).bind(context.workerId, instance, context.now,
         JSON.stringify(fresh.slice(1).map(event => event.s))),
@@ -447,7 +531,7 @@ export async function ingestSnapshot(context: Context, input: Input) {
     db.prepare("SELECT part_no,total_parts,seq,payload_json FROM snapshot_staging WHERE worker_id=? AND instance_id=? AND snap_id=? ORDER BY part_no")
       .bind(...filter),
   ]);
-  const rows = staged[1].results;
+  const rows = staged[1].results ?? [];
   if (rows.some(row => row.total_parts !== total || row.seq !== seq ||
     (row.part_no === part && row.payload_json !== payload))) throw new HttpError(409, "SNAPSHOT_PART_CONFLICT");
   if (rows.length !== total) return {ok: true, complete: false};
@@ -473,6 +557,13 @@ export async function ingestSnapshot(context: Context, input: Input) {
     if (leases.has(item.short_tid)) item.allocation_json = JSON.stringify(leases.get(item.short_tid));
   }
   const identities = JSON.stringify(tasks.map(item => item.task_uid));
+  const priorActive = await db.prepare(
+    "SELECT DISTINCT provider,repo,run_id,attempt FROM tasks_active WHERE worker_id=?",
+  ).bind(context.workerId).all<WorkflowIdentity>();
+  const affectedWorkflows = [
+    ...priorActive.results,
+    ...tasks.map(item => ({provider: item.provider, repo: item.repo, run_id: item.run_id, attempt: item.attempt})),
+  ];
   await guardedBatch(db, [
     guard(context, instance, -1, previous),
     ...finish(context, "task_uid NOT IN (SELECT value FROM json_each(?))", [identities],
@@ -480,7 +571,7 @@ export async function ingestSnapshot(context: Context, input: Input) {
     taskUpsert(db, tasks, true),
     db.prepare("DELETE FROM queue_orders WHERE worker_id=?").bind(context.workerId),
     queueUpsert(db, queues),
-    ...refreshWorkflowRuns(db, context.now),
+    ...refreshWorkflowRuns(db, affectedWorkflows, context.now),
     db.prepare("DELETE FROM device_group_states WHERE worker_id=?").bind(context.workerId),
     deviceUpsert(db, groups),
     advance(context, instance, seq, sid),

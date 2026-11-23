@@ -1,4 +1,4 @@
-import type {DeviceGroup, WorkerId, WorkerStatus} from "../types/api";
+import type {DeviceGroup, DeviceHealth, WorkerId, WorkerStatus} from "../types/api";
 
 export interface WorkerRow {
   worker_id: WorkerId;
@@ -72,6 +72,34 @@ export function groups(pool: Pool) {
   return pool.nodes.flatMap(node => (node.allocation_groups ?? []).map(group => ({node, group})));
 }
 
+export function aggregateHealth(items: readonly DeviceHealth[]): DeviceHealth {
+  if (!items.length) return {status: "PENDING_PROBE", missed_count: 0, last_online_at: null};
+  let lastOnline: number | null = null;
+  let maxMissed = 0;
+  let offlineCount = 0;
+  let partialCount = 0;
+  let warnCount = 0;
+  let pendingCount = 0;
+  for (const item of items) {
+    if (item.last_online_at != null) lastOnline = lastOnline == null ? item.last_online_at : Math.max(lastOnline, item.last_online_at);
+    if (item.missed_count > maxMissed) maxMissed = item.missed_count;
+    if (item.status === "OFFLINE") offlineCount += 1;
+    else if (item.status === "PARTIAL_OFFLINE") partialCount += 1;
+    else if (item.status === "PROBE_WARN") warnCount += 1;
+    else if (item.status === "PENDING_PROBE") pendingCount += 1;
+  }
+  const status: DeviceHealth["status"] = offlineCount === items.length
+    ? "OFFLINE"
+    : offlineCount > 0 || partialCount > 0
+      ? "PARTIAL_OFFLINE"
+      : warnCount > 0
+        ? "PROBE_WARN"
+        : pendingCount > 0
+          ? "PENDING_PROBE"
+          : "ONLINE";
+  return {status, missed_count: maxMissed, last_online_at: lastOnline};
+}
+
 export function projectDevice(now: number, input: {
   worker?: WorkerRow;
   observation?: GroupRow;
@@ -79,23 +107,28 @@ export function projectDevice(now: number, input: {
   node: PoolNode;
   group: PoolGroup;
   leased: boolean;
+  draining?: boolean;
 }): DeviceGroup {
-  const {worker, observation, pool, node, group, leased} = input;
+  const {worker, observation, pool, node, group, leased, draining} = input;
   const fresh = Math.max(observation?.probe_at ?? 0, observation?.occupancy_state === "idle" ? (worker?.last_idle_probe_at ?? 0) : 0);
   const state = leased ? "LEASED" :
     (observation?.occupancy_state === "idle" && fresh > 0 && now - fresh <= 1800 ? "CONFIRMED_IDLE" : "UNKNOWN_BUSY");
   const scopes: DeviceGroup["paused_scopes"] = [];
-  if (pool.paused) scopes.push("pool");
+  if (pool.enabled === false || pool.paused) scopes.push("pool");
   if (node.paused) scopes.push("node");
   if (group.paused) scopes.push("device_group");
   const visibility = observation?.visibility_state ?? "pending";
+  const lastOnline = visibility === "online"
+    ? (Math.max(observation?.last_online_at ?? 0, worker?.last_visibility_probe_at ?? 0) || null)
+    : (observation?.last_online_at ?? null);
   return {
     devices: group.devices.slice().sort((a, b) => a - b), state, offline: offline(now, worker),
-    quarantined: observation?.quarantined === 1, paused: scopes.length > 0, paused_scopes: scopes,
+    quarantined: observation?.quarantined === 1, paused: scopes.length > 0, draining: Boolean(draining),
+    paused_scopes: scopes,
     health: {
       status: visibility === "online" ? "ONLINE" : visibility === "warn" ? "PROBE_WARN" : visibility === "offline" ? "OFFLINE" : "PENDING_PROBE",
       missed_count: observation?.consecutive_failures ?? 0,
-      last_online_at: observation?.last_online_at ?? null,
+      last_online_at: lastOnline,
     },
     updated_at: Math.max(fresh, observation?.updated_at ?? 0, worker?.last_heartbeat_at ?? 0) || null,
     solid_blocks: [], dashed_blocks: [],

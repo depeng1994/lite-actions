@@ -9,10 +9,10 @@ import metadataMigration from "../migrations/0005_v15_workflow_metadata.sql?raw"
 import workflowRunsMigration from "../migrations/0006_v15_workflow_runs.sql?raw";
 import runNumberMigration from "../migrations/0008_v15_run_number.sql?raw";
 import runDisplayTitleMigration from "../migrations/0009_v15_run_display_title.sql?raw";
+import partialAppliedMigration from "../migrations/0010_v15_partial_applied.sql?raw";
 import { logicalModel, modelMap } from "../src/modelMap";
-import type { Env } from "../src/router";
 
-const db = (env as unknown as Env).DB;
+const db = (env as unknown as {DB: D1Database}).DB;
 
 test("migrations create project tables and history indexes", async () => {
   await applyD1Migrations(db, [
@@ -25,6 +25,7 @@ test("migrations create project tables and history indexes", async () => {
     {name: "0007_v15_task_started_at.sql", queries: ["ALTER TABLE task_index ADD COLUMN started_at INTEGER", "UPDATE task_index SET started_at = finished_at - duration_sec WHERE started_at IS NULL AND duration_sec IS NOT NULL AND duration_sec >= 0"]},
     {name: "0008_v15_run_number.sql", queries: runNumberMigration.split(";").filter(query => query.trim())},
     {name: "0009_v15_run_display_title.sql", queries: runDisplayTitleMigration.split(";").filter(query => query.trim())},
+    {name: "0010_v15_partial_applied.sql", queries: partialAppliedMigration.split(";").filter(query => query.trim())},
   ], "d1_test_migrations");
   const {results} = await db.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all<{name: string}>();
   expect(results.map(table => table.name).filter(name => !/^(d1_|sqlite_|_cf_)/.test(name))).toHaveLength(23);

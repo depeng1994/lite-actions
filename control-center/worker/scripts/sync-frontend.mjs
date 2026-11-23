@@ -3,7 +3,7 @@ import path from "node:path";
 import {fileURLToPath} from "node:url";
 
 const workerRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const source = path.resolve(process.env.FRONTEND_DIST || path.join(workerRoot, "../../../lite-actions-control-center-demo/dist/client"));
+const source = path.resolve(process.env.FRONTEND_DIST || path.join(workerRoot, "../web/dist/client"));
 const target = path.join(workerRoot, "public");
 
 await mkdir(target, {recursive: true});

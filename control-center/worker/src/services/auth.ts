@@ -14,7 +14,8 @@ export function pepper(context: Context) {
   return context.env.KEY_PEPPER;
 }
 export function cookie(context: Context, token: string, maxAge: number) {
-  const secure = context.env.DEV_INSECURE_COOKIE === "1" && context.url.hostname === "localhost" ? "" : "; Secure";
+  const localHost = context.url.hostname === "localhost" || context.url.hostname === "127.0.0.1";
+  const secure = context.env.DEV_INSECURE_COOKIE === "1" && localHost ? "" : "; Secure";
   return `la_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure}`;
 }
 export async function principal(context: Context): Promise<Principal | undefined> {

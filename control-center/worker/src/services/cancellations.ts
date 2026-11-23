@@ -1,5 +1,6 @@
 import {modelMap} from "../modelMap";
 import {type Context, HttpError} from "../router";
+import type {SqlStore} from "../storage/sqlStore";
 import type {Cancellation, RunIdentity} from "../types/api";
 import {auditStatement} from "./audit";
 import {workflowPlatform} from "./cancelPlatform";
@@ -7,7 +8,7 @@ import {integer, member, REPO, RUN_ID, string} from "../utils/validate";
 
 type CancelRow = Cancellation & {updated_at: number; requested_by: string};
 
-function lookup(db: D1Database, id: string) {
+function lookup(db: SqlStore, id: string) {
   return db.prepare("SELECT * FROM cancellations WHERE cancel_id=?").bind(id).first<CancelRow>();
 }
 function identityParams(run: RunIdentity) {
@@ -21,7 +22,7 @@ function parse(input: Record<string, unknown>): RunIdentity {
     attempt: integer(input.attempt, "attempt", 1, 2**31 - 1),
   };
 }
-async function byRun(db: D1Database, run: RunIdentity) {
+async function byRun(db: SqlStore, run: RunIdentity) {
   return db.prepare("SELECT * FROM cancellations WHERE provider=? AND repo=? AND run_id=? AND attempt=?")
     .bind(...identityParams(run)).first<CancelRow>();
 }
@@ -113,10 +114,11 @@ export async function trackCancellations(context: Context) {
       if (row.status !== "PLATFORM_DONE") {
         const platform = await workflowPlatform(context.env, row, context.now);
         const state = await platform.state();
+        const forceWait = Number(context.env.FORCE_CANCEL_WAIT_SECONDS ?? 120);
         if (state.attempt !== attempt || state.terminal) {
           row.platform_conclusion = state.attempt !== attempt ? "superseded" : state.conclusion;
           row.status = "PLATFORM_DONE";
-        } else if (provider === "github" && row.force_cancel_sent_at === null && context.now - (row.submitted_at ?? context.now) >= 120) {
+        } else if (provider === "github" && row.force_cancel_sent_at === null && context.now - (row.submitted_at ?? context.now) >= forceWait) {
           const claim = await db.prepare(`UPDATE cancellations SET status='FORCE_CANCEL_PENDING',force_cancel_sent_at=?,updated_at=?
             WHERE cancel_id=? AND force_cancel_sent_at IS NULL AND status='SUBMITTED'`)
             .bind(context.now, context.now, id).run();

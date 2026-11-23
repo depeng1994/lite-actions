@@ -1,3 +1,4 @@
+import type {SqlStore} from "../storage/sqlStore";
 import type {DeviceGroup, Projection, TaskSummary} from "../types/api";
 
 type Shape = Pick<TaskSummary, "logical_model" | "test_id" | "target_pool" | "req_nodes" | "req_devices">;
@@ -7,7 +8,7 @@ export function durationKey(task: Shape) {
   return JSON.stringify([task.logical_model, task.test_id, task.target_pool, task.req_nodes, task.req_devices]);
 }
 
-export async function estimates(db: D1Database, tasks: Shape[]) {
+export async function estimates(db: SqlStore, tasks: Shape[]) {
   const keys = [...new Set(tasks.map(durationKey))];
   if (!keys.length) return new Map<string, number[]>();
   const {results} = await db.prepare(`

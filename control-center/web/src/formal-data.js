@@ -1,20 +1,33 @@
-const current = new Date();
-const shanghaiFormatter = new Intl.DateTimeFormat("en-CA", {
+const shanghaiDateFormatter = new Intl.DateTimeFormat("en-CA", {
   timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
 });
-const minuteAtShanghai = () => {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false,
-  }).formatToParts(current);
-  return Number(parts.find(({type}) => type === "hour")?.value || 0) * 60
-    + Number(parts.find(({type}) => type === "minute")?.value || 0);
-};
+const shanghaiLabelFormatter = new Intl.DateTimeFormat("zh-CN", {
+  timeZone: "Asia/Shanghai", dateStyle: "full",
+});
+const shanghaiTimeParts = new Intl.DateTimeFormat("en-US", {
+  timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false,
+});
 
-export const currentDate = shanghaiFormatter.format(current);
-export const dateLabel = new Intl.DateTimeFormat("zh-CN", {timeZone: "Asia/Shanghai", dateStyle: "full"}).format(current);
-export const now = minuteAtShanghai();
-export const timelineStart = Math.max(0, now - 50);
-export const timelineEnd = Math.min(24 * 60, now + 100);
+export function beijingClock(date = new Date()) {
+  const parts = shanghaiTimeParts.formatToParts(date);
+  const hour = Number(parts.find(({type}) => type === "hour")?.value || 0) % 24;
+  const minute = Number(parts.find(({type}) => type === "minute")?.value || 0);
+  const nowMinute = hour * 60 + minute;
+  return {
+    currentDate: shanghaiDateFormatter.format(date),
+    dateLabel: shanghaiLabelFormatter.format(date),
+    now: nowMinute,
+    timelineStart: Math.max(0, nowMinute - 50),
+    timelineEnd: Math.min(24 * 60, nowMinute + 100),
+  };
+}
+
+const initialClock = beijingClock();
+export const currentDate = initialClock.currentDate;
+export const dateLabel = initialClock.dateLabel;
+export const now = initialClock.now;
+export const timelineStart = initialClock.timelineStart;
+export const timelineEnd = initialClock.timelineEnd;
 export const workers = ["Blue", "Yellow"];
 
 // Repository tabs are configuration metadata. Runtime tasks, nodes, accounts and history
@@ -42,7 +55,8 @@ export function workflowKey({platform, repo, id, attempt}) {
 
 export function clock(minute) {
   if (minute == null) return "暂无估算";
-  return [Math.floor(minute / 60), Math.floor(minute % 60)]
+  const normalized = ((Math.floor(minute) % 1440) + 1440) % 1440;
+  return [Math.floor(normalized / 60), normalized % 60]
     .map((part) => String(part).padStart(2, "0")).join(":");
 }
 
@@ -50,11 +64,16 @@ export function poolId(worker, pool) {
   return `${worker}/${pool}`;
 }
 
+export function displayNodeHost(node) {
+  return node.displayHost || node.hostId || node.host_id || (node.ip && node.port ? `${node.ip}:${node.port}` : node.id);
+}
+
 export function targetFor(node, group) {
   const hostId = node.hostId || node.host_id || (node.ip && node.port ? `${node.ip}:${node.port}` : node.id);
+  const labelHost = displayNodeHost(node);
   return group
-    ? {id: `${node.id}/${group}`, label: `${node.id} · 设备组 ${group}`, worker: node.worker, pool: node.pool, node: hostId, group, type: "设备组"}
-    : {id: node.id, label: node.id, worker: node.worker, pool: node.pool, node: hostId, type: "节点"};
+    ? {id: `${node.id}/${group}`, label: `${labelHost} · 设备组 ${group}`, worker: node.worker, pool: node.pool, node: hostId, nodeId: node.id, group, type: "设备组"}
+    : {id: node.id, label: labelHost, worker: node.worker, pool: node.pool, node: hostId, nodeId: node.id, type: "节点"};
 }
 
 export function flagFor(config, node, group) {
@@ -62,24 +81,26 @@ export function flagFor(config, node, group) {
   return config.flags[poolId(node.worker, node.pool)]
     || config.flags[node.id]
     || (hostId && config.flags[hostId])
-    || config.flags[`${node.id}/${group}`]
-    || (hostId && config.flags[`${hostId}/${group}`]);
+    || (group ? config.flags[`${node.id}/${group}`] : null)
+    || (group && hostId ? config.flags[`${hostId}/${group}`] : null);
 }
 
 export function plannedTime(item, config, nodes) {
+  if (item.projectionStatus === "NO_ESTIMATE" || item.projectionStatus === "WAITING_EXTERNAL") return null;
   if (item.planned == null) return null;
+  if (!item.plannedNode) return item.planned;
   const node = nodes.find(({id}) => id === item.plannedNode);
-  if (!node || item.plannedGroups.some((group) => flagFor(config, node, group))) return null;
+  if (!node || item.plannedGroups?.some((group) => flagFor(config, node, group))) return null;
   return item.planned;
 }
 
 export function impactOf(target, cases, nodes) {
   const affectedNodes = nodes.filter((node) => {
     const hostId = node.hostId || node.host_id || (node.ip && node.port ? `${node.ip}:${node.port}` : null);
-    return node.worker === target.worker && node.pool === target.pool && (!target.node || target.node === node.id || target.node === hostId);
+    return node.worker === target.worker && node.pool === target.pool && (!target.node || target.node === node.id || target.node === hostId || target.nodeId === node.id);
   });
   const leases = cases.filter((item) => item.node && affectedNodes.some((node) => node.id === item.node) && (!target.group || item.groups.includes(target.group)) && ["准备中", "运行中", "清理中"].includes(item.status));
-  const queue = cases.filter((item) => item.status === "排队中" && item.worker === target.worker && item.pool === target.pool && (!target.group || !item.plannedGroups || item.plannedGroups.includes(target.group)));
+  const queue = cases.filter((item) => item.status === "排队中" && item.worker === target.worker && item.pool === target.pool && (!target.group || !item.plannedGroups?.length || item.plannedGroups.includes(target.group)));
   return {affectedNodes, leases, queue};
 }
 
@@ -87,6 +108,10 @@ export const dateFormatter = new Intl.DateTimeFormat("sv-SE", {
   timeZone: "Asia/Shanghai", dateStyle: "short", timeStyle: "short",
 });
 
+export const dateTimeSecondFormatter = new Intl.DateTimeFormat("sv-SE", {
+  timeZone: "Asia/Shanghai", dateStyle: "short", timeStyle: "medium",
+});
+
 export function timeFromMinutes(minute) {
-  return minute == null ? null : Date.parse(`${currentDate}T00:00:00+08:00`) + minute * 60000;
+  return minute == null ? null : Date.parse(`${beijingClock().currentDate}T00:00:00+08:00`) + minute * 60000;
 }

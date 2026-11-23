@@ -1,0 +1,29 @@
+# Example systemd unit for self-hosted Lite Actions Control Center (Node.js 24 + built-in node:sqlite)
+# Copy to /etc/systemd/system/lite-actions-control-center.service and customize EnvironmentFile.
+
+[Unit]
+Description=Lite Actions Control Center (Node 24 + SQLite)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/lite-actions/control-center
+Environment=HOST=127.0.0.1
+Environment=PORT=8788
+Environment=DB_PATH=/var/lib/lite-actions/control-center.sqlite
+Environment=STATIC_DIR=/opt/lite-actions/control-center/web/dist/client
+Environment=TRUST_PROXY_HEADERS=1
+EnvironmentFile=/etc/lite-actions/control-center.env
+ExecStartPre=/usr/bin/node /opt/lite-actions/control-center/worker/scripts/seed.mjs --sqlite /var/lib/lite-actions/control-center.sqlite
+ExecStart=/usr/bin/node --experimental-strip-types /opt/lite-actions/control-center/worker/scripts/start-node-server.mjs
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+
+# Example Caddyfile (automatic HTTPS reverse proxy):
+# control.example.com {
+#   reverse_proxy 127.0.0.1:8788
+# }

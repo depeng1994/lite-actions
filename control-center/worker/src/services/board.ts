@@ -1,9 +1,11 @@
 import {installation, supportsCancel} from "./cancelPlatform";
 import {modelMap} from "../modelMap";
 import {type Context, HttpError} from "../router";
+import type {SqlStatement} from "../storage/sqlStore";
 import type {CaseKind, DeviceGroup, ModelRepo, ModelTab, Phase, Projection, Provider, RunGroup, TaskDetail, TaskSummary, Timeline, WorkflowList, WorkflowRow, WorkerId} from "../types/api";
 import {pepper} from "./auth";
-import {type GroupRow, offline, overlaps, type Pools, projectDevice, type RawAllocation, type WorkerRow, workerStatus} from "./deviceState";
+import {aggregateHealth, type GroupRow, offline, overlaps, type Pools, projectDevice, type RawAllocation, type WorkerRow, workerStatus} from "./deviceState";
+import {refreshWorkflowRuns, type WorkflowIdentity as IngestWorkflowIdentity} from "./ingest";
 import {durationKey, estimate, estimates, projectSchedule, type ProjectionRow, type QueueTask} from "./schedule";
 import {base64url} from "../utils/crypto";
 import {blobBuffer, gunzip} from "../utils/gzip";
@@ -77,8 +79,8 @@ export async function overview(context: Context) {
     context.env.DB.prepare("SELECT * FROM workers"),
     context.env.DB.prepare("SELECT COALESCE(MAX(revision),0) AS revision FROM pools_configs"),
   ]);
-  const latest = Number((results[1].results[0] as {revision: number} | undefined)?.revision ?? 0);
-  const health = results[0].results as unknown as WorkerRow[];
+  const latest = Number((results[1].results?.[0] as {revision: number} | undefined)?.revision ?? 0);
+  const health = (results[0].results ?? []) as unknown as WorkerRow[];
   const workers = ZONES.map(zone => workerStatus(context.now, zone, latest, health.find(row => row.worker_id === zone)));
   return {
     workers, page_refresh_sec: 30 as const,
@@ -89,7 +91,7 @@ export async function overview(context: Context) {
 export async function models(context: Context) {
   const {results} = await context.env.DB.prepare(`
     SELECT logical_model,provider,repo,count(*) AS active_count FROM tasks_active GROUP BY logical_model,provider,repo
-    UNION ALL SELECT logical_model,provider,repo,0 FROM task_index GROUP BY logical_model,provider,repo
+    UNION ALL SELECT DISTINCT logical_model,provider,repo,0 FROM workflow_runs
   `).all<{logical_model: string; provider: Provider; repo: string; active_count: number}>();
   const tabs = new Map<string, ModelTab>(modelMap.models.map(model => [model.slug, {
     slug: model.slug, display_name: model.display_name,
@@ -112,7 +114,7 @@ export async function models(context: Context) {
     await Promise.allSettled(repos.slice(0, 25).map(row => installation(context.env, row.repo, context.now)));
     for (const row of repos) row.cancel_supported = canCancel(context, row.provider, row.repo);
   }
-  return {models: [...tabs.values()]};
+  return {default_model: modelMap.default_model, models: [...tabs.values()]};
 }
 
 function byRun(tasks: TaskSummary[]): RunGroup[] {
@@ -126,75 +128,94 @@ function byRun(tasks: TaskSummary[]): RunGroup[] {
   return [...bins.values()];
 }
 
-function workflowIdentity(task: TaskSummary) {
-  return JSON.stringify([task.provider, task.repo, task.run_id, task.attempt]);
+type WorkflowRunRecord = {
+  provider: Provider; repo: string; run_id: string; attempt: number;
+  logical_model: string; submitted_at: number | null; workflow_name: string | null;
+  run_number: number | null; display_title: string | null; workflow_file: string | null;
+  pr_number: number | null; pr_author: string | null; trigger_actor: string | null;
+  event_type: string | null; is_active: number; has_in_flight: number;
+  has_waiting_resource_case: number; active_case_count: number; total_case_count: number;
+  queue_order_rank: number | null; first_started_at: number | null; finished_at: number | null;
+  result_state: "QUEUED" | "PASS" | "FAIL"; pools_json: string; max_cards: number;
+  card_seconds_finished: number; has_unmeasured_allocated: number;
+};
+
+function workflowIdentity(row: {provider: Provider; repo: string; run_id: string; attempt: number}) {
+  return JSON.stringify([row.provider, row.repo, row.run_id, row.attempt]);
 }
 
-function workflowName(task: TaskSummary) {
-  return task.workflow_name ?? task.workflow_file?.split("/").at(-1)?.replace(/\.ya?ml$/, "") ?? null;
-}
-
-function workflowScope(task: TaskSummary) {
-  return task.repo.startsWith("depeng1994/") ? "个人仓" as const : "组织仓" as const;
-}
-
-function workflowRows(tasks: TaskSummary[], history: boolean): WorkflowRow[] {
-  const groups = new Map<string, TaskSummary[]>();
-  for (const task of tasks) {
-    const key = workflowIdentity(task);
-    groups.set(key, [...(groups.get(key) ?? []), task]);
+function workflowScope(provider: Provider, repo: string): ModelRepo["repo_scope"] {
+  for (const model of modelMap.models) {
+    const found = model.repos.find(entry => entry.provider === provider && entry.repo.toLowerCase() === repo.toLowerCase());
+    if (found?.repo_scope) return found.repo_scope as ModelRepo["repo_scope"];
   }
-  const rows = [...groups.values()].map((cases) => {
-    const first = cases[0];
-    const active = cases.some(item => item.phase != null);
-    const inFlight = cases.some(item => item.phase != null && item.phase !== "QUEUED");
-    const queued = cases.some(item => item.phase === "QUEUED" && item.kind !== "worker_probe");
-    const passed = cases.every(item => item.status === "PASS");
-    const failed = cases.some(item => item.status && item.status !== "PASS");
-    const finished = cases.map(item => item.finished_at ?? 0).filter(Boolean);
-    const submitted = cases.map(item => item.submitted_at ?? item.queued_at ?? 0).filter(Boolean);
-    const started = cases.map(item => item.queued_at ?? 0).filter(Boolean);
-    const startedAt = cases.map(item => item.started_at ?? 0).filter(Boolean);
-    const cards = Math.max(0, ...cases.map(item => item.allocated_cards));
-    const measured = cases.filter(item => item.allocated_cards > 0 &&
-      (item.duration_sec != null || (item.started_at != null && (item.finished_at != null || inFlight))) &&
-      (item.duration_sec != null || item.estimate_status !== "NO_ESTIMATE"));
-    const durations = measured.reduce((sum, item) => sum + Math.max(0,
-      item.duration_sec ?? ((item.finished_at ?? (inFlight ? Date.now() / 1000 : item.started_at!)) - item.started_at!)), 0);
-    return {
-      provider: first.provider, repo: first.repo, run_id: first.run_id, attempt: first.attempt,
-      sequence: history ? 0 : queued ? 0 : 0,
-      submitted_at: submitted.length ? Math.min(...submitted) : null,
-      run_number: first.run_number ?? null,
-      display_title: first.display_title ?? null,
-      repo_scope: workflowScope(first), logical_model: first.logical_model,
-      workflow_name: workflowName(first), workflow_file: first.workflow_file,
-      pools: [...new Set(cases.map(item => item.target_pool))], max_cards: cards,
-      result: (history ? (passed ? "PASS" : "FAIL") : "QUEUED") as WorkflowRow["result"],
-      trigger_actor: first.trigger_actor, event_type: first.event_type,
-      pr_number: first.pr_number, pr_author: first.pr_author,
-      started_at: startedAt.length ? Math.min(...startedAt) : null,
-      finished_at: finished.length ? Math.max(...finished) : null,
-      card_hours: durations && measured.length ? Number((measured.reduce((sum, item) => sum + item.allocated_cards *
-        Math.max(0, item.duration_sec ?? ((item.finished_at ?? (inFlight ? Date.now() / 1000 : item.started_at!)) - item.started_at!)), 0) / 3600).toFixed(2)) : null,
-      card_hours_as_of_now: !history && inFlight,
-      card_hours_partial: measured.length > 0 && measured.length < cases.filter(item => item.allocated_cards > 0).length,
-      cancel_supported: cases.some(item => item.cancel_supported),
-      can_move_up: cases.some(item => item.can_move_up), cases,
-    };
-  });
-  if (history) {
-    rows.sort((left, right) => (right.finished_at ?? 0) - (left.finished_at ?? 0) ||
-      workflowIdentity(left.cases[0]).localeCompare(workflowIdentity(right.cases[0])));
-    rows.forEach((row, index) => { row.sequence = -(index + 1); });
-  } else {
-    const queue = rows.filter(row => row.cases.some(item => item.phase === "QUEUED" && item.kind !== "worker_probe"))
-      .sort((left, right) => (left.submitted_at ?? Number.MAX_SAFE_INTEGER) - (right.submitted_at ?? Number.MAX_SAFE_INTEGER) ||
-        workflowIdentity(left.cases[0]).localeCompare(workflowIdentity(right.cases[0])));
-    queue.forEach((row, index) => { row.sequence = index + 1; });
-    rows.forEach(row => { if (row.cases.some(item => item.phase != null && item.phase !== "QUEUED")) row.sequence = 0; });
+  return undefined;
+}
+
+function buildWorkflowRow(
+  run: WorkflowRunRecord,
+  cases: TaskSummary[],
+  sequence: number,
+  now: number,
+  reliableMap: Map<string, boolean>,
+): WorkflowRow {
+  const history = run.is_active === 0;
+  const inFlight = run.has_in_flight === 1;
+  const allocated = cases.filter(item => item.allocated_cards > 0);
+  const measured = allocated.filter(item =>
+    item.duration_sec != null ||
+    (item.started_at != null && (item.finished_at != null || (item.phase != null && item.phase !== "QUEUED")) && reliableMap.get(item.task_uid)),
+  );
+  const cardSeconds = measured.reduce((sum, item) => {
+    const sec = item.duration_sec ?? Math.max(0, (item.finished_at ?? now) - (item.started_at ?? now));
+    return sum + item.allocated_cards * Math.max(0, sec);
+  }, 0);
+  const pools = [...new Set(cases.map(item => item.target_pool).filter(Boolean))];
+  const fallbackPools = (JSON.parse(run.pools_json || "[]") as string[]).filter(Boolean);
+  const maxCards = cases.length
+    ? Math.max(0, ...cases.map(item => item.allocated_cards || item.req_nodes * item.req_devices))
+    : run.max_cards;
+  const starts = cases.map(item => item.started_at).filter((v): v is number => v != null);
+  return {
+    provider: run.provider, repo: run.repo, run_id: run.run_id, attempt: run.attempt,
+    sequence,
+    submitted_at: run.submitted_at,
+    run_number: run.run_number ?? null,
+    display_title: run.display_title ?? null,
+    repo_scope: workflowScope(run.provider, run.repo),
+    logical_model: run.logical_model,
+    workflow_name: run.workflow_name ?? run.workflow_file?.split("/").at(-1)?.replace(/\.ya?ml$/, "") ?? null,
+    workflow_file: run.workflow_file,
+    pools: pools.length ? pools : fallbackPools,
+    max_cards: maxCards,
+    result: run.result_state,
+    trigger_actor: run.trigger_actor,
+    event_type: run.event_type,
+    pr_number: run.pr_number,
+    pr_author: run.pr_author,
+    started_at: starts.length ? Math.min(...starts) : run.first_started_at,
+    finished_at: history ? run.finished_at : null,
+    card_hours: measured.length && cardSeconds > 0 ? Number((cardSeconds / 3600).toFixed(2)) : null,
+    card_hours_as_of_now: !history && inFlight && measured.length > 0 && cardSeconds > 0,
+    card_hours_partial: measured.length > 0 && measured.length < allocated.length,
+    cancel_supported: !history && cases.some(item => item.cancel_supported),
+    can_move_up: !history && sequence >= 2,
+    cases,
+  };
+}
+
+function parseWorkflowCursor(cursor: string | null) {
+  if (!cursor) return null;
+  try {
+    const decoded = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(cursor.replaceAll("-", "+").replaceAll("_", "/")), c => c.charCodeAt(0))));
+    if (!Array.isArray(decoded) || decoded.length !== 5) throw new Error();
+    const [finished, provider, repo, runId, attempt] = decoded as [number, string, string, string, number];
+    if (!Number.isSafeInteger(finished) || typeof provider !== "string" || typeof repo !== "string" ||
+      typeof runId !== "string" || !Number.isSafeInteger(attempt)) throw new Error();
+    return {finished, provider, repo, runId, attempt};
+  } catch {
+    throw new HttpError(400, "INVALID_CURSOR");
   }
-  return rows;
 }
 
 export async function workflows(context: Context): Promise<WorkflowList> {
@@ -212,57 +233,165 @@ export async function workflows(context: Context): Promise<WorkflowList> {
   if (platform && platform !== "github" && platform !== "gitcode") throw new HttpError(400, "INVALID_PLATFORM");
   if (pool && !POOL.test(pool)) throw new HttpError(400, "INVALID_POOL");
   if (status && !["active", "history"].includes(status)) throw new HttpError(400, "INVALID_STATUS");
+  const cursor = parseWorkflowCursor(context.url.searchParams.get("cursor"));
   const {DB: db} = context.env;
-  const result = await db.batch<TaskRow>([
-    db.prepare(ACTIVE_SELECT + " ORDER BY a.queued_at,a.task_uid"),
-    // The requested history_limit is a Workflow count. Fetching a fixed task
-    // cap can silently truncate a Workflow when one run has many cases.
-    db.prepare("SELECT * FROM task_index ORDER BY finished_at DESC,provider,repo,run_id,attempt,task_uid"),
-    db.prepare("SELECT COUNT(DISTINCT provider||'/'||repo||'/'||run_id||'/'||attempt) AS count FROM task_index"),
-    db.prepare("SELECT queue_version AS version FROM workflow_queue_meta WHERE id=1"),
-  ]);
-  const filter = (row: WorkflowRow) => (!model || row.logical_model === model) && (!repo || row.repo === repo) &&
-    (!platform || row.provider === platform) && (!pool || row.pools.includes(pool));
-  const active = await summaries(context, result[0].results as unknown as TaskRow[]);
-  // A Workflow can have completed child cases while another child is still
-  // active. Merge those historical cases into the active row so one Workflow
-  // never appears in both tables.
-  const historical = await summaries(context, result[1].results as unknown as TaskRow[]);
-  const activeKeys = new Set(active.map(workflowIdentity));
-  const mixedHistory = historical.filter(task => activeKeys.has(workflowIdentity(task)));
-  const activeRows = workflowRows([...active, ...mixedHistory], false).filter(filter);
-  const historicalOnly = historical.filter(task => !activeKeys.has(workflowIdentity(task)));
-  const allHistoryRows = workflowRows(historicalOnly, true).filter(filter);
-  const cursor = context.url.searchParams.get("cursor");
-  let historyRows = allHistoryRows;
-  if (cursor) {
-    try {
-      const decoded = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(cursor.replaceAll("-", "+").replaceAll("_", "/")), c => c.charCodeAt(0))));
-      if (!Array.isArray(decoded) || decoded.length !== 5) throw new Error();
-      const [cursorFinished, cursorProvider, cursorRepo, cursorRun, cursorAttempt] = decoded as [number, string, string, string, number];
-      if (!Number.isSafeInteger(cursorFinished) || typeof cursorProvider !== "string" || typeof cursorRepo !== "string" ||
-        typeof cursorRun !== "string" || !Number.isSafeInteger(cursorAttempt)) throw new Error();
-      const cursorWorkflow = JSON.stringify([cursorProvider, cursorRepo, cursorRun, cursorAttempt]);
-      historyRows = historyRows.filter(row => {
-        if ((row.finished_at ?? 0) !== cursorFinished) return (row.finished_at ?? 0) < cursorFinished;
-        return JSON.stringify([row.provider, row.repo, row.run_id, row.attempt]) > cursorWorkflow;
-      });
-    } catch { throw new HttpError(400, "INVALID_CURSOR"); }
+  const showActive = !status || status === "active";
+  const showHistory = (!status || status === "history") && historyLimit > 0;
+
+  // Backfill only active tasks missing from workflow_runs (e.g. direct SQL test
+  // inserts). Never scan task_index on this path.
+  const missingActive = await db.prepare(`
+    SELECT DISTINCT a.provider,a.repo,a.run_id,a.attempt FROM tasks_active a
+    WHERE NOT EXISTS (
+      SELECT 1 FROM workflow_runs w
+      WHERE w.provider=a.provider AND w.repo=a.repo AND w.run_id=a.run_id AND w.attempt=a.attempt
+    )
+  `).all<IngestWorkflowIdentity>();
+  if (missingActive.results.length) {
+    await db.batch(refreshWorkflowRuns(db, missingActive.results, context.now));
   }
-  const visibleHistory = historyRows.slice(0, historyLimit);
-  const last = visibleHistory.at(-1);
-  const next_cursor = last ? base64url(new TextEncoder().encode(JSON.stringify([
+
+  const filterClauses: string[] = [];
+  const filterParams: unknown[] = [];
+  if (model) { filterClauses.push("logical_model=?"); filterParams.push(model); }
+  if (repo) { filterClauses.push("repo=?"); filterParams.push(repo); }
+  if (platform) { filterClauses.push("provider=?"); filterParams.push(platform); }
+  if (pool) { filterClauses.push("EXISTS (SELECT 1 FROM json_each(pools_json) WHERE value=?)"); filterParams.push(pool); }
+  const filterSql = filterClauses.length ? " AND " + filterClauses.join(" AND ") : "";
+
+  const metaStatements: SqlStatement[] = [
+    db.prepare("SELECT queue_version AS version FROM workflow_queue_meta WHERE id=1"),
+    db.prepare("SELECT meta_value FROM system_meta WHERE meta_key='capacity_purged_before_ts'"),
+  ];
+  if (showActive) {
+    metaStatements.push(db.prepare(`
+      SELECT * FROM workflow_runs WHERE is_active=1
+      ORDER BY has_in_flight DESC,
+        CASE WHEN queue_order_rank IS NULL THEN 1 ELSE 0 END,
+        queue_order_rank ASC,
+        COALESCE(submitted_at, 9223372036854775807) ASC,
+        provider ASC, repo ASC, run_id ASC, attempt ASC
+    `));
+  }
+  const cursorSql = cursor
+    ? ` AND (COALESCE(finished_at,0)<? OR (COALESCE(finished_at,0)=? AND (
+        provider>? OR (provider=? AND (repo>? OR (repo=? AND (run_id>? OR (run_id=? AND attempt>?)))))
+      )))`
+    : "";
+  const cursorParams = cursor
+    ? [cursor.finished, cursor.finished, cursor.provider, cursor.provider, cursor.repo, cursor.repo, cursor.runId, cursor.runId, cursor.attempt]
+    : [];
+  if (showHistory) {
+    metaStatements.push(
+      db.prepare(`
+        SELECT * FROM workflow_runs WHERE is_active=0${filterSql}${cursorSql}
+        ORDER BY finished_at DESC, provider ASC, repo ASC, run_id ASC, attempt ASC
+        LIMIT ?
+      `).bind(...filterParams, ...cursorParams, historyLimit + 1),
+      db.prepare(`SELECT COUNT(*) AS count FROM workflow_runs WHERE is_active=0${filterSql}`).bind(...filterParams),
+    );
+  }
+  const metaResults = await db.batch(metaStatements);
+  let idx = 0;
+  const queueVersion = Number((metaResults[idx++].results?.[0] as {version?: number} | undefined)?.version ?? 0);
+  const purged = Boolean((metaResults[idx++].results?.[0] as {meta_value?: string} | undefined)?.meta_value);
+  const allActiveRuns = showActive ? ((metaResults[idx++].results ?? []) as unknown as WorkflowRunRecord[]) : [];
+  const rawHistoryRuns = showHistory ? ((metaResults[idx++].results ?? []) as unknown as WorkflowRunRecord[]) : [];
+  const historyTotal = showHistory ? Number((metaResults[idx++].results?.[0] as {count?: number} | undefined)?.count ?? 0) : 0;
+
+  // Assign global waiting sequence before filtering so filters never renumber.
+  let waitingSeq = 0;
+  const activeWithSeq = allActiveRuns.map(run => {
+    const seq = run.has_in_flight === 1 || run.has_waiting_resource_case === 0 ? 0 : ++waitingSeq;
+    return {run, sequence: seq};
+  }).filter(({run}) => {
+    const pools = JSON.parse(run.pools_json || "[]") as string[];
+    return (!model || run.logical_model === model) && (!repo || run.repo === repo) &&
+      (!platform || run.provider === platform) && (!pool || pools.includes(pool));
+  });
+
+  const hasMore = showHistory && rawHistoryRuns.length > historyLimit;
+  const pageHistoryRuns = showHistory ? rawHistoryRuns.slice(0, historyLimit) : [];
+
+  // Load case rows only for the visible workflows on this response.
+  const activeRunIdentities = activeWithSeq.map(({run}) => ({provider: run.provider, repo: run.repo, run_id: run.run_id, attempt: run.attempt}));
+  const mixedActiveIdentities = activeWithSeq
+    .filter(({run}) => run.total_case_count > run.active_case_count)
+    .map(({run}) => ({provider: run.provider, repo: run.repo, run_id: run.run_id, attempt: run.attempt}));
+  const historyRunIdentities = pageHistoryRuns.map(run => ({provider: run.provider, repo: run.repo, run_id: run.run_id, attempt: run.attempt}));
+
+  const detailStatements: SqlStatement[] = [];
+  const activeCasesIdx = activeRunIdentities.length ? detailStatements.push(db.prepare(`
+    SELECT a.*, (SELECT queue_pos FROM queue_orders q WHERE q.task_uid=a.task_uid
+      AND q.worker_id=a.worker_id AND q.pool_name=a.target_pool AND q.kind=a.kind) AS queue_pos
+    FROM tasks_active a JOIN json_each(?) k
+      ON a.provider=json_extract(k.value,'$.provider') AND a.repo=json_extract(k.value,'$.repo')
+      AND a.run_id=json_extract(k.value,'$.run_id') AND a.attempt=json_extract(k.value,'$.attempt')
+    ORDER BY a.queued_at,a.task_uid
+  `).bind(JSON.stringify(activeRunIdentities))) - 1 : -1;
+
+  const indexTargets = [...mixedActiveIdentities, ...historyRunIdentities];
+  const indexCasesIdx = indexTargets.length ? detailStatements.push(db.prepare(`
+    SELECT i.* FROM task_index i JOIN json_each(?) k
+      ON i.provider=json_extract(k.value,'$.provider') AND i.repo=json_extract(k.value,'$.repo')
+      AND i.run_id=json_extract(k.value,'$.run_id') AND i.attempt=json_extract(k.value,'$.attempt')
+    ORDER BY i.finished_at DESC, i.task_uid
+  `).bind(JSON.stringify(indexTargets))) - 1 : -1;
+
+  const historyRanksIdx = historyRunIdentities.length ? detailStatements.push(db.prepare(`
+    SELECT r.provider,r.repo,r.run_id,r.attempt,
+      1 + (SELECT COUNT(*) FROM workflow_runs w WHERE w.is_active=0 AND (
+        COALESCE(w.finished_at,0)>COALESCE(r.finished_at,0) OR (
+          COALESCE(w.finished_at,0)=COALESCE(r.finished_at,0) AND (
+            w.provider<r.provider OR (w.provider=r.provider AND (
+              w.repo<r.repo OR (w.repo=r.repo AND (
+                w.run_id<r.run_id OR (w.run_id=r.run_id AND w.attempt<r.attempt)
+              ))
+            ))
+          )
+        )
+      )) AS rank
+    FROM workflow_runs r JOIN json_each(?) k
+      ON r.provider=json_extract(k.value,'$.provider') AND r.repo=json_extract(k.value,'$.repo')
+      AND r.run_id=json_extract(k.value,'$.run_id') AND r.attempt=json_extract(k.value,'$.attempt')
+  `).bind(JSON.stringify(historyRunIdentities))) - 1 : -1;
+
+  const detailResults = detailStatements.length ? await db.batch(detailStatements) : [];
+  const rawActiveCases = activeCasesIdx >= 0 ? ((detailResults[activeCasesIdx].results ?? []) as unknown as TaskRow[]) : [];
+  const rawIndexCases = indexCasesIdx >= 0 ? ((detailResults[indexCasesIdx].results ?? []) as unknown as TaskRow[]) : [];
+  const rawRanks = historyRanksIdx >= 0
+    ? ((detailResults[historyRanksIdx].results ?? []) as unknown as Array<WorkflowRunRecord & {rank: number}>)
+    : [];
+
+  const allRawCases = [...rawActiveCases, ...rawIndexCases];
+  const reliableMap = new Map(allRawCases.map(row => [row.task_uid, row.timing_reliable === 1]));
+  const allSummaries = allRawCases.length ? await summaries(context, allRawCases) : [];
+  const casesByWorkflow = new Map<string, TaskSummary[]>();
+  for (const item of allSummaries) {
+    const key = workflowIdentity(item);
+    (casesByWorkflow.get(key) ?? (casesByWorkflow.set(key, []), casesByWorkflow.get(key)!)).push(item);
+  }
+  const rankByWorkflow = new Map(rawRanks.map(row => [workflowIdentity(row), -Number(row.rank)]));
+
+  const activeRows = activeWithSeq.map(({run, sequence}) =>
+    buildWorkflowRow(run, casesByWorkflow.get(workflowIdentity(run)) ?? [], sequence, context.now, reliableMap));
+  const historyRows = pageHistoryRuns.map(run =>
+    buildWorkflowRow(run, casesByWorkflow.get(workflowIdentity(run)) ?? [], rankByWorkflow.get(workflowIdentity(run)) ?? -1, context.now, reliableMap));
+
+  const last = historyRows.at(-1);
+  const next_cursor = hasMore && last ? base64url(new TextEncoder().encode(JSON.stringify([
     last.finished_at ?? 0, last.provider, last.repo, last.run_id, last.attempt,
   ]))) : null;
-  const showActive = !status || status === "active";
-  const showHistory = !status || status === "history";
+
   return {
-    queue_version: Number((result[3].results[0] as {version?: number} | undefined)?.version ?? 0),
-    active: showActive ? activeRows : [], history: showHistory ? visibleHistory : [],
-    history_total: showHistory ? allHistoryRows.length : 0,
-    next_cursor: showHistory && historyRows.length > historyLimit ? next_cursor : null,
-    has_more: showHistory && historyRows.length > historyLimit, truncated_by_capacity: Boolean(await db.prepare("SELECT 1 FROM system_meta WHERE meta_key='capacity_purged_before_ts'").first()),
-    purged_notice: Boolean(await db.prepare("SELECT 1 FROM system_meta WHERE meta_key='capacity_purged_before_ts'").first()) ? "更早的记录已因容量清理" : null,
+    queue_version: queueVersion,
+    active: showActive ? activeRows : [],
+    history: showHistory ? historyRows : [],
+    history_total: showHistory ? historyTotal : 0,
+    next_cursor,
+    has_more: hasMore,
+    truncated_by_capacity: purged,
+    purged_notice: purged ? "更早的记录已因容量清理" : null,
   };
 }
 function readCursor(cursor: string | null, slug: string): [number, string] {
@@ -290,7 +419,7 @@ export async function modelRuns(context: Context) {
     db.prepare(`SELECT * FROM task_index WHERE logical_model=? AND (finished_at,task_uid)<(?,?)
         ORDER BY finished_at DESC,task_uid DESC LIMIT ?`).bind(slug, finished, uid, limit + 1),
   ]);
-  const [active, history] = result.map(entry => entry.results);
+  const [active, history] = result.map(entry => entry.results ?? []);
   const has_more = history.length > limit;
   const visible = history.slice(0, limit);
   const last = visible.at(-1);
@@ -344,14 +473,24 @@ export async function timeline(context: Context): Promise<Timeline> {
     db.prepare(ACTIVE_SELECT + " ORDER BY a.task_uid"),
     db.prepare("SELECT * FROM device_group_states"),
     db.prepare("SELECT * FROM queue_orders ORDER BY worker_id,pool_name,kind,queue_pos,task_uid"),
+    db.prepare("SELECT worker_id,scope,pool_name,host_id,devices_json FROM cluster_drain_targets"),
   ]);
-  const [health, versions, tasks, observations, queueRows] = results.map(result => result.results) as unknown as
-    [WorkerRow[], Revision[], TaskRow[], GroupRow[], QueueRow[]];
+  const [health, versions, tasks, observations, queueRows, drains] = results.map(result => result.results ?? []) as unknown as
+    [WorkerRow[], Revision[], TaskRow[], GroupRow[], QueueRow[], Array<{worker_id: WorkerId; scope: string; pool_name: string; host_id: string | null; devices_json: string | null}>];
   const latest = versions.at(-1)?.revision ?? 0;
   const details = await summaries(context, tasks);
   const byUid = new Map(tasks.map((task, i) => [task.task_uid, {task, detail: details[i], allocation: allocation(task)}]));
   const leases = [...byUid.values()].filter(lease => lease.allocation.length && lease.task.phase !== "QUEUED");
   const probe = new Map(observations.map(row => [JSON.stringify([row.worker_id, row.pool_name, row.host_id, row.devices_json]), row]));
+  const isPoolDraining = (zone: WorkerId, poolName: string) =>
+    drains.some(row => row.worker_id === zone && row.scope === "pool" && row.pool_name === poolName);
+  const isNodeDraining = (zone: WorkerId, poolName: string, host: string) =>
+    isPoolDraining(zone, poolName) || drains.some(row => row.worker_id === zone && row.scope === "node" && row.pool_name === poolName && row.host_id === host);
+  const isGroupDraining = (zone: WorkerId, poolName: string, host: string, ids: number[]) => {
+    const key = JSON.stringify(ids);
+    return isNodeDraining(zone, poolName, host) || drains.some(row =>
+      row.worker_id === zone && row.scope === "device_group" && row.pool_name === poolName && row.host_id === host && row.devices_json === key);
+  };
   const blocks = new Map<string, DeviceGroup[]>();
   const projections: Projection[] = [];
 
@@ -375,7 +514,10 @@ export async function timeline(context: Context): Promise<Timeline> {
           const allocated = leases.filter(lease => lease.task.worker_id === zone && lease.task.target_pool === pool_name
             && overlaps(node.host_id, ids, lease.allocation));
           const observation = probe.get(JSON.stringify([zone, pool_name, node.host_id, JSON.stringify(ids)]));
-          const display = projectDevice(context.now, {worker, pool, node, group, observation, leased: Boolean(allocated.length)});
+          const groupDraining = isGroupDraining(zone, pool_name, node.host_id, ids);
+          const display = projectDevice(context.now, {
+            worker, pool, node, group, observation, leased: Boolean(allocated.length), draining: groupDraining,
+          });
           let release_at = context.now;
           let uncertain = false;
           for (const {task, detail, allocation: allocatedNodes} of allocated) {
@@ -396,7 +538,12 @@ export async function timeline(context: Context): Promise<Timeline> {
           rows.push(display);
           device_groups.push(display);
         }
-        nodes.push({...identity, device_groups});
+        nodes.push({
+          ...identity,
+          draining: isNodeDraining(zone, pool_name, node.host_id),
+          health: aggregateHealth(device_groups.map(item => item.health)),
+          device_groups,
+        });
       }
       for (let index = 0; index < states.length; index++) {
         const {host_id, devices} = physical[index];
@@ -417,7 +564,15 @@ export async function timeline(context: Context): Promise<Timeline> {
         projections.push(projection);
         for (const index of groupIndexes) rows[index].dashed_blocks.push(projection);
       }
-      poolTree.push({pool_name, type: pool.type, enabled: pool.enabled, paused: Boolean(pool.paused), nodes});
+      poolTree.push({
+        pool_name,
+        type: pool.type,
+        enabled: pool.enabled,
+        paused: pool.enabled === false || Boolean(pool.paused),
+        draining: isPoolDraining(zone, pool_name),
+        health: aggregateHealth(nodes.map(node => node.health)),
+        nodes,
+      });
     }
     return {...status, offline: offline(context.now, worker), pools: poolTree};
   }));

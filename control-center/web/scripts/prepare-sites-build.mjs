@@ -31,15 +31,15 @@ for (const relative of ["index.html", ...readdirSync(path.join(client, "assets")
 }
 const server = `const ASSETS = ${JSON.stringify(assets)};
 const decode = (value) => Uint8Array.from(atob(value), (char) => char.charCodeAt(0));
-const assetResponse = (key) => {
+const assetResponse = (key, head) => {
   const asset = ASSETS[key];
   if (!asset) return null;
-  return new Response(decode(asset.body), {headers: {"Content-Type": asset.type, "Cache-Control": key === "/index.html" ? "no-cache" : "public, max-age=31536000, immutable"}});
+  return new Response(head ? null : decode(asset.body), {headers: {"Content-Type": asset.type, "Cache-Control": key === "/index.html" ? "no-cache" : "public, max-age=31536000, immutable"}});
 };
 export default {async fetch(request, env) {
   const url = new URL(request.url);
   if (url.pathname === "/api/v1" || url.pathname.startsWith("/api/v1/")) {
-    const origin = typeof env.CONTROL_CENTER_API_ORIGIN === "string"
+    const origin = typeof env?.CONTROL_CENTER_API_ORIGIN === "string"
       ? env.CONTROL_CENTER_API_ORIGIN.replace(/\\/$/, "") : "";
     if (!origin) return Response.json({code: "CONTROL_CENTER_API_NOT_CONFIGURED"}, {status: 503});
     const target = new URL(origin + url.pathname + url.search);
@@ -47,7 +47,20 @@ export default {async fetch(request, env) {
     headers.delete("host");
     return fetch(new Request(target, {method: request.method, headers, body: ["GET", "HEAD"].includes(request.method) ? undefined : request.body, redirect: "manual"}));
   }
-  return assetResponse(url.pathname) || assetResponse("/index.html") || new Response("Not found", {status: 404});
+  if (url.pathname.startsWith("/api/")) {
+    return Response.json({code: "NOT_FOUND", message: "API route not found"}, {status: 404});
+  }
+  if (!["GET", "HEAD"].includes(request.method)) {
+    return new Response("Not found", {status: 404});
+  }
+  const head = request.method === "HEAD";
+  const direct = assetResponse(url.pathname === "/" ? "/index.html" : url.pathname, head);
+  if (direct) return direct;
+  const hasExtension = /\\.[A-Za-z0-9]{1,10}$/.test(url.pathname);
+  if (!hasExtension && request.headers.get("accept")?.includes("text/html")) {
+    return assetResponse("/index.html", head) || new Response("Not found", {status: 404});
+  }
+  return new Response("Not found", {status: 404});
 }};`;
 writeFileSync(path.join(dist, "server", "index.js"), server);
 

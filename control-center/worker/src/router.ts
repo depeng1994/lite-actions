@@ -1,10 +1,11 @@
-import type { WorkerId, Role } from "./types/api";
+import type {SqlStore, StaticAssets} from "./storage/sqlStore";
+import type {WorkerId, Role} from "./types/api";
 
 export interface Env {
-  DB: D1Database;
-  /** Optional per-request address injected by the Node/server adapter. */
+  DB: SqlStore;
+  /** Optional per-request address injected by a runtime adapter. */
   __clientIp?: string;
-  ASSETS?: Fetcher;
+  ASSETS?: StaticAssets;
   SUPER_SECRET?: string;
   SUPER_USERNAME?: string;
   KEY_PEPPER?: string;
@@ -15,6 +16,8 @@ export interface Env {
   GITHUB_APP_PRIVATE_KEY?: string;
   GITCODE_CANCEL_TOKEN?: string;
   D1_LIMIT_BYTES?: string;
+  DB_LIMIT_BYTES?: string;
+  FORCE_CANCEL_WAIT_SECONDS?: string;
 }
 
 export interface Principal {

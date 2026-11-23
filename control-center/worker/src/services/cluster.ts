@@ -2,7 +2,7 @@ import {type Context, HttpError} from "../router";
 import type {ClusterPreview, WorkerId} from "../types/api";
 import {auditStatement} from "./audit";
 import {pepper} from "./auth";
-import {groups, overlaps, type Pool, type PoolGroup, type PoolNode, type Pools, type RawAllocation} from "./deviceState";
+import {aggregateHealth, type GroupRow, groups, overlaps, type Pool, type PoolGroup, type PoolNode, type Pools, projectDevice, type RawAllocation, type WorkerRow} from "./deviceState";
 import {hmac, safeHashEqual, sha256} from "../utils/crypto";
 import {nodeIdentity} from "../utils/mask";
 import {array, devices, hostId, integer, invalid, member, object, POOL, string} from "../utils/validate";
@@ -276,8 +276,16 @@ async function plan(context: Context, input: Record<string, unknown>, rollback =
   const prior = new Map(before.map(group => [groupKey(group), group]));
   const following = new Map(after.map(group => [groupKey(group), group]));
   const removed = before.filter(group => !following.has(groupKey(group)));
+  const isDrain = operationName === "DRAIN";
+  const matchesTarget = (group: ImpactGroup) => {
+    if (!target || group.worker_id !== target.worker_id || group.pool_name !== target.pool_name) return false;
+    if (target.scope === "pool") return true;
+    if (target.scope === "node") return group.host_id === target.host_id;
+    return group.host_id === target.host_id && JSON.stringify(group.devices) === JSON.stringify(target.devices);
+  };
   const affected = [
-    ...before.filter(group => !following.has(groupKey(group)) || following.get(groupKey(group))!.paused !== group.paused),
+    ...before.filter(group => !following.has(groupKey(group)) || following.get(groupKey(group))!.paused !== group.paused ||
+      (isDrain && matchesTarget(group))),
     ...after.filter(group => !prior.has(groupKey(group))),
   ];
   const affected_groups = affected.map(({paused: _, ...group}) => group);
@@ -288,6 +296,7 @@ async function plan(context: Context, input: Record<string, unknown>, rollback =
   const active_leases: string[] = [];
   const drain_cancel_tasks: string[] = [];
   const drain = new Map<WorkerId, string[]>();
+  const blocking_reasons: string[] = [];
   if (affected.length) {
     const flags = await db.prepare("SELECT worker_id,pool_name,host_id,devices_json FROM device_group_states WHERE quarantined=1").all<{
       worker_id: WorkerId; pool_name: string; host_id: string; devices_json: string;
@@ -295,7 +304,7 @@ async function plan(context: Context, input: Record<string, unknown>, rollback =
     if (removed.some(group => flags.results.some(row => row.worker_id === group.worker_id &&
       row.pool_name === group.pool_name && row.host_id === group.host_id &&
       (JSON.parse(row.devices_json) as number[]).some(device => group.devices.includes(device))))) {
-      throw new HttpError(409, "NODE_QUARANTINED");
+      blocking_reasons.push("NODE_QUARANTINED");
     }
     const info = await db.prepare(`
       SELECT a.task_uid,a.task_key,a.phase,a.worker_id,a.target_pool,a.allocation_json,q.candidate_group_idxs_json
@@ -313,11 +322,18 @@ async function plan(context: Context, input: Record<string, unknown>, rollback =
       if (row.phase !== "QUEUED") continue;
       const candidates = JSON.parse(row.candidate_group_idxs_json ?? "{}").options as number[][] | undefined;
       const oldPoolGroups = before.filter(group => group.pool_name === row.target_pool);
-      const lostAll = candidates?.length && candidates.every(bundle => bundle.some(index => {
-        const member = oldPoolGroups[index];
-        return member && !following.has(groupKey(member));
-      }));
-      if (!Object.hasOwn(next, row.target_pool) || lostAll) {
+      const groupUnavailable = (member: ImpactGroup) => {
+        const afterGroup = following.get(groupKey(member));
+        return !afterGroup || (isDrain && afterGroup.paused);
+      };
+      const lostAll = candidates?.length
+        ? candidates.every(bundle => bundle.some(index => {
+            const member = oldPoolGroups[index];
+            return member && groupUnavailable(member);
+          }))
+        : (isDrain && oldPoolGroups.length > 0 && oldPoolGroups.every(groupUnavailable));
+      const drainedWholePool = isDrain && target?.scope === "pool" && target.pool_name === row.target_pool;
+      if (!Object.hasOwn(next, row.target_pool) || drainedWholePool || lostAll) {
         drain_cancel_tasks.push(row.task_uid);
         const keys = drain.get(row.worker_id) ?? [];
         keys.push(row.task_key);
@@ -325,7 +341,6 @@ async function plan(context: Context, input: Record<string, unknown>, rollback =
       }
     }
   }
-  const blocking_reasons: string[] = [];
   if (target && operationName?.startsWith("DELETE")) {
     const drainRow = await db.prepare(`SELECT revision FROM cluster_drain_targets WHERE target_key=?`)
       .bind(target.target_key).first<{revision: number}>();
@@ -377,6 +392,7 @@ async function plan(context: Context, input: Record<string, unknown>, rollback =
   const edit = {base_revision, affected_groups, affected_combinations, active_leases, drain_cancel_tasks};
   const preview_hash = await hmac(pepper(context), JSON.stringify([sha, edit]));
   const zones = ZONES.filter(zone => {
+    if (isDrain && target?.worker_id === zone) return true;
     const owned = (pools: Pools) => Object.entries(pools).filter(([, pool]) => pool.owner === zone);
     return JSON.stringify(owned(old)) !== JSON.stringify(owned(next));
   });
@@ -438,45 +454,134 @@ export async function cluster(context: Context) {
   const db = context.env.DB;
   const results = await db.batch([
     db.prepare("SELECT revision,config_json,sha256 FROM pools_configs ORDER BY revision DESC LIMIT 1"),
-    db.prepare("SELECT worker_id,applied_rev,last_heartbeat_at FROM workers"),
+    db.prepare("SELECT * FROM workers"),
     db.prepare(`SELECT c.worker_id,c.status,c.result_json,c.error_msg,c.payload_json FROM commands c
       WHERE c.cmd_type='SYNC_CONFIG' AND c.ordinal=(SELECT MAX(ordinal) FROM commands
         WHERE worker_id=c.worker_id AND cmd_type='SYNC_CONFIG')`),
     db.prepare("SELECT target_key,worker_id,scope,pool_name,host_id,devices_json,revision FROM cluster_drain_targets"),
+    db.prepare("SELECT * FROM device_group_states"),
+    db.prepare(`SELECT worker_id,target_pool,allocation_json FROM tasks_active
+      WHERE phase IN ('RESERVED','STAGING','RUNNING','CLEANING')`),
     ...(context.principal ? [db.prepare(`SELECT revision,sha256,created_at,created_by,rollback_from_rev
       FROM pools_configs ORDER BY revision DESC LIMIT 50`)] : []),
   ]);
-  const revision = results[0].results[0] as Revision | undefined;
+  const revision = results[0].results?.[0] as Revision | undefined;
   const pools = JSON.parse(revision?.config_json ?? "{}") as Pools;
-  const drains = results[3].results as {target_key: string; worker_id: WorkerId; scope: string; pool_name: string;
+  const workerRows = (results[1].results ?? []) as unknown as WorkerRow[];
+  const commands = (results[2].results ?? []) as {worker_id: WorkerId; status: string; result_json: string; error_msg: string; payload_json: string}[];
+  const drains = (results[3].results ?? []) as {target_key: string; worker_id: WorkerId; scope: string; pool_name: string;
     host_id: string | null; devices_json: string | null; revision: number}[];
-  const config = context.principal ? pools : Object.fromEntries(await Promise.all(Object.entries(pools).map(async ([pool, value]) => [pool, {
-    owner: value.owner, type: value.type, enabled: value.enabled, paused: Boolean(value.paused),
-    draining: drains.some(row => row.pool_name === pool),
-    nodes: await Promise.all(value.nodes.map(async node => ({
-      ...await nodeIdentity(pepper(context), node.host_id, false), paused: Boolean(node.paused),
-      environments: Object.keys(object(node.environments ?? {}, "environments")),
-      capabilities: node.capabilities ?? ["train","npu_smoke"],
-      allocation_groups: (node.allocation_groups ?? []).map(group => ({
-        devices: group.devices, verified: group.verified, paused: Boolean(group.paused),
-      })),
-    }))),
-  }])));
-  const workerRows = results[1].results as {worker_id: WorkerId; applied_rev: number; last_heartbeat_at: number}[];
-  const commands = results[2].results as {worker_id: WorkerId; status: string; result_json: string; error_msg: string; payload_json: string}[];
-  const configWithDrain = Object.fromEntries(Object.entries(config).map(([pool, value]) => [pool, {
-    ...(value as Record<string, unknown>),
-    draining: Boolean((value as {draining?: boolean}).draining) || drains.some(row => row.pool_name === pool),
-  }]));
-  return {revision: revision?.revision ?? 0, sha256: revision?.sha256 ?? null, config: configWithDrain,
+  const observations = (results[4].results ?? []) as unknown as GroupRow[];
+  const activeLeases = ((results[5].results ?? []) as Array<{worker_id: WorkerId; target_pool: string; allocation_json: string}>)
+    .map(row => ({worker_id: row.worker_id, target_pool: row.target_pool, allocation: JSON.parse(row.allocation_json || "[]") as RawAllocation[]}));
+  const probeMap = new Map(observations.map(row => [JSON.stringify([row.worker_id, row.pool_name, row.host_id, row.devices_json]), row]));
+
+  const isPoolDraining = (poolName: string) =>
+    drains.some(row => row.scope === "pool" && row.pool_name === poolName);
+  const isNodeDraining = (poolName: string, host: string) =>
+    isPoolDraining(poolName) || drains.some(row => row.scope === "node" && row.pool_name === poolName && row.host_id === host);
+  const isGroupDraining = (poolName: string, host: string, ids: number[]) => {
+    const key = JSON.stringify([...ids].sort((a, b) => a - b));
+    return isNodeDraining(poolName, host) || drains.some(row =>
+      row.scope === "device_group" && row.pool_name === poolName && row.host_id === host && row.devices_json === key);
+  };
+  const projectGroupMeta = (poolName: string, pool: Pool, node: PoolNode, group: PoolGroup) => {
+    const ids = [...group.devices].sort((a, b) => a - b);
+    const worker = workerRows.find(row => row.worker_id === pool.owner);
+    const observation = probeMap.get(JSON.stringify([pool.owner, poolName, node.host_id, JSON.stringify(ids)]));
+    const leased = activeLeases.some(lease => lease.worker_id === pool.owner && lease.target_pool === poolName
+      && overlaps(node.host_id, ids, lease.allocation));
+    const draining = isGroupDraining(poolName, node.host_id, ids);
+    const projected = projectDevice(context.now, {worker, observation, pool, node, group, leased, draining});
+    return {
+      draining,
+      paused: projected.paused,
+      paused_scopes: projected.paused_scopes,
+      occupancy_state: projected.state,
+      quarantined: projected.quarantined,
+      health: projected.health,
+      last_online_at: projected.health.last_online_at,
+      updated_at: projected.updated_at,
+    };
+  };
+
+  const config = context.principal
+    ? Object.fromEntries(Object.entries(pools).map(([poolName, value]) => {
+        const nodes = value.nodes.map(node => {
+          const allocation_groups = (node.allocation_groups ?? []).map(group => ({
+            ...group,
+            ...projectGroupMeta(poolName, value, node, group),
+          }));
+          const nodeHealth = aggregateHealth(allocation_groups.map(group => group.health));
+          return {
+            ...node,
+            draining: isNodeDraining(poolName, node.host_id),
+            quarantined: allocation_groups.some(group => group.quarantined),
+            health: nodeHealth,
+            last_online_at: nodeHealth.last_online_at,
+            allocation_groups,
+          };
+        });
+        const poolHealth = aggregateHealth(nodes.map(node => node.health));
+        return [poolName, {
+          ...value,
+          paused: value.enabled === false || Boolean(value.paused),
+          draining: isPoolDraining(poolName),
+          health: poolHealth,
+          last_online_at: poolHealth.last_online_at,
+          nodes,
+        }];
+      }))
+    : Object.fromEntries(await Promise.all(Object.entries(pools).map(async ([poolName, value]) => {
+        const nodes = await Promise.all(value.nodes.map(async node => {
+          const allocation_groups = (node.allocation_groups ?? []).map(group => {
+            const meta = projectGroupMeta(poolName, value, node, group);
+            return {
+              devices: group.devices,
+              verified: group.verified,
+              paused: meta.paused,
+              paused_scopes: meta.paused_scopes,
+              draining: meta.draining,
+              occupancy_state: meta.occupancy_state,
+              quarantined: meta.quarantined,
+              health: meta.health,
+              last_online_at: meta.last_online_at,
+              updated_at: meta.updated_at,
+            };
+          });
+          const nodeHealth = aggregateHealth(allocation_groups.map(group => group.health));
+          return {
+            ...await nodeIdentity(pepper(context), node.host_id, false),
+            paused: Boolean(node.paused),
+            draining: isNodeDraining(poolName, node.host_id),
+            quarantined: allocation_groups.some(group => group.quarantined),
+            health: nodeHealth,
+            last_online_at: nodeHealth.last_online_at,
+            environments: Object.keys(object(node.environments ?? {}, "environments")),
+            capabilities: node.capabilities ?? ["train","npu_smoke"],
+            allocation_groups,
+          };
+        }));
+        const poolHealth = aggregateHealth(nodes.map(node => node.health));
+        return [poolName, {
+          owner: value.owner, type: value.type, enabled: value.enabled,
+          paused: value.enabled === false || Boolean(value.paused),
+          draining: isPoolDraining(poolName),
+          health: poolHealth,
+          last_online_at: poolHealth.last_online_at,
+          nodes,
+        }];
+      })));
+  return {revision: revision?.revision ?? 0, sha256: revision?.sha256 ?? null, config,
     workers: ZONES.map(worker_id => {
       const worker = workerRows.find(row => row.worker_id === worker_id);
       const command = commands.find(row => row.worker_id === worker_id);
       return {worker_id, applied_rev: worker?.applied_rev ?? 0,
         desired_rev: command ? JSON.parse(command.payload_json).revision : revision?.revision ?? 0,
+        last_heartbeat_at: worker?.last_heartbeat_at ?? null,
         offline: !worker || context.now - worker.last_heartbeat_at > 90, status: command?.status ?? null,
         ...(context.principal ? {error_msg: command?.error_msg ?? null} : {}),
       };
-    }), ...(context.principal ? {history: results[4].results} : {}),
+    }), ...(context.principal ? {history: results[6]?.results ?? []} : {}),
   };
 }

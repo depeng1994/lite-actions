@@ -4,7 +4,7 @@ export type Role = "admin" | "super";
 export type Phase = "QUEUED" | "RESERVED" | "STAGING" | "RUNNING" | "CLEANING";
 export type CaseKind = "train" | "npu_smoke" | "worker_probe";
 export type Occupancy = "LEASED" | "UNKNOWN_BUSY" | "CONFIRMED_IDLE";
-export type CommandStatus = "PENDING" | "ACKED" | "APPLIED" | "NOOP" | "CONFLICT" | "FAILED" | "EXPIRED";
+export type CommandStatus = "PENDING" | "ACKED" | "APPLIED" | "PARTIAL_APPLIED" | "NOOP" | "CONFLICT" | "FAILED" | "EXPIRED";
 
 export interface ApiError {
   code: string;
@@ -59,6 +59,7 @@ export interface DeviceGroup {
   offline: boolean;
   quarantined: boolean;
   paused: boolean;
+  draining: boolean;
   paused_scopes: ("pool" | "node" | "device_group")[];
   updated_at: number | null;
   health: {status: DeviceHealthStatus; missed_count: number; last_online_at: number | null};
@@ -88,7 +89,9 @@ export interface Timeline {
       type: string;
       enabled: boolean;
       paused: boolean;
-      nodes: (NodeIdentity & {device_groups: DeviceGroup[]})[];
+      draining: boolean;
+      health: DeviceHealth;
+      nodes: (NodeIdentity & {draining: boolean; health: DeviceHealth; device_groups: DeviceGroup[]})[];
     }[];
   })[];
   zero_card_tasks: TaskSummary[];
@@ -96,6 +99,10 @@ export interface Timeline {
   tasks_by_uid: Record<string, TaskSummary>;
   queued_by_pool: Record<string, TaskSummary[]>;
   now: number;
+}
+export interface ModelsResponse {
+  default_model: string;
+  models: ModelTab[];
 }
 export interface ModelRepo {
   provider: Provider;
@@ -171,7 +178,7 @@ export interface ModelRuns {
 }
 export type ClusterScope = "pool" | "node" | "device_group";
 export type ClusterOperation =
-  | { op: "PAUSE" | "RESUME"; scope: ClusterScope; pool: string; host_id?: string; devices?: number[] }
+  | { op: "PAUSE" | "RESUME" | "DRAIN"; scope: ClusterScope; pool: string; host_id?: string; devices?: number[] }
   | { op: "ADD_POOL" | "ADD_NODE" | "ADD_DEVICE_GROUP"; pool: string; host_id?: string; value: unknown }
   | { op: "DELETE_POOL" | "DELETE_NODE" | "DELETE_DEVICE_GROUP"; pool: string; host_id?: string; devices?: number[] };
 export interface ClusterPreview {

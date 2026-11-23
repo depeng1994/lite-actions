@@ -1,4 +1,5 @@
 import {type Context} from "../router";
+import type {SqlStore} from "../storage/sqlStore";
 import {auditStatement} from "./audit";
 import {sha256} from "../utils/crypto";
 import {blobBuffer, gunzip, gzip} from "../utils/gzip";
@@ -9,20 +10,16 @@ const MB = 1024 * 1024;
 
 type ArchiveGroup = {logical_model: string; finish_day: number};
 type Detail = {task_uid: string; finished_at: number; detail_json: string};
-type SizeSource = {
-  prepare(query: string): {all<T = unknown>(): Promise<{meta?: {size_after?: number}}>};
-  dbSizeBytes?: () => Promise<number>;
-};
-type SizeProbe = (db: SizeSource) => Promise<number>;
-type ColdBlock = {gzip_blob: number[] | ArrayBuffer; sha256: string; record_count: number};
+type SizeProbe = (db: SqlStore) => Promise<number>;
+type ColdBlock = {gzip_blob: number[] | ArrayBuffer | ArrayBufferView; sha256: string; record_count: number};
 
-export function putMeta(db: D1Database, key: string, value: string, now: number) {
+export function putMeta(db: SqlStore, key: string, value: string, now: number) {
   return db.prepare(`INSERT INTO system_meta(meta_key,meta_value,updated_at) VALUES (?,?,?)
     ON CONFLICT(meta_key) DO UPDATE SET meta_value=excluded.meta_value,updated_at=excluded.updated_at`)
     .bind(key, value, now);
 }
 
-async function coldGroup(db: D1Database, group: ArchiveGroup, now: number) {
+async function coldGroup(db: SqlStore, group: ArchiveGroup, now: number) {
   const start = group.finish_day * DAY;
   const {results: rows} = await db.prepare(`
       SELECT i.task_uid,i.finished_at,h.detail_json FROM task_index i JOIN task_details_hot h USING (task_uid)
@@ -62,12 +59,12 @@ async function coldGroup(db: D1Database, group: ArchiveGroup, now: number) {
   ]);
 }
 
-function deleteEmptyChunks(db: D1Database, now: number) {
+function deleteEmptyChunks(db: SqlStore, now: number) {
   return db.prepare(`DELETE FROM task_details_cold WHERE NOT EXISTS
       (SELECT 1 FROM task_index WHERE cold_chunk_id=task_details_cold.chunk_id) AND created_at<?`).bind(now - 60);
 }
 
-function deleteOrphanWorkflowRuns(db: D1Database) {
+function deleteOrphanWorkflowRuns(db: SqlStore) {
   return db.prepare(`DELETE FROM workflow_runs
     WHERE NOT EXISTS (SELECT 1 FROM task_index i WHERE i.provider=workflow_runs.provider
       AND i.repo=workflow_runs.repo AND i.run_id=workflow_runs.run_id AND i.attempt=workflow_runs.attempt)
@@ -75,7 +72,7 @@ function deleteOrphanWorkflowRuns(db: D1Database) {
       AND a.repo=workflow_runs.repo AND a.run_id=workflow_runs.run_id AND a.attempt=workflow_runs.attempt)`);
 }
 
-function deleteExpiredWorkflows(db: D1Database, cutoff: number) {
+function deleteExpiredWorkflows(db: SqlStore, cutoff: number) {
   // Retention is keyed by the complete Workflow. A mixed or partially finished
   // Workflow remains available until every child case has passed the cutoff.
   return db.prepare(`DELETE FROM task_index
@@ -92,7 +89,7 @@ function deleteExpiredWorkflows(db: D1Database, cutoff: number) {
       )`).bind(cutoff, cutoff);
 }
 
-function deleteOldestWorkflow(db: D1Database) {
+function deleteOldestWorkflow(db: SqlStore) {
   // Select a bounded batch of whole historical Workflows per capacity round.
   // This keeps multi-case runs intact while allowing a 200-row-sized
   // maintenance step when most runs contain one or two cases.
@@ -133,16 +130,14 @@ export async function archive(context: Context) {
   for (const group of results) await coldGroup(db, group, now);
 }
 
-export async function databaseSize(db: SizeSource): Promise<number> {
-  if (db.dbSizeBytes) return db.dbSizeBytes();
-  const response = await db.prepare("SELECT 1").all();
-  return response.meta?.size_after ?? Number.NaN;
+export async function databaseSize(db: SqlStore): Promise<number> {
+  return db.dbSizeBytes();
 }
 
 export async function capacity(context: Context, probe: SizeProbe = databaseSize) {
   const db = context.env.DB;
-  const limit = Number(context.env.D1_LIMIT_BYTES ?? DEFAULT_CAPACITY);
-  if (!Number.isFinite(limit) || limit <= 0) throw new Error("INVALID_D1_LIMIT_BYTES");
+  const limit = Number(context.env.DB_LIMIT_BYTES ?? context.env.D1_LIMIT_BYTES ?? DEFAULT_CAPACITY);
+  if (!Number.isFinite(limit) || limit <= 0) throw new Error("INVALID_DB_LIMIT_BYTES");
   const flags = await db.prepare(`SELECT meta_key,meta_value FROM system_meta WHERE
     meta_key IN ('last_db_size_bytes','capacity_cleanup_pending')`).all<{meta_key: string; meta_value: string}>();
   const meta = Object.fromEntries(flags.results.map(row => [row.meta_key,row.meta_value]));
@@ -173,7 +168,7 @@ export async function capacity(context: Context, probe: SizeProbe = databaseSize
         SELECT 'capacity_cleanup_pending','1',? WHERE changes()>0
         ON CONFLICT(meta_key) DO UPDATE SET meta_value='1',updated_at=excluded.updated_at`).bind(context.now),
     ]);
-    const deleted = results[0].results;
+    const deleted = results[0].results ?? [];
     if (!deleted.length) {
       noHistory = true;
       break;

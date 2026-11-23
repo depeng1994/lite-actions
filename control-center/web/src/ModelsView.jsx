@@ -1,8 +1,8 @@
 import { ArrowDown, ArrowSquareOut, ArrowUp, CaretUpDown, FunnelSimple, Minus, Plus } from "@phosphor-icons/react";
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { clock, dateFormatter, history, plannedTime, poolId, repositories, workflowKey } from "./formal-data.js";
+import { clock, dateFormatter, displayNodeHost, history, plannedTime, poolId, repositories, workflowKey } from "./formal-data.js";
 import { actionsUrl, groupActiveRuns, queuedChildren, summarizeRun, terminalStatuses } from "./workflows.js";
-import { Status, Tag } from "./Views.jsx";
+import { Status } from "./Views.jsx";
 
 const pageSize = 50;
 const cardHours = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 });
@@ -16,9 +16,12 @@ function WorkflowTime({ value }) {
 function CasePhase({ item, config, nodes }) {
   const queued = item.status === "排队中";
   const planned = queued ? plannedTime(item, config, nodes) : null;
+  const planText = item.projectionStatus === "WAITING_EXTERNAL"
+    ? "等待外部释放"
+    : planned == null ? "暂无估算" : `预计 ${clock(planned)}`;
   return <>
     <Status value={item.status} />
-    {queued && <small>{planned == null ? "暂无估算" : `预计 ${clock(planned)}`} · 顺位 {item.position}</small>}
+    {queued && <small>{planText} · 顺位 {item.position}</small>}
   </>;
 }
 
@@ -34,7 +37,7 @@ function CasesTable({ run, config, nodes, open }) {
   return <table className="data-table cases-table" aria-label={`Workflow #${run.id} 的子用例`}>
     <thead><tr><th scope="col">用例</th><th scope="col">阶段</th><th scope="col">申请资源</th><th scope="col">实际分配／设备 ID</th><th scope="col">开始／结束</th><th scope="col">耗时</th></tr></thead>
     <tbody>{run.cases.map((item) => {
-      const allocation = item.historyId ? item.node : item.allocation;
+      const allocation = item.allocation || (item.historyId ? item.node : null);
       return <tr key={item.historyId ?? item.id}>
         <td><button className="text-button case-detail" onClick={() => open(item.historyId
           ? { type: "history", runKey: workflowKey(run), historyId: item.historyId }
@@ -42,7 +45,7 @@ function CasesTable({ run, config, nodes, open }) {
           {item.archived && <small>归档</small>}</td>
         <td><CasePhase item={item} config={config} nodes={nodes} /></td>
         <td>{item.worker} / {item.pool} · {item.nodes} 节点 · {item.cards} 卡</td>
-        <td>{allocation ? <><code>{allocation.ip}:{allocation.port}</code><small>{item.groups.join("、")}</small></> : <span className="subtle">—</span>}</td>
+        <td>{allocation ? <><code>{displayNodeHost(allocation)}</code><small>{item.groups.join("、")}</small></> : <span className="subtle">—</span>}</td>
         <td className="case-times"><WorkflowTime value={item.start} /><span className="subtle"> / </span><WorkflowTime value={item.end} /></td>
         <td><CaseDuration item={item} /></td>
       </tr>;
@@ -53,8 +56,9 @@ function CasesTable({ run, config, nodes, open }) {
 function WorkflowActions({ run, summary, sequence, canManage, open, cancellation, priority }) {
   const prompt = (type) => open(canManage ? { type, runKey: workflowKey(run) } : { type: "login" });
   const queued = queuedChildren(run.cases, run);
+  const canMoveUp = run.canMoveUp ?? (sequence >= 2 && queued.length > 0);
   return <div className="workflow-actions">
-    {sequence > 0 && queued.length > 0 && !cancellation && <button className="button small" disabled={sequence === 1} onClick={() => prompt("expedite")} title={sequence === 1 ? "已在队首" : "与前一位 Workflow 交换顺序"}>{sequence === 1 ? "已在队首" : canManage ? "插队" : "登录后插队"}</button>}
+    {sequence > 0 && queued.length > 0 && !cancellation && <button className="button small" disabled={!canMoveUp || sequence === 1} onClick={() => prompt("expedite")} title={sequence === 1 ? "已在队首" : "与前一位 Workflow 交换顺序"}>{sequence === 1 ? "已在队首" : canManage ? "插队" : "登录后插队"}</button>}
     {priority && <button className="text-button small-text" onClick={() => open({ type: "priority-receipt", runKey: workflowKey(run) })}>插队回执</button>}
     {cancellation
       ? <button className="button small" onClick={() => open({ type: "cancel-receipt", runKey: workflowKey(run) })}>取消进度</button>
@@ -133,7 +137,10 @@ function SortHeader({ column, sort, change }) {
   </th>;
 }
 
-export function ModelsView({ model, cases, nodes, config, cancellations, priorities, queue, historyHasMore, loadMoreHistory, canManage, open }) {
+export function ModelsView({
+  model, cases, nodes, config, cancellations, priorities, queue,
+  historyHasMore, historyLoaded, truncatedByCapacity, purgedNotice, loadMoreHistory, canManage, open,
+}) {
   const [filters, setFilters] = useState({ model, repo: "", platform: "", pool: "", status: "" });
   const [columnFilters, setColumnFilters] = useState({});
   const [showColumns, setShowColumns] = useState(false);
@@ -150,15 +157,18 @@ export function ModelsView({ model, cases, nodes, config, cancellations, priorit
     revealBoundary.current = false;
     historyBoundary.current?.focus({ preventScroll: true });
     historyBoundary.current?.scrollIntoView({ block: "start", inline: "nearest" });
-  }, [limit]);
+  }, [limit, history.length]);
   const updateFilter = (filter, value) => {
     setFilters((previous) => ({ ...previous, [filter]: value, ...(filter === "model" ? { repo: "" } : {}) }));
-    if (filter === "status" && value === "history") setHistoryCollapsed(false);
-    setLimit((loaded) => loaded || value === "history" ? pageSize : 0);
+    if (filter === "status" && value === "history") {
+      setHistoryCollapsed(false);
+      if (!historyLoaded) loadMoreHistory?.();
+    }
+    setLimit((loaded) => loaded || value === "history" ? Math.max(loaded, pageSize) : 0);
   };
   const updateColumn = (key, value) => {
     setColumnFilters((previous) => ({ ...previous, [key]: value }));
-    setLimit((loaded) => loaded ? pageSize : 0);
+    setLimit((loaded) => loaded ? Math.max(loaded, pageSize) : 0);
   };
   const changeSort = (key) => setSort((previous) => {
     if (previous?.key !== key) return { key, direction: "ascending" };
@@ -168,11 +178,20 @@ export function ModelsView({ model, cases, nodes, config, cancellations, priorit
 
   const entries = [...groupActiveRuns(cases, nodes), ...history].map((run) => ({ run, summary: summarizeRun(run) }));
   const active = entries.filter(({ summary }) => summary.active)
-    .map((entry) => ({ ...entry, sequence: queue.indexOf(workflowKey(entry.run)) + 1 }))
-    .sort((a, b) => a.sequence - b.sequence || a.run.submitted - b.run.submitted);
+    .map((entry) => ({
+      ...entry,
+      sequence: typeof entry.run.sequence === "number" ? entry.run.sequence : (queue.indexOf(workflowKey(entry.run)) + 1),
+    }))
+    .sort((a, b) => a.sequence - b.sequence || (a.run.submitted ?? 0) - (b.run.submitted ?? 0));
   const finished = entries.filter(({ summary }) => !summary.active)
-    .sort((a, b) => (b.summary.end ?? 0) - (a.summary.end ?? 0) || workflowKey(a.run).localeCompare(workflowKey(b.run)))
-    .map((entry, index) => ({ ...entry, sequence: -index - 1 }));
+    .sort((a, b) => {
+      if (typeof a.run.sequence === "number" && typeof b.run.sequence === "number") return b.run.sequence - a.run.sequence;
+      return (b.summary.end ?? 0) - (a.summary.end ?? 0) || workflowKey(a.run).localeCompare(workflowKey(b.run));
+    })
+    .map((entry, index) => ({
+      ...entry,
+      sequence: typeof entry.run.sequence === "number" ? entry.run.sequence : -index - 1,
+    }));
   const matches = (entry) => filtersFor(filters, entry.run, entry.summary)
     && columns.every((column) => matchesColumn(entry, column, columnFilters[column.key]));
   const activeMatches = active.filter(matches);
@@ -181,9 +200,12 @@ export function ModelsView({ model, cases, nodes, config, cancellations, priorit
   const shownHistory = historyCollapsed ? [] : windowedHistory;
   const visible = sortEntries([...shownHistory.slice().reverse(), ...activeMatches], sort);
   const boundary = windowedHistory[Math.min(1, windowedHistory.length - 1)];
+  const canLoadMoreHistory = !historyCollapsed && (!historyLoaded || limit < historicalMatches.length || historyHasMore);
   const loadHistory = () => {
     revealBoundary.current = limit === 0 && !sort && activeMatches.length > 0;
-    if (limit >= historicalMatches.length && historyHasMore) loadMoreHistory?.();
+    if (!historyLoaded || (limit >= historicalMatches.length && historyHasMore)) {
+      loadMoreHistory?.();
+    }
     setLimit((count) => count + pageSize);
   };
   const repos = [...new Set(repositories.filter(({ name }) => !filters.model || name === filters.model).flatMap(({ sources }) => sources))].sort();
@@ -219,7 +241,7 @@ export function ModelsView({ model, cases, nodes, config, cancellations, priorit
         <span role="status">{activeMatches.length} 个活动 Workflow · 已显示 {shownHistory.length} / {historicalMatches.length} 个历史 Workflow</span>
         {windowedHistory.length > 0 && <button className="button small" aria-expanded={!historyCollapsed}
           onClick={() => setHistoryCollapsed((collapsed) => !collapsed)}>{historyCollapsed ? "展开历史 Workflow" : "折叠历史 Workflow"}</button>}
-        {!historyCollapsed && (limit < historicalMatches.length || historyHasMore) && <button className="button small" onClick={loadHistory}>{limit ? "再加载" : "加载"} 50 个历史 Workflow</button>}
+        {canLoadMoreHistory && <button className="button small" onClick={loadHistory}>{limit ? "再加载" : "加载"} 50 个历史 Workflow</button>}
         {activeColumnFilters > 0 && <button className="text-button" onClick={() => { setColumnFilters({}); setLimit((loaded) => loaded ? pageSize : 0); }}>清除列筛选</button>}
       </div>
       <div className="workflow-count-main">{sort && <button className="text-button" onClick={() => setSort(null)}>恢复队列顺序</button>}<span>北京时间 (UTC+8)</span></div>
@@ -257,7 +279,7 @@ export function ModelsView({ model, cases, nodes, config, cancellations, priorit
               <td><WorkflowTime value={summary.start} /></td>
               <td><WorkflowTime value={summary.end} /></td>
               <td title="Σ（各子用例实际分配卡数 × 实际执行分钟数）÷ 60，单位为卡·小时">
-                {summary.cardHours == null ? <span className="subtle">—</span> : <>{cardHours.format(summary.cardHours)}{summary.active && <small>截至当前</small>}{summary.partialCardHours && <small>统计不完整</small>}</>}
+                {summary.cardHours == null ? <span className="subtle">—</span> : <>{cardHours.format(summary.cardHours)}{(run.cardHoursAsOfNow ?? summary.active) && <small>截至当前</small>}{summary.partialCardHours && <small>统计不完整</small>}</>}
               </td>
               <td><WorkflowActions run={run} summary={summary} sequence={sequence} canManage={canManage} open={open}
                 cancellation={cancellations[key]} priority={priorities[key]} /></td>
@@ -267,6 +289,9 @@ export function ModelsView({ model, cases, nodes, config, cancellations, priorit
             </td></tr>}
           </Fragment>;
         })}
+        {historyLoaded && !historyCollapsed && !historyHasMore && truncatedByCapacity && purgedNotice && (
+          <tr><td colSpan={columnCount} className="empty subtle">{purgedNotice}</td></tr>
+        )}
         {!visible.length && <tr><td className="empty" colSpan={columnCount}>
           {historyCollapsed && windowedHistory.length ? "历史 Workflow 已折叠" : "当前筛选没有找到 Workflow"}
         </td></tr>}</tbody>

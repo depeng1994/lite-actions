@@ -1,7 +1,13 @@
 import {beforeAll, expect, test} from "vitest";
-import {db, migrate, request} from "./db";
+import {workflows as queryWorkflows} from "../src/services/board";
+import {refreshWorkflowRuns, type WorkflowIdentity} from "../src/services/ingest";
+import {bindings, db, migrate, request} from "./db";
 
 const now = Math.floor(Date.now() / 1000);
+
+async function syncRuns(identities: WorkflowIdentity[]) {
+  await db.batch(refreshWorkflowRuns(db, identities, now));
+}
 
 beforeAll(async () => {
   await migrate();
@@ -14,6 +20,10 @@ beforeAll(async () => {
       finishedAt - 10, "Dispatcher Smoke",
     ).run();
   }
+  await syncRuns([
+    {provider: "github", repo: "depeng1994/lite-actions", run_id: "run-a", attempt: 1},
+    {provider: "github", repo: "depeng1994/lite-actions", run_id: "run-b", attempt: 1},
+  ]);
 });
 
 test("workflow history honors the 50-row limit and cursor", async () => {
@@ -47,16 +57,47 @@ test("workflow filters and timeline metadata are live API fields", async () => {
   expect(timeline.queued_by_pool).toEqual({});
 });
 
-test("workflow history paginates complete Workflow rows in 50/50/3 pages", async () => {
+test("workflow history paginates complete Workflow rows in 50/50/3 pages and history_limit=0 avoids task_index scan", async () => {
+  const seeded: WorkflowIdentity[] = [];
   for (let offset = 0; offset < 103; offset += 1) {
+    const runId = `history-${String(offset).padStart(3, "0")}`;
     await db.prepare(`INSERT INTO task_index(task_uid,finished_at,worker_id,provider,repo,logical_model,run_id,attempt,
       case_id,test_id,label,kind,target_pool,req_nodes,req_devices,actual_allocation_json,status,timing_reliable,submitted_at,workflow_name)
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
-      `large-${offset}`, now - offset, "blue", "github", "org/large", "large", `history-${String(offset).padStart(3, "0")}`, 1,
+      `large-${offset}`, now - offset, "blue", "github", "org/large", "large", runId, 1,
       `case-${offset}`, "worker_os_blue", "OS probe", "worker_probe", "pool", 0, 0, "[]", "PASS", 1,
       now - offset - 10, "Large History",
     ).run();
+    seeded.push({provider: "github", repo: "org/large", run_id: runId, attempt: 1});
   }
+  await syncRuns(seeded);
+
+  // Zero-history default query must not scan task_index or query system_meta twice.
+  const queries: string[] = [];
+  const tracedDb = new Proxy(db, {
+    get(target, prop, receiver) {
+      if (prop === "prepare") {
+        return (sql: string) => {
+          queries.push(sql);
+          return target.prepare(sql);
+        };
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const zeroHistory = await queryWorkflows({
+    request: new Request("https://control.test/api/v1/public/workflows?history_limit=0"),
+    url: new URL("https://control.test/api/v1/public/workflows?history_limit=0"),
+    env: {...bindings, DB: tracedDb},
+    params: {},
+    now,
+  });
+  expect(zeroHistory.history).toHaveLength(0);
+  expect(zeroHistory.history_total).toBe(0);
+  expect(queries.some(sql => /\btask_index\b/i.test(sql))).toBe(false);
+  expect(queries.filter(sql => /\bcapacity_purged_before_ts\b/i.test(sql))).toHaveLength(1);
+
   const pages: string[] = [];
   let cursor = "";
   for (const expected of [50, 50, 3]) {
@@ -74,6 +115,33 @@ test("workflow history paginates complete Workflow rows in 50/50/3 pages", async
   expect(cursor).toBe("");
 });
 
+test("incremental workflow_runs refresh preserves unrelated workflow queue_order_rank", async () => {
+  await db.batch([
+    db.prepare(`INSERT INTO tasks_active(task_uid,short_tid,task_key,worker_id,provider,repo,logical_model,run_id,
+      attempt,case_id,test_id,label,kind,target_pool,req_nodes,req_devices,phase,timing_reliable,updated_at,submitted_at)
+      VALUES('inc-a','incaaaaaaaaa','key:inc-a','blue','github','org/inc','inc','inc-a',1,
+        'case_000_a','npu_smoke','A','npu_smoke','pool',1,8,'QUEUED',1,?,?)`).bind(now, now - 100),
+    db.prepare(`INSERT INTO tasks_active(task_uid,short_tid,task_key,worker_id,provider,repo,logical_model,run_id,
+      attempt,case_id,test_id,label,kind,target_pool,req_nodes,req_devices,phase,timing_reliable,updated_at,submitted_at)
+      VALUES('inc-b','incbbbbbbbbb','key:inc-b','blue','github','org/inc','inc','inc-b',1,
+        'case_000_b','npu_smoke','B','npu_smoke','pool',1,8,'QUEUED',1,?,?)`).bind(now, now - 50),
+  ]);
+  await syncRuns([
+    {provider: "github", repo: "org/inc", run_id: "inc-a", attempt: 1},
+    {provider: "github", repo: "org/inc", run_id: "inc-b", attempt: 1},
+  ]);
+  await db.prepare("UPDATE workflow_runs SET queue_order_rank=7,updated_at=12345 WHERE run_id='inc-a'").run();
+  // Refreshing only inc-b must not touch inc-a's rank or updated_at.
+  await db.batch(refreshWorkflowRuns(db, [{provider: "github", repo: "org/inc", run_id: "inc-b", attempt: 1}], now + 10));
+  const rowA = await db.prepare("SELECT queue_order_rank,updated_at FROM workflow_runs WHERE run_id='inc-a'").first();
+  expect(rowA).toEqual({queue_order_rank: 7, updated_at: 12345});
+  // Refreshing inc-a while still waiting must preserve its existing queue_order_rank.
+  await db.batch(refreshWorkflowRuns(db, [{provider: "github", repo: "org/inc", run_id: "inc-a", attempt: 1}], now + 20));
+  expect(await db.prepare("SELECT queue_order_rank FROM workflow_runs WHERE run_id='inc-a'").first("queue_order_rank")).toBe(7);
+  await db.prepare("DELETE FROM tasks_active WHERE run_id IN ('inc-a','inc-b')").run();
+  await db.prepare("DELETE FROM workflow_runs WHERE run_id IN ('inc-a','inc-b')").run();
+});
+
 test("workflow card-hours use finished duration and allocated devices", async () => {
   const allocation = JSON.stringify([{host_id: "198.51.100.88:22", devices: Array.from({length: 16}, (_, index) => index)}]);
   await db.prepare(`INSERT INTO task_index(task_uid,finished_at,worker_id,provider,repo,logical_model,run_id,attempt,
@@ -83,6 +151,7 @@ test("workflow card-hours use finished duration and allocated devices", async ()
     "case-card", "npu_smoke", "16P", "npu_smoke", "pool", 1, 16, allocation, "PASS", 1, 2280,
     now - 3000, "Card Hours",
   ).run();
+  await syncRuns([{provider: "github", repo: "org/card", run_id: "card-hours", attempt: 1}]);
   const page = await (await request("/public/workflows?history_limit=50&repo=org%2Fcard&status=history")).json<{
     history: Array<{card_hours: number | null; result: string; workflow_name: string | null}>;
   }>();
@@ -111,11 +180,13 @@ test("mixed active and finished cases stay in one active Workflow row", async ()
       now - 100, "Mixed Workflow",
     ),
   ]);
+  await syncRuns([{provider: "github", repo: "org/mixed", run_id: run, attempt: 1}]);
   const page = await (await request("/public/workflows?history_limit=50&repo=org%2Fmixed")).json<{
-    active: Array<{sequence: number; cases: unknown[]}>; history: unknown[];
+    active: Array<{sequence: number; finished_at: number | null; cases: unknown[]}>; history: unknown[];
   }>();
   expect(page.active).toHaveLength(1);
   expect(page.active[0].sequence).toBe(0);
+  expect(page.active[0].finished_at).toBeNull();
   expect(page.active[0].cases).toHaveLength(2);
   expect(page.history).toHaveLength(0);
 });
@@ -135,6 +206,10 @@ test("Workflow summaries expose partial card-hours and three-state outcomes", as
       uid, now - 200, "blue", "github", "org/summary", "summary", run, 1, `case_${uid.slice(0, 3)}_case`,
       "npu_smoke", uid, "npu_smoke", "pool", 1, 8, alloc, status, reliable, duration, now - 300, "Summary Workflow",
     )));
+  await syncRuns([
+    {provider: "github", repo: "org/summary", run_id: "partial-run", attempt: 1},
+    {provider: "github", repo: "org/summary", run_id: "outcome-run", attempt: 1},
+  ]);
   const page = await (await request("/public/workflows?history_limit=50&repo=org%2Fsummary")).json<{
     history: Array<{run_id: string; card_hours: number | null; card_hours_partial: boolean; result: string}>;
   }>();

@@ -1,6 +1,7 @@
 import { CalendarBlank, CaretDown, CaretRight, Pause, Play, Plus, Trash, X } from "@phosphor-icons/react";
 import { useEffect, useState } from "react";
-import { clock, dateLabel, flagFor, now, plannedTime, poolId, runs, statusTone, targetFor, timelineEnd, timelineStart, workers, workflowKey } from "./formal-data.js";
+import { beijingClock, clock, displayNodeHost, flagFor, plannedTime, poolId, runs, statusTone, targetFor, workers, workflowKey } from "./formal-data.js";
+import { commandStatusLabel, commandStatusTone } from "./command-status.js";
 import { lastSeenDateTime, resourceHealth } from "./resource-health.js";
 
 export function Tag({ children, tone = "gray" }) {
@@ -21,9 +22,14 @@ export function RunIdentity({ run }) {
   return <span>{run.pr ? `@${run.author} #${run.pr}` : `${run.trigger}触发`} <span className="middot">·</span> {run.action} #{run.id}</span>;
 }
 
-const ticks = Array.from({ length: 6 }, (_, index) => timelineStart + index * 30);
 const rowHeight = { worker: 39, pool: 39, node: 39, group: 54 };
-const marker = (minute) => `${(minute - timelineStart) / (timelineEnd - timelineStart) * 100}%`;
+
+function groupCardCount(node, group) {
+  if (node.groupCards?.[group] != null) return node.groupCards[group];
+  const bounds = String(group || "").match(/\d+/g)?.map(Number);
+  if (bounds?.length === 2 && bounds[1] >= bounds[0]) return bounds[1] - bounds[0] + 1;
+  return node.cards || 0;
+}
 
 function resourceRows(nodes, folded) {
   const rows = [];
@@ -36,7 +42,8 @@ function resourceRows(nodes, folded) {
       rows.push({ key, worker, pool, level: "pool", label: pool });
       if (folded[key]) continue;
       for (const node of onWorker.filter((item) => item.pool === pool)) {
-        rows.push({ key: node.id, worker, pool, node, level: "node", label: node.id });
+        const hostLabel = displayNodeHost(node);
+        rows.push({ key: node.id, worker, pool, node, level: "node", label: hostLabel });
         if (folded[node.id]) continue;
         for (const group of node.groups) {
           rows.push({ key: targetFor(node, group).id, worker, pool, node, group, level: "group", label: group });
@@ -60,33 +67,38 @@ function ResourceLabel({ row, folded, changeFold, config, selectScope, open }) {
   return <div className={`resource resource-${level} ${worker.toLowerCase()}`} style={{ height }}>
     {level === "group"
       ? <button className="tree-leaf" onClick={() => open({ type: "resource", target: targetFor(node, group) })}>
-          设备组 {group} <span className="subtle">（{node.groupCards?.[group] ?? 8}P）</span>
+          设备组 {group} <span className="subtle">（{groupCardCount(node, group)}P）</span>
         </button>
       : <button className="tree-item" onClick={() => {
           changeFold(key);
           if (pool) selectScope(poolId(worker, pool));
         }} aria-expanded={!folded[key]}>
           <GroupMark size={16} weight="bold" />
-          <strong>{label}</strong>
+          <strong className={level === "node" ? "mono" : undefined}>{label}</strong>
           {level === "worker" && <span>（Worker）</span>}
           {level === "pool" && <span>（Pool）</span>}
-          {level === "node" && <span className="node-address mono">({node.ip}:{node.port})</span>}
         </button>}
     {flag && <span className="resource-flag" title={flag}> {flag === "暂停" ? "暂停调度" : flag}</span>}
   </div>;
 }
 
-function LeaseBar({ item, run, rows, config, nodes, selected, onClick }) {
+function LeaseBar({ item, run, rows, config, nodes, clockState, selected, onClick }) {
+  const { now, timelineStart, timelineEnd } = clockState;
+  const marker = (minute) => `${(minute - timelineStart) / Math.max(1, timelineEnd - timelineStart) * 100}%`;
   const queued = item.status === "排队中";
   const actual = item.node && ["准备中", "运行中", "清理中"].includes(item.status);
   const ended = item.node && item.status === "已取消" && item.finished;
   const selectedGroup = queued ? item.plannedGroups : item.groups;
   const node = queued ? item.plannedNode : item.node;
-  const resourceRows = rows.filter((row) => row.node?.id === node && selectedGroup?.includes(row.group));
-  if (!resourceRows.length || (!queued && !actual && !ended)) return null;
+  const resourceRowsList = rows.filter((row) => row.node?.id === node && selectedGroup?.includes(row.group));
+  if (!resourceRowsList.length || (!queued && !actual && !ended)) return null;
   const start = queued ? plannedTime(item, config, nodes) : item.started;
   if (start == null) return null;
-  const projectedEnd = queued ? start + item.estimate : actual && item.estimate && item.started + item.estimate > now ? item.started + item.estimate : null;
+  const projectedEnd = queued
+    ? (item.plannedEnd ?? (item.estimate ? start + item.estimate : null))
+    : actual && item.estimate && item.started != null && item.started + item.estimate > now
+      ? item.started + item.estimate
+      : null;
   const finish = ended ? item.finished : projectedEnd ?? now;
   const visibleStart = Math.max(start, timelineStart);
   const total = Math.min(finish, timelineEnd) - visibleStart;
@@ -99,15 +111,15 @@ function LeaseBar({ item, run, rows, config, nodes, selected, onClick }) {
     left: marker(visibleStart),
     width: marker(timelineStart + total),
   };
-  return resourceRows.map((row) => <button key={row.key} className={`lease ${item.worker.toLowerCase()} ${selected ? "lease-selected" : ""} ${item.status === "已取消" ? "lease-ended" : ""}`}
-    aria-label={`${run.repo} #${run.pr ?? run.id} · ${item.name} · ${item.status} · ${row.node.id} 设备组 ${row.group}`}
+  return resourceRowsList.map((row) => <button key={row.key} className={`lease ${item.worker.toLowerCase()} ${selected ? "lease-selected" : ""} ${item.status === "已取消" ? "lease-ended" : ""}`}
+    aria-label={`${run.repo} #${run.pr ?? run.id} · ${item.name} · ${item.status} · ${displayNodeHost(row.node)} 设备组 ${row.group}`}
     aria-pressed={selected} onClick={onClick} style={{ ...style, top: row.top + 6, height: row.height - 12 }}>
     {!queued && <span className="lease-actual" />}
     {projectedEnd && <span className="lease-planned" />}
     <span className="lease-label">
       <strong>{run.repo} <span className="lease-author">· @{run.author ?? run.actor} #{run.pr ?? run.id}</span></strong>
       <small>{run.action} #{run.id} / {item.name} · {item.cards}P</small>
-      {actual && <small className="lease-meta">{item.status} · 已用 {now - item.started} 分钟 · {item.estimate ? `预计 ${item.estimate} 分钟（${item.samples} 样本）` : "暂无估算"}</small>}
+      {actual && <small className="lease-meta">{item.status} · 已用 {Math.max(0, Math.round(now - item.started))} 分钟 · {item.estimate ? `预计 ${item.estimate} 分钟（${item.samples} 样本）` : "暂无估算"}</small>}
     </span>
     {start > timelineStart && <span className="lease-time lease-start">{startLabel}</span>}
     {actual && projectedEnd && <span className="lease-time lease-end">{finishLabel}</span>}
@@ -118,6 +130,16 @@ export function PoolsView({ nodes, cases, config, open, go, live }) {
   const [folded, setFolded] = useState({});
   const [queueScope, selectScope] = useState("");
   const [selected, setSelected] = useState(null);
+  const [clockState, setClockState] = useState(() => beijingClock());
+  useEffect(() => {
+    setClockState(beijingClock());
+    const timer = setInterval(() => setClockState(beijingClock()), 30_000);
+    return () => clearInterval(timer);
+  }, [cases, nodes]);
+  const { dateLabel, now, timelineStart, timelineEnd } = clockState;
+  const ticks = Array.from({ length: 6 }, (_, index) => timelineStart + index * 30);
+  const marker = (minute) => `${(minute - timelineStart) / Math.max(1, timelineEnd - timelineStart) * 100}%`;
+
   const rows = resourceRows(nodes, folded);
   const scopes = [...new Set([...nodes, ...cases].map((item) => poolId(item.worker, item.pool)))];
   useEffect(() => {
@@ -165,11 +187,14 @@ export function PoolsView({ nodes, cases, config, open, go, live }) {
             <div className="chart-coordinates">
               {ticks.map((minute) => <i key={minute} className="grid-line" style={{ left: marker(minute) }} />)}
               {rows.filter((row) => row.level === "group" && row.node.unknown.includes(row.group)).map((row) => (
-                <button key={row.key} className="unknown-block" style={{ left: marker(timelineStart + 2), width: marker(now - 2), top: row.top + 11 }}
+                <button key={row.key} className="unknown-block" style={{ left: marker(timelineStart + 2), width: marker(Math.max(timelineStart + 4, now - 2)), top: row.top + 11 }}
                   onClick={() => open({ type: "resource", target: targetFor(row.node, row.group) })}>未知占用</button>
               ))}
-              {cases.map((item) => <LeaseBar key={item.id} item={item} run={runs.find((run) => workflowKey(run) === item.run)}
-                rows={rows} config={config} nodes={nodes} selected={selected === item.id} onClick={() => showCase(item)} />)}
+              {cases.map((item) => {
+                const run = runs.find((candidate) => workflowKey(candidate) === item.run);
+                return run ? <LeaseBar key={item.id} item={item} run={run}
+                  rows={rows} config={config} nodes={nodes} clockState={clockState} selected={selected === item.id} onClick={() => showCase(item)} /> : null;
+              })}
               <i className="now-line" style={{ left: marker(now) }} />
             </div>
           </div>
@@ -192,13 +217,16 @@ export function PoolsView({ nodes, cases, config, open, go, live }) {
           <thead><tr><th>用例 / 仓库</th><th>PR / Workflow</th><th>申请资源</th><th>预计开始</th></tr></thead>
           <tbody>
             {queue.map((item) => {
-              const run = runs.find((run) => workflowKey(run) === item.run);
+              const run = runs.find((candidate) => workflowKey(candidate) === item.run);
+              if (!run) return null;
               const estimate = plannedTime(item, config, nodes);
               return <tr className={item.id === selected ? "is-selected" : ""} key={item.id}>
                 <td><button className="cell-title" onClick={() => showCase(item)}>{item.name}</button><small>{run.repo} · {run.owner}</small></td>
                 <td><RunIdentity run={run} /></td>
                 <td>{item.worker} / {item.pool} · {item.cards}P</td>
-                <td>{estimate == null ? "暂无估算" : <><span>约 {clock(estimate)}</span><small>排期预估</small></>}
+                <td>{item.projectionStatus === "WAITING_EXTERNAL"
+                  ? "等待外部释放"
+                  : estimate == null ? "暂无估算" : <><span>约 {clock(estimate)}</span><small>排期预估</small></>}
                   <small>队列顺位 {item.position}</small>
                 </td>
               </tr>;
@@ -226,26 +254,39 @@ function ClusterControls({ target, state, config, open }) {
   </div>;
 }
 
-export function ResourceStatus({ health, configStatus, unknown }) {
+export function ResourceStatus({ health, configStatus, unknown, quarantined = false }) {
   return <div className="resource-status">
     <Tag tone={health.tone}>{health.status}</Tag>
     {configStatus && <Tag tone="amber">{configStatus === "暂停" ? "暂停调度" : configStatus}</Tag>}
+    {quarantined && <Tag tone="red">已隔离</Tag>}
     {unknown && <Tag tone="red">未知占用</Tag>}
   </div>;
 }
 
 function ClusterRow({ target, status, nodes, config, canManage, open, node, group }) {
   const health = resourceHealth(node ? [node] : nodes, group);
+  const quarantined = Boolean(group ? node.quarantinedGroups?.includes(group) : node?.quarantinedGroups?.length);
   return <tr>
     <td><button className={`resource-link ${group ? "group-link" : node ? "node-link" : ""}`} onClick={() => open({ type: "resource", target })}>
-      {group ? `设备组 ${group}` : node ? node.id : `Pool ${target.pool}`} <CaretRight size={13} />
+      {group ? `设备组 ${group}` : node ? <span className="mono">{displayNodeHost(node)}</span> : `Pool ${target.pool}`} <CaretRight size={13} />
     </button></td>
-    <td>{node ? <span className="mono">{node.ip}:{node.port}</span> : <span className="subtle">—</span>}</td>
-    <td>{group ? `${node.groupCards?.[group] ?? 8} 卡` : node ? `${node.cards} 卡 · ${node.groups.length} 组` : `${nodes.length} 节点 · ${nodes.reduce((sum, member) => sum + member.cards, 0)} 卡`}</td>
-    <td><ResourceStatus health={health} configStatus={status} unknown={Boolean(group && node.unknown.includes(group))} /></td>
+    <td>{node ? <span className="mono">{displayNodeHost(node)}</span> : <span className="subtle">—</span>}</td>
+    <td>{group ? `${groupCardCount(node, group)} 卡` : node ? `${node.cards} 卡 · ${node.groups.length} 组` : `${nodes.length} 节点 · ${nodes.reduce((sum, member) => sum + member.cards, 0)} 卡`}</td>
+    <td><ResourceStatus health={health} configStatus={status} quarantined={quarantined} unknown={Boolean(group && node.unknown.includes(group))} /></td>
     <td className="subtle mono" title={group ? "该设备组上一次查到全部配置卡的时间" : "成员中最近一次查到配置卡的时间"}>{lastSeenDateTime(health.lastSeen)}</td>
     {canManage && <td><ClusterControls target={target} state={status} config={config} open={open} /></td>}
   </tr>;
+}
+
+function syncStatusBadge(workerInfo, appliedRevision, desiredRevision) {
+  if (workerInfo?.status === "PARTIAL_APPLIED") {
+    return { tone: commandStatusTone("PARTIAL_APPLIED"), label: `${commandStatusLabel("PARTIAL_APPLIED")}（存在不可达节点）` };
+  }
+  if (workerInfo?.status === "FAILED") {
+    return { tone: commandStatusTone("FAILED"), label: "应用失败" };
+  }
+  if (appliedRevision != null && appliedRevision === desiredRevision) return { tone: "teal", label: "已同步" };
+  return { tone: "amber", label: "等待 Worker 应用" };
 }
 
 export function ClusterView({ config, nodes, clusterPools = [], clusterHistory = [], rollbackCluster, canManage, open, audit }) {
@@ -253,7 +294,9 @@ export function ClusterView({ config, nodes, clusterPools = [], clusterHistory =
   const scoped = nodes.filter((node) => node.worker === worker);
   const pools = [...new Set([...scoped.map((node) => node.pool), ...clusterPools.filter((entry) => entry.worker === worker).map((entry) => entry.pool)])];
   const appliedRevision = config.applied[worker];
-  const desiredRevision = config.workerStatus?.[worker]?.desired ?? config.desired;
+  const workerInfo = config.workerStatus?.[worker];
+  const desiredRevision = workerInfo?.desired ?? config.desired;
+  const syncBadge = syncStatusBadge(workerInfo, appliedRevision, desiredRevision);
   return <main className="standard-view">
     <div className="page-heading">
       <div><h1>集群管理</h1><p>查看 Worker、Pool、节点与设备组的配置及生效状态。</p></div>
@@ -266,11 +309,12 @@ export function ClusterView({ config, nodes, clusterPools = [], clusterHistory =
       </button>)}
     </nav>
     <div className="revision-bar">
-      <strong>{worker}</strong><Tag tone={config.workerStatus?.[worker]?.offline ? "red" : "teal"}>{config.workerStatus?.[worker]?.offline ? "离线" : "在线"}</Tag>
+      <strong>{worker}</strong><Tag tone={workerInfo?.offline ? "red" : "teal"}>{workerInfo?.offline ? "离线" : "在线"}</Tag>
       <span>当前版本 <code>{appliedRevision == null ? "—" : `r${appliedRevision}`}</code></span>
       <span>期望版本 <code>{desiredRevision == null ? "—" : `r${desiredRevision}`}</code></span>
-      <Tag tone={appliedRevision != null && appliedRevision === desiredRevision ? "teal" : "amber"}>{appliedRevision != null && appliedRevision === desiredRevision ? "已同步" : "等待 Worker 应用"}</Tag>
-      <span className="revision-updated">{config.workerStatus?.[worker]?.status || "等待心跳"}</span>
+      <Tag tone={syncBadge.tone}>{syncBadge.label}</Tag>
+      <span className="revision-updated">{workerInfo?.status ? commandStatusLabel(workerInfo.status) : "等待心跳"}</span>
+      {canManage && workerInfo?.error && <span className="subtle" title={workerInfo.error}>原因：{workerInfo.error}</span>}
     </div>
     <div className="table-scroll">
       <table className="data-table cluster-table">
@@ -290,7 +334,7 @@ export function ClusterView({ config, nodes, clusterPools = [], clusterHistory =
         <thead><tr><th>版本</th><th>创建时间</th><th>操作账号</th><th>来源</th><th>操作</th></tr></thead>
         <tbody>{clusterHistory.map((revision) => <tr key={revision.revision}>
           <td className="mono">r{revision.revision}</td>
-          <td className="mono">{revision.created_at ? new Date(revision.created_at * 1000).toLocaleString("zh-CN") : "—"}</td>
+          <td className="mono">{revision.created_at ? new Date(revision.created_at * 1000).toLocaleString("zh-CN", {timeZone: "Asia/Shanghai"}) : "—"}</td>
           <td>{revision.created_by || "—"}</td><td>{revision.rollback_from_rev ? `回滚自 r${revision.rollback_from_rev}` : "发布"}</td>
           <td><button className="button small" disabled={Boolean(config.pending) || revision.revision === config.desired} onClick={() => rollbackCluster?.(revision.revision)}>回滚</button></td>
         </tr>)}

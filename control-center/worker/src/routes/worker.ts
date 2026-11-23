@@ -43,7 +43,7 @@ export function workerRoutes(router: Router) {
   router.add("POST", prefix + "/command-receipts", async context => {
     const data = await body(context);
     const id = string(data.cmd_id, "command", 64, /^[a-zA-Z0-9_-]+$/);
-    const status = member(data.status, "status", ["ACKED", "APPLIED", "NOOP", "CONFLICT", "FAILED"] as const);
+    const status = member(data.status, "status", ["ACKED", "APPLIED", "PARTIAL_APPLIED", "NOOP", "CONFLICT", "FAILED"] as const);
     const pools = data.pools == null ? null : array(data.pools, "pools", 32).map(value => {
       const row = object(value, "pool receipt");
       return {
@@ -64,7 +64,7 @@ export function workerRoutes(router: Router) {
     if (command.status !== (status === "ACKED" ? "PENDING" : "ACKED")) {
       throw new HttpError(409, "COMMAND_STATE_CONFLICT");
     }
-    const sync = status === "APPLIED" && command.cmd_type === "SYNC_CONFIG";
+    const sync = (status === "APPLIED" || status === "PARTIAL_APPLIED") && command.cmd_type === "SYNC_CONFIG";
     if (sync && (result.rev == null || JSON.parse(command.payload_json).revision !== result.rev)) {
       throw new HttpError(400, "COMMAND_REVISION_MISMATCH");
     }

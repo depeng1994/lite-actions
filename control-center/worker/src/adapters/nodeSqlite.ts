@@ -19,7 +19,11 @@ export class NodeSqliteStatement implements SqlStatement {
   }
 
   bind(...values: unknown[]): SqlStatement {
-    this.values = values;
+    this.values = values.map(value => {
+      if (value === undefined) return null;
+      if (value instanceof ArrayBuffer) return new Uint8Array(value);
+      return value;
+    });
     return this;
   }
 

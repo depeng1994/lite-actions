@@ -12,20 +12,45 @@ export function groupActiveRuns(cases, nodes, sourceRuns = runs) {
   const byId = new Map(nodes.map((node) => [node.id, node]));
   return sourceRuns.map((run) => ({
     ...run,
-    cases: cases.filter((item) => item.run === workflowKey(run)).map((item) => ({
-      ...item,
-      start: timeFromMinutes(item.started),
-      end: timeFromMinutes(item.finished),
-      elapsed: item.started == null ? null : (item.finished ?? now) - item.started,
-      allocatedCards: item.node ? item.groups.length * 8 : 0,
-      allocation: byId.get(item.node),
-    })),
+    cases: cases.filter((item) => item.run === workflowKey(run)).map((item) => {
+      const node = byId.get(item.node);
+      const computedCards = item.allocatedCards ?? (item.node
+        ? (item.groups?.reduce((sum, group) => sum + (node?.groupCards?.[group] ?? 0), 0) || item.cards || 0)
+        : 0);
+      return {
+        ...item,
+        start: item.start ?? timeFromMinutes(item.started),
+        end: item.end ?? timeFromMinutes(item.finished),
+        elapsed: item.elapsed ?? (item.started == null ? null : (item.finished ?? now) - item.started),
+        allocatedCards: computedCards,
+        allocation: node ?? item.allocation,
+      };
+    }),
   }));
 }
 
+const RESULT_MAP = {
+  QUEUED: "排队中",
+  PASS: "成功",
+  FAIL: "失败",
+  "排队中": "排队中",
+  "成功": "成功",
+  "失败": "失败",
+};
+
+export function workflowResultLabel(value) {
+  if (!value) return null;
+  return RESULT_MAP[value] || null;
+}
+
 export function summarizeRun(run) {
-  const { cases } = run;
-  const active = cases.some(({ status }) => !terminalStatuses.has(status));
+  const { cases = [] } = run;
+  const backendResult = workflowResultLabel(run.resultLabel) || workflowResultLabel(run.result);
+  const active = backendResult
+    ? backendResult === "排队中"
+    : typeof run.sequence === "number"
+      ? run.sequence >= 0
+      : cases.some(({ status }) => !terminalStatuses.has(status));
   const starts = cases.flatMap(({ start }) => start == null ? [] : [start]);
   const ends = cases.flatMap(({ end }) => end == null ? [] : [end]);
   const inferredStarts = cases.flatMap((item) => item.end == null || item.elapsed == null
@@ -46,7 +71,7 @@ export function summarizeRun(run) {
     maxCards: Math.max(0, ...cases.map(({ cards, allocatedCards }) => allocatedCards || cards)),
     partialCardHours: run.cardHoursPartial ?? (measured.length > 0 && measured.length < allocated.length),
     cardHours: run.cardHours ?? (measured.length ? measured.reduce((sum, item) => sum + item.elapsed * item.allocatedCards, 0) / 60 : null),
-    result: active ? "排队中" : cases.every(({ status }) => status === "成功") ? "成功" : "失败",
+    result: backendResult ?? (active ? "排队中" : cases.every(({ status }) => status === "成功") ? "成功" : "失败"),
   };
 }
 

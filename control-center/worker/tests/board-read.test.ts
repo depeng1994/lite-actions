@@ -57,8 +57,16 @@ test("public timeline and model views share allocations while admin can read rea
   const text = await pub.text();
   expect(text).not.toMatch(/198\.51\.100|"host_id"/);
   const timeline: Timeline = JSON.parse(text);
-  const nodes = timeline.workers[0].pools[0].nodes;
+  const poolObj = timeline.workers[0].pools[0];
+  const nodes = poolObj.nodes;
+  expect(poolObj.draining).toBe(false);
+  expect(poolObj.health.status).toBe("PENDING_PROBE");
+  expect(nodes[0].health.status).toBe("PENDING_PROBE");
+  expect(nodes[0].device_groups[0].draining).toBe(false);
   expect(timeline.zero_card_tasks.map(task => task.task_uid)).toEqual(["t_probe"]);
+  const modelsResp = await (await request("/public/models")).json<{default_model: string; models: unknown[]}>();
+  expect(modelsResp.default_model).toBe("vllm-ascend");
+  expect(modelsResp.models.length).toBeGreaterThanOrEqual(3);
   expect(nodes.map(node => node.device_groups[0].solid_blocks[0])).toMatchObject([
     {task_uid: "t_active", total_cards: 16, is_primary_row: true, group_count: 2},
     {task_uid: "t_active", total_cards: 16, is_primary_row: false, group_count: 2},
