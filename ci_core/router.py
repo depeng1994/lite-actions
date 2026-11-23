@@ -300,8 +300,12 @@ class Router:
         )
         visibility = self.idle_probe.health if self.idle_probe else {}
         probe_round = self.idle_probe.probe_round if self.idle_probe else 0
+        visibility_probe_time = (
+            self.idle_probe.visibility_probe_time if self.idle_probe else None
+        )
         if sampled_pools is not pools:
             probe, probe_time = {}, None
+            visibility_probe_time = None
         blocked = {}
         if self.quarantine_enabled:
             for key, record in records.items():
@@ -368,7 +372,7 @@ class Router:
             "healthy": self.control_healthy,
             "revision": revision,
             "idle_ts": probe_time,
-            "probe_ts": probe_time,
+            "probe_ts": visibility_probe_time,
             "devices": devices,
             "queues": queue_telemetry(
                 self.worker, pools, records, self.quarantine_enabled

@@ -43,3 +43,22 @@ test("visibility health is independent from occupancy and preserves last online 
     {status: "OFFLINE", missed_count: 5, last_online_at: 1950},
   ])).toEqual({status: "OFFLINE", missed_count: 5, last_online_at: 1950});
 });
+
+test("an online group uses the latest successful worker visibility probe", () => {
+  const worker: WorkerRow = {worker_id: "yellow", applied_rev: 1, health_ok: 1, last_heartbeat_at: 2020,
+    last_idle_probe_at: null, last_visibility_probe_at: 2010, active_count: 0, queued_count: 0};
+  const group = {devices: [0, 1]};
+  const node = {host_id: "198.51.100.25:22", allocation_groups: [group]};
+  const pool: Pool = {owner: "yellow", type: "ascend-a5", nodes: [node], enabled: true};
+  const observation: GroupRow = {worker_id: "yellow", pool_name: "a5_shared_yellow", host_id: node.host_id,
+    devices_json: "[0,1]", occupancy_state: "busy", probe_at: 2010, quarantined: 0,
+    visibility_state: "online", consecutive_failures: 0, last_online_at: 1980, last_probe_round: 4, updated_at: 2010};
+
+  expect(projectDevice(2025, {worker, pool, node, group, observation, leased: false}).health)
+    .toEqual({status: "ONLINE", missed_count: 0, last_online_at: 2010});
+  expect(projectDevice(2025, {
+    worker, pool, node, group,
+    observation: {...observation, visibility_state: "offline", consecutive_failures: 5},
+    leased: false,
+  }).health).toEqual({status: "OFFLINE", missed_count: 5, last_online_at: 1980});
+});

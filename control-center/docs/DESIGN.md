@@ -1200,13 +1200,13 @@ lite-actions/
    - **去重与零多余 SQLite 写入**：
      - Worker 在本地状态持久化单调递增轮次 `probe_round`（重启延续）以及每组的 `(vis, consecutive_failures, last_online_at, occupancy)`；
      - 仅当某组 `vis`、`consecutive_failures` 或 `occupancy` 发生变化时才发 `IP` 事件：`{"t":"IP","ts":now,"pool":...,"h":...,"d":[...],"pr":probe_round,"v":0|1|2,"mc":0..5,"lo":last_online_at,"st":"idle"|"busy"|"probe_error"}`；
-     - 若整轮所有设备组稳态无变化（如全在线且空闲），通过 30s 心跳的 `probe_ts`（本轮可见性成功时间）和 `idle_ts`（未租用组空闲时间）刷新新鲜度，**稳态 0 额外 SQLite 行写入**。
+     - 若整轮所有设备组稳态无变化（如全在线且空闲），通过 30s 心跳的 `probe_ts`（本轮至少一个设备组成功探测的最新时间）和 `idle_ts`（未租用组空闲时间）刷新新鲜度，**稳态 0 额外 SQLite 行写入**；部分设备组探测失败时，仍刷新成功环境的探测新鲜度。
 2. **SQLite 迁移（`migrations/0002_v15_workflow_and_health.sql`）**
    - `device_group_states` 新增列：`visibility_state TEXT NOT NULL DEFAULT 'pending' CHECK(visibility_state IN ('pending','online','warn','offline'))`、`consecutive_failures INTEGER NOT NULL DEFAULT 0`、`last_online_at INTEGER`、`last_probe_round INTEGER NOT NULL DEFAULT 0`。
    - `workers` 新增列：`last_visibility_probe_at INTEGER`（对应心跳 `probe_ts`）。
    - 服务端 `ingest.ts` 处理 `IP` 事件时校验 `pr > last_probe_round`（或 `pr == last_probe_round` 时幂等忽略），**防止重复投递导致 `consecutive_failures` 重复递增**；仅 `v === 0` 时更新 `last_online_at = MAX(COALESCE(last_online_at,0), lo)`，失败/配置发布/页面刷新绝不改写 `last_online_at`。
 3. **节点与 Pool 汇总规则（`src/services/deviceState.ts` & `src/services/cluster.ts`）**
-   - 设备组输出独立 `health` 对象：`{ status: "PENDING_PROBE" | "ONLINE" | "PROBE_WARN" | "OFFLINE", missed_count, last_online_at }`（与 `state: "LEASED" | "CONFIRMED_IDLE" | "UNKNOWN_BUSY"`、`paused`、`quarantined`、`worker_offline` 并列展示）。
+   - 设备组输出独立 `health` 对象：`{ status: "PENDING_PROBE" | "ONLINE" | "PROBE_WARN" | "OFFLINE", missed_count, last_online_at }`（与 `state: "LEASED" | "CONFIRMED_IDLE" | "UNKNOWN_BUSY"`、`paused`、`quarantined`、`worker_offline` 并列展示）。在线环境行使用 Worker 最近一次成功可见性探测时间，探测异常或离线环境行保留自身最后一次成功在线时间，Pool 行只做汇总。
    - 节点行 / Pool 行汇总成员设备组：
      - 全部成员 `OFFLINE` → `OFFLINE`（已离线，红）；
      - 部分成员 `OFFLINE` → `PARTIAL_OFFLINE`（部分离线，红）；

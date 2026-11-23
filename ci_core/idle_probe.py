@@ -162,6 +162,7 @@ class IdleProbe:
             target=self.run, name="npu-idle-probe", daemon=True
         )
         self.sample = ({}, None, None)
+        self.visibility_probe_time = None
         self.health = {}
         self.probe_round = 0
         if self.state_path and self.state_path.exists():
@@ -183,6 +184,12 @@ class IdleProbe:
             probe_round=self.probe_round,
         )
         self.sample = (states, complete_time, pools)
+        successful_probe_times = [
+            entry["lo"]
+            for entry in health.values()
+            if entry.get("v") == 0 and entry.get("lo") is not None
+        ]
+        self.visibility_probe_time = max(successful_probe_times, default=None)
         self.health = health
         if self.state_path:
             self.state_path.parent.mkdir(parents=True, exist_ok=True)
