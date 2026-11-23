@@ -78,7 +78,7 @@ class GitCodeWorkflowTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 client.ci_request(run)
 
-    def test_model_artifacts_cannot_request_probes_on_either_platform(self):
+    def test_model_artifacts_run_fixed_worker_probe_on_either_platform(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             write_workspace(root)
@@ -182,16 +182,14 @@ class GitCodeWorkflowTests(unittest.TestCase):
                 ),
                 patch.object(gitcode, "send_result", side_effect=send),
                 patch.object(gitcode, "request", side_effect=request),
-                patch(
-                    "ci_core.router.verify_definition",
-                    return_value={"env_vars": {"ASCEND_SET_ENV_PATH": "/fixture/cann"}},
-                ),
+                patch("ci_core.router.execute") as execute,
+                patch("ci_core.router.model_archive") as archive,
                 patch(
                     "ci_core.router.probe_worker",
                     return_value=subprocess.CompletedProcess(
-                        [], 0, "OS probe passed\n", ""
+                        [], 0, "WORKER_HOSTNAME=blue-host\nWORKER_ARCH=x86_64\n", ""
                     ),
-                ),
+                ) as probe,
             ):
                 client = MultiPlatformClient(github, {gitcode.repo: gitcode})
                 router = Router(root, "blue", client, "reporter")
@@ -204,11 +202,29 @@ class GitCodeWorkflowTests(unittest.TestCase):
                         router.flush()
                         if not router.active:
                             break
-                    self.assertFalse(router.state.read())
-                    self.assertFalse(comments)
-                    self.assertFalse(github.results())
+                    router.tick()
                 finally:
                     router.close()
+                execute.assert_not_called()
+                archive.assert_not_called()
+                self.assertEqual(probe.call_count, 2)
+            gitcode_results = [
+                json.loads(c["body"].split("\n", 1)[1])
+                for c in comments
+                if c["body"].startswith("Lite-CI-V3 ")
+            ]
+            self.assertEqual(len(gitcode_results), 1)
+            self.assertEqual(gitcode_results[0]["status"], "PASS")
+            self.assertEqual(gitcode_results[0]["test_id"], "gitcode_os")
+            self.assertIn(
+                "WORKER_HOSTNAME=blue-host", gitcode_results[0]["last_20_lines"]
+            )
+            self.assertEqual(len(github.results()), 1)
+            self.assertEqual(github.results()[0]["status"], "PASS")
+            self.assertEqual(github.results()[0]["test_id"], "github_os")
+            self.assertIn(
+                "WORKER_HOSTNAME=blue-host", github.results()[0]["last_20_lines"]
+            )
 
     def test_cross_platform_jobs_share_device_and_port_leases(self):
         import threading

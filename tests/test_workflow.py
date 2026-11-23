@@ -70,7 +70,7 @@ class WorkflowTests(unittest.TestCase):
                 return
         self.fail("workflow did not settle")
 
-    def test_model_artifact_cannot_request_host_probes_on_either_worker(self):
+    def test_model_artifact_worker_probe_runs_builtin_probe_only(self):
         service = Service(
             [
                 definition("blue_os", kind="worker_probe"),
@@ -80,14 +80,23 @@ class WorkflowTests(unittest.TestCase):
         )
         blue = self.router(service)
         yellow = self.router(service, "yellow")
-        with service.connected():
+        with (
+            service.connected(),
+            patch("ci_core.router.execute") as execute,
+            patch("ci_core.router.model_archive") as archive,
+        ):
             for router in [blue, yellow]:
                 router.tick()
                 self.drain(router)
                 router.tick()
-        self.assertFalse(blue.state.read())
-        self.assertFalse(yellow.state.read())
-        self.assertEqual(service.results(), [])
+            execute.assert_not_called()
+            archive.assert_not_called()
+        results = {(r["test_id"], r["worker"]): r for r in service.results()}
+        self.assertEqual(set(results), {("blue_os", "blue"), ("yellow_os", "yellow")})
+        for result in results.values():
+            self.assertEqual(result["status"], "PASS")
+            self.assertEqual(result["exit_code"], 0)
+            self.assertIn("WORKER_HOSTNAME=fixture", result["last_20_lines"])
 
     def test_parallel_cases_hold_disjoint_devices_and_ports_until_report(self):
         service = Service([definition("first"), definition("second")], self.root)

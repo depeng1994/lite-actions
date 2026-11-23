@@ -698,8 +698,6 @@ class Router:
 
                 if plan != expected_plan(run):
                     raise ValueError("self-smoke plan differs from its pinned profile")
-            elif any(i["kind"] == "worker_probe" for i in plan["cases"]):
-                raise ValueError("MODEL_HOST_PROBE_FORBIDDEN")
             self.plans[identity] = plan
         else:
             plan = cached
@@ -969,7 +967,13 @@ class Router:
                     ):
                         raise ValueError("self-smoke probe identity mismatch")
                 else:
-                    raise ValueError("MODEL_HOST_PROBE_FORBIDDEN")
+                    if (
+                        "env_vars" in item
+                        or item.get("target_pool") is not None
+                        or item.get("docker") is not None
+                        or item.get("resources") != {"nodes": 0, "devices_per_node": 0}
+                    ):
+                        raise ValueError("INVALID_WORKER_PROBE_ITEM")
                 self.transition(key, "RUNNING")
                 p = probe_worker()
                 locator = None

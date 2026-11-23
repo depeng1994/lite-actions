@@ -344,8 +344,8 @@ class SourceProfileTests(unittest.TestCase):
             )
         )
 
-    # 看护运行中探针收到取消时不能报告成功。
-    def test_recovered_model_probe_is_refused_before_source_or_commands(self):
+    # 看护模型仓的固定 OS 探针可直接执行内置 probe，但被篡改字段的持久化探针必须在执行前被拦截。
+    def test_model_probe_runs_builtin_probe_and_tampered_probe_is_refused(self):
         run = self.client.running_workflows()[0]
         router = self.router("blue")
         row = {
@@ -360,23 +360,45 @@ class SourceProfileTests(unittest.TestCase):
         plan = source_plan([row], run, self.client.repo)
         item = plan["cases"][0]
         router.state.update(
-            "legacy",
+            "valid_probe",
             phase="QUEUED",
             run=run,
             item=item,
             digest=plan["plan_digest"],
             defaults=plan["defaults"],
         )
+        router.state.update(
+            "tampered_probe",
+            phase="QUEUED",
+            run=run,
+            item={**item, "docker": "training"},
+            digest=plan["plan_digest"],
+            defaults=plan["defaults"],
+        )
         with (
-            patch("ci_core.router.probe_worker") as probe,
+            patch(
+                "ci_core.router.probe_worker",
+                return_value=subprocess.CompletedProcess(
+                    [], 0, "WORKER_HOSTNAME=blue\n", ""
+                ),
+            ) as probe,
             patch("ci_core.router.model_archive") as archive,
         ):
-            router.work("legacy", None, None, threading.Event(), threading.Event())
+            router.work("valid_probe", None, None, threading.Event(), threading.Event())
+            probe.assert_called_once()
+            archive.assert_not_called()
+            probe.reset_mock()
+            router.work(
+                "tampered_probe", None, None, threading.Event(), threading.Event()
+            )
             probe.assert_not_called()
             archive.assert_not_called()
-        self.assertEqual(
-            router.state.read()["legacy"]["report"]["status"], "INFRA_ERROR"
+        records = router.state.read()
+        self.assertEqual(records["valid_probe"]["report"]["status"], "PASS")
+        self.assertIn(
+            "WORKER_HOSTNAME=blue", records["valid_probe"]["report"]["last_20_lines"]
         )
+        self.assertEqual(records["tampered_probe"]["report"]["status"], "INFRA_ERROR")
 
     # 看护重跑取消旧用例，且新旧结果、执行目录互不混淆。
     def test_rerun_cancels_old_cases_and_uses_distinct_result_and_execution_identity(
