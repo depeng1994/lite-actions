@@ -334,12 +334,12 @@ function queueUpsert(db: SqlStore, pages: QueueWrite[]): Statement {
     ON CONFLICT(worker_id,pool_name,kind,task_uid) DO UPDATE SET
       queue_pos=excluded.queue_pos,
       candidate_group_idxs_json=CASE WHEN json_extract(excluded.candidate_group_idxs_json,'$.off')=0
-        THEN excluded.candidate_group_idxs_json ELSE json_set(queue_orders.candidate_group_idxs_json,'$.options',(
+        THEN excluded.candidate_group_idxs_json ELSE json_set(queue_orders.candidate_group_idxs_json,'$.options',json((
           SELECT json_group_array(json(value)) FROM (
             SELECT value FROM json_each(queue_orders.candidate_group_idxs_json,'$.options')
             UNION ALL SELECT value FROM json_each(excluded.candidate_group_idxs_json,'$.options')
           )
-        )) END,
+        ))) END,
       queue_ver=excluded.queue_ver,updated_at=excluded.updated_at
     WHERE excluded.queue_ver>=queue_orders.queue_ver AND (
       json_extract(excluded.candidate_group_idxs_json,'$.off')=0 OR
