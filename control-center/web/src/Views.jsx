@@ -1,5 +1,5 @@
 import { CalendarBlank, CaretDown, CaretRight, Pause, Play, Plus, Trash, X } from "@phosphor-icons/react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { clock, displayNodeHost, flagFor, plannedTime, poolId, statusTone, targetFor, timelineClock, timelineLabel, timelineMinuteFor, timelineRuns, workers, workflowKey } from "./formal-data.js";
 import { commandStatusLabel, commandStatusTone } from "./command-status.js";
 import { lastSeenDateTime, resourceHealth } from "./resource-health.js";
@@ -139,6 +139,8 @@ export function PoolsView({ nodes, cases, timelineCases, config, open, go, live 
   const [queueScope, selectScope] = useState("");
   const [selected, setSelected] = useState(null);
   const [clockState, setClockState] = useState(() => timelineClock());
+  const timelineScrollRef = useRef(null);
+  const initialScrollDone = useRef(false);
   useEffect(() => {
     setClockState(timelineClock());
     const timer = setInterval(() => setClockState(timelineClock()), 30_000);
@@ -153,6 +155,12 @@ export function PoolsView({ nodes, cases, timelineCases, config, open, go, live 
   useEffect(() => {
     if (!scopes.includes(queueScope)) selectScope(scopes[0] || "");
   }, [queueScope, scopes.join("|")]);
+  useEffect(() => {
+    const scroll = timelineScrollRef.current;
+    if (!scroll || initialScrollDone.current || scroll.scrollWidth <= scroll.clientWidth) return;
+    scroll.scrollLeft = scroll.scrollWidth - scroll.clientWidth;
+    initialScrollDone.current = true;
+  }, [timelineCases?.length, nodes.length]);
   const queue = cases.filter((item) => item.status === "排队中" && queueScope === poolId(item.worker, item.pool))
     .sort((a, b) => a.position - b.position);
   const showCase = (item) => {
@@ -178,7 +186,7 @@ export function PoolsView({ nodes, cases, timelineCases, config, open, go, live 
           </ul>
         </div>
       </div>
-      <div className="timeline-scroll">
+      <div className="timeline-scroll" ref={timelineScrollRef}>
         <div className="timeline" aria-label="Blue 与 Yellow 资源时间轴">
           <div className="axis-label">资源 <span>（Worker / Pool / 节点 / 设备组）</span></div>
           <div className="axis">
