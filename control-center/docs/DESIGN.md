@@ -144,6 +144,7 @@
 - [x] **`INT-09B`** `★ P0` 统一 Workflow 表汇总口径专项验证：`workflows-board.test.ts` 已验证混合活动/已结束子用例只保留活动表并标 `0`、全结束历史固定负序号、调度结果三态、运行总卡时 16 卡 38 分钟 = `10.13` 卡·小时、截至当前和统计不完整标记；线上 `/public/workflows` 已返回真实历史数据。
 - [ ] **`INT-10`** `★ P0` 可迁移性 DT 拦截与双运行时对等联调（`node-runtime.test.ts` + `node-runtime.test.ts` + `scripts/start-node-server.mjs` 产物包校验 + 同一份代码与 SQLite 迁移分别在 Node.js 24/SQLite 与个人服务器 Node 24/`node:sqlite` 上跑通双 Worker 心跳、无 Cron 取消推进、冷块 BLOB 读写与防爆破 IP 识别）
   - [x] 本地与隔离夹具对等子集（isolated fixture evidence）：Node 24/SQLite 单测与 `control-center/tests/integration/run.py` 双 Worker + 本地 TLS Proxy 验证均通过，峰值 1,795 B `< 2,000` B，其中平台写请求为本地 stub，非外部真实平台。
+  - [x] `lite-actions.ooguy.com已验证`：公网 DNS、HTTPS、SPA 回退、JSON 404、正式历史数据读取与 Blue heartbeat 已在个人服务器实机核对。
   - [ ] 真实生产基础设施双运行时对等（未完成，等待现场执行）：线上最新 Node.js 24/SQLite（含 `0010` 迁移）与 lite-actions.ooguy.com（注入生产 `CONTROL_CENTER_DOMAIN` / `CONTROL_CENTER_ORIGIN`）部署核验，以及真实主机将 Worker `control_center.url` 切至 Node 24 自建实例后的实机对等验收（见 `E2E-12` / `REL-00`）。
 
 #### 7.2 全栈端到端联调（浏览器 + 正式前端 + 控制面 + 双 Worker，`⏳ 依赖 Phase 5.5 + FE-01~05 标绿`）
@@ -151,6 +152,7 @@
 - [ ] **`E2E-02`** **`★ P0 关键必通`** 全栈操作下的双 Worker 实时抓包 `< 2,000` 字节硬门禁验证
 - [ ] **`E2E-03`** **`★ P0 关键必通`** 设备组 5 次探测离线 + 最近在线时间 + 16P 半节点暂停热加载与重启保留闭环 16P 半节点暂停与重启闭环需要可调度的 16P 资源，当前阻塞，未勾选。
 - [ ] **`E2E-04`** **`★ P0 关键必通`** 统一 Workflow 表格全交互闭环（`-3,-2,-1,0,1,2...` 序号、50 条上方历史分页/折叠恢复、12 列筛选排序、调度结果三态、运行总卡时、冷归档详情）
+  - [x] `lite-actions.ooguy.com已验证` 子集：个人服务器页面可加载，正式导入的 38 个 Workflow/79 个 case 可通过 `/api/v1/public/workflows` 读取。
   - [x] 旧前端版本 v31 浏览器子集：默认全部模型与 38/38 历史、单模型筛选后清除、历史折叠/展开、12 列表头、Actions 运行标题、真实开始/结束时间与耗时。
   - [ ] 仍需 103 条 `50/50/3` 冷热分页、冷归档详情、组合列筛选/排序和完整管理员浏览器会话证据。
 - [ ] **`E2E-05`** **`★ P0 关键必通`** Workflow 级跨区（Blue/Yellow）插队端到端闭环（含筛选态按真实队列交换、多端回执、晚发现沿用、排期同步刷新） Blue/GitCode/16P 跨区部分当前阻塞，Yellow 单节点子集已在 INT-07 记录，未勾选。
@@ -166,6 +168,7 @@
 
 #### 7.3 生产上线前置实机签收（对应 PRD v1.5 §12 全部 5 条前提）
 - [ ] **`REL-00`** **`★ 上线必过`** 初期 lite-actions.ooguy.com 前端与 API 同源部署 + Node.js/SQLite 实机核验（验证 `control-center/deploy/Caddyfile.personal-server.example` 保持 `Node.js 24 + SQLite`/``、部署时注入 `CONTROL_CENTER_DOMAIN` 与 `CONTROL_CENTER_ORIGIN` 反代同源 `/api/v1/*`、Node.js/SQLite Secret 注入与出站 `fetch()` 调 GitHub/GitCode API 及域名接入）
+  - [x] `lite-actions.ooguy.com已验证` 子集：DNS、Caddy HTTPS、Node systemd 服务、匿名 overview、SPA 回退、JSON 404 与 Blue heartbeat 已通过实机证据确认。
 - [x] **`REL-01`** **`★ 上线必过`** 真实 Yellow 主机通过批准域名完成心跳、取令、拉配置、回执，满足出口放行与每日字节预算（待定 1）
   - 实机证据（2026-11-20）：Yellow `offline=false`、`applied_rev=6`；`test_upload_intercept.py` 4/4 通过；`http-egress.json` 中 control 路径均 `rejected=0`、`sent_violations=0`，最大请求 1,828 B，日上传量 1,254,020 / 67,108,864。
 - [ ] **`REL-02`** **`★ 上线必过`** 已装 App 的 GitHub 测试仓 + 配好 Token 的 GitCode 测试仓各完成一次含原生作业和双区用例的真实整次取消 GitCode 侧真实 Workflow 触发当前阻塞，原因是本会话没有可用的 GitCode dispatch 接口或触发凭据，未勾选。 GitHub 侧实测返回 400 APP_NOT_INSTALLED，GitHub App 安装阻塞；GitCode 侧触发同样阻塞，未勾选。
