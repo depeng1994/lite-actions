@@ -43,10 +43,8 @@ function resourceRows(nodes, folded) {
       if (folded[key]) continue;
       for (const node of onWorker.filter((item) => item.pool === pool)) {
         const hostLabel = displayNodeHost(node);
-        rows.push({ key: node.id, worker, pool, node, level: "node", label: hostLabel });
-        if (folded[node.id]) continue;
         for (const group of node.groups) {
-          rows.push({ key: targetFor(node, group).id, worker, pool, node, group, level: "group", label: group });
+          rows.push({ key: targetFor(node, group).id, worker, pool, node, group, level: "group", label: `${hostLabel} 设备组 ${group}` });
         }
       }
     }
@@ -67,7 +65,7 @@ function ResourceLabel({ row, folded, changeFold, config, selectScope, open }) {
   return <div className={`resource resource-${level} ${worker.toLowerCase()}`} style={{ height }}>
     {level === "group"
       ? <button className="tree-leaf" onClick={() => open({ type: "resource", target: targetFor(node, group) })}>
-          设备组 {group} <span className="subtle">（{groupCardCount(node, group)}P）</span>
+          <span className="mono">{displayNodeHost(node)}</span> 设备组 {group} <span className="subtle">（{groupCardCount(node, group)}P）</span>
         </button>
       : <button className="tree-item" onClick={() => {
           changeFold(key);
@@ -111,6 +109,7 @@ function LeaseBar({ item, run, rows, config, nodes, clockState, selected, onClic
   const visibleStart = Math.max(start, timelineStart);
   const total = Math.min(finish, timelineEnd) - visibleStart;
   if (total <= 0) return null;
+  const compact = ended && total < 20;
   const solid = queued ? 0 : Math.max(0, Math.min(100, (timelineNow - visibleStart) / total * 100));
   const startLabel = timelineLabel(start);
   const finishLabel = timelineLabel(finish);
@@ -119,12 +118,13 @@ function LeaseBar({ item, run, rows, config, nodes, clockState, selected, onClic
     left: marker(visibleStart),
     width: marker(timelineStart + total),
   };
+  const ariaLabel = `${run.repo} #${run.pr ?? run.id} · ${item.name} · ${item.status} · ${resourceRowsList.map((row) => `${displayNodeHost(row.node)} 设备组 ${row.group}`).join("、")}`;
   return resourceRowsList.map((row) => <button key={row.key} className={`lease ${item.worker.toLowerCase()} ${selected ? "lease-selected" : ""} ${ended ? "lease-ended" : ""}`}
-    aria-label={`${run.repo} #${run.pr ?? run.id} · ${item.name} · ${item.status} · ${displayNodeHost(row.node)} 设备组 ${row.group}`}
+    aria-label={ariaLabel} title={ariaLabel}
     aria-pressed={selected} onClick={onClick} style={{ ...style, top: row.top + 6, height: row.height - 12 }}>
     {!queued && <span className="lease-actual" />}
     {projectedEnd && <span className="lease-planned" />}
-    <span className="lease-label">
+    <span className={`lease-label ${compact ? "lease-label-compact" : ""}`}>
       <strong>{run.repo} <span className="lease-author">· @{run.author ?? run.actor} #{run.pr ?? run.id}</span></strong>
       <small>{run.action} #{run.id} / {item.name} · {item.cards}P</small>
       {actual && <small className="lease-meta">{item.status} · 已用 {Math.max(0, Math.round(now - item.started))} 分钟 · {item.estimate ? `预计 ${item.estimate} 分钟（${item.samples} 样本）` : "暂无估算"}</small>}

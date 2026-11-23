@@ -168,7 +168,7 @@ code, .mono { font-family: var(--mono); font-size: .94em; letter-spacing: -.25px
 .resource-pool .tree-item { margin-left: 24px; }
 .resource-node .tree-item { margin-left: 42px; gap: 7px; font-size: 16px; }
 .node-address { color: var(--text); font-size: 14px; margin-left: 2px; }
-.tree-leaf { margin-left: 72px; font-size: 17px; gap: 0; }
+.tree-leaf { margin-left: 42px; font-size: 17px; gap: 0; }
 .resource-flag { font-size: 12px; color: var(--amber); white-space: nowrap; }
 .lanes { position: relative; }
 .lane-worker, .lane-pool { background: var(--heading); }
@@ -193,6 +193,7 @@ code, .mono { font-family: var(--mono); font-size: .94em; letter-spacing: -.25px
 .lease-author { font-weight: 560; }
 .lease-label small { font-size: 12px; }
 .lease-label .lease-meta { font-size: 11px; }
+.lease-label-compact { display: none; }
 .lease-time { position: absolute; top: 50%; transform: translateY(-50%); font-size: 12px; color: var(--text); white-space: nowrap; }
 .lease-start { right: calc(100% + 7px); }
 .lease-end { left: calc(100% + 7px); }
