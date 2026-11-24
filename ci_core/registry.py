@@ -141,8 +141,13 @@ def decode_catalog(data):
                 not isinstance(overrides, dict)
                 or set(overrides) - {"worker", "target_pool", "docker"}
                 or not all(
-                    isinstance(v, str) and 0 < len(v) <= 256 and v.isprintable()
-                    for v in overrides.values()
+                    (key == "docker" and value is None)
+                    or (
+                        isinstance(value, str)
+                        and 0 < len(value) <= 256
+                        and value.isprintable()
+                    )
+                    for key, value in overrides.items()
                 )
             ):
                 raise ValueError

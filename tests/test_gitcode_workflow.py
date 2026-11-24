@@ -415,7 +415,6 @@ class GitCodeWorkflowTests(unittest.TestCase):
                     ),
                     defaults,
                     1,
-                    allow_site_defaults=True,
                 ),
                 normalize(
                     SimpleNamespace(
@@ -430,6 +429,20 @@ class GitCodeWorkflowTests(unittest.TestCase):
                     ),
                     defaults,
                     2,
+                ),
+                normalize(
+                    SimpleNamespace(
+                        test_name="training_defaults",
+                        test_descr="Training with deployment defaults",
+                        nnodes=1,
+                        ngpu=2,
+                        ci_kind="train",
+                        ci_overrides={"docker": None},
+                        timeout=90,
+                        env_vars={"DATASET_PATH": "tests/assets/fixtures"},
+                    ),
+                    defaults,
+                    3,
                 ),
             ]
             run_id = "run_multi_1"
@@ -482,7 +495,7 @@ class GitCodeWorkflowTests(unittest.TestCase):
             }
             artifact_ready = False
             comments = []
-            seen_envs = []
+            seen_envs = {}
 
             def request(method, path, **kwargs):
                 if path.startswith("/actions/runs?"):
@@ -519,7 +532,7 @@ class GitCodeWorkflowTests(unittest.TestCase):
 
             def execute(selected, current, **kwargs):
                 self.assertEqual(selected["docker"], "training")
-                seen_envs.append(selected["verified_env"])
+                seen_envs[current["_ci_case_id"]] = selected["verified_env"]
                 current["_ci_phase_callback"]("LAUNCHING")
                 return completed_execution(root, selected, current)
 
@@ -586,7 +599,7 @@ class GitCodeWorkflowTests(unittest.TestCase):
                         router.flush()
                         if (
                             not router.active
-                            and len(router.state.read()) == 3
+                            and len(router.state.read()) == 4
                             and all(
                                 r["phase"] == "REPORTED"
                                 for r in router.state.read().values()
@@ -594,17 +607,25 @@ class GitCodeWorkflowTests(unittest.TestCase):
                         ):
                             break
                     records = list(router.state.read().values())
-                    self.assertEqual(len(records), 3)
+                    self.assertEqual(len(records), 4)
                     self.assertTrue(
                         all(r["report"]["status"] == "PASS" for r in records)
                     )
                     self.assertEqual(
                         seen_envs,
-                        [
-                            env_vars,
-                            {**env_vars, "ASCEND_SET_ENV_PATH": "/fixture/cann"},
-                            env_vars,
-                        ],
+                        {
+                            "case_000_dispatch_smoke_8p": env_vars,
+                            "case_001_dispatch_smoke_16p": {
+                                **env_vars,
+                                "ASCEND_SET_ENV_PATH": "/fixture/cann",
+                            },
+                            "case_002_dispatch_smoke_8p": env_vars,
+                            "case_003_training_defaults": {
+                                "DATASET_PATH": "tests/assets/fixtures",
+                                "ASCEND_SET_ENV_PATH": "/fixture/cann",
+                                "HF_ASSETS_PATH": "/fixture/model",
+                            },
+                        },
                     )
                     results = [
                         json.loads(c["body"].split("\n", 1)[1])
@@ -612,7 +633,11 @@ class GitCodeWorkflowTests(unittest.TestCase):
                         if c["body"].startswith("Lite-CI-V3 ")
                     ]
                     self.assertEqual(
-                        [r["case_id"] for r in results],
+                        [
+                            r["case_id"]
+                            for r in results
+                            if r["test_id"] != "training_defaults"
+                        ],
                         [
                             "case_000_dispatch_smoke_8p",
                             "case_001_dispatch_smoke_16p",
@@ -651,7 +676,13 @@ class GitCodeWorkflowTests(unittest.TestCase):
         del pool["default_docker"]
         node["paused"] = True
         self.assertEqual(runtime_case(item, pools, "blue")["docker"], "training")
-        pool["nodes"][0]["environments"] = {}
+        del node["paused"]
+        node["capabilities"] = ["npu_smoke"]
+        del node["environments"]["training"]
+        self.assertEqual(runtime_case(item, pools, "blue")["docker"], "training")
+        with self.assertRaisesRegex(ValueError, "DEFAULT_DOCKER_AMBIGUOUS"):
+            runtime_case({**item, "kind": "npu_smoke"}, pools, "blue")
+        pool["nodes"][0]["capabilities"] = ["npu_smoke"]
         with self.assertRaisesRegex(ValueError, "CONTAINER_BINDING_MISSING"):
             runtime_case(item, pools, "blue")
 

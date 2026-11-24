@@ -160,15 +160,18 @@ digest, executes its own cases, and posts results as
 result identities. Legacy source-profile callers still need the fixed commit's
 declarative `.ci/lite-actions.json`; the Worker does not run model code on its host.
 
-#### GitCode request site defaults
+#### Worker site defaults for GitHub and GitCode
 
-Inline NPU cases can send `"docker": null` and omit deployment-owned paths from
-`env_vars` (send `{}` if there are no model-owned entries). Keep the case's
-`worker`, `target_pool`, and topology explicit.
+NPU cases in GitHub and GitCode schema-3 requests can send `"docker": null` and
+omit deployment-owned paths from `env_vars`. Inline cases send `{}` if there are
+no model-owned entries. For a plan resolved from the pinned `.ci/lite-actions.json`
+catalog, set `ci_overrides.docker` to null in the catalog as well. Keep the
+case's `worker`, `target_pool`, and topology explicit.
 
 - The Worker uses the target pool's `default_docker` when configured. Otherwise it
-  uses the sole container binding name across unpaused, verified nodes. Multiple
-  names require an explicit pool default or an explicit case binding. Missing
+  uses the sole container binding name across unpaused, verified nodes that
+  support the requested case kind. Multiple names require an explicit pool
+  default or an explicit case binding. Missing
   bindings and ambiguous defaults fail the case before execution.
 - `ASCEND_SET_ENV_PATH` and, for training, `HF_ASSETS_PATH` default to the first
   approved value for the resolved container in the Worker's
@@ -182,8 +185,8 @@ Inline NPU cases can send `"docker": null` and omit deployment-owned paths from
 
 Existing explicitly configured plans remain valid. Upgrade and verify both
 participating Workers before switching a caller to omitted paths or
-`docker: null`. GitHub and legacy source-profile request contracts keep their
-existing requirements.
+`docker: null`. Catalog-backed requests still undergo pinned definition checks,
+and Worker probes retain their zero-resource contract.
 
 ### Yellow：GitCode / GitHub 仓库来源配置
 

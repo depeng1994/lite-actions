@@ -1065,17 +1065,16 @@ class Router:
                 .get("case_environments", {})
                 .get(case["docker"], {})
             )
-            if run.get("_ci_provider") == "gitcode" and "env_vars" in item:
-                raw_env = dict(raw_env)
-                keys = (
-                    ("ASCEND_SET_ENV_PATH", "HF_ASSETS_PATH")
-                    if item["kind"] == "train"
-                    else ("ASCEND_SET_ENV_PATH",)
-                )
-                for name in keys:
-                    allowed = rules.get(name)
-                    if name not in raw_env and isinstance(allowed, list) and allowed:
-                        raw_env[name] = allowed[0]
+            raw_env = dict(raw_env)
+            keys = (
+                ("ASCEND_SET_ENV_PATH", "HF_ASSETS_PATH")
+                if item["kind"] == "train"
+                else ("ASCEND_SET_ENV_PATH",)
+            )
+            for name in keys:
+                allowed = rules.get(name)
+                if name not in raw_env and isinstance(allowed, list) and allowed:
+                    raw_env[name] = allowed[0]
             environment = validate_case_environment(raw_env, kind=item["kind"])
             approved_setup = rules.get("ASCEND_SET_ENV_PATH")
             if type(approved_setup) is not list or (

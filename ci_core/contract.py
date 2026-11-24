@@ -102,7 +102,7 @@ def digest(plan):
     ).hexdigest()
 
 
-def normalize(test, defaults, order, *, allow_site_defaults=False):
+def normalize(test, defaults, order):
     override = getattr(test, "ci_overrides", None) or {}
     if not isinstance(override, dict) or set(override) - {
         "worker",
@@ -112,7 +112,7 @@ def normalize(test, defaults, order, *, allow_site_defaults=False):
         raise ValueError("unknown case override")
     config = dict(defaults)
     for k, v in override.items():
-        if allow_site_defaults and k == "docker" and v is None:
+        if k == "docker" and v is None:
             config[k] = None
             continue
         if (
@@ -137,7 +137,7 @@ def normalize(test, defaults, order, *, allow_site_defaults=False):
         pool, docker = config.get("target_pool"), config.get("docker")
         if not isinstance(pool, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", pool):
             raise ValueError("invalid pool")
-        if not (allow_site_defaults and docker is None) and (
+        if docker is not None and (
             not isinstance(docker, str)
             or not docker
             or len(docker) > 256
@@ -177,7 +177,7 @@ def normalize(test, defaults, order, *, allow_site_defaults=False):
         from ci_core.registry import validate_case_environment
 
         case["env_vars"] = validate_case_environment(
-            raw_env, kind=kind, require_setup=not allow_site_defaults
+            raw_env, kind=kind, require_setup=False
         )
     return case
 
@@ -322,7 +322,6 @@ def parse_plan(plan, run, workflow, *, repo=REPO):
             ),
             defaults,
             i,
-            allow_site_defaults=gitcode and "env_vars" in c,
         )
         if expected != c:
             raise ValueError("noncanonical case")

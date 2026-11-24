@@ -100,12 +100,18 @@ def write_catalog(tar, rows):
 class Service(GitHubClient):
     """In-memory REST boundary; artifact decoding and result posting use production code."""
 
-    def __init__(self, definitions, root):
+    def __init__(self, definitions, root, *, catalog_envs=None):
         super().__init__("disposable-fixture-token")
         self.definitions = definitions
         self.plans, self.runs, self.comments = {}, {}, []
         self.offline = False
         self.archive = root / "model.tar.gz"
+        default_env = dict(
+            ASCEND_SET_ENV_PATH="/fixture/cann",
+            HF_ASSETS_PATH="/fixture/model",
+            CKPT_INIT_LOAD_PATH="/fixture/checkpoint",
+        )
+        catalog_envs = catalog_envs or {}
         rows = [
             dict(
                 test_id=d.test_name,
@@ -115,11 +121,7 @@ class Service(GitHubClient):
                 timeout=d.timeout,
                 kind=d.ci_kind,
                 ci_overrides=d.ci_overrides,
-                env_vars=dict(
-                    ASCEND_SET_ENV_PATH="/fixture/cann",
-                    HF_ASSETS_PATH="/fixture/model",
-                    CKPT_INIT_LOAD_PATH="/fixture/checkpoint",
-                ),
+                env_vars=catalog_envs.get(d.test_name, default_env),
             )
             for d in definitions
         ]

@@ -98,6 +98,72 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(result["exit_code"], 0)
             self.assertIn("WORKER_HOSTNAME=fixture", result["last_20_lines"])
 
+    def test_training_site_defaults_for_inline_and_catalog_github_requests(self):
+        dataset = {"DATASET_PATH": "tests/assets/fixtures"}
+        envs = {
+            "defaults": dataset,
+            "approved": {**dataset, "HF_ASSETS_PATH": "/fixture/alternate"},
+            "unapproved": {**dataset, "HF_ASSETS_PATH": "/other/assets"},
+        }
+        for inline in (True, False):
+            with self.subTest(inline=inline):
+                root = self.root / ("inline" if inline else "catalog")
+                write_workspace(root)
+                definitions = [definition(name) for name in envs]
+                for case in definitions:
+                    case.ci_overrides["docker"] = None
+                    if inline:
+                        case.env_vars = envs[case.test_name]
+                service = Service(definitions, root, catalog_envs=envs)
+                router = self.router(service, existing=root)
+                router.pools["pool_blue"]["default_docker"] = "training"
+                rules = router.workers["blue"]["case_environments"]["training"]
+                rules["HF_ASSETS_PATH"].append("/fixture/alternate")
+                with (
+                    service.connected(),
+                    patch(
+                        "ci_core.router.model_archive", return_value=service.archive
+                    ) as model_archive,
+                    patch(
+                        "ci_core.router.execute",
+                        side_effect=lambda case, run, **_: completed_execution(
+                            root, case, run
+                        ),
+                    ) as execute,
+                    self.assertLogs("root", level="ERROR") as logs,
+                ):
+                    router.tick()
+                    self.drain(router)
+                self.assertIn("MODEL_ENV_NOT_APPROVED", "\n".join(logs.output))
+                self.assertEqual(model_archive.call_count, 0 if inline else 3)
+                self.assertEqual(
+                    {r["test_id"]: r["status"] for r in service.results()},
+                    {
+                        "defaults": "PASS",
+                        "approved": "PASS",
+                        "unapproved": "INFRA_ERROR",
+                    },
+                )
+                actual_envs = {}
+                for call in execute.call_args_list:
+                    case, run = call.args
+                    self.assertEqual(case["docker"], "training")
+                    actual_envs[run["_ci_test_id"]] = case["verified_env"]
+                self.assertEqual(
+                    actual_envs,
+                    {
+                        "defaults": {
+                            **dataset,
+                            "ASCEND_SET_ENV_PATH": "/fixture/cann",
+                            "HF_ASSETS_PATH": "/fixture/model",
+                        },
+                        "approved": {
+                            **envs["approved"],
+                            "ASCEND_SET_ENV_PATH": "/fixture/cann",
+                        },
+                    },
+                )
+
     def test_parallel_cases_hold_disjoint_devices_and_ports_until_report(self):
         service = Service([definition("first"), definition("second")], self.root)
         router = self.router(service)

@@ -207,7 +207,7 @@ class PoolDefaultError(ValueError):
     """A missing or ambiguous deployment-owned container binding."""
 
 
-def resolve_pool_default_docker(pool):
+def resolve_pool_default_docker(pool, *, kind):
     if "default_docker" in pool:
         return pool["default_docker"]
     bindings = {
@@ -215,6 +215,7 @@ def resolve_pool_default_docker(pool):
         for node in pool["nodes"]
         if not node.get("paused")
         and not node.get("probe_unavailable")
+        and kind in node.get("capabilities", ["train", "npu_smoke"])
         and any(
             group.get("verified")
             and not group.get("paused")
@@ -238,8 +239,8 @@ def runtime_case(item, pools, worker):
     if pool["owner"] != worker:
         raise ValueError("POOL_OWNER_MISMATCH")
     docker = item["docker"]
-    if docker is None and "env_vars" in item:
-        docker = resolve_pool_default_docker(pool)
+    if docker is None and item["kind"] != "worker_probe":
+        docker = resolve_pool_default_docker(pool, kind=item["kind"])
     return dict(
         name=item["case_id"],
         pool=item["target_pool"],
