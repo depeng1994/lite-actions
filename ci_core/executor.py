@@ -188,6 +188,30 @@ def remote_task_name(run: dict) -> str:
     return f"{prefix}{local:%Y-%m-%d_%H-%M-%S}_run_{name}_{number}{suffix}"
 
 
+def _process_table_header(output, indexing, *, legacy_a3=False):
+    """Find the process table by its required columns, not container PID."""
+    required = [
+        "NPU Chip" if indexing == "card-die" else "NPU ID",
+        "Process id",
+        "Process name",
+        "Process memory(MB)",
+    ]
+    for i, line in enumerate(output.splitlines()):
+        line = line.strip()
+        if not (line.startswith("|") and line.endswith("|")):
+            continue
+        cells = [" ".join(cell.split()) for cell in line[1:-1].split("|")]
+        if cells == required or cells == required + ["Process id in container"]:
+            return i, len(cells)
+        if legacy_a3 and indexing == "card-die" and cells == [
+            "NPU ID",
+            "Chip ID",
+            "Process id in container",
+        ]:
+            return i, len(cells)
+    raise ValueError("npu-smi process table absent")
+
+
 def _verified_inventory(output, indexing, expected_devices):
     lines = output.splitlines()
     header = None
@@ -209,15 +233,8 @@ def _verified_inventory(output, indexing, expected_devices):
             break
     if header is None or header + 1 >= len(lines):
         raise ValueError("NPU hardware inventory header missing")
-    end = next(
-        (
-            i
-            for i in range(header + 1, len(lines))
-            if "Process id in container" in lines[i]
-        ),
-        None,
-    )
-    if end is None:
+    end, _ = _process_table_header(output, indexing)
+    if end <= header + 1:
         raise ValueError("NPU process table missing")
     data = [
         line.strip()
@@ -336,29 +353,15 @@ def _process_rows(
     """Return (chip, PID visible in the kill namespace, container PID evidence).
 
     A5 "card" mode reports the *host* PID in column two, regardless of
-    whether the process belongs to the bound CI container. The last column
-    may be NA or a PID from a different container's namespace; never kill it.
+    whether the process belongs to the bound CI container. The optional
+    container PID is diagnostic only and never used for validation or signalling.
     Preserve the established A3 card-die PID and chip mapping.
     """
     if indexing not in ("card", "card-die"):
         raise ValueError("unknown NPU process index mapping")
-    a3_host_table = False
-    a3_header_line = None
-    if "Process id in container" not in output:
-        # A3 exposes host PIDs in a four-column NPU/Chip table. Restrict
-        # this compatibility path to card-die; leave A5 host semantics intact.
-        if indexing != "card-die" or host_pids:
-            raise ValueError("npu-smi process table absent")
-        for i, line in enumerate(output.splitlines()):
-            if not line.strip().startswith("|"):
-                continue
-            columns = [" ".join(cell.split()) for cell in line.strip().strip("|").split("|")]
-            if columns == ["NPU Chip", "Process id", "Process name", "Process memory(MB)"]:
-                a3_host_table = True
-                a3_header_line = i
-                break
-        if not a3_host_table:
-            raise ValueError("npu-smi process table absent")
+    header_line, width = _process_table_header(
+        output, indexing, legacy_a3=not host_pids
+    )
     if host_pids:
         _verified_inventory(output, indexing, coverage_devices)
 
@@ -366,11 +369,7 @@ def _process_rows(
     rows: list[tuple[int, int, str]] = []
     has_process_data = False
     covered_cards = set()
-    lines = (
-        output.splitlines()[a3_header_line + 1 :]
-        if a3_host_table
-        else output.split("Process id in container", 1)[1].splitlines()[1:]
-    )
+    lines = output.splitlines()[header_line + 1 :]
     if require_end:
         nonempty = [line.strip() for line in lines if line.strip()]
         if not nonempty or not re.fullmatch(
@@ -379,100 +378,67 @@ def _process_rows(
             if not require_exclusive:
                 raise ExternalNpuOccupancy("NPU process table has no verified end")
             raise ValueError("NPU process table has no verified end")
-    if indexing == "card-die" and not host_pids:
-        for line in lines:
-            stripped = line.strip()
-            if not stripped or re.fullmatch(r"[+=-]+", stripped):
-                continue
-            empty = re.fullmatch(
-                r"\|\s*No running processes found in NPU (\d+)(?:\.\.(\d+))?[^|]*\|",
-                stripped,
-            )
-            if empty:
-                has_process_data = True
-                first = int(empty[1])
-                last = int(empty[2]) if empty[2] is not None else first
-                if last < first or last - first > 255:
-                    raise ValueError("invalid empty NPU range")
-                covered_cards.update(range(first, last + 1))
-                continue
-            match = CHIP_PROCESS.match(line)
-            if match:
-                has_process_data = True
-                covered_cards.add(int(match.group(1)))
-                chip = int(match.group(1)) * 2 + int(match.group(2))
-                pid = int(match.group(3))
-                rows.append((chip, pid, None))
-            elif not require_exclusive:
-                raise ExternalNpuOccupancy("NPU process row cannot be resolved")
-            else:
-                raise ValueError("unrecognized NPU process row")
-    else:
-        # The A3 host table uses the first cell for both card and chip, and
-        # its second cell is the host PID. Never infer it from a container PID.
-        if host_pids:
-            header = next(
-                line
-                for line in output.splitlines()
-                if "Process id in container" in line
-            )
-            columns = [
-                " ".join(x.split()) for x in header.strip().strip("|").split("|")
-            ]
-            if columns != [
-                "NPU Chip" if indexing == "card-die" else "NPU ID",
-                "Process id",
-                "Process name",
-                "Process memory(MB)",
-                "Process id in container",
-            ]:
-                raise ValueError("unrecognized host PID table")
-        # Ignore the remainder of the header line; all following data rows
-        # must match the five-column table. Unknown rows are not idle.
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            if re.fullmatch(r"[+=-]+", line):
-                continue
-            empty = re.fullmatch(
-                r"\|\s*No running processes found in NPU (\d+)[^|]*\|", line
-            )
-            if empty:
-                has_process_data = True
-                covered_cards.add(int(empty[1]))
-                continue
-            if not (line.startswith("|") and line.endswith("|")):
-                raise ValueError("unrecognized NPU process row")
-            cells = [part.strip() for part in line[1:-1].split("|")]
-            chip = cells[0].split()
-            valid_chip = (
-                len(chip) == 2
-                and re.fullmatch(r"[0-9]+", chip[0])
-                and chip[1] in ("0", "1")
-                if host_pids and indexing == "card-die"
-                else re.fullmatch(r"[0-9]+", cells[0])
-            )
-            if (
-                len(cells) != 5
-                or not valid_chip
-                or not re.fullmatch(r"[0-9]+", cells[1])
-                or int(cells[1]) <= 1
-                or not cells[2]
-                or not re.fullmatch(r"[0-9]+", cells[3])
-                or not (cells[4] == "NA" or re.fullmatch(r"[0-9]+", cells[4]))
-            ):
-                raise ValueError("unrecognized NPU process row")
-            index = (
-                int(chip[0]) * 2 + int(chip[1])
-                if host_pids and indexing == "card-die"
-                else int(cells[0])
-            )
-            rows.append((index, int(cells[1]), cells[4]))
+    for line in lines:
+        line = line.strip()
+        if not line or re.fullmatch(r"[+=-]+", line):
+            continue
+        empty = re.fullmatch(
+            r"\|\s*No running processes found in NPU (\d+)(?:\.\.(\d+))?\s*\|",
+            line,
+        )
+        if empty:
+            first = int(empty[1])
+            last = int(empty[2]) if empty[2] is not None else first
+            if last < first or last - first > 255:
+                raise ValueError("invalid empty NPU range")
             has_process_data = True
-            covered_cards.add(
-                int(chip[0]) if host_pids and indexing == "card-die" else index
-            )
+            covered_cards.update(range(first, last + 1))
+            continue
+        if width == 3:
+            # Legacy A3 container-side layout; preserve its PID mapping.
+            match = CHIP_PROCESS.match(line)
+            if not match:
+                if not require_exclusive:
+                    raise ExternalNpuOccupancy("NPU process row cannot be resolved")
+                raise ValueError("unrecognized NPU process row")
+            card, die, pid = map(int, match.groups())
+            rows.append((card * 2 + die, pid, None))
+            has_process_data = True
+            covered_cards.add(card)
+            continue
+
+        if not (line.startswith("|") and line.endswith("|")):
+            raise ValueError("unrecognized NPU process row")
+        cells = [part.strip() for part in line[1:-1].split("|")]
+        chip = cells[0].split()
+        valid_chip = (
+            len(chip) == 2
+            and re.fullmatch(r"[0-9]+", chip[0])
+            and chip[1] in ("0", "1")
+            if indexing == "card-die"
+            else re.fullmatch(r"[0-9]+", cells[0])
+        )
+        if (
+            not 4 <= len(cells) <= width
+            or not valid_chip
+            or not re.fullmatch(r"[0-9]+", cells[1])
+            or int(cells[1]) <= 1
+            or not cells[2]
+            or not re.fullmatch(r"[0-9]+", cells[3])
+        ):
+            raise ValueError("unrecognized NPU process row")
+        card = int(chip[0])
+        index = card * 2 + int(chip[1]) if indexing == "card-die" else card
+        # The optional container PID is diagnostic evidence only. Missing or
+        # nonnumeric values must never invalidate the host-PID observation.
+        container_pid = (
+            cells[4] if len(cells) == 5 and re.fullmatch(r"[0-9]+", cells[4]) else "NA"
+        )
+        if indexing == "card-die" and not host_pids:
+            container_pid = None
+        rows.append((index, int(cells[1]), container_pid))
+        has_process_data = True
+        covered_cards.add(card)
 
     expected_cards = {
         device // 2 if indexing == "card-die" else device
@@ -599,6 +565,8 @@ def _bound_host_command(pid, devices, fingerprint, indexing, coverage_devices):
         + "CHIP_PROCESS = re.compile("
         + repr(CHIP_PROCESS.pattern)
         + ")\n"
+        + getsource(_process_table_header)
+        + "\n"
         + getsource(_verified_inventory)
         + "\n"
         + getsource(_process_rows)
