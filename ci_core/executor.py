@@ -385,7 +385,7 @@ def _process_rows(
             if not stripped or re.fullmatch(r"[+=-]+", stripped):
                 continue
             empty = re.fullmatch(
-                r"\\|\\s*No running processes found in NPU (\\d+)(?:\\.\\.(\\d+))?[^|]*\\|",
+                r"\|\s*No running processes found in NPU (\d+)(?:\.\.(\d+))?[^|]*\|",
                 stripped,
             )
             if empty:
