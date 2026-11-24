@@ -13,7 +13,7 @@ from tests.integration_tests.tools.lite_actions.entrypoint import inspect_profil
 
 PLAN = Path(".ci-request/ci-request.json")
 CPU_TITLE = "Lite Actions self smoke: cpu-only"
-YELLOW_A5_TITLE = "Lite Actions self smoke: yellow-a5"
+YELLOW_A3_TITLE = "Lite Actions self smoke: yellow-a3"
 
 
 def case_passed(result):
@@ -30,8 +30,8 @@ def expected_plan(run):
     title = run.get("display_title")
     if title == CPU_TITLE:
         profile = "cpu-only"
-    elif title == YELLOW_A5_TITLE:
-        profile = "yellow-a5"
+    elif title == YELLOW_A3_TITLE:
+        profile = "yellow-a3"
     else:
         profile = "dispatch_smoke"
     rows = inspect_profile(profile)
@@ -44,7 +44,7 @@ def prepare(environ=os.environ):
     if environ["GITHUB_REPOSITORY"] != SELF_REPO:
         raise ValueError("unexpected self-smoke repository")
     profile = environ.get("SELF_SMOKE_PROFILE", "full")
-    if profile not in {"full", "cpu-only", "yellow-a5"}:
+    if profile not in {"full", "cpu-only", "yellow-a3"}:
         raise ValueError("unknown self-smoke profile")
     run = {
         "id": int(environ["GITHUB_RUN_ID"]),
@@ -54,8 +54,8 @@ def prepare(environ=os.environ):
         "display_title": (
             CPU_TITLE
             if profile == "cpu-only"
-            else YELLOW_A5_TITLE
-            if profile == "yellow-a5"
+            else YELLOW_A3_TITLE
+            if profile == "yellow-a3"
             else ""
         ),
     }

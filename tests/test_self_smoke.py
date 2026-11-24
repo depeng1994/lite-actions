@@ -57,7 +57,7 @@ class SelfSmokeTests(unittest.TestCase):
                 "dispatch_smoke_8p",
                 "dispatch_smoke_16p",
                 "dispatch_smoke_8p",
-                "dispatch_smoke_yellow_a5_8p",
+                "dispatch_smoke_yellow_a3_8p",
             ],
         )
         self.assertEqual(
@@ -71,6 +71,11 @@ class SelfSmokeTests(unittest.TestCase):
         yellow = self.plan["cases"][1]
         self.assertEqual((yellow["kind"], yellow["worker"]), ("worker_probe", "yellow"))
         self.assertEqual((yellow["target_pool"], yellow["docker"]), (None, None))
+        yellow_a3 = self.plan["cases"][5]
+        self.assertEqual(
+            (yellow_a3["worker"], yellow_a3["target_pool"], yellow_a3["docker"]),
+            ("yellow", "a3_shared_yellow", "torchtitan_ci_a3_r2"),
+        )
         run = {"id": 42, "run_attempt": 1, "head_sha": "a" * 40}
         with self.assertRaises(ValueError):
             parse_plan(self.plan, run, SELF_WORKFLOW, repo=TORCHTITAN_REPO)
@@ -364,14 +369,15 @@ class SelfSmokeTests(unittest.TestCase):
             {"devices": list(range(8)), "verified": True}
         ]
         yellow_node["environments"] = {
-            "a5_ci_214": {
+            "torchtitan_ci_a3_r2": {
                 "container_id": "c" * 64,
                 "image_id": "sha256:" + "d" * 64,
-                "image_ref": "a5_ci_214:fixture",
+                "image_ref": "torchtitan_ci_a3_r2:fixture",
             }
         }
-        pools["a5_shared_yellow"] = {
+        pools["a3_shared_yellow"] = {
             "owner": "yellow",
+            "type": "ascend-a3",
             "enabled": True,
             "nodes": [yellow_node],
             "process_indexing": "card-die",
@@ -382,7 +388,7 @@ class SelfSmokeTests(unittest.TestCase):
 
         workers_path = root / "config/workers.json"
         workers = json.loads(workers_path.read_text())
-        workers["yellow"]["case_environments"]["a5_ci_214"] = {
+        workers["yellow"]["case_environments"]["torchtitan_ci_a3_r2"] = {
             "ASCEND_SET_ENV_PATH": [
                 "/fixture/cann",
                 "/usr/local/Ascend/ascend-toolkit/set_env.sh",
@@ -484,7 +490,7 @@ class SelfSmokeTests(unittest.TestCase):
                     [r["item"]["case_id"] for r in yellow.state.read().values()],
                     [
                         "case_001_worker_os_yellow",
-                        "case_005_dispatch_smoke_yellow_a5_8p",
+                        "case_005_dispatch_smoke_yellow_a3_8p",
                     ],
                 )
                 queued = ("GET", "/actions/runs?status=queued&per_page=100&page=1")
