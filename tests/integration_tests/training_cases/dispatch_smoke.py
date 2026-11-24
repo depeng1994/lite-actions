@@ -15,14 +15,14 @@ SMOKE_DEFAULTS = {
 
 SMOKE_PROFILES = {
     "cpu-only": ["worker_os_blue"],
-    "yellow-a5": ["worker_os_yellow", "dispatch_smoke_yellow_a5_8p"],
+    "yellow-a3": ["worker_os_yellow", "dispatch_smoke_yellow_a3_8p"],
     "dispatch_smoke": [
         "worker_os_blue",
         "worker_os_yellow",
         "dispatch_smoke_8p",
         "dispatch_smoke_16p",
         "dispatch_smoke_8p",
-        "dispatch_smoke_yellow_a5_8p",
+        "dispatch_smoke_yellow_a3_8p",
     ],
 }
 
@@ -65,11 +65,11 @@ def build_smoke_list() -> list[OverrideDefinitions]:
         npu_smoke(2),
         npu_smoke(
             1,
-            test_name="dispatch_smoke_yellow_a5_8p",
+            test_name="dispatch_smoke_yellow_a3_8p",
             ci_overrides={
                 "worker": "yellow",
-                "target_pool": "a5_shared_yellow",
-                "docker": "a5_ci_214",
+                "target_pool": "a3_shared_yellow",
+                "docker": "torchtitan_ci_a3_r2",
             },
         ),
     ]

@@ -12,7 +12,7 @@ on:
         type: choice
         required: true
         default: full
-        options: [full, cpu-only, yellow-a5]
+        options: [full, cpu-only, yellow-a3]
 permissions:
   contents: read
   actions: read
