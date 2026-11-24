@@ -39,6 +39,12 @@ jobs:
         run: |
           npm run build --prefix control-center/web
           npm test --prefix control-center/web
+      - name: Browser detail panel ST
+        working-directory: control-center/web
+        run: |
+          npx playwright install --with-deps chromium
+          npm run build:node --prefix ../worker
+          npx playwright test
       - name: Control Center Node runtime gates
         working-directory: control-center/worker
         run: |

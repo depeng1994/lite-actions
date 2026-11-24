@@ -24,7 +24,7 @@ export async function migrate() {
 }
 
 export async function request(path: string, opts: {
-  method?: string; data?: unknown; cookie?: string; headers?: HeadersInit;
+  method?: string; data?: unknown; cookie?: string; headers?: HeadersInit; now?: number;
 } = {}, config: Env = bindings) {
   const headers = new Headers(opts.headers);
   if (opts.cookie) headers.set("Cookie", opts.cookie);
@@ -32,7 +32,7 @@ export async function request(path: string, opts: {
     method: opts.method ?? (opts.data === undefined ? "GET" : "POST"),
     body: opts.data === undefined ? undefined : JSON.stringify(opts.data),
     headers,
-  }), config, {clientIp: headers.get("X-Test-Client-IP") || "192.0.2.1"});
+  }), config, {clientIp: headers.get("X-Test-Client-IP") || "192.0.2.1", now: opts.now});
   return response;
 }
 

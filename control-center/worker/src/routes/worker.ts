@@ -20,7 +20,8 @@ export function workerRoutes(router: Router) {
         instance_id=excluded.instance_id,applied_rev=excluded.applied_rev,code_sha=excluded.code_sha,
         health_ok=excluded.health_ok,active_count=excluded.active_count,queued_count=excluded.queued_count,
         last_heartbeat_at=excluded.last_heartbeat_at,last_idle_probe_at=excluded.last_idle_probe_at,
-        last_visibility_probe_at=excluded.last_visibility_probe_at,
+        last_visibility_probe_at=CASE WHEN excluded.last_visibility_probe_at>COALESCE(workers.last_visibility_probe_at,-1)
+          THEN excluded.last_visibility_probe_at ELSE workers.last_visibility_probe_at END,
         last_egress_used=excluded.last_egress_used,updated_at=excluded.updated_at
       RETURNING need_snapshot,
         (SELECT COUNT(*) FROM commands WHERE worker_id=workers.worker_id AND status='PENDING') AS pending_commands,

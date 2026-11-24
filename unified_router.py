@@ -96,6 +96,7 @@ def main():
                     a.worker_id,
                     lambda: (router.pools, router.state.read()),
                     state_dir=cfg["state_dir"],
+                    report=control.capture_device_probes,
                 )
                 router.idle_probe.start()
                 control.start()

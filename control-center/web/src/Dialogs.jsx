@@ -97,7 +97,17 @@ function RunDetails({ run, runUrl }) {
 }
 
 function formatUnixTime(seconds) {
-  return seconds ? dateTimeSecondFormatter.format(seconds * 1000) : "—";
+  return seconds == null ? "—" : dateTimeSecondFormatter.format(seconds * 1000);
+}
+
+function taskOccupancy(item, detail) {
+  const allocated = item.status !== "排队中" && (detail?.allocation?.length || item.allocations?.length);
+  const start = detail?.reserved_at ?? detail?.staging_at ?? detail?.started_at ?? (item.start == null ? null : item.start / 1000);
+  const end = detail?.finished_at ?? (item.end == null ? null : item.end / 1000);
+  return [
+    ["占用开始时间", formatUnixTime(allocated ? start : null)],
+    ["占用结束时间", formatUnixTime(allocated ? end : null)],
+  ];
 }
 
 function useTaskDetail(access, taskUid, live) {
@@ -111,8 +121,35 @@ function useTaskDetail(access, taskUid, live) {
   return detail;
 }
 
-export function CaseDialog({ item, nodes, config, access = "public", live = false, close, go }) {
-  const run = runs.find((candidate) => workflowKey(candidate) === item.run);
+function InlineDetail({ id, title, subtitle, status, close, action, children }) {
+  return <section className="inline-detail" id={id} aria-labelledby={`${id}-title`}>
+    <header className="inline-detail-header">
+      <div className="inline-detail-heading">
+        <h2 id={`${id}-title`}>{title}</h2>
+        {status}
+        <p>{subtitle}</p>
+      </div>
+      <div className="inline-detail-actions">{action}<DialogClose close={close} /></div>
+    </header>
+    <div className="inline-detail-columns">{children}</div>
+  </section>;
+}
+
+function TaskDetailFrame({ title, subtitle, status, close, inline, action, children }) {
+  if (inline) return <InlineDetail id="timeline-detail" title={title} subtitle={subtitle}
+    status={<Status value={status} />} close={close} action={action}>{children}</InlineDetail>;
+  return <Dialog drawer title={title} subtitle={subtitle} close={close}>
+    <div className="drawer-body"><Status value={status} />{children}</div>
+    {action && <div className="dialog-actions">{action}</div>}
+  </Dialog>;
+}
+
+function TaskDetailColumn({ title, children }) {
+  return <div className="task-detail-column"><h3>{title}</h3>{children}</div>;
+}
+
+export function CaseDialog({ item, run: suppliedRun, nodes, config, access = "public", live = false, inline = false, close, go }) {
+  const run = suppliedRun || runs.find((candidate) => workflowKey(candidate) === item.run);
   const node = nodes.find(({ id }) => id === item.node);
   const detail = useTaskDetail(access, item.taskUid, live);
   const nowMinute = beijingClock().now;
@@ -124,23 +161,24 @@ export function CaseDialog({ item, nodes, config, access = "public", live = fals
   const allocHost = detail?.allocation?.[0]
     ? (detail.allocation[0].host_id || detail.allocation[0].display_host_id)
     : (node ? displayNodeHost(node) : null);
-  return <Dialog drawer title={item.name} subtitle={`${run.action} #${run.id} · ${run.repo}`} close={close}>
-    <div className="drawer-body">
-      <Status value={item.status} />
-      <h3>Workflow</h3><RunDetails run={run} runUrl={detail?.run_url || item.runUrl} />
-      <h3>资源与排期</h3>
+  const action = <button className="button" onClick={() => { close(); go("models", run.model); }}>查看代码仓任务 <ArrowRight size={16} /></button>;
+  return <TaskDetailFrame title={item.name} subtitle={`${run.action} #${run.id} · ${run.repo}`} status={item.status}
+    close={close} inline={inline} action={action}>
+    <TaskDetailColumn title="Workflow"><RunDetails run={run} runUrl={detail?.run_url || item.runUrl} /></TaskDetailColumn>
+    <TaskDetailColumn title="资源与排期">
       <Details entries={[
         ["申请资源", `${item.worker} / ${item.pool} · ${item.nodes} 节点 · ${item.cards} 卡`],
         ["实际分配", allocHost ? `${item.worker} / ${item.pool} · ${allocHost}` : "等待分配"],
         ["设备 ID", detail?.allocation?.length ? detail.allocation.map((a) => a.devices.join(",")).join(" / ") : (node && item.groups.join("、")) || "—"],
         [isQueued ? "预计开始" : "开始时间", isQueued ? (item.projectionStatus === "WAITING_EXTERNAL" ? "等待外部释放" : clock(planned)) : (detail?.started_at ? formatUnixTime(detail.started_at) : clock(item.started))],
+        ...taskOccupancy(item, detail),
         ["已用时长", elapsed == null ? "—" : `${elapsed} 分钟`],
         ["预计总时长", item.estimate ? `${item.estimate} 分钟 · ${item.samples} 个成功样本` : "暂无估算 · 0 个样本"],
         ...(item.estimate && elapsed != null && elapsed > item.estimate ? [["预计状态", "已超过预计"]] : []),
         ...(isQueued ? [["队列顺位", `第 ${item.position} 位`]] : []),
       ]} />
-      {detail && <>
-        <h3>各阶段时间（北京时间）</h3>
+    </TaskDetailColumn>
+    {detail && <TaskDetailColumn title="各阶段时间（北京时间）">
         <Details entries={[
           ["入队", formatUnixTime(detail.queued_at)],
           ["租约", formatUnixTime(detail.reserved_at)],
@@ -149,15 +187,11 @@ export function CaseDialog({ item, nodes, config, access = "public", live = fals
           ["清理", formatUnixTime(detail.cleaning_at)],
           ["数据层级", detail.storage_tier === "cold" ? "冷归档" : "热库"],
         ]} />
-      </>}
-    </div>
-    <div className="dialog-actions">
-      <button className="button" onClick={() => { close(); go("models", run.model); }}>查看代码仓任务 <ArrowRight size={16} /></button>
-    </div>
-  </Dialog>;
+    </TaskDetailColumn>}
+  </TaskDetailFrame>;
 }
 
-export function HistoryDialog({ run, item, access = "public", live = false, close }) {
+export function HistoryDialog({ run, item, access = "public", live = false, inline = false, close }) {
   const detail = useTaskDetail(access, item.taskUid || item.historyId, live);
   const elapsed = detail?.duration_sec != null
     ? `${Number((detail.duration_sec / 60).toFixed(1))} 分钟`
@@ -168,13 +202,12 @@ export function HistoryDialog({ run, item, access = "public", live = false, clos
     ? (detail.allocation[0].host_id || detail.allocation[0].display_host_id)
     : (item.allocation ? displayNodeHost(item.allocation) : null);
   const storageTier = detail?.storage_tier ?? item.storageTier;
-  return <Dialog drawer title={item.name} subtitle={`历史用例 · Workflow #${run.id}`} close={close}>
-    <div className="drawer-body">
-      <Status value={item.status} />
-      <h3>Workflow</h3><RunDetails run={run} runUrl={detail?.run_url || item.runUrl} />
-      <h3>执行明细</h3>
+  return <TaskDetailFrame title={item.name} subtitle={`历史用例 · Workflow #${run.id}`} status={item.status} close={close} inline={inline}>
+    <TaskDetailColumn title="Workflow"><RunDetails run={run} runUrl={detail?.run_url || item.runUrl} /></TaskDetailColumn>
+    <TaskDetailColumn title="执行明细">
       <Details entries={[
         ["开始时间", start ? dateFormatter.format(start) : "—"], ["结束时间", end ? dateFormatter.format(end) : "—"],
+        ...taskOccupancy(item, detail),
         ["耗时", elapsed],
         ["退出码", detail?.exit_code != null ? String(detail.exit_code) : "—"],
         ["清理校验", detail?.cleanup_verified == null ? "—" : (detail.cleanup_verified ? "已确认释放" : "未确认（隔离）")],
@@ -182,8 +215,8 @@ export function HistoryDialog({ run, item, access = "public", live = false, clos
         ["实际分配", allocHost ? `${item.worker} / ${item.pool} · ${allocHost}` : "—"],
         ["设备 ID", detail?.allocation?.length ? detail.allocation.map((a) => a.devices.join(",")).join(" / ") : (item.groups.join("、") || "—")],
       ]} />
-      {detail && <>
-        <h3>各阶段时间（北京时间）</h3>
+    </TaskDetailColumn>
+    {detail && <TaskDetailColumn title="各阶段时间（北京时间）">
         <Details entries={[
           ["入队", formatUnixTime(detail.queued_at)],
           ["租约", formatUnixTime(detail.reserved_at)],
@@ -192,9 +225,8 @@ export function HistoryDialog({ run, item, access = "public", live = false, clos
           ["清理", formatUnixTime(detail.cleaning_at)],
           ["结束", formatUnixTime(detail.finished_at)],
         ]} />
-      </>}
-    </div>
-  </Dialog>;
+    </TaskDetailColumn>}
+  </TaskDetailFrame>;
 }
 
 export function CancelDialog({ run, cases, close, confirm }) {
@@ -275,7 +307,7 @@ function Impact({ impact, target }) {
     : impact.affectedNodes.reduce((count, node) => count + node.cards, 0);
   return <ul className="impact-list">
     <li><span>影响设备</span><strong>{impact.affectedNodes.length} 节点 · {groupCards} 卡</strong></li>
-    {impact.affectedNodes.map((node) => <li key={node.id}><span>{displayNodeHost(node)}</span><code>{node.cards} 卡</code></li>)}
+    {impact.affectedNodes.map((node) => <li key={node.id}><span>{displayNodeHost(node)}</span><code>{target.group ? node.groupCards?.[target.group] ?? 0 : node.cards} 卡</code></li>)}
     <li><span>排队用例</span><strong>{impact.queue.length} 个</strong></li>
     <li><span>活动租约</span><strong>{impact.leases.length} 个</strong></li>
   </ul>;
@@ -351,26 +383,50 @@ export function ConfigDialog({ target, action, cases, nodes, config, live = fals
   </Dialog>;
 }
 
-export function ResourceDialog({ target, cases, nodes, config, close, go }) {
+export function ResourceDetail({ id, target, blockStart, cases, nodes, config, close, go }) {
   const impact = impactOf(target, cases, nodes);
   const node = impact.affectedNodes.find((item) => item.id === target.nodeId || item.id === target.node);
   const state = node ? flagFor(config, node, target.group) : config.flags[target.id];
   const health = resourceHealth(impact.affectedNodes, target.group);
   const quarantined = Boolean(target.group ? node?.quarantinedGroups?.includes(target.group) : node?.quarantinedGroups?.length);
-  return <Dialog drawer title={target.label} subtitle={`${target.worker} / ${target.pool}`} close={close}>
-    <div className="drawer-body">
-      <ResourceStatus health={health} configStatus={state} quarantined={quarantined}
-        unknown={Boolean(target.group && node?.unknown.includes(target.group))} />
-      <h3>配置</h3>
+  const intervals = impact.affectedNodes.flatMap((member) =>
+    (target.group ? [target.group] : member.groups).flatMap((group) =>
+      (member.occupancyBlocks?.[group] || [])
+        .filter((block) => blockStart == null || block.started_at === blockStart)
+        .map((block) => ({ member, group, block }))))
+    .sort((left, right) => right.block.started_at - left.block.started_at);
+  const status = <ResourceStatus health={health} configStatus={state} quarantined={quarantined}
+    unknown={Boolean(target.group && node?.unknown.includes(target.group))} />;
+  const action = id === "timeline-detail"
+    ? <button className="button" onClick={() => go("cluster")}>查看集群管理 <ArrowRight size={16} /></button>
+    : null;
+  return <InlineDetail id={id} title={target.label} subtitle={`${target.worker} / ${target.pool}`}
+    status={status} close={close} action={action}>
+    <TaskDetailColumn title="配置">
       <Details entries={[
         ["节点地址", node && <code>{displayNodeHost(node)}</code>], ["设备 ID", target.group ?? node?.groups.join("、")],
         ["容器绑定", node?.binding], ["当前 / 期望版本", `r${config.applied[target.worker] ?? "—"} / r${config.desired}`],
         ["最近在线时间", lastSeenDateTime(health.lastSeen)],
       ]} />
-      <h3>资源占用</h3><Impact impact={impact} target={target} />
-    </div>
-    <div className="dialog-actions"><button className="button" onClick={() => { close(); go("cluster"); }}>查看集群管理 <ArrowRight size={16} /></button></div>
-  </Dialog>;
+    </TaskDetailColumn>
+    <TaskDetailColumn title="资源使用"><Impact impact={impact} target={target} /></TaskDetailColumn>
+    <section className="inline-occupancy" aria-labelledby={`${id}-occupancy`}>
+      <h3 id={`${id}-occupancy`}>外部占用（北京时间）</h3>
+      <div className="table-scroll"><table className="data-table">
+        <thead><tr>{!target.group && <th scope="col">设备组</th>}<th scope="col">开始时间</th>
+          <th scope="col">结束时间</th><th scope="col">最后确认占用</th></tr></thead>
+        <tbody>
+          {intervals.map(({ member, group, block }) => <tr key={`${member.id}/${group}/${block.started_at}`}>
+            {!target.group && <th scope="row">{displayNodeHost(member)} · {group}</th>}
+            <td className="mono">{formatUnixTime(block.started_at)}</td>
+            <td className="mono">{formatUnixTime(block.ended_at)}</td>
+            <td className="mono">{formatUnixTime(block.last_busy_at)}</td>
+          </tr>)}
+          {!intervals.length && <tr><td className="empty" colSpan={target.group ? 3 : 4}>暂无外部占用记录</td></tr>}
+        </tbody>
+      </table></div>
+    </section>
+  </InlineDetail>;
 }
 
 export function AddNodeDialog({ worker, nodes, close, save }) {

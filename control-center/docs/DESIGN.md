@@ -80,7 +80,7 @@
 ### Phase 6：正式前端工程化、GitHub 仓合入与 个人服务器统一产物构建（P1/P2 改造完成）
 
 - [x] **`FE-00` 交互原型 Demo 定稿与确认**：`codex/control-center-demo @ cd770ce`。
-- [x] **`FE-01` Pools任务看板与排队面板正式化**：已对接 `/timeline`，补齐动态北京时间轴（`beijingClock()`）、映射后端 `projections` / `dashed_blocks` 虚线排期与 `WAITING_EXTERNAL`/`NO_ESTIMATE` 状态、直接以 `display_host_id`/`host_id` 展示节点、移除硬编码 8 卡回退。
+- [x] **`FE-01` Pools任务看板与排队面板正式化**：已对接 `/timeline`，补齐动态北京时间轴（`beijingClock()`）、近 72 小时历史租约横向滚动、左侧资源与设备组栏固定、映射后端 `projections` / `dashed_blocks` 虚线排期与 `WAITING_EXTERNAL`/`NO_ESTIMATE` 状态、直接以 `display_host_id`/`host_id` 展示节点、移除硬编码 8 卡回退。
   - 后端依赖：`REQ-15`, `REQ-16`, `REQ-18`
 - [x] **`FE-02` 统一 Workflow 表格、上方 50 条历史分页/折叠与任务详情抽屉正式化**：首次/定时刷新改请求 `history_limit=0` 且不清空已加载历史、直接使用后端 `sequence`/`repo_scope`/`card_hours_as_of_now`、详情抽屉（`CaseDialog`/`HistoryDialog`）接入 `GET /tasks/:taskUid` 展示完整阶段时间/退出码/清理状态/热冷层级、展示 `purged_notice`。
   - 后端依赖：`REQ-16`, `REQ-19`
@@ -1197,16 +1197,17 @@ lite-actions/
        - 若 `set(group.devices).issubset(visible_chips)` → 本轮可见性成功：`consecutive_failures = 0`，`last_online_at = now`，`vis = "online"`；
        - 若 SSH/命令失败、输出截断或缺失任一配置卡 → 本轮可见性失败：`consecutive_failures = min(prev + 1, 5)`，`vis = "offline" if consecutive_failures >= 5 else "warn"`，**保持原 `last_online_at` 不变**。
      - **占用存在性校验（仅未租用设备组适用）**：沿用既有 `_process_rows(..., require_exclusive=False)` 判定 `idle / busy / probe_error`（绝不透出外部 PID/用户名）。
-   - **去重与零多余 SQLite 写入**：
+   - **按状态变更与新鲜度上报**：
      - Worker 在本地状态持久化单调递增轮次 `probe_round`（重启延续）以及每组的 `(vis, consecutive_failures, last_online_at, occupancy)`；
-     - 仅当某组 `vis`、`consecutive_failures` 或 `occupancy` 发生变化时才发 `IP` 事件：`{"t":"IP","ts":now,"pool":...,"h":...,"d":[...],"pr":probe_round,"v":0|1|2,"mc":0..5,"lo":last_online_at,"st":"idle"|"busy"|"probe_error"}`；
-     - 若整轮所有设备组稳态无变化（如全在线且空闲），通过 30s 心跳的 `probe_ts`（本轮可见性成功时间）和 `idle_ts`（未租用组空闲时间）刷新新鲜度，**稳态 0 额外 SQLite 行写入**。
+     - 状态变更立即进入 Outbox；持续外部占用每个新样本都上报，用于更新区间的最后确认时间。连续空闲及可见的持续租约每 15 分钟上传实际探测时间以刷新组级状态；稳态探测失败不重复发送。租约跳过占用检查时以 `sk=1` 断开外部占用区间，并保留最近一次实际占用探测。
+     - 心跳的 `probe_ts` 记录 Worker 最近一次成功探测的时间，设备组的最后在线时间只使用该组成功上报的 `lo`。
 2. **SQLite 迁移（`migrations/0002_v15_workflow_and_health.sql`）**
    - `device_group_states` 新增列：`visibility_state TEXT NOT NULL DEFAULT 'pending' CHECK(visibility_state IN ('pending','online','warn','offline'))`、`consecutive_failures INTEGER NOT NULL DEFAULT 0`、`last_online_at INTEGER`、`last_probe_round INTEGER NOT NULL DEFAULT 0`。
    - `workers` 新增列：`last_visibility_probe_at INTEGER`（对应心跳 `probe_ts`）。
    - 服务端 `ingest.ts` 处理 `IP` 事件时校验 `pr > last_probe_round`（或 `pr == last_probe_round` 时幂等忽略），**防止重复投递导致 `consecutive_failures` 重复递增**；仅 `v === 0` 时更新 `last_online_at = MAX(COALESCE(last_online_at,0), lo)`，失败/配置发布/页面刷新绝不改写 `last_online_at`。
+   - 定期归档清理已关闭且超过 30 天的外部占用区间，保留仍在跟踪的区间。
 3. **节点与 Pool 汇总规则（`src/services/deviceState.ts` & `src/services/cluster.ts`）**
-   - 设备组输出独立 `health` 对象：`{ status: "PENDING_PROBE" | "ONLINE" | "PROBE_WARN" | "OFFLINE", missed_count, last_online_at }`（与 `state: "LEASED" | "CONFIRMED_IDLE" | "UNKNOWN_BUSY"`、`paused`、`quarantined`、`worker_offline` 并列展示）。
+   - 设备组输出独立 `health` 对象：`{ status: "PENDING_PROBE" | "ONLINE" | "PROBE_WARN" | "OFFLINE", missed_count, last_online_at }`（与 `state: "LEASED" | "CONFIRMED_IDLE" | "UNKNOWN_BUSY"`、`paused`、`quarantined`、`worker_offline` 并列展示）。在线环境行使用 Worker 最近一次成功可见性探测时间。兼容尚未上报 `probe_ts` 的旧 Worker 时，在线环境行回退到该 Worker 当前心跳时间。探测异常或离线环境行保留自身最后一次成功在线时间，Pool 行只做汇总。
    - 节点行 / Pool 行汇总成员设备组：
      - 全部成员 `OFFLINE` → `OFFLINE`（已离线，红）；
      - 部分成员 `OFFLINE` → `PARTIAL_OFFLINE`（部分离线，红）；

@@ -7,6 +7,12 @@ const shanghaiLabelFormatter = new Intl.DateTimeFormat("zh-CN", {
 const shanghaiTimeParts = new Intl.DateTimeFormat("en-US", {
   timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false,
 });
+const timelineDateTime = new Intl.DateTimeFormat("en-US", {
+  timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+});
+const timelineDateTimeWithSeconds = new Intl.DateTimeFormat("en-US", {
+  timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+});
 
 export function beijingClock(date = new Date()) {
   const parts = shanghaiTimeParts.formatToParts(date);
@@ -19,6 +25,16 @@ export function beijingClock(date = new Date()) {
     now: nowMinute,
     timelineStart: Math.max(0, nowMinute - 50),
     timelineEnd: Math.min(24 * 60, nowMinute + 100),
+  };
+}
+
+export function timelineClock(date = new Date()) {
+  const now = Math.floor(date.getTime() / 60000);
+  return {
+    dateLabel: shanghaiLabelFormatter.format(date),
+    now,
+    timelineStart: now - 72 * 60,
+    timelineEnd: now + 60,
   };
 }
 
@@ -38,7 +54,7 @@ export const repositories = [
   {name: "lite-actions", sources: []},
 ];
 export const runs = [];
-export const history = [];
+export const timelineRuns = [];
 export const initialQueueOrder = [];
 export const initialCases = [];
 export const initialNodes = [];
@@ -58,6 +74,15 @@ export function clock(minute) {
   const normalized = ((Math.floor(minute) % 1440) + 1440) % 1440;
   return [Math.floor(normalized / 60), normalized % 60]
     .map((part) => String(part).padStart(2, "0")).join(":");
+}
+
+export function timelineLabel(minute, withSeconds = false) {
+  if (minute == null) return "暂无估算";
+  const formatter = withSeconds ? timelineDateTimeWithSeconds : timelineDateTime;
+  const parts = Object.fromEntries(formatter.formatToParts(new Date(Math.round(minute * 60000)))
+    .map(({type, value}) => [type, value]));
+  const dateTime = `${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
+  return withSeconds ? `${dateTime}:${parts.second}` : dateTime;
 }
 
 export function poolId(worker, pool) {

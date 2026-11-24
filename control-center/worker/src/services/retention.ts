@@ -118,6 +118,8 @@ export async function archive(context: Context) {
     deleteOrphanWorkflowRuns(db),
     deleteEmptyChunks(db, now),
     db.prepare("DELETE FROM worker_event_dedup WHERE received_at<?").bind(now - 7*DAY),
+    db.prepare(`DELETE FROM device_occupancy_intervals WHERE close_reason IS NOT NULL
+      AND COALESCE(ended_at,last_busy_at)<?`).bind(now - 30 * DAY),
     db.prepare("DELETE FROM sessions WHERE expires_at<=? OR revoked_at<?").bind(now, now - 7*DAY),
     db.prepare("DELETE FROM snapshot_staging WHERE created_at<?").bind(now - DAY),
     db.prepare("DELETE FROM login_attempts WHERE window_start_at<? AND COALESCE(locked_until,0)<=?").bind(now - DAY, now),

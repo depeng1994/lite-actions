@@ -26,6 +26,7 @@ from ci_core.egress_policy import (
 TARGET_BYTES = 1880
 RESPONSE_LIMIT = 1024 * 1024
 OUTBOX_LIMIT = 5000
+HEALTH_REFRESH_SECONDS = 900
 ACTIVE = {"QUEUED", "RESERVED", "STAGING", "RUNNING", "CLEANING"}
 TERMINAL = {"PENDING_REPORT", "REPORTED"}
 
@@ -432,32 +433,48 @@ class ControlClient:
 
         self.outbox.change(observe)
 
+    def capture_device_probes(self):
+        self._capture_devices(self.view().get("devices", []))
+
     def _capture_devices(self, devices):
         def observe(data):
             seen = data.setdefault("devices", {})
+            sampled = data.setdefault("device_sample_at", {})
             for group in devices:
                 key = json.dumps([group["pool"], group["h"], group["d"]])
-                # Compare only business state fields; steady-state probe_round
-                # and last_online_at refresh via heartbeat probe_ts/idle_ts so
-                # unchanged rounds emit zero extra IP events.
+                timestamp = group.get("ts")
+                last_sample = sampled.get(key, 0)
+                if timestamp is not None and timestamp < last_sample:
+                    continue
+                fresh_sample = timestamp is not None and timestamp > last_sample
+                occupancy = "leased" if group.get("sk") else group.get("st")
                 state = [
-                    group.get("st"),
+                    occupancy,
                     group.get("qu"),
                     group.get("qid"),
                     group.get("v"),
                     group.get("mc"),
                 ]
-                # A skipped group has no fresh reading. A quarantine or
-                # visibility change still needs reporting independently.
+                # No reading after a config change does not undo the last sample.
                 previous = seen.get(key)
-                if group.get("st") is None and previous:
+                if occupancy is None and previous:
                     state[0] = previous[0]
+                refresh = fresh_sample and (
+                    occupancy == "busy"
+                    or (
+                        (
+                            occupancy == "idle"
+                            or (occupancy == "leased" and group.get("v") == 0)
+                        )
+                        and timestamp - last_sample >= HEALTH_REFRESH_SECONDS
+                    )
+                )
                 payload = {
                     name: value
                     for name, value in group.items()
                     if value is not None or name == "ts"
                 }
-                if state != previous and self.outbox.append(
+                if (refresh or state != previous) and self.outbox.append(
                     data,
                     {
                         **payload,
@@ -466,6 +483,8 @@ class ControlClient:
                     },
                 ):
                     seen[key] = state
+                    if fresh_sample:
+                        sampled[key] = timestamp
 
         self.outbox.change(observe)
 

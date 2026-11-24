@@ -31,7 +31,17 @@ async function seed(count: number, prefix: string, finish: (index: number) => nu
 test("archives and verifies cold gzip, purges old days and preserves keyset order", async () => {
   await seed(103, "t_history_", i => i < 43 ? now - 31 * day - i : now - i);
   await seed(5, "t_expired_", i => now - 366 * day - i);
+  const expiry = now - 30 * day;
+  await db.batch([
+    ["[0]", expiry - 2, expiry - 1, "idle"],
+    ["[1]", expiry - 2, null, "unobserved"],
+    ["[2]", expiry - 1, expiry, "idle"],
+    ["[3]", expiry - 1, null, null],
+  ].map(([devices, last, end, reason]) => db.prepare(`INSERT INTO device_occupancy_intervals
+    VALUES('blue','pool','192.0.2.1:22',?,?,?,?,?)`).bind(devices, expiry - day, last, end, reason)));
   await archive(context);
+  const intervals = await db.prepare("SELECT devices_json FROM device_occupancy_intervals ORDER BY devices_json").all<{devices_json: string}>();
+  expect(intervals.results.map(row => row.devices_json)).toEqual(["[2]", "[3]"]);
   expect(await db.prepare("SELECT count(*) AS n FROM task_index WHERE storage_tier='cold'").first("n")).toBe(43);
   expect(await db.prepare("SELECT count(*) AS n FROM task_details_hot").first("n")).toBe(60);
   expect(await db.prepare("SELECT count(*) AS n FROM task_index WHERE task_uid LIKE 't_expired_%'").first("n")).toBe(0);
