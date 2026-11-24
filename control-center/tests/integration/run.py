@@ -150,7 +150,14 @@ def worker(zone, root, proxy):
         )
 
     def observe_health(
-        owner, pools, records, *, execute=None, previous=None, probe_round=1
+        owner,
+        pools,
+        records,
+        *,
+        execute=None,
+        previous=None,
+        probe_round=1,
+        refresh=None,
     ):
         states, sampled_at = observe(owner, pools, records)
         health = {
@@ -568,6 +575,21 @@ def integration(root):
             for node in pool["nodes"]
             for g in node["device_groups"]
         ), pub
+
+        def reported_occupancy():
+            status, timeline, _ = http("/public/timeline?history_hours=72")
+            if status != 200:
+                return False
+            return {
+                worker["worker_id"]
+                for worker in timeline["workers"]
+                for pool in worker["pools"]
+                for node in pool["nodes"]
+                for group in node["device_groups"]
+                if any(block["ended_at"] is None for block in group["occupancy_blocks"])
+            } == set(ZONES)
+
+        until(reported_occupancy)
         status, pub_models, _ = http("/public/models")
         assert status == 200 and pub_models.get("default_model") == "vllm-ascend", (
             pub_models
