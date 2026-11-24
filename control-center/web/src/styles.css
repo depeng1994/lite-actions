@@ -155,7 +155,7 @@ code, .mono { font-family: var(--mono); font-size: .94em; letter-spacing: -.25px
 .timeline-scroll::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 8px; }
 .timeline-scroll::-webkit-scrollbar-track { background: var(--heading); }
 .timeline { position: relative; display: grid; grid-template-rows: 61px auto; overflow: hidden; background: var(--plot); cursor: crosshair; user-select: none; }
-.timeline-measuring .lease, .timeline-measuring .occupancy-marker { cursor: crosshair; }
+.timeline-measuring .lease, .timeline-measuring .occupancy-marker, .timeline-measuring .occupancy-history { cursor: crosshair; }
 .axis, .axis-label { position: relative; border-bottom: 1px solid var(--line); }
 .axis-label { display: flex; align-items: center; min-height: 61px; box-sizing: border-box; padding: 0 16px; border-right: 1px solid var(--line); font-size: 17px; font-weight: 680; }
 .axis-label span { margin-left: 3px; }
@@ -218,6 +218,8 @@ code, .mono { font-family: var(--mono); font-size: .94em; letter-spacing: -.25px
 .lease-end { left: calc(100% + 7px); }
 .occupancy-marker { position: absolute; z-index: 3; width: 17px; height: 17px; padding: 0; transform: translate(-50%, -50%); border: 1px solid var(--occupancy-stroke); border-radius: 4px; background: var(--occupancy-fill); }
 .occupancy-marker:hover { border-color: var(--accent); }
+.occupancy-history { position: absolute; min-width: 3px; height: 30px; padding: 0; transform: translateY(-50%); border: 1px solid var(--occupancy-stroke); border-radius: 4px; background: var(--occupancy-fill); }
+.occupancy-history:hover, .occupancy-history:focus-visible { border-color: var(--accent); }
 
 .timeline-measure-readout { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 14px; margin: 8px 5px 0; padding: 7px 14px; border: 1px solid var(--line); border-radius: 4px; background: var(--accent-tint); }
 .timeline-measure-values { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 18px; font-size: 13px; }

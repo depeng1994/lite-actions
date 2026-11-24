@@ -53,6 +53,12 @@ export interface SolidBlock {
   is_primary_row: boolean;
   total_cards: number;
 }
+export interface OccupancyBlock {
+  started_at: number;
+  last_busy_at: number;
+  ended_at: number | null;
+  close_reason: "idle" | "unobserved" | null;
+}
 export interface DeviceGroup {
   devices: number[];
   state: Occupancy;
@@ -65,6 +71,7 @@ export interface DeviceGroup {
   health: {status: DeviceHealthStatus; missed_count: number; last_online_at: number | null};
   solid_blocks: SolidBlock[];
   dashed_blocks: Projection[];
+  occupancy_blocks?: OccupancyBlock[];
 }
 export interface WorkerStatus {
   worker_id: WorkerId;

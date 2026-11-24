@@ -253,6 +253,8 @@ function finish(context: Context, selection: string, parameters: unknown[], fiel
 
 function device(context: Context, input: Input) {
   const ts = nullableInt(input.ts, "probe time");
+  const skipped = input.sk == null ? false : integer(input.sk, "lease skip", 0, 1) === 1;
+  const state = input.st == null ? null : member(input.st, "occupancy", ["idle", "busy", "probe_error"] as const);
   const round = input.pr == null ? null : integer(input.pr, "probe round", 0);
   const visibility = input.v == null ? null : integer(input.v, "visibility", 0, 2);
   const failures = input.mc == null ? null : integer(input.mc, "probe failures", 0, 5);
@@ -262,8 +264,9 @@ function device(context: Context, input: Input) {
     pool_name: string(input.pool, "pool", 64, POOL),
     host_id: hostId(input.h),
     devices_json: JSON.stringify(devices(input.d)),
-    occupancy_state: input.st == null ? null : member(input.st, "occupancy", ["idle", "busy", "probe_error"] as const),
-    probe_at: ts === null ? null : Math.min(ts, context.now),
+    occupancy_state: skipped ? null : state,
+    probe_at: ts === null || (!state && !skipped) ? null : Math.min(ts, context.now),
+    skipped,
     quarantined: nullableInt(input.qu, "quarantined"),
     quarantine_task_uid: nullableString(input.qid, "quarantine task", 40, /^t_[a-f0-9]{32}$/),
     visibility_state: visibility == null ? null : (["online", "warn", "offline"] as const)[visibility],
@@ -287,8 +290,10 @@ function deviceUpsert(db: SqlStore, rows: DeviceWrite[]): Statement {
       : `json_extract(value,'$.${column}')`).join(",")}
     FROM json_each(?) WHERE 1
     ON CONFLICT(worker_id,pool_name,host_id,devices_json) DO UPDATE SET
-      occupancy_state=COALESCE(excluded.occupancy_state,device_group_states.occupancy_state),
-      probe_at=COALESCE(excluded.probe_at,device_group_states.probe_at),
+      occupancy_state=CASE WHEN excluded.probe_at>COALESCE(device_group_states.probe_at,-1)
+        THEN excluded.occupancy_state ELSE device_group_states.occupancy_state END,
+      probe_at=CASE WHEN excluded.probe_at>COALESCE(device_group_states.probe_at,-1)
+        THEN excluded.probe_at ELSE device_group_states.probe_at END,
       quarantined=COALESCE((SELECT json_extract(value,'$.quarantined') FROM json_each(?) WHERE
         json_extract(value,'$.pool_name')=excluded.pool_name AND json_extract(value,'$.host_id')=excluded.host_id
         AND json_extract(value,'$.devices_json')=excluded.devices_json),device_group_states.quarantined),
@@ -303,6 +308,18 @@ function deviceUpsert(db: SqlStore, rows: DeviceWrite[]): Statement {
       last_probe_round=MAX(device_group_states.last_probe_round,COALESCE(excluded.last_probe_round,0)),
       updated_at=excluded.updated_at
   `).bind(JSON.stringify(rows), JSON.stringify(rows));
+}
+
+function occupancyWrite(db: SqlStore, group: DeviceWrite): Statement[] {
+  const state = group.skipped ? "leased" : group.occupancy_state;
+  if (!state || group.probe_at == null) return [];
+  return [db.prepare(`
+    INSERT INTO device_occupancy_readings(worker_id,pool_name,host_id,devices_json,observed_at,state)
+    VALUES (?,?,?,?,?,?)
+    ON CONFLICT(worker_id,pool_name,host_id,devices_json) DO UPDATE SET
+      observed_at=excluded.observed_at,state=excluded.state
+    WHERE excluded.observed_at>device_occupancy_readings.observed_at
+  `).bind(group.worker_id, group.pool_name, group.host_id, group.devices_json, group.probe_at, state)];
 }
 
 function queuePage(context: Context, input: Input) {
@@ -356,8 +373,12 @@ async function eventWrites(context: Context, event: Input): Promise<Statement[]>
   switch (event.t) {
     case "TU":
       return [taskUpsert(db, [await task(context, event)], false)];
-    case "IP":
-      return [deviceUpsert(db, [device(context, event)])];
+    case "IP": {
+      const group = device(context, event);
+      // Only sequenced events update history. A recovery snapshot can contain
+      // a newer reading than events that are still waiting in the outbox.
+      return [deviceUpsert(db, [group]), ...occupancyWrite(db, group)];
+    }
     case "QP": {
       const page = queuePage(context, event);
       return [

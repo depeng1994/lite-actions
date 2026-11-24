@@ -81,6 +81,21 @@ class IdleProbeTests(unittest.TestCase):
         self.assertEqual(previous[key]["mc"], 5)
         self.assertIsNotNone(previous[key]["lo"])
 
+    def test_probe_marks_group_leased_if_task_starts_during_scan(self):
+        active = {
+            "task": {
+                "phase": "RUNNING",
+                "allocation": [{"host_id": self.node["host_id"], "devices": [0, 1]}],
+            }
+        }
+        refresh = Mock(side_effect=[{}, active])
+        with patch("ci_core.idle_probe._process_rows", return_value=[(0, 1234, "NA")]):
+            result, _, _ = observe_health(
+                "blue", self.pools, {}, execute=self.execute, refresh=refresh
+            )
+        self.assertEqual(result[("test", self.node["host_id"], (0, 1))][0], "leased")
+        self.assertEqual(result[("test", self.node["host_id"], (2, 3))][0], "idle")
+
     def test_missing_card_in_one_group_does_not_fail_healthy_sibling_group(self):
         # Card 1 (chips 2,3) is present and idle; card 0 (chips 0,1) is absent.
         output = "\n".join(

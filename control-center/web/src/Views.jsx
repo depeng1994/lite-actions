@@ -31,6 +31,7 @@ const timelineShortcuts = [
   ["w", "放大"], ["s", "缩小"], ["a", "左移"], ["d", "右移"],
 ];
 const occupancyLabels = {unknown: "当前未知占用", idle: "当前已确认空闲"};
+const externalOccupancyLabel = "探测到外部占用";
 
 function groupCardCount(node, group) {
   if (node.groupCards?.[group] != null) return node.groupCards[group];
@@ -88,6 +89,26 @@ function ResourceLabel({ row, folded, changeFold, config, selectScope, open }) {
         </button>}
     {flag && <span className="resource-flag" title={flag}> {flag === "暂停" ? "暂停调度" : flag}</span>}
   </div>;
+}
+
+function OccupancyHistory({ row, clockState, open }) {
+  const { timelineStart, timelineEnd } = clockState;
+  const width = timelineEnd - timelineStart;
+  return (row.node?.occupancyBlocks?.[row.group] || []).map((block) => {
+    const start = Math.max(timelineStart, block.started_at / 60);
+    const end = Math.min(timelineEnd, (block.ended_at ?? block.last_busy_at) / 60);
+    if (start > end) return null;
+    const lastBusy = timelineLabel(block.last_busy_at / 60, true);
+    const ending = block.ended_at == null
+      ? `最后确认占用 ${lastBusy}，释放时间未知`
+      : `最后确认占用 ${lastBusy}，首次确认空闲 ${timelineLabel(block.ended_at / 60, true)}`;
+    const title = `${row.label} · ${externalOccupancyLabel} · 首次发现 ${timelineLabel(block.started_at / 60, true)} · ${ending}`;
+    return <button key={block.started_at} type="button" className="occupancy-history occupancy-unknown"
+      style={{ left: `${(start - timelineStart) / width * 100}%`, width: `${(end - start) / width * 100}%`,
+        top: row.top + row.height / 2 }}
+      title={title} aria-label={title}
+      onClick={() => open({ type: "resource", target: targetFor(row.node, row.group) })} />;
+  });
 }
 
 const LeaseBar = memo(function LeaseBar({ item, run, rows, config, nodes, clockState, plotWidth, selected, onSelect }) {
@@ -339,6 +360,7 @@ export function PoolsView({ nodes, cases, timelineCases, config, open, go, live,
           <ul className="legend" aria-label="时间轴图例">
             <li><i className="legend-actual" />实际租约</li>
             <li><i className="legend-planned" />预计使用</li>
+            <li><i className="legend-occupancy occupancy-unknown" />{externalOccupancyLabel}</li>
             <li><i className="legend-occupancy occupancy-unknown" />{occupancyLabels.unknown}</li>
             <li><i className="legend-occupancy occupancy-idle" />{occupancyLabels.idle}</li>
           </ul>
@@ -375,6 +397,7 @@ export function PoolsView({ nodes, cases, timelineCases, config, open, go, live,
               {rows.map((row) => <div key={row.key} className={`lane lane-${row.level} ${row.worker.toLowerCase()}`} style={{ height: row.height }} />)}
               <div className="chart-coordinates">
                 {ticks.map((minute) => <i key={minute} className="grid-line" style={{ left: marker(minute) }} />)}
+                {rows.map((row) => <OccupancyHistory key={row.key} row={row} clockState={clockState} open={open} />)}
                 {rows.filter((row) => row.occupancy).map((row) => (
                   <button key={row.key} type="button" className={`occupancy-marker occupancy-${row.occupancy}`}
                     style={{ left: marker(timelineNow), top: row.top + row.height / 2 }}

@@ -432,14 +432,20 @@ class ControlClient:
 
         self.outbox.change(observe)
 
+    def capture_device_probes(self):
+        self._capture_devices(self.view().get("devices", []))
+
     def _capture_devices(self, devices):
         def observe(data):
             seen = data.setdefault("devices", {})
+            sampled = data.setdefault("device_sample_at", {})
             for group in devices:
                 key = json.dumps([group["pool"], group["h"], group["d"]])
-                # Compare only business state fields; steady-state probe_round
-                # and last_online_at refresh via heartbeat probe_ts/idle_ts so
-                # unchanged rounds emit zero extra IP events.
+                timestamp = group.get("ts")
+                last_sample = sampled.get(key, 0)
+                if timestamp is not None and timestamp < last_sample:
+                    continue
+                fresh_sample = timestamp is not None and timestamp > last_sample
                 state = [
                     group.get("st"),
                     group.get("qu"),
@@ -450,14 +456,14 @@ class ControlClient:
                 # A skipped group has no fresh reading. A quarantine or
                 # visibility change still needs reporting independently.
                 previous = seen.get(key)
-                if group.get("st") is None and previous:
+                if group.get("st") is None and previous and not group.get("sk"):
                     state[0] = previous[0]
                 payload = {
                     name: value
                     for name, value in group.items()
                     if value is not None or name == "ts"
                 }
-                if state != previous and self.outbox.append(
+                if (fresh_sample or state != previous) and self.outbox.append(
                     data,
                     {
                         **payload,
@@ -466,6 +472,8 @@ class ControlClient:
                     },
                 ):
                     seen[key] = state
+                    if fresh_sample:
+                        sampled[key] = timestamp
 
         self.outbox.change(observe)
 

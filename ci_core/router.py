@@ -347,15 +347,18 @@ class Router:
                             "mc": max(int(base_health.get("mc", 0)), 1),
                             "lo": base_health.get("lo"),
                         }
+                    skipped = state == "leased"
                     entry = {
                         "pool": pool_name,
                         "h": host,
                         "d": ids,
-                        "st": state,
+                        "st": None if skipped else state,
                         "ts": ts,
                         "qu": int(bool(keys) or unavailable),
                         "qid": qid,
                     }
+                    if skipped:
+                        entry["sk"] = 1
                     if health is not None:
                         entry.update(
                             {

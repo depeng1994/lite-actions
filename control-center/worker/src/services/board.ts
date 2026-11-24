@@ -2,7 +2,7 @@ import {installation, supportsCancel} from "./cancelPlatform";
 import {modelMap} from "../modelMap";
 import {type Context, HttpError} from "../router";
 import type {SqlStatement} from "../storage/sqlStore";
-import type {CaseKind, DeviceGroup, ModelRepo, ModelTab, Phase, Projection, Provider, TaskDetail, TaskSummary, Timeline, WorkflowList, WorkflowRow, WorkerId} from "../types/api";
+import type {CaseKind, DeviceGroup, ModelRepo, ModelTab, OccupancyBlock, Phase, Projection, Provider, TaskDetail, TaskSummary, Timeline, WorkflowList, WorkflowRow, WorkerId} from "../types/api";
 import {pepper} from "./auth";
 import {aggregateHealth, type GroupRow, offline, overlaps, type Pools, projectDevice, type RawAllocation, type WorkerRow, workerStatus} from "./deviceState";
 import {refreshWorkflowRuns, type WorkflowIdentity as IngestWorkflowIdentity} from "./ingest";
@@ -434,15 +434,30 @@ export async function timeline(context: Context): Promise<Timeline> {
     db.prepare("SELECT worker_id,scope,pool_name,host_id,devices_json FROM cluster_drain_targets"),
   ];
   if (historyHours > 0) {
+    const since = context.now - historyHours * 3600;
     statements.push(db.prepare(`SELECT * FROM task_index
       WHERE finished_at >= ? AND finished_at <= ?
       ORDER BY finished_at DESC, task_uid DESC
-      LIMIT 5000`).bind(context.now - historyHours * 3600, context.now));
+      LIMIT 5000`).bind(since, context.now));
+    statements.push(db.prepare(`SELECT worker_id,pool_name,host_id,devices_json,started_at,last_busy_at,ended_at,close_reason
+      FROM device_occupancy_intervals
+      WHERE COALESCE(ended_at,last_busy_at)>=? AND started_at<=?
+      ORDER BY started_at`).bind(since, context.now));
   }
   const results = await db.batch(statements);
   const [health, versions, tasks, observations, queueRows, drains] = results.slice(0, 6).map(result => result.results ?? []) as unknown as
     [WorkerRow[], Revision[], TaskRow[], GroupRow[], QueueRow[], Array<{worker_id: WorkerId; scope: string; pool_name: string; host_id: string | null; devices_json: string | null}>];
   const historyTasks = historyHours > 0 ? (results[6]?.results ?? []) as unknown as TaskRow[] : [];
+  const occupancyRows = (results[7]?.results ?? []) as unknown as Array<OccupancyBlock & {
+    worker_id: WorkerId; pool_name: string; host_id: string; devices_json: string;
+  }>;
+  const occupancy = new Map<string, OccupancyBlock[]>();
+  for (const {worker_id, pool_name, host_id, devices_json, ...block} of occupancyRows) {
+    const key = JSON.stringify([worker_id, pool_name, host_id, devices_json]);
+    const blocks = occupancy.get(key) ?? [];
+    blocks.push(block);
+    occupancy.set(key, blocks);
+  }
   const latest = versions.at(-1)?.revision ?? 0;
   const details = await summaries(context, tasks);
   const historyDetails = historyTasks.length ? await summaries(context, historyTasks) : [];
@@ -483,11 +498,13 @@ export async function timeline(context: Context): Promise<Timeline> {
           const matchesGroup = (lease: {task: TaskRow; allocation: RawAllocation[]}) =>
             lease.task.worker_id === zone && lease.task.target_pool === pool_name && overlaps(node.host_id, ids, lease.allocation);
           const activeForGroup = activeLeases.filter(matchesGroup);
-          const observation = probe.get(JSON.stringify([zone, pool_name, node.host_id, JSON.stringify(ids)]));
+          const groupKey = JSON.stringify([zone, pool_name, node.host_id, JSON.stringify(ids)]);
+          const observation = probe.get(groupKey);
           const groupDraining = isGroupDraining(zone, pool_name, node.host_id, ids);
           const display = projectDevice(context.now, {
             worker, pool, node, group, observation, leased: activeForGroup.length > 0, draining: groupDraining,
           });
+          if (historyHours > 0) display.occupancy_blocks = occupancy.get(groupKey) ?? [];
           let release_at = context.now;
           let uncertain = false;
           for (const {task, detail} of activeForGroup) {
