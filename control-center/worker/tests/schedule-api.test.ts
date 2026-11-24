@@ -1,12 +1,15 @@
 import {beforeAll, expect, test} from "vitest";
+import type {Timeline} from "../src/types/api";
 import {db, migrate, request} from "./db";
 
 const now = Math.floor(Date.now() / 1000);
+const host_id = "198.51.100.30:22";
+const devices = [0,1,2,3,4,5,6,7];
 
 beforeAll(async () => {
   await migrate();
   const config = {pool_blue: {owner: "blue", enabled: true, type: "ascend-a3", nodes: [{
-    host_id: "198.51.100.30:22", allocation_groups: [{devices: [0,1,2,3,4,5,6,7], verified: true}],
+    host_id, allocation_groups: [{devices, verified: true}],
   }]}};
   await db.batch([
     db.prepare("INSERT INTO pools_configs VALUES(1,'hash',?,'{}','test',?,NULL)").bind(JSON.stringify(config), now),
@@ -18,10 +21,12 @@ beforeAll(async () => {
       VALUES('blue','pool_blue','198.51.100.30:22','[0,1,2,3,4,5,6,7]','idle',?,'online',0,?,?,?)`).bind(now, now, 1, now),
     ...[1,3,5,7,9].map((duration, index) => db.prepare(`INSERT INTO task_index(
       task_uid,finished_at,worker_id,provider,repo,logical_model,run_id,attempt,case_id,test_id,label,kind,
-      target_pool,req_nodes,req_devices,actual_allocation_json,status,timing_reliable,duration_sec)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
+      target_pool,req_nodes,req_devices,actual_allocation_json,status,timing_reliable,duration_sec,started_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
       `sample-${index}`, now - index, "blue", "github", "org/schedule", "schedule", `sample-run-${index}`, 1,
-      `case_00${index}_sample`, "npu_smoke", "Sample", "npu_smoke", "pool_blue", 1, 8, "[]", "PASS", 1, duration,
+      `case_00${index}_sample`, "npu_smoke", "Sample", "npu_smoke", "pool_blue", 1, 8,
+      index === 1 ? JSON.stringify([{host_id, devices}]) : "[]", "PASS", 1, duration,
+      index === 1 ? now - index - duration : null,
     )),
     ...[1,3,5,7,9].map((duration, index) => db.prepare(`INSERT INTO duration_samples(
       logical_model,test_id,target_pool,req_nodes,req_devices,duration_sec,finished_at,task_uid)
@@ -48,4 +53,27 @@ test("timeline API projects the median duration from reliable samples", async ()
   expect(estEnd).toBeDefined();
   if (estStart === undefined || estEnd === undefined) throw new Error("missing schedule projection timestamps");
   expect(estEnd).toBe(estStart + 5);
+});
+
+test("history adds task bars without changing current occupancy or queue projections", async () => {
+  for (const [observation, state, projectionStatus] of [
+    ["idle", "CONFIRMED_IDLE", "SCHEDULED"],
+    ["busy", "UNKNOWN_BUSY", "WAITING_EXTERNAL"],
+  ] as const) {
+    await db.prepare("UPDATE device_group_states SET occupancy_state=? WHERE host_id=?").bind(observation, host_id).run();
+    // Each fixture observation needs a fresh public-cache key.
+    const live = await (await request(`/public/timeline?fixture=${observation}`)).json<Timeline>();
+    const withHistory = await (await request(`/public/timeline?fixture=${observation}&history_hours=72`)).json<Timeline>();
+    const group = (response: Timeline) => response.workers[0].pools[0].nodes[0].device_groups[0];
+    expect(group(live).state).toBe(state);
+    expect(group(withHistory).state).toBe(state);
+    expect(group(live).solid_blocks).toEqual([]);
+    expect(group(withHistory).solid_blocks).toMatchObject([{task_uid: "sample-1", total_cards: 8, group_count: 1}]);
+    const projection = (response: Timeline) => response.projections.find(item => item.task_uid === "schedule-task");
+    expect(projection(live)?.projection_status).toBe(projectionStatus);
+    expect(projection(withHistory)?.projection_status).toBe(projectionStatus);
+    if (projectionStatus === "SCHEDULED") {
+      expect(projection(withHistory)).toMatchObject({uncertain_release: false, est_start: withHistory.now});
+    }
+  }
 });

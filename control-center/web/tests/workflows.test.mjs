@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import {test} from "node:test";
-import {beijingClock, displayNodeHost, now, plannedTime, workflowKey} from "../src/formal-data.js";
+import {beijingClock, displayNodeHost, now, plannedTime, timelineLabel, workflowKey} from "../src/formal-data.js";
 import {commandStatusLabel, commandStatusTone} from "../src/command-status.js";
+import {resourceInventories} from "../src/control-api.js";
 import {currentWorkflowQueue, groupActiveRuns, moveWorkflow, summarizeRun, workflowResultLabel} from "../src/workflows.js";
 import {lastSeenDateTime, resourceHealth} from "../src/resource-health.js";
+import {measuredRange, rangeDuration, timelineSecondAt, timelineTicks} from "../src/timeline-viewport.js";
 
 const runA = {id: "run-a", platform: "GitHub", repo: "org/model", attempt: 1, action: "Smoke", model: "vllm-ascend"};
 const runB = {id: "run-b", platform: "GitCode", repo: "org/model", attempt: 1, action: "Smoke", model: "vllm-ascend"};
@@ -102,6 +104,55 @@ test("dynamic Beijing clock, direct host display, full timestamp formatting, and
     plannedTime({planned: 600, projectionStatus: "SCHEDULED", plannedNode: "n1", plannedGroups: ["0–7"]}, {flags: {}}, [{id: "n1", worker: "Blue", pool: "A3"}]),
     600,
   );
+});
+
+test("applied and desired inventories each show one node when the admin responses use different identifiers", () => {
+  const host = "192.0.2.1:22";
+  const appliedGroup = {devices: [0, 1], state: "CONFIRMED_IDLE"};
+  const removedGroup = {devices: [2, 3], state: "UNKNOWN_BUSY"};
+  const addedGroup = {devices: [4, 5], occupancy_state: "UNKNOWN_BUSY"};
+  const timeline = {workers: [{worker_id: "blue", pools: [{pool_name: "A3", nodes: [
+    {node_ref: "n_shared", host_id: host, device_groups: [appliedGroup, removedGroup]},
+    {node_ref: "n_removed", host_id: "192.0.2.2:22", device_groups: [appliedGroup]},
+  ]}]}]};
+  const cluster = {config: {A3: {owner: "blue", nodes: [
+    {host_id: host, allocation_groups: [appliedGroup, addedGroup]},
+    {host_id: "192.0.2.3:22", allocation_groups: [addedGroup]},
+  ]}}};
+  const {nodes, clusterNodes, nodesByRef} = resourceInventories(timeline, cluster);
+  assert.deepEqual(nodes.map(({id, groups}) => [id, groups]), [["n_shared", ["0–1", "2–3"]], ["n_removed", ["0–1"]]]);
+  assert.deepEqual(clusterNodes.map(({id, groups}) => [id, groups]), [["n_shared", ["0–1", "4–5"]], ["192.0.2.3:22", ["4–5"]]]);
+  assert.deepEqual(clusterNodes[0].unknown, ["4–5"]);
+  assert.deepEqual(nodes[0].confirmedIdle, ["0–1"]);
+  assert.deepEqual(nodes[0].unknown, ["2–3"]);
+  assert.equal(nodesByRef.get("n_shared"), nodes[0]);
+});
+
+test("timeline ticks include Beijing dates across midnight and expose seconds when zoomed", () => {
+  const midnight = Date.parse("2026-11-22T16:00:00Z") / 60_000;
+  assert.equal(timelineLabel(midnight + 187), "11-23 03:07");
+  assert.equal(timelineLabel(midnight - 1), "11-22 23:59");
+
+  const overview = timelineTicks(midnight - 720, midnight + 720, 3000, 0, 3000);
+  assert.equal(overview.withSeconds, false);
+  assert.ok(overview.ticks.includes(midnight));
+  const detail = timelineTicks(midnight - 720, midnight + 720, 12_000_000, 6_000_000, 1000);
+  assert.equal(detail.withSeconds, true);
+  assert.ok(detail.ticks.length > 1 && detail.ticks.length < 12);
+  assert.equal(timelineLabel(detail.ticks[0], true), "11-23 00:00:00");
+  assert.notEqual(timelineLabel(detail.ticks[0], true), timelineLabel(detail.ticks[1], true));
+});
+
+test("timeline selection measures a reverse drag across midnight at second precision", () => {
+  const midnight = Date.parse("2026-11-22T16:00:00Z") / 60_000;
+  const secondAt = (offset) => timelineSecondAt(offset, 1200, midnight - 1, midnight + 1);
+  const range = measuredRange(secondAt(810), secondAt(450));
+  assert.equal(timelineLabel(range.start / 60, true), "11-22 23:59:45");
+  assert.equal(timelineLabel(range.end / 60, true), "11-23 00:00:21");
+  assert.equal(rangeDuration(range.end - range.start), "36 秒");
+  assert.equal(secondAt(-300), (midnight - 1) * 60);
+  assert.equal(secondAt(1700), (midnight + 1) * 60);
+  assert.equal(rangeDuration(3661), "1 小时 1 分钟 1 秒");
 });
 
 test("summarizeRun prefers formal backend resultLabel/result even when cases are empty or incomplete", () => {

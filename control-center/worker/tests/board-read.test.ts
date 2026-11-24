@@ -109,7 +109,10 @@ test("timeline includes completed tasks from the requested history window", asyn
 
   const timeline = await (await request("/public/timeline?history_hours=72")).json<Timeline>();
   expect(timeline.history_tasks.map(task => task.task_uid)).toContain("t_history_timeline");
-  const historyBlock = timeline.workers[0].pools[0].nodes[0].device_groups[0].solid_blocks
-    .find(block => block.task_uid === "t_history_timeline");
-  expect(historyBlock).toMatchObject({task_uid: "t_history_timeline", total_cards: 8, group_count: 1});
+  const group = timeline.workers[0].pools[0].nodes[0].device_groups[0];
+  expect(group.state).toBe("LEASED");
+  expect(group.solid_blocks).toMatchObject([
+    {task_uid: "t_active", total_cards: 16, group_count: 2},
+    {task_uid: "t_history_timeline", total_cards: 8, group_count: 1},
+  ]);
 });

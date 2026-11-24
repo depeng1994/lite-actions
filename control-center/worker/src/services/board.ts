@@ -447,8 +447,8 @@ export async function timeline(context: Context): Promise<Timeline> {
   const details = await summaries(context, tasks);
   const historyDetails = historyTasks.length ? await summaries(context, historyTasks) : [];
   const byUid = new Map(tasks.map((task, i) => [task.task_uid, {task, detail: details[i], allocation: allocation(task)}]));
-  const leases = [...byUid.values()].filter(lease => lease.allocation.length && lease.task.phase !== "QUEUED");
-  const historyLeases = historyTasks.map((task, index) => ({task, detail: historyDetails[index], allocation: allocation(task)}))
+  const activeLeases = [...byUid.values()].filter(lease => lease.allocation.length && lease.task.phase !== "QUEUED");
+  const historyLeases = historyTasks.map(task => ({task, allocation: allocation(task)}))
     .filter(lease => lease.allocation.length && lease.task.started_at != null && lease.task.finished_at != null);
   const probe = new Map(observations.map(row => [JSON.stringify([row.worker_id, row.pool_name, row.host_id, row.devices_json]), row]));
   const isPoolDraining = (zone: WorkerId, poolName: string) =>
@@ -480,20 +480,24 @@ export async function timeline(context: Context): Promise<Timeline> {
         const device_groups: DeviceGroup[] = [];
         for (const group of node.allocation_groups ?? []) {
           const ids = group.devices.slice().sort((a, b) => a - b);
-          const allocated = [...leases, ...historyLeases].filter(lease => lease.task.worker_id === zone && lease.task.target_pool === pool_name
-            && overlaps(node.host_id, ids, lease.allocation));
+          const matchesGroup = (lease: {task: TaskRow; allocation: RawAllocation[]}) =>
+            lease.task.worker_id === zone && lease.task.target_pool === pool_name && overlaps(node.host_id, ids, lease.allocation);
+          const activeForGroup = activeLeases.filter(matchesGroup);
           const observation = probe.get(JSON.stringify([zone, pool_name, node.host_id, JSON.stringify(ids)]));
           const groupDraining = isGroupDraining(zone, pool_name, node.host_id, ids);
           const display = projectDevice(context.now, {
-            worker, pool, node, group, observation, leased: Boolean(allocated.length), draining: groupDraining,
+            worker, pool, node, group, observation, leased: activeForGroup.length > 0, draining: groupDraining,
           });
           let release_at = context.now;
           let uncertain = false;
-          for (const {task, detail, allocation: allocatedNodes} of allocated) {
+          for (const {task, detail} of activeForGroup) {
             const start_at = task.running_at ?? task.reserved_at ?? task.started_at ?? context.now;
             const ending = detail.estimated_sec === null ? context.now : start_at + detail.estimated_sec;
             release_at = Math.max(release_at, ending);
             uncertain ||= detail.estimated_sec === null || ending <= context.now || task.phase === "CLEANING";
+          }
+          for (const {task, allocation: allocatedNodes} of [...activeForGroup, ...historyLeases.filter(matchesGroup)]) {
+            const start_at = task.running_at ?? task.reserved_at ?? task.started_at ?? context.now;
             const related = blocks.get(task.task_uid) ?? [];
             blocks.set(task.task_uid, related);
             display.solid_blocks.push({

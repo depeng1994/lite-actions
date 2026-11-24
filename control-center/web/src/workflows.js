@@ -1,5 +1,8 @@
 import { timeFromMinutes, now, poolId, runs, workflowKey } from "./formal-data.js";
 
+export const initialWorkflowHistorySize = 5;
+export const workflowHistoryPageSize = 50;
+
 export const terminalStatuses = new Set(["已取消", "成功", "失败"]);
 const inFlightStatuses = new Set(["准备中", "运行中", "清理中"]);
 

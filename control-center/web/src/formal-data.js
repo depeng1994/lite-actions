@@ -7,6 +7,12 @@ const shanghaiLabelFormatter = new Intl.DateTimeFormat("zh-CN", {
 const shanghaiTimeParts = new Intl.DateTimeFormat("en-US", {
   timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false,
 });
+const timelineDateTime = new Intl.DateTimeFormat("en-US", {
+  timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+});
+const timelineDateTimeWithSeconds = new Intl.DateTimeFormat("en-US", {
+  timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+});
 
 export function beijingClock(date = new Date()) {
   const parts = shanghaiTimeParts.formatToParts(date);
@@ -53,7 +59,6 @@ export const repositories = [
 ];
 export const runs = [];
 export const timelineRuns = [];
-export const history = [];
 export const initialQueueOrder = [];
 export const initialCases = [];
 export const initialNodes = [];
@@ -75,11 +80,13 @@ export function clock(minute) {
     .map((part) => String(part).padStart(2, "0")).join(":");
 }
 
-export function timelineLabel(minute) {
+export function timelineLabel(minute, withSeconds = false) {
   if (minute == null) return "暂无估算";
-  return new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
-  }).format(new Date(minute * 60000)).replaceAll("/", "-");
+  const formatter = withSeconds ? timelineDateTimeWithSeconds : timelineDateTime;
+  const parts = Object.fromEntries(formatter.formatToParts(new Date(Math.round(minute * 60000)))
+    .map(({type, value}) => [type, value]));
+  const dateTime = `${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
+  return withSeconds ? `${dateTime}:${parts.second}` : dateTime;
 }
 
 export function timelineMinuteFor(dayMinute, referenceMinute = Math.floor(Date.now() / 60000)) {
