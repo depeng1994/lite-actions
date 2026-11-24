@@ -47,6 +47,7 @@ export interface Pool {
   enabled: boolean;
   paused?: true;
   nodes: PoolNode[];
+  default_docker?: string;
   verified_multinode_allocations?: RawAllocation[][];
   [key: string]: unknown;
 }

@@ -74,6 +74,11 @@ def validate_pools(pools, workers):
     seen = {}
     fingerprints = {}
     for pool in pools.values():
+        if "default_docker" in pool and (
+            not isinstance(pool["default_docker"], str)
+            or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", pool["default_docker"])
+        ):
+            raise ValueError("invalid pool default_docker")
         if "paused" in pool and pool["paused"] is not True:
             raise ValueError("paused must be true when specified")
         if pool.get("owner") not in workers:
@@ -198,6 +203,34 @@ def execution_node(node, environment):
     return {**node, "ssh": execution_ssh}
 
 
+class PoolDefaultError(ValueError):
+    """A missing or ambiguous deployment-owned container binding."""
+
+
+def resolve_pool_default_docker(pool):
+    if "default_docker" in pool:
+        return pool["default_docker"]
+    bindings = {
+        name
+        for node in pool["nodes"]
+        if not node.get("paused")
+        and not node.get("probe_unavailable")
+        and any(
+            group.get("verified")
+            and not group.get("paused")
+            and not group.get("probe_unavailable")
+            for group in node.get("allocation_groups", [])
+        )
+        for name, binding in node.get("environments", {}).items()
+        if binding
+    }
+    if len(bindings) != 1:
+        raise PoolDefaultError(
+            "DEFAULT_DOCKER_AMBIGUOUS" if bindings else "CONTAINER_BINDING_MISSING"
+        )
+    return next(iter(bindings))
+
+
 def runtime_case(item, pools, worker):
     pool = pools.get(item["target_pool"])
     if not pool:
@@ -209,7 +242,9 @@ def runtime_case(item, pools, worker):
         pool=item["target_pool"],
         resources=item["resources"],
         enabled=True,
-        docker=item["docker"],
+        docker=item["docker"]
+        if item["docker"] is not None
+        else resolve_pool_default_docker(pool),
         kind=item["kind"],
         timeout_seconds=item["execution_timeout_seconds"] + 780,
         execution_timeout_seconds=item["execution_timeout_seconds"],

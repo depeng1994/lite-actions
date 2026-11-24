@@ -12,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from ci_core.config import runtime_case
 from ci_core.contract import create_plan, digest, normalize, parse_plan
 from ci_core.gitcode import GitCodeClient, MultiPlatformClient, source_plan
 from ci_core.router import Router
@@ -408,12 +409,13 @@ class GitCodeWorkflowTests(unittest.TestCase):
                         nnodes=2,
                         ngpu=2,
                         ci_kind="npu_smoke",
-                        ci_overrides={},
+                        ci_overrides={"docker": None},
                         timeout=75,
-                        env_vars=env_vars,
+                        env_vars={"TORCH_NPU_EXTRA": "1"},
                     ),
                     defaults,
                     1,
+                    allow_site_defaults=True,
                 ),
                 normalize(
                     SimpleNamespace(
@@ -516,6 +518,7 @@ class GitCodeWorkflowTests(unittest.TestCase):
                 return buf.getvalue()
 
             def execute(selected, current, **kwargs):
+                self.assertEqual(selected["docker"], "training")
                 seen_envs.append(selected["verified_env"])
                 current["_ci_phase_callback"]("LAUNCHING")
                 return completed_execution(root, selected, current)
@@ -595,7 +598,14 @@ class GitCodeWorkflowTests(unittest.TestCase):
                     self.assertTrue(
                         all(r["report"]["status"] == "PASS" for r in records)
                     )
-                    self.assertEqual(seen_envs, [env_vars] * 3)
+                    self.assertEqual(
+                        seen_envs,
+                        [
+                            env_vars,
+                            {**env_vars, "ASCEND_SET_ENV_PATH": "/fixture/cann"},
+                            env_vars,
+                        ],
+                    )
                     results = [
                         json.loads(c["body"].split("\n", 1)[1])
                         for c in comments
@@ -611,6 +621,38 @@ class GitCodeWorkflowTests(unittest.TestCase):
                     )
                 finally:
                     router.close()
+
+    def test_runtime_pool_default_requires_unambiguous_binding(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_workspace(root)
+            pools = json.loads((root / "config/pools.json").read_text())
+        pool = pools["pool_blue"]
+        item = {
+            "target_pool": "pool_blue",
+            "case_id": "case_000_train",
+            "kind": "train",
+            "execution_timeout_seconds": 75,
+            "resources": {"nodes": 1, "devices_per_node": 2},
+            "docker": None,
+        }
+        self.assertEqual(runtime_case(item, pools, "blue")["docker"], "training")
+        node = pool["nodes"][1]
+        node["environments"]["another"] = node["environments"]["training"]
+        with self.assertRaisesRegex(ValueError, "DEFAULT_DOCKER_AMBIGUOUS"):
+            runtime_case(item, pools, "blue")
+        self.assertEqual(
+            runtime_case({**item, "docker": "training"}, pools, "blue")["docker"],
+            "training",
+        )
+        pool["default_docker"] = "another"
+        self.assertEqual(runtime_case(item, pools, "blue")["docker"], "another")
+        del pool["default_docker"]
+        node["paused"] = True
+        self.assertEqual(runtime_case(item, pools, "blue")["docker"], "training")
+        pool["nodes"][0]["environments"] = {}
+        with self.assertRaisesRegex(ValueError, "CONTAINER_BINDING_MISSING"):
+            runtime_case(item, pools, "blue")
 
     def test_gitcode_request_artifact_rejects_worker_probe_and_unsafe_env(self):
         defaults = {

@@ -121,9 +121,10 @@ function validatePools(pools: Pools) {
       invalid("pool flags");
     }
     const allowed = ["type","owner","enabled","paused","force_reclaim","process_indexing","nodes",
-      "max_jobs_per_host","notes","verified_multinode_allocations"];
+      "max_jobs_per_host","notes","verified_multinode_allocations","default_docker"];
     if (Object.keys(pool).some(key => !allowed.includes(key))) invalid("pool fields");
     if (pool.max_jobs_per_host != null) integer(pool.max_jobs_per_host, "max_jobs_per_host", 1, 64);
+    if (pool.default_docker !== undefined) string(pool.default_docker, "default_docker", 128, /^[A-Za-z0-9_.:-]+$/);
     if (pool.notes != null) string(pool.notes, "notes", 2048);
     const groupsByNode = new Map<string, Set<string>>();
     for (const raw of array(pool.nodes, "nodes", 64)) {
