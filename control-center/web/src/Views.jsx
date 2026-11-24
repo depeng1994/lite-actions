@@ -105,7 +105,7 @@ function OccupancyHistory({ row, clockState, showResource }) {
     const title = `${row.label} · ${externalOccupancyLabel} · 首次发现 ${timelineLabel(block.started_at / 60, true)} · ${ending}`;
     return <button key={block.started_at} type="button" className="occupancy-history occupancy-unknown"
       style={{ left: `${(start - timelineStart) / width * 100}%`, width: `${(end - start) / width * 100}%`,
-        top: row.top + row.height / 2 }}
+        top: row.top + row.height / 2 - 4 }}
       title={title} aria-label={title}
       onClick={() => showResource(targetFor(row.node, row.group), block.started_at)} />;
   });
@@ -407,7 +407,7 @@ export function PoolsView({ nodes, cases, timelineCases, config, go, live, rende
                 {rows.map((row) => <OccupancyHistory key={row.key} row={row} clockState={clockState} showResource={showResource} />)}
                 {rows.filter((row) => row.occupancy).map((row) => (
                   <button key={row.key} type="button" className={`occupancy-marker occupancy-${row.occupancy}`}
-                    style={{ left: marker(timelineNow), top: row.top + row.height / 2 }}
+                    style={{ left: marker(timelineNow), top: row.top + row.height - 8 }}
                     aria-label={`${row.label} · ${occupancyLabels[row.occupancy]}`} title={occupancyLabels[row.occupancy]}
                     onClick={() => showResource(targetFor(row.node, row.group))} />
                 ))}

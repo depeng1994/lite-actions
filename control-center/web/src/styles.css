@@ -216,7 +216,8 @@ code, .mono { font-family: var(--mono); font-size: .94em; letter-spacing: -.25px
 .lease-time { position: absolute; top: 50%; transform: translateY(-50%); font-size: 12px; color: var(--text); white-space: nowrap; }
 .lease-start { right: calc(100% + 7px); }
 .lease-end { left: calc(100% + 7px); }
-.occupancy-marker { position: absolute; z-index: 3; width: 17px; height: 17px; padding: 0; transform: translate(-50%, -50%); border: 1px solid var(--occupancy-stroke); border-radius: 4px; background: var(--occupancy-fill); }
+/* The status marker sits below occupancy history so both stay clickable at any zoom. */
+.occupancy-marker { position: absolute; z-index: 3; width: 14px; height: 14px; padding: 0; transform: translate(-50%, -50%); border: 1px solid var(--occupancy-stroke); border-radius: 4px; background: var(--occupancy-fill); }
 .occupancy-marker:hover { border-color: var(--accent); }
 .occupancy-history { position: absolute; min-width: 3px; height: 30px; padding: 0; transform: translateY(-50%); border: 1px solid var(--occupancy-stroke); border-radius: 4px; background: var(--occupancy-fill); }
 .occupancy-history:hover, .occupancy-history:focus-visible { border-color: var(--accent); }

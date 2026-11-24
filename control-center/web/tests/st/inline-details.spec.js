@@ -6,7 +6,7 @@ const host = "192.0.2.1:22";
 const pool = "blue_pool";
 const occupancy = [
   { started_at: ago(240), last_busy_at: ago(180), ended_at: ago(178), close_reason: "idle" },
-  { started_at: ago(70), last_busy_at: ago(2), ended_at: null, close_reason: null },
+  { started_at: ago(8), last_busy_at: time, ended_at: null, close_reason: null },
 ];
 const health = { status: "ONLINE", missed_count: 0, last_online_at: time };
 const groups = Array.from({ length: 4 }, (_, index) => ({
@@ -146,12 +146,12 @@ test("Pools opens all task and occupancy entry points in the same detail slot", 
     await expectOccupancy(closedPanel, "2026-11-24 12:00:00", "2026-11-24 13:02:00");
     await expect(closedPanel.getByRole("row")).toHaveCount(2);
     const openPanel = await expectInline(page, active, pools, group);
-    await expectOccupancy(openPanel, "2026-11-24 14:50:00", "—");
+    await expectOccupancy(openPanel, "2026-11-24 15:52:00", "—");
   });
   await test.step("当前状态标记和资源名称", async () => {
     const panel = await expectInline(page, page.locator(".occupancy-marker.occupancy-unknown"), pools, group);
     await expectOccupancy(panel, "2026-11-24 12:00:00", "2026-11-24 13:02:00");
-    await expectOccupancy(panel, "2026-11-24 14:50:00", "—");
+    await expectOccupancy(panel, "2026-11-24 15:52:00", "—");
     const idlePanel = await expectInline(page, page.locator(".occupancy-marker.occupancy-idle"), pools, "192.0.2.2:22 · 设备组 0–1");
     await expect(idlePanel.getByText("暂无外部占用记录")).toBeVisible();
     await expectInline(page, page.locator(".tree-leaf").filter({ hasText: /192\.0\.2\.1:22.*0–1/ }), pools, group);
@@ -165,13 +165,13 @@ test("cluster reuses the detail slot checks for Pool, node and device groups", a
   await page.goto("/#/cluster");
   const table = page.locator(".cluster-table");
   const poolPanel = await expectInline(page, table.getByRole("button", { name: "Pool blue_pool" }), cluster, "Blue / blue_pool");
-  await expectOccupancy(poolPanel, "2026-11-24 14:50:00", "—");
+  await expectOccupancy(poolPanel, "2026-11-24 15:52:00", "—");
   const nodePanel = await expectInline(page, table.getByRole("button", { name: "192.0.2.3:22", exact: true }), cluster, "192.0.2.3:22");
   await expect(nodePanel.getByText("暂无外部占用记录")).toBeVisible();
   const group = table.getByRole("button", { name: "192.0.2.1:22 设备组 0–1" });
   const panel = await expectInline(page, group, cluster, "192.0.2.1:22 · 设备组 0–1");
   await expectOccupancy(panel, "2026-11-24 12:00:00", "2026-11-24 13:02:00");
-  await expectOccupancy(panel, "2026-11-24 14:50:00", "—");
+  await expectOccupancy(panel, "2026-11-24 15:52:00", "—");
   await page.getByRole("navigation", { name: "Worker 页签" }).getByRole("button", { name: "Yellow" }).click();
   await expect(panel).toHaveCount(0);
   await expectInline(page, table.getByRole("button", { name: "192.0.2.2:22 设备组 0–1" }), cluster, "192.0.2.2:22 · 设备组 0–1");
