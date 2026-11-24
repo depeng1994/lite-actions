@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "node --test tests/workflows.test.mjs",
-    "test:st": "playwright test"
+    "test:st": "npm run build && npm run build:node --prefix ../worker && playwright test"
   },
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",

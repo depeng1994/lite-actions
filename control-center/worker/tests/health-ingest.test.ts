@@ -1,4 +1,4 @@
-import {beforeAll, expect, test} from "vitest";
+import {beforeAll, beforeEach, expect, test} from "vitest";
 import type {Timeline, WorkerId} from "../src/types/api";
 import {hmac} from "../src/utils/crypto";
 import {bindings, db, migrate, request} from "./db";
@@ -14,6 +14,11 @@ beforeAll(async () => {
     host_id: "198.51.100.40:22", allocation_groups: [{devices: [0,1], verified: true}, {devices: [2,3], verified: true}],
   }]}};
   await db.prepare("INSERT INTO pools_configs VALUES(1,'hash',?,'{}','test',?,NULL)").bind(JSON.stringify(pools), now).run();
+});
+
+beforeEach(async () => {
+  await db.batch(["device_group_states", "device_occupancy_intervals", "device_occupancy_readings"]
+    .map(table => db.prepare(`DELETE FROM ${table}`)));
 });
 
 test("occupancy history follows sample time across retries, missing evidence and snapshots", async () => {
@@ -60,6 +65,52 @@ test("occupancy history follows sample time across retries, missing evidence and
 function worker(path: string, data: unknown) {
   return request(`/worker/${path}`, {data, headers: {Authorization: `Bearer ${token}`}}, config);
 }
+
+test("lease skips and recovery snapshots preserve the last occupancy sample", async () => {
+  const base = {w: "blue", i: "abcdabcd"};
+  const group = {pool: "pool_blue", h: "198.51.100.40:22", d: [0,1]};
+  await worker("heartbeat", {...base, rev: 1, ok: 1, act: 0, q: 0});
+  expect((await worker("events", {...base, ev: [
+    {...group, s: 1, t: "IP", st: "idle", ts: now - 40},
+    {...group, s: 2, t: "IP", sk: 1, ts: now - 20},
+  ]})).status).toBe(200);
+  expect(await (await worker("snapshots", {...base, sid: "1111222233", p: 1, n: 1, seq: 2,
+    kind: "device", items: [{...group, sk: 1, ts: now - 10}]})).json()).toMatchObject({complete: true});
+  expect(await db.prepare("SELECT occupancy_state,probe_at FROM device_group_states").first())
+    .toMatchObject({occupancy_state: "idle", probe_at: now - 40});
+  const timeline = await (await request("/public/timeline?fixture=skip")).json<Timeline>();
+  expect(timeline.workers[0].pools[0].nodes[0].device_groups[0].state).toBe("CONFIRMED_IDLE");
+});
+
+test("heartbeats and config snapshots cannot advance a group's last successful visibility time", async () => {
+  const base = {w: "blue", i: "aaaabbbb", rev: 1, ok: 1, act: 0, q: 0};
+  const group = {pool: "pool_blue", h: "198.51.100.40:22"};
+  expect((await worker("heartbeat", base)).status).toBe(200);
+  const online = [now - 100, now - 80];
+  expect((await worker("events", {...base, ev: online.map((ts,index) => ({
+    ...group, s: index + 1, t: "IP", d: index === 0 ? [0,1] : [2,3], st: "idle", ts, pr: 1, v: 0, lo: ts,
+  }))})).status).toBe(200);
+
+  async function verify(tag: string) {
+    const response = await (await request(`/public/timeline?fixture=${tag}`)).json<Timeline>();
+    expect(response.workers[0].pools[0].nodes[0].device_groups.map(group => group.health.last_online_at)).toEqual(online);
+    const cluster = await (await request(`/public/cluster?fixture=${tag}`)).json<{
+      config: {pool_blue: {nodes: Array<{allocation_groups: Array<{last_online_at: number}>}>}};
+    }>();
+    expect(cluster.config.pool_blue.nodes[0].allocation_groups.map(group => group.last_online_at))
+      .toEqual(online);
+  }
+  await verify("legacy-heartbeat");
+  await worker("heartbeat", {...base, probe_ts: now - 20});
+  await verify("worker-probe");
+  await worker("heartbeat", {...base, rev: 2, probe_ts: null});
+  expect(await db.prepare("SELECT last_visibility_probe_at FROM workers WHERE worker_id='blue'").first("last_visibility_probe_at"))
+    .toBe(now - 20);
+  expect(await (await worker("snapshots", {...base, sid: "1111222244", p: 1, n: 1, seq: 2, kind: "device",
+    items: [{...group, d: [0,1], st: "probe_error", ts: now - 10, pr: 2, v: 1, mc: 1, lo: online[0]},
+      {...group, d: [2,3]}]})).json()).toMatchObject({complete: true});
+  await verify("failed-probe-and-config");
+});
 
 test("IP visibility rounds reach timeline health without changing occupancy", async () => {
   const instance = "feedcafe";

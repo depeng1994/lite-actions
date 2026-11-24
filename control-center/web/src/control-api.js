@@ -53,7 +53,8 @@ function nodeFromIdentity(identity, worker, pool, deviceGroups = []) {
   const display = identity.host_id || identity.display_host_id || "未知节点";
   const match = display.match(/^(.*):(\d+)$/);
   const groups = deviceGroups.map((group) => rangeLabel(group.devices)).filter(Boolean);
-  const groupCards = Object.fromEntries(deviceGroups.map((group) => [rangeLabel(group.devices), group.devices.length]));
+  const groupDeviceIds = Object.fromEntries(deviceGroups.map((group) => [rangeLabel(group.devices), group.devices]));
+  const groupCards = Object.fromEntries(Object.entries(groupDeviceIds).map(([group, ids]) => [group, ids.length]));
   const totalCards = deviceGroups.reduce((sum, group) => sum + group.devices.length, 0);
   return {
     id: identity.node_ref || display,
@@ -63,6 +64,7 @@ function nodeFromIdentity(identity, worker, pool, deviceGroups = []) {
     ip: match?.[1] || display, port: Number(match?.[2] || 22),
     cards: totalCards,
     groups,
+    groupDeviceIds,
     groupCards,
     binding: "control-center",
     quarantinedGroups: deviceGroups.filter((group) => group.quarantined).map((group) => rangeLabel(group.devices)).filter(Boolean),
@@ -191,10 +193,11 @@ function taskToCase(task, nodesByRef, projectionIndex, runKey, isHistory = false
   const projection = projected?.projection;
   const scheduled = projection?.projection_status === "SCHEDULED";
   const planned = scheduled ? minuteOfDay(projection.est_start) : null;
+  const finished = isHistory || (task.phase == null && task.finished_at != null);
   return {
     id: task.task_uid || `${runKey}-${task.case_id}`,
     taskUid: task.task_uid || null,
-    historyId: isHistory ? (task.task_uid || `${runKey}-${task.case_id}`) : undefined,
+    historyId: finished ? (task.task_uid || `${runKey}-${task.case_id}`) : undefined,
     run: runKey, name: task.label || task.test_id || task.case_id, status: phaseLabel(task),
     kind: task.kind,
     worker: workerLabel(task.worker_id), pool: task.target_pool, nodes: task.req_nodes,
@@ -221,8 +224,8 @@ function taskToCase(task, nodesByRef, projectionIndex, runKey, isHistory = false
   };
 }
 
-function runFromWorkflow(row, nodesByRef, projectionIndex, archived = false) {
-  const run = {
+function workflowMetadata(row) {
+  return {
     id: row.run_id, number: row.run_number, title: row.display_title, attempt: row.attempt, model: row.logical_model,
     platform: platformLabel(row.provider), repo: row.repo,
     owner: row.repo_scope || (row.repo?.startsWith("depeng1994/") ? "个人仓" : "组织仓"),
@@ -230,6 +233,12 @@ function runFromWorkflow(row, nodesByRef, projectionIndex, archived = false) {
     trigger: row.event_type === "pull_request" ? "PR" : row.event_type === "workflow_dispatch" ? "手动" : "事件",
     action: row.workflow_name || row.workflow_file?.replace(/^.*\//, "").replace(/\.ya?ml$/, "") || "Workflow",
     commit: "—", submitted: timestampMs(row.submitted_at),
+  };
+}
+
+function runFromWorkflow(row, nodesByRef, projectionIndex, archived = false) {
+  const run = {
+    ...workflowMetadata(row),
     startedAt: timestampMs(row.started_at), finishedAt: timestampMs(row.finished_at),
     sequence: row.sequence,
     result: row.result || null,
@@ -252,13 +261,7 @@ function groupTimelineTasks(tasks, nodesByRef) {
     let run = groups.get(key);
     if (!run) {
       run = {
-        id: task.run_id, number: task.run_number, title: task.display_title, attempt: task.attempt,
-        model: task.logical_model, platform, repo: task.repo,
-        owner: task.repo_scope || (task.repo?.startsWith("depeng1994/") ? "个人仓" : "组织仓"),
-        author: task.pr_author, actor: task.trigger_actor || "—", pr: task.pr_number,
-        trigger: task.event_type === "pull_request" ? "PR" : task.event_type === "workflow_dispatch" ? "手动" : "事件",
-        action: task.workflow_name || task.workflow_file?.replace(/^.*\//, "").replace(/\.ya?ml$/, "") || "Workflow",
-        commit: "—", submitted: task.submitted_at == null ? null : task.submitted_at * 1000,
+        ...workflowMetadata(task),
         startedAt: null, finishedAt: null, sequence: -1, result: "成功", resultLabel: "成功",
         cardHours: null, cardHoursAsOfNow: false, cardHoursPartial: false, cancelSupported: false, canMoveUp: false, cases: [],
       };
@@ -286,7 +289,7 @@ export async function loadControlCenter(access = "public") {
   try {
     const [overview, timeline, models, cluster, workflowSnapshot] = await Promise.all([
       request(`/${access}/overview`),
-      request(`/${access}/timeline?history_hours=72`),
+      request(`/${access}/timeline?history_hours=72&compact_history=1`),
       request(`/${access}/models`),
       request(`/${access}/cluster`),
       request(`/${access}/workflows?history_limit=0`),
@@ -299,7 +302,10 @@ export async function loadControlCenter(access = "public") {
       ? workflowSnapshot.active.map((row) => runFromWorkflow(row, nodesByRef, projectionIndex))
       : [];
     const cases = activeRuns.flatMap((run) => run.cases);
-    const timelineHistoryRuns = timeline.history_tasks?.length ? groupTimelineTasks(timeline.history_tasks, nodesByRef) : [];
+    const caseIds = new Set(cases.map(({id}) => id));
+    const historyTasks = timeline.history_task_uids?.map((uid) => timeline.tasks_by_uid?.[uid]).filter(Boolean)
+      ?? timeline.history_tasks ?? [];
+    const timelineHistoryRuns = groupTimelineTasks(historyTasks.filter((task) => !caseIds.has(task.task_uid)), nodesByRef);
     const timelineCases = [...cases, ...timelineHistoryRuns.flatMap((run) => run.cases)];
     const repositories = modelTabs.map((model) => ({name: model.slug, sources: (model.repos || []).map((repo) => repo.repo)}));
     const workflowOrder = activeRuns

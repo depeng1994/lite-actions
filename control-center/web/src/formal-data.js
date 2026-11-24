@@ -29,16 +29,12 @@ export function beijingClock(date = new Date()) {
 }
 
 export function timelineClock(date = new Date()) {
-  const parts = shanghaiTimeParts.formatToParts(date);
-  const hour = Number(parts.find(({type}) => type === "hour")?.value || 0) % 24;
-  const minute = Number(parts.find(({type}) => type === "minute")?.value || 0);
+  const now = Math.floor(date.getTime() / 60000);
   return {
-    currentDate: shanghaiDateFormatter.format(date),
     dateLabel: shanghaiLabelFormatter.format(date),
-    now: Math.floor(date.getTime() / 60000),
-    displayNow: hour * 60 + minute,
-    timelineStart: Math.floor(date.getTime() / 60000) - 72 * 60,
-    timelineEnd: Math.floor(date.getTime() / 60000) + 60,
+    now,
+    timelineStart: now - 72 * 60,
+    timelineEnd: now + 60,
   };
 }
 
@@ -87,15 +83,6 @@ export function timelineLabel(minute, withSeconds = false) {
     .map(({type, value}) => [type, value]));
   const dateTime = `${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
   return withSeconds ? `${dateTime}:${parts.second}` : dateTime;
-}
-
-export function timelineMinuteFor(dayMinute, referenceMinute = Math.floor(Date.now() / 60000)) {
-  if (dayMinute == null) return null;
-  const shanghaiDate = shanghaiDateFormatter.format(new Date(referenceMinute * 60000));
-  const midnight = Date.parse(`${shanghaiDate}T00:00:00+08:00`) / 60000;
-  let candidate = midnight + dayMinute;
-  if (candidate < referenceMinute - 12 * 60) candidate += 24 * 60;
-  return candidate;
 }
 
 export function poolId(worker, pool) {

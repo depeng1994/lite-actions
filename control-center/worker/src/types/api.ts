@@ -105,7 +105,8 @@ export interface Timeline {
   projections: Projection[];
   tasks_by_uid: Record<string, TaskSummary>;
   queued_by_pool: Record<string, TaskSummary[]>;
-  history_tasks: TaskSummary[];
+  history_tasks?: TaskSummary[];
+  history_task_uids?: string[];
   now: number;
 }
 export interface ModelsResponse {

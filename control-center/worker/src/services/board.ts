@@ -437,6 +437,7 @@ export async function timeline(context: Context): Promise<Timeline> {
     const since = context.now - historyHours * 3600;
     statements.push(db.prepare(`SELECT * FROM task_index
       WHERE finished_at >= ? AND finished_at <= ?
+      AND started_at IS NOT NULL AND json_array_length(actual_allocation_json)>0
       ORDER BY finished_at DESC, task_uid DESC
       LIMIT 5000`).bind(since, context.now));
     statements.push(db.prepare(`SELECT worker_id,pool_name,host_id,devices_json,started_at,last_busy_at,ended_at,close_reason
@@ -463,8 +464,7 @@ export async function timeline(context: Context): Promise<Timeline> {
   const historyDetails = historyTasks.length ? await summaries(context, historyTasks) : [];
   const byUid = new Map(tasks.map((task, i) => [task.task_uid, {task, detail: details[i], allocation: allocation(task)}]));
   const activeLeases = [...byUid.values()].filter(lease => lease.allocation.length && lease.task.phase !== "QUEUED");
-  const historyLeases = historyTasks.map(task => ({task, allocation: allocation(task)}))
-    .filter(lease => lease.allocation.length && lease.task.started_at != null && lease.task.finished_at != null);
+  const historyLeases = historyTasks.map(task => ({task, allocation: allocation(task)}));
   const probe = new Map(observations.map(row => [JSON.stringify([row.worker_id, row.pool_name, row.host_id, row.devices_json]), row]));
   const isPoolDraining = (zone: WorkerId, poolName: string) =>
     drains.some(row => row.worker_id === zone && row.scope === "pool" && row.pool_name === poolName);
@@ -581,5 +581,8 @@ export async function timeline(context: Context): Promise<Timeline> {
   for (const tasksForPool of Object.values(queued_by_pool)) tasksForPool.sort((left, right) =>
     (left.queue_pos ?? Number.MAX_SAFE_INTEGER) - (right.queue_pos ?? Number.MAX_SAFE_INTEGER));
   return {workers, now: context.now, zero_card_tasks: details.filter(task => task.kind === "worker_probe"), projections,
-    tasks_by_uid, queued_by_pool, history_tasks: historyDetails};
+    tasks_by_uid, queued_by_pool,
+    ...(context.url.searchParams.get("compact_history") === "1"
+      ? {history_task_uids: historyDetails.map(task => task.task_uid)}
+      : {history_tasks: historyDetails})};
 }

@@ -23,7 +23,7 @@ export function RunIdentity({ run }) {
   return <span>{run.pr ? `@${run.author} #${run.pr}` : `${run.trigger}触发`} <span className="middot">·</span> {run.action} #{run.id}</span>;
 }
 
-const rowHeight = { worker: 39, pool: 39, node: 39, group: 54 };
+const rowHeight = { worker: 39, pool: 39, group: 54 };
 const baseChartWidth = 3000;
 const maxChartWidth = 12_288_000;
 const plotInset = 64;
@@ -122,17 +122,11 @@ const LeaseBar = memo(function LeaseBar({ item, run, rows, config, nodes, clockS
   const queued = item.status === "排队中";
   const actual = item.node && ["准备中", "运行中", "清理中"].includes(item.status);
   const ended = item.node && item.timelineFinished != null && ["成功", "失败", "已取消"].includes(item.status);
-  const selectedGroup = queued ? item.plannedGroups : item.groups;
-  const node = queued ? item.plannedNode : item.node;
-  const allocations = item.allocations?.length ? item.allocations : item.allocation ? [item.allocation] : [];
   const poolRows = rows.filter((row) => row.node && row.worker === item.worker && row.pool === item.pool);
   const resourceRowsList = queued
-    ? poolRows.filter((row) => row.node.id === node && selectedGroup?.includes(row.group))
-    : poolRows.filter((row) => allocations.some((allocation) => {
-        const ids = [...(allocation.devices || [])].sort((a, b) => a - b);
-        const label = ids.length ? `${ids[0]}–${ids.at(-1)}` : null;
-        return row.node?.id === (allocation.node_ref || allocation.id) && row.group === label;
-      }));
+    ? poolRows.filter((row) => row.node.id === item.plannedNode && item.plannedGroups?.includes(row.group))
+    : poolRows.filter((row) => item.allocations?.some((allocation) => row.node.id === allocation.node_ref
+        && row.node.groupDeviceIds[row.group].some((id) => allocation.devices.includes(id))));
   if (!resourceRowsList.length || (!queued && !actual && !ended)) return null;
   const start = queued
     ? (plannedTime(item, config, nodes) == null ? null : item.timelinePlanned)
@@ -372,7 +366,7 @@ export function PoolsView({ nodes, cases, timelineCases, config, go, live, rende
           <ul className="legend" aria-label="时间轴图例">
             <li><i className="legend-actual" />实际租约</li>
             <li><i className="legend-planned" />预计使用</li>
-            <li><i className="legend-occupancy occupancy-unknown" />{externalOccupancyLabel}</li>
+            <li><i className="legend-occupancy legend-occupancy-history occupancy-unknown" />{externalOccupancyLabel}</li>
             <li><i className="legend-occupancy occupancy-unknown" />{occupancyLabels.unknown}</li>
             <li><i className="legend-occupancy occupancy-idle" />{occupancyLabels.idle}</li>
           </ul>

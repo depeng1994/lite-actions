@@ -43,7 +43,8 @@ jobs:
         working-directory: control-center/web
         run: |
           npx playwright install --with-deps chromium
-          npm run test:st
+          npm run build:node --prefix ../worker
+          npx playwright test
       - name: Control Center Node runtime gates
         working-directory: control-center/worker
         run: |

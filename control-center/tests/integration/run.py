@@ -18,6 +18,7 @@ import urllib.error
 import urllib.request
 from contextlib import ExitStack
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -129,47 +130,33 @@ def worker(zone, root, proxy):
     import unified_router
     from ci_core.control_client import ControlClient
     from ci_core.egress_policy import Egress
-    from ci_core.idle_probe import group_id
+    from ci_core.idle_probe import IdleProbe, observe_health
 
     state = root / "state"
 
-    def observe(owner, pools, _records):
-        now = int(time.time())
-        return (
-            {
-                group_id(name, node["host_id"], group["devices"]): (
-                    "idle" if 0 in group["devices"] else "busy",
-                    now,
-                )
-                for name, pool in pools.items()
-                if pool["owner"] == owner
-                for node in pool["nodes"]
-                for group in node["allocation_groups"]
-            },
-            now,
+    def npu_smi(ssh, command, *, timeout):
+        assert command == "npu-smi info" and timeout == 20
+        mode_file = root / "probe-mode"
+        mode = mode_file.read_text() if mode_file.exists() else "busy"
+        partial = mode == "partial" and ssh.split(":")[0].endswith(".10")
+        lines = [
+            "| NPU Chip | Process id | Process name | Process memory(MB) | Process id in container |",
+            "| 0 0 | 4321 | sample | 1 | NA |"
+            if partial
+            else "| No running processes found in NPU 0 |",
+        ]
+        if not partial:
+            lines.append(
+                "| 1 0 | 4321 | sample | 1 | NA |"
+                if mode == "busy"
+                else "| No running processes found in NPU 1 |"
+            )
+        return SimpleNamespace(
+            stdout="\n".join([*lines, "+============================+"])
         )
 
-    def observe_health(
-        owner,
-        pools,
-        records,
-        *,
-        execute=None,
-        previous=None,
-        probe_round=1,
-        refresh=None,
-    ):
-        states, sampled_at = observe(owner, pools, records)
-        health = {
-            json.dumps([pool, host, sorted(devices)], separators=(",", ":")): {
-                "v": 0,
-                "mc": 0,
-                "lo": sampled_at,
-                "pr": probe_round,
-            }
-            for pool, host, devices in states
-        }
-        return states, sampled_at, health
+    def observe(*args, **kwargs):
+        return observe_health(*args, execute=npu_smi, **kwargs)
 
     cfg = {
         "state_dir": str(state),
@@ -180,6 +167,7 @@ def worker(zone, root, proxy):
     }
     real_control = ControlClient.__init__
     real_egress = Egress.__init__
+    real_idle = IdleProbe.__init__
 
     class FixtureWait(threading.Event):
         def wait(self, timeout=None):
@@ -194,6 +182,9 @@ def worker(zone, root, proxy):
     def init_egress(self, *args):
         origin, epoch = time.monotonic(), time.time()
         real_egress(self, *args, clock=lambda: epoch + 10 * (time.monotonic() - origin))
+
+    def init_idle(self, *args, **kwargs):
+        real_idle(self, *args, **kwargs, interval=4)
 
     with ExitStack() as stack:
         stack.enter_context(
@@ -230,8 +221,9 @@ def worker(zone, root, proxy):
         )
         stack.enter_context(patch("ci_core.router.Router.claim", return_value=None))
         stack.enter_context(
-            patch("ci_core.idle_probe.observe_health", side_effect=observe_health)
+            patch("ci_core.idle_probe.observe_health", side_effect=observe)
         )
+        stack.enter_context(patch.object(IdleProbe, "__init__", init_idle))
         stack.enter_context(patch.object(ControlClient, "__init__", init_control))
         stack.enter_context(patch.object(Egress, "__init__", init_egress))
         unified_router.main()
@@ -245,6 +237,7 @@ class Proxy(socketserver.ThreadingTCPServer):
         self.upstream = upstream
         self.paused = False
         self.frames = []
+        self.probes = []
         tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         tls.load_cert_chain(cert, private_key)
         self.tls = tls
@@ -292,6 +285,11 @@ class ProxyRequest(socketserver.StreamRequestHandler):
         elif not path.startswith("/api/v1/worker/"):
             return
         self.server.frames.append((zone, method, path, length))
+        if path == "/api/v1/worker/heartbeat":
+            heartbeat = json.loads(body)
+            self.server.probes.append(
+                (zone, heartbeat.get("probe_ts"), heartbeat.get("idle_ts"))
+            )
         if length >= 2000 or self.server.paused:
             status = 413 if length >= 2000 else 503
             data = b'{"ok":false}'
@@ -576,20 +574,42 @@ def integration(root):
             for g in node["device_groups"]
         ), pub
 
-        def reported_occupancy():
-            status, timeline, _ = http("/public/timeline?history_hours=72")
+        def reported_occupancy(reason):
+            status, timeline, _ = http(
+                "/admin/timeline?history_hours=72", session=cookie
+            )
             if status != 200:
                 return False
             return {
-                worker["worker_id"]
+                (worker["worker_id"], node["host_id"], tuple(group["devices"])): block
                 for worker in timeline["workers"]
                 for pool in worker["pools"]
                 for node in pool["nodes"]
                 for group in node["device_groups"]
-                if any(block["ended_at"] is None for block in group["occupancy_blocks"])
-            } == set(ZONES)
+                for block in group["occupancy_blocks"]
+                if block["close_reason"] == reason
+            }
 
-        until(reported_occupancy)
+        expected_groups = {
+            (zone, node["host_id"], tuple(group["devices"]))
+            for zone in ZONES
+            for node in pools[f"pool_{zone}"]["nodes"]
+            for group in node["allocation_groups"]
+            if 2 in group["devices"]
+        }
+
+        def both_workers(reason):
+            blocks = reported_occupancy(reason)
+            return blocks if blocks and blocks.keys() == expected_groups else None
+
+        open_intervals = until(lambda: both_workers(None))
+        for zone in ZONES:
+            (root / zone / "probe-mode").write_text("released")
+        closed = until(lambda: both_workers("idle"))
+        assert closed.keys() == open_intervals.keys()
+        for key, block in closed.items():
+            assert block["started_at"] == open_intervals[key]["started_at"]
+            assert block["ended_at"] > block["last_busy_at"] >= block["started_at"]
         status, pub_models, _ = http("/public/models")
         assert status == 200 and pub_models.get("default_model") == "vllm-ascend", (
             pub_models
@@ -678,6 +698,30 @@ def integration(root):
             flush=True,
         )
         node = pools["pool_blue"]["nodes"][0]
+
+        def blue_groups():
+            timeline = http("/admin/timeline", session=cookie)[1]
+            return timeline["workers"][0]["pools"][0]["nodes"][0]["device_groups"]
+
+        before_partial = [group["health"]["last_online_at"] for group in blue_groups()]
+        (root / "blue/probe-mode").write_text("partial")
+
+        def partial_seen():
+            healthy, missing = blue_groups()
+            return (
+                healthy["health"]["last_online_at"] > before_partial[0]
+                and missing["health"]["status"] in ("PROBE_WARN", "OFFLINE")
+                and any(
+                    zone == "blue"
+                    and ts
+                    and ts >= healthy["health"]["last_online_at"]
+                    and idle is None
+                    for zone, ts, idle in proxy.probes
+                )
+            )
+
+        until(partial_seen)
+        assert blue_groups()[1]["health"]["last_online_at"] == before_partial[1]
         op = {
             "base_revision": 1,
             "operation": {
@@ -717,6 +761,7 @@ def integration(root):
                 == 2
             )
         )
+        assert blue_groups()[1]["health"]["last_online_at"] == before_partial[1]
         print(
             "INT-08  revision published and acknowledged through real Worker process",
             flush=True,

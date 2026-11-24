@@ -1,6 +1,8 @@
 import {beforeAll, expect, test} from "vitest";
 import type {Timeline} from "../src/types/api";
-import {db, migrate, request} from "./db";
+import {hmac} from "../src/utils/crypto";
+import {taskIdentity} from "../src/utils/taskIdentity";
+import {bindings, db, migrate, request} from "./db";
 
 const now = Math.floor(Date.now() / 1000);
 const host_id = "198.51.100.30:22";
@@ -25,8 +27,7 @@ beforeAll(async () => {
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
       `sample-${index}`, now - index, "blue", "github", "org/schedule", "schedule", `sample-run-${index}`, 1,
       `case_00${index}_sample`, "npu_smoke", "Sample", "npu_smoke", "pool_blue", 1, 8,
-      index === 1 ? JSON.stringify([{host_id, devices}]) : "[]", "PASS", 1, duration,
-      index === 1 ? now - index - duration : null,
+      "[]", "PASS", 1, duration, null,
     )),
     ...[1,3,5,7,9].map((duration, index) => db.prepare(`INSERT INTO duration_samples(
       logical_model,test_id,target_pool,req_nodes,req_devices,duration_sec,finished_at,task_uid)
@@ -55,20 +56,49 @@ test("timeline API projects the median duration from reliable samples", async ()
   expect(estEnd).toBe(estStart + 5);
 });
 
-test("history adds task bars without changing current occupancy or queue projections", async () => {
+test("completed leases respect the 72-hour cutoff and leave current projections intact", async () => {
+  const token = "schedule-blue-fixture-key";
+  const config = {...bindings, WORKER_BLUE_KEY_HASH: await hmac(bindings.KEY_PEPPER!, token)};
+  const base = {w: "blue", i: "01234567"};
+  const post = (path: string, data: unknown) => request("/worker/" + path, {
+    data, now, headers: {Authorization: `Bearer ${token}`},
+  }, config);
+  expect((await post("heartbeat", {...base, rev: 1, ok: 1, act: 0, q: 1})).status).toBe(200);
+  const cutoff = now - 72 * 3600;
+  let sequence = 0;
+  const expected: string[] = [];
+  for (const [index, finished, hasAllocation] of [[0, cutoff - 1, true], [1, cutoff, true], [2, now - 10, true], [3, now - 1, false]] as const) {
+    const identity = {provider: "github" as const, repo: "org/history", run_id: String(index + 100), attempt: 1};
+    const caseId = "case_000_history";
+    const ids = await taskIdentity(identity, caseId, null);
+    const tid = ids.short_tid;
+    const start = finished - 120;
+    const events = [
+      {t: "TU", tid, p: identity.provider, r: identity.repo, run: identity.run_id, att: 1, cid: caseId,
+        lbl: "Closed lease", k: "npu_smoke", pool: "pool_blue", req: [1, 8], ph: "RUNNING",
+        ts: start, tm: {RUNNING: start}, reliable: 1},
+      ...(hasAllocation ? [{t: "TL", tid, ts: start, a: [{h: host_id, d: devices}]}] : []),
+      {t: "TF", tid, ts: finished, st: "PASS", ec: 0, cv: 1},
+    ];
+    expect(await (await post("events", {...base, ev: events.map(event => ({...event, s: ++sequence}))})).json())
+      .toMatchObject({ok: true, need_snapshot: false});
+    if (hasAllocation && finished >= cutoff) expected.unshift(ids.task_uid);
+  }
+
   for (const [observation, state, projectionStatus] of [
     ["idle", "CONFIRMED_IDLE", "SCHEDULED"],
     ["busy", "UNKNOWN_BUSY", "WAITING_EXTERNAL"],
   ] as const) {
     await db.prepare("UPDATE device_group_states SET occupancy_state=? WHERE host_id=?").bind(observation, host_id).run();
     // Each fixture observation needs a fresh public-cache key.
-    const live = await (await request(`/public/timeline?fixture=${observation}`)).json<Timeline>();
-    const withHistory = await (await request(`/public/timeline?fixture=${observation}&history_hours=72`)).json<Timeline>();
+    const live = await (await request(`/public/timeline?fixture=${observation}`, {now})).json<Timeline>();
+    const withHistory = await (await request(`/public/timeline?fixture=${observation}&history_hours=72`, {now})).json<Timeline>();
     const group = (response: Timeline) => response.workers[0].pools[0].nodes[0].device_groups[0];
     expect(group(live).state).toBe(state);
     expect(group(withHistory).state).toBe(state);
     expect(group(live).solid_blocks).toEqual([]);
-    expect(group(withHistory).solid_blocks).toMatchObject([{task_uid: "sample-1", total_cards: 8, group_count: 1}]);
+    expect(group(withHistory).solid_blocks).toMatchObject(expected.map(task_uid => ({task_uid, total_cards: 8, group_count: 1})));
+    expect(withHistory.history_tasks?.map(task => task.task_uid)).toEqual(expected);
     const projection = (response: Timeline) => response.projections.find(item => item.task_uid === "schedule-task");
     expect(projection(live)?.projection_status).toBe(projectionStatus);
     expect(projection(withHistory)?.projection_status).toBe(projectionStatus);
@@ -76,4 +106,8 @@ test("history adds task bars without changing current occupancy or queue project
       expect(projection(withHistory)).toMatchObject({uncertain_release: false, est_start: withHistory.now});
     }
   }
+  const compact = await (await request("/public/timeline?history_hours=72&compact_history=1", {now})).json<Timeline>();
+  expect(compact.history_tasks).toBeUndefined();
+  expect(compact.history_task_uids).toEqual(expected);
+  expect(expected.map(uid => compact.tasks_by_uid[uid].task_uid)).toEqual(expected);
 });

@@ -253,6 +253,7 @@ function finish(context: Context, selection: string, parameters: unknown[], fiel
 
 function device(context: Context, input: Input) {
   const ts = nullableInt(input.ts, "probe time");
+  const observedAt = ts === null ? null : Math.min(ts, context.now);
   const skipped = input.sk == null ? false : integer(input.sk, "lease skip", 0, 1) === 1;
   const state = input.st == null ? null : member(input.st, "occupancy", ["idle", "busy", "probe_error"] as const);
   const round = input.pr == null ? null : integer(input.pr, "probe round", 0);
@@ -265,7 +266,8 @@ function device(context: Context, input: Input) {
     host_id: hostId(input.h),
     devices_json: JSON.stringify(devices(input.d)),
     occupancy_state: skipped ? null : state,
-    probe_at: ts === null || (!state && !skipped) ? null : Math.min(ts, context.now),
+    probe_at: state && !skipped ? observedAt : null,
+    observed_at: observedAt,
     skipped,
     quarantined: nullableInt(input.qu, "quarantined"),
     quarantine_task_uid: nullableString(input.qid, "quarantine task", 40, /^t_[a-f0-9]{32}$/),
@@ -278,9 +280,12 @@ function device(context: Context, input: Input) {
 }
 type DeviceWrite = ReturnType<typeof device>;
 
-function deviceUpsert(db: SqlStore, rows: DeviceWrite[]): Statement {
+function deviceUpsert(db: SqlStore, rows: DeviceWrite[], newInstance = false): Statement {
   const columns = ["worker_id", "pool_name", "host_id", "devices_json", "occupancy_state", "probe_at",
     "quarantined", "quarantine_task_uid", "visibility_state", "consecutive_failures", "last_online_at", "last_probe_round", "updated_at"];
+  const newerRound = newInstance
+    ? "excluded.last_probe_round>0"
+    : "excluded.last_probe_round>device_group_states.last_probe_round";
   return db.prepare(`
     INSERT INTO device_group_states(${columns.join(",")})
     SELECT ${columns.map(column => column === "quarantined"
@@ -298,28 +303,28 @@ function deviceUpsert(db: SqlStore, rows: DeviceWrite[]): Statement {
         json_extract(value,'$.pool_name')=excluded.pool_name AND json_extract(value,'$.host_id')=excluded.host_id
         AND json_extract(value,'$.devices_json')=excluded.devices_json),device_group_states.quarantined),
       quarantine_task_uid=COALESCE(excluded.quarantine_task_uid,device_group_states.quarantine_task_uid),
-      visibility_state=CASE WHEN COALESCE(excluded.last_probe_round,0)>device_group_states.last_probe_round
+      visibility_state=CASE WHEN ${newerRound}
         THEN excluded.visibility_state ELSE device_group_states.visibility_state END,
-      consecutive_failures=CASE WHEN COALESCE(excluded.last_probe_round,0)>device_group_states.last_probe_round
+      consecutive_failures=CASE WHEN ${newerRound}
         THEN COALESCE(excluded.consecutive_failures,0) ELSE device_group_states.consecutive_failures END,
-      last_online_at=CASE WHEN COALESCE(excluded.last_probe_round,0)>device_group_states.last_probe_round
-        AND excluded.visibility_state='online' THEN MAX(COALESCE(device_group_states.last_online_at,0),COALESCE(excluded.last_online_at,0))
+      last_online_at=CASE WHEN ${newerRound} AND excluded.visibility_state='online' AND excluded.last_online_at IS NOT NULL
+        THEN MAX(COALESCE(device_group_states.last_online_at,0),excluded.last_online_at)
         ELSE device_group_states.last_online_at END,
-      last_probe_round=MAX(device_group_states.last_probe_round,COALESCE(excluded.last_probe_round,0)),
+      last_probe_round=CASE WHEN ${newerRound} THEN excluded.last_probe_round ELSE device_group_states.last_probe_round END,
       updated_at=excluded.updated_at
   `).bind(JSON.stringify(rows), JSON.stringify(rows));
 }
 
 function occupancyWrite(db: SqlStore, group: DeviceWrite): Statement[] {
   const state = group.skipped ? "leased" : group.occupancy_state;
-  if (!state || group.probe_at == null) return [];
+  if (!state || group.observed_at == null) return [];
   return [db.prepare(`
     INSERT INTO device_occupancy_readings(worker_id,pool_name,host_id,devices_json,observed_at,state)
     VALUES (?,?,?,?,?,?)
     ON CONFLICT(worker_id,pool_name,host_id,devices_json) DO UPDATE SET
       observed_at=excluded.observed_at,state=excluded.state
     WHERE excluded.observed_at>device_occupancy_readings.observed_at
-  `).bind(group.worker_id, group.pool_name, group.host_id, group.devices_json, group.probe_at, state)];
+  `).bind(group.worker_id, group.pool_name, group.host_id, group.devices_json, group.observed_at, state)];
 }
 
 function queuePage(context: Context, input: Input) {
@@ -593,8 +598,12 @@ export async function ingestSnapshot(context: Context, input: Input) {
     db.prepare("DELETE FROM queue_orders WHERE worker_id=?").bind(context.workerId),
     queueUpsert(db, queues),
     ...refreshWorkflowRuns(db, affectedWorkflows, context.now),
-    db.prepare("DELETE FROM device_group_states WHERE worker_id=?").bind(context.workerId),
-    deviceUpsert(db, groups),
+    db.prepare(`DELETE FROM device_group_states WHERE worker_id=?
+      AND json_array(pool_name,host_id,devices_json) NOT IN (
+        SELECT json_array(json_extract(value,'$.pool_name'),json_extract(value,'$.host_id'),json_extract(value,'$.devices_json'))
+        FROM json_each(?)
+      )`).bind(context.workerId, JSON.stringify(groups)),
+    deviceUpsert(db, groups, previous.last_snapshot_id == null),
     advance(context, instance, seq, sid),
     db.prepare("UPDATE workers SET need_snapshot=0,updated_at=? WHERE worker_id=?").bind(context.now, context.workerId),
     db.prepare("DELETE FROM snapshot_staging WHERE worker_id=? AND instance_id=? AND seq<=?").bind(context.workerId, instance, seq),

@@ -7,7 +7,9 @@ export default defineConfig({
   testDir: "./tests/st",
   use: { baseURL, viewport: { width: 1600, height: 1080 } },
   webServer: {
-    command: `npm run build && npm run preview -- --host 127.0.0.1 --port ${port} --strictPort`,
+    command: "node --experimental-strip-types tests/st/server.mjs",
+    env: { ST_PORT: String(port) },
+    gracefulShutdown: { signal: "SIGTERM", timeout: 1000 },
     url: baseURL,
   },
 });

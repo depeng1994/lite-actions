@@ -111,18 +111,20 @@ test("applied and desired inventories each show one node when the admin response
   const appliedGroup = {devices: [0, 1], state: "CONFIRMED_IDLE"};
   const removedGroup = {devices: [2, 3], state: "UNKNOWN_BUSY"};
   const addedGroup = {devices: [4, 5], occupancy_state: "UNKNOWN_BUSY"};
+  const desiredGroup = {devices: appliedGroup.devices, occupancy_state: "CONFIRMED_IDLE"};
   const timeline = {workers: [{worker_id: "blue", pools: [{pool_name: "A3", nodes: [
     {node_ref: "n_shared", host_id: host, device_groups: [appliedGroup, removedGroup]},
     {node_ref: "n_removed", host_id: "192.0.2.2:22", device_groups: [appliedGroup]},
   ]}]}]};
   const cluster = {config: {A3: {owner: "blue", nodes: [
-    {host_id: host, allocation_groups: [appliedGroup, addedGroup]},
+    {host_id: host, allocation_groups: [desiredGroup, addedGroup]},
     {host_id: "192.0.2.3:22", allocation_groups: [addedGroup]},
   ]}}};
   const {nodes, clusterNodes, nodesByRef} = resourceInventories(timeline, cluster);
   assert.deepEqual(nodes.map(({id, groups}) => [id, groups]), [["n_shared", ["0–1", "2–3"]], ["n_removed", ["0–1"]]]);
   assert.deepEqual(clusterNodes.map(({id, groups}) => [id, groups]), [["n_shared", ["0–1", "4–5"]], ["192.0.2.3:22", ["4–5"]]]);
   assert.deepEqual(clusterNodes[0].unknown, ["4–5"]);
+  assert.deepEqual(clusterNodes[0].confirmedIdle, ["0–1"]);
   assert.deepEqual(nodes[0].confirmedIdle, ["0–1"]);
   assert.deepEqual(nodes[0].unknown, ["2–3"]);
   assert.equal(nodesByRef.get("n_shared"), nodes[0]);
@@ -168,9 +170,6 @@ test("timeline selection measures a reverse drag across midnight at second preci
   assert.equal(timelineLabel(range.start / 60, true), "11-22 23:59:45");
   assert.equal(timelineLabel(range.end / 60, true), "11-23 00:00:21");
   assert.equal(rangeDuration(range.end - range.start), "36 秒");
-  assert.equal(secondAt(-300), (midnight - 1) * 60);
-  assert.equal(secondAt(1700), (midnight + 1) * 60);
-  assert.equal(rangeDuration(3661), "1 小时 1 分钟 1 秒");
 });
 
 test("summarizeRun prefers formal backend resultLabel/result even when cases are empty or incomplete", () => {

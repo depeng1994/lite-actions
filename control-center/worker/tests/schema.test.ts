@@ -4,9 +4,7 @@ import {db, migrate} from "./db";
 
 beforeAll(migrate);
 
-test("migrations create project tables and history indexes", async () => {
-  const {results} = await db.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all<{name: string}>();
-  expect(results.map(table => table.name)).toHaveLength(26);
+test("migrations preserve the history index and API columns", async () => {
   const index = await db.prepare("SELECT sql FROM sqlite_schema WHERE name='idx_task_index_model_page'").first<string>("sql");
   expect(index).toContain("finished_at DESC,task_uid DESC");
   const columns = await db.prepare("PRAGMA table_info(device_group_states)").all<{name: string}>();

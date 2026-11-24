@@ -144,6 +144,7 @@ code, .mono { font-family: var(--mono); font-size: .94em; letter-spacing: -.25px
 .resource.yellow .occupancy-leased { --occupancy-fill: var(--yellow-bar); --occupancy-stroke: var(--yellow-stroke); }
 .occupancy-idle { --occupancy-fill: var(--accent-tint); --occupancy-stroke: var(--accent); }
 .legend .legend-occupancy { inline-size: 16px; block-size: 16px; border-color: var(--occupancy-stroke); background: var(--occupancy-fill); }
+.legend .legend-occupancy-history { inline-size: 39px; }
 .timeline-tools { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px 16px; margin-inline-start: auto; }
 .timeline-measure-hint { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
 .timeline-shortcuts { display: flex; flex-wrap: wrap; gap: 6px 8px; }
@@ -250,7 +251,7 @@ code, .mono { font-family: var(--mono); font-size: .94em; letter-spacing: -.25px
 }
 
 .queue-section { margin: 39px 12px 0; border-top: 1px solid var(--line-strong); }
-.pools-view:has(.timeline-detail-slot, .timeline-measure-readout) .queue-section { margin-top: 16px; }
+.pools-view:has(.inline-detail-slot, .timeline-measure-readout) .queue-section { margin-top: 16px; }
 .queue-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 18px 10px 16px; }
 .queue-heading-main { display: flex; align-items: center; gap: 15px; }
 .scope-select { display: inline-flex; align-items: center; position: relative; color: var(--blue-text); }
