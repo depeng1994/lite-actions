@@ -7,6 +7,12 @@ const shanghaiLabelFormatter = new Intl.DateTimeFormat("zh-CN", {
 const shanghaiTimeParts = new Intl.DateTimeFormat("en-US", {
   timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false,
 });
+const timelineDateTime = new Intl.DateTimeFormat("en-US", {
+  timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+});
+const timelineDateTimeWithSeconds = new Intl.DateTimeFormat("en-US", {
+  timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+});
 
 export function beijingClock(date = new Date()) {
   const parts = shanghaiTimeParts.formatToParts(date);
@@ -19,6 +25,20 @@ export function beijingClock(date = new Date()) {
     now: nowMinute,
     timelineStart: Math.max(0, nowMinute - 50),
     timelineEnd: Math.min(24 * 60, nowMinute + 100),
+  };
+}
+
+export function timelineClock(date = new Date()) {
+  const parts = shanghaiTimeParts.formatToParts(date);
+  const hour = Number(parts.find(({type}) => type === "hour")?.value || 0) % 24;
+  const minute = Number(parts.find(({type}) => type === "minute")?.value || 0);
+  return {
+    currentDate: shanghaiDateFormatter.format(date),
+    dateLabel: shanghaiLabelFormatter.format(date),
+    now: Math.floor(date.getTime() / 60000),
+    displayNow: hour * 60 + minute,
+    timelineStart: Math.floor(date.getTime() / 60000) - 72 * 60,
+    timelineEnd: Math.floor(date.getTime() / 60000) + 60,
   };
 }
 
@@ -38,7 +58,7 @@ export const repositories = [
   {name: "lite-actions", sources: []},
 ];
 export const runs = [];
-export const history = [];
+export const timelineRuns = [];
 export const initialQueueOrder = [];
 export const initialCases = [];
 export const initialNodes = [];
@@ -58,6 +78,24 @@ export function clock(minute) {
   const normalized = ((Math.floor(minute) % 1440) + 1440) % 1440;
   return [Math.floor(normalized / 60), normalized % 60]
     .map((part) => String(part).padStart(2, "0")).join(":");
+}
+
+export function timelineLabel(minute, withSeconds = false) {
+  if (minute == null) return "暂无估算";
+  const formatter = withSeconds ? timelineDateTimeWithSeconds : timelineDateTime;
+  const parts = Object.fromEntries(formatter.formatToParts(new Date(Math.round(minute * 60000)))
+    .map(({type, value}) => [type, value]));
+  const dateTime = `${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
+  return withSeconds ? `${dateTime}:${parts.second}` : dateTime;
+}
+
+export function timelineMinuteFor(dayMinute, referenceMinute = Math.floor(Date.now() / 60000)) {
+  if (dayMinute == null) return null;
+  const shanghaiDate = shanghaiDateFormatter.format(new Date(referenceMinute * 60000));
+  const midnight = Date.parse(`${shanghaiDate}T00:00:00+08:00`) / 60000;
+  let candidate = midnight + dayMinute;
+  if (candidate < referenceMinute - 12 * 60) candidate += 24 * 60;
+  return candidate;
 }
 
 export function poolId(worker, pool) {

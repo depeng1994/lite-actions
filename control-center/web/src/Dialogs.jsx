@@ -111,8 +111,32 @@ function useTaskDetail(access, taskUid, live) {
   return detail;
 }
 
-export function CaseDialog({ item, nodes, config, access = "public", live = false, close, go }) {
-  const run = runs.find((candidate) => workflowKey(candidate) === item.run);
+function TaskDetailFrame({ title, subtitle, status, close, inline, action, children }) {
+  if (inline) {
+    return <section className="timeline-task-detail" id="timeline-task-detail" aria-labelledby="timeline-task-title">
+      <header className="timeline-task-header">
+        <div className="timeline-task-heading">
+          <h2 id="timeline-task-title">{title}</h2>
+          <Status value={status} />
+          <p>{subtitle}</p>
+        </div>
+        <div className="timeline-task-actions">{action}<DialogClose close={close} /></div>
+      </header>
+      <div className="timeline-task-columns">{children}</div>
+    </section>;
+  }
+  return <Dialog drawer title={title} subtitle={subtitle} close={close}>
+    <div className="drawer-body"><Status value={status} />{children}</div>
+    {action && <div className="dialog-actions">{action}</div>}
+  </Dialog>;
+}
+
+function TaskDetailColumn({ title, children }) {
+  return <div className="task-detail-column"><h3>{title}</h3>{children}</div>;
+}
+
+export function CaseDialog({ item, run: suppliedRun, nodes, config, access = "public", live = false, inline = false, close, go }) {
+  const run = suppliedRun || runs.find((candidate) => workflowKey(candidate) === item.run);
   const node = nodes.find(({ id }) => id === item.node);
   const detail = useTaskDetail(access, item.taskUid, live);
   const nowMinute = beijingClock().now;
@@ -124,11 +148,11 @@ export function CaseDialog({ item, nodes, config, access = "public", live = fals
   const allocHost = detail?.allocation?.[0]
     ? (detail.allocation[0].host_id || detail.allocation[0].display_host_id)
     : (node ? displayNodeHost(node) : null);
-  return <Dialog drawer title={item.name} subtitle={`${run.action} #${run.id} · ${run.repo}`} close={close}>
-    <div className="drawer-body">
-      <Status value={item.status} />
-      <h3>Workflow</h3><RunDetails run={run} runUrl={detail?.run_url || item.runUrl} />
-      <h3>资源与排期</h3>
+  const action = <button className="button" onClick={() => { close(); go("models", run.model); }}>查看代码仓任务 <ArrowRight size={16} /></button>;
+  return <TaskDetailFrame title={item.name} subtitle={`${run.action} #${run.id} · ${run.repo}`} status={item.status}
+    close={close} inline={inline} action={action}>
+    <TaskDetailColumn title="Workflow"><RunDetails run={run} runUrl={detail?.run_url || item.runUrl} /></TaskDetailColumn>
+    <TaskDetailColumn title="资源与排期">
       <Details entries={[
         ["申请资源", `${item.worker} / ${item.pool} · ${item.nodes} 节点 · ${item.cards} 卡`],
         ["实际分配", allocHost ? `${item.worker} / ${item.pool} · ${allocHost}` : "等待分配"],
@@ -139,8 +163,8 @@ export function CaseDialog({ item, nodes, config, access = "public", live = fals
         ...(item.estimate && elapsed != null && elapsed > item.estimate ? [["预计状态", "已超过预计"]] : []),
         ...(isQueued ? [["队列顺位", `第 ${item.position} 位`]] : []),
       ]} />
-      {detail && <>
-        <h3>各阶段时间（北京时间）</h3>
+    </TaskDetailColumn>
+    {detail && <TaskDetailColumn title="各阶段时间（北京时间）">
         <Details entries={[
           ["入队", formatUnixTime(detail.queued_at)],
           ["租约", formatUnixTime(detail.reserved_at)],
@@ -149,15 +173,11 @@ export function CaseDialog({ item, nodes, config, access = "public", live = fals
           ["清理", formatUnixTime(detail.cleaning_at)],
           ["数据层级", detail.storage_tier === "cold" ? "冷归档" : "热库"],
         ]} />
-      </>}
-    </div>
-    <div className="dialog-actions">
-      <button className="button" onClick={() => { close(); go("models", run.model); }}>查看代码仓任务 <ArrowRight size={16} /></button>
-    </div>
-  </Dialog>;
+    </TaskDetailColumn>}
+  </TaskDetailFrame>;
 }
 
-export function HistoryDialog({ run, item, access = "public", live = false, close }) {
+export function HistoryDialog({ run, item, access = "public", live = false, inline = false, close }) {
   const detail = useTaskDetail(access, item.taskUid || item.historyId, live);
   const elapsed = detail?.duration_sec != null
     ? `${Number((detail.duration_sec / 60).toFixed(1))} 分钟`
@@ -168,11 +188,9 @@ export function HistoryDialog({ run, item, access = "public", live = false, clos
     ? (detail.allocation[0].host_id || detail.allocation[0].display_host_id)
     : (item.allocation ? displayNodeHost(item.allocation) : null);
   const storageTier = detail?.storage_tier ?? item.storageTier;
-  return <Dialog drawer title={item.name} subtitle={`历史用例 · Workflow #${run.id}`} close={close}>
-    <div className="drawer-body">
-      <Status value={item.status} />
-      <h3>Workflow</h3><RunDetails run={run} runUrl={detail?.run_url || item.runUrl} />
-      <h3>执行明细</h3>
+  return <TaskDetailFrame title={item.name} subtitle={`历史用例 · Workflow #${run.id}`} status={item.status} close={close} inline={inline}>
+    <TaskDetailColumn title="Workflow"><RunDetails run={run} runUrl={detail?.run_url || item.runUrl} /></TaskDetailColumn>
+    <TaskDetailColumn title="执行明细">
       <Details entries={[
         ["开始时间", start ? dateFormatter.format(start) : "—"], ["结束时间", end ? dateFormatter.format(end) : "—"],
         ["耗时", elapsed],
@@ -182,8 +200,8 @@ export function HistoryDialog({ run, item, access = "public", live = false, clos
         ["实际分配", allocHost ? `${item.worker} / ${item.pool} · ${allocHost}` : "—"],
         ["设备 ID", detail?.allocation?.length ? detail.allocation.map((a) => a.devices.join(",")).join(" / ") : (item.groups.join("、") || "—")],
       ]} />
-      {detail && <>
-        <h3>各阶段时间（北京时间）</h3>
+    </TaskDetailColumn>
+    {detail && <TaskDetailColumn title="各阶段时间（北京时间）">
         <Details entries={[
           ["入队", formatUnixTime(detail.queued_at)],
           ["租约", formatUnixTime(detail.reserved_at)],
@@ -192,9 +210,8 @@ export function HistoryDialog({ run, item, access = "public", live = false, clos
           ["清理", formatUnixTime(detail.cleaning_at)],
           ["结束", formatUnixTime(detail.finished_at)],
         ]} />
-      </>}
-    </div>
-  </Dialog>;
+    </TaskDetailColumn>}
+  </TaskDetailFrame>;
 }
 
 export function CancelDialog({ run, cases, close, confirm }) {

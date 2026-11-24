@@ -1,13 +1,14 @@
 import { Moon, Sun } from "@phosphor-icons/react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
+import liteActionsIcon from "./assets/lite-actions-icon.png";
 import { ClusterView, PoolsView, UsersView } from "./Views.jsx";
 import { ModelsView } from "./ModelsView.jsx";
 import {
   AddNodeDialog, buildClusterOperation, CancelDialog, CancellationReceipt, CaseDialog, ConfigDialog, DeleteUserDialog, ExpediteDialog,
   HistoryDialog, LoginForm, NewUserDialog, PriorityReceipt, ResourceDialog, ResetUserKeyDialog, UserKeyDialog,
 } from "./Dialogs.jsx";
-import { dateTimeSecondFormatter, history, initialCases, initialNodes, initialQueueOrder, poolId, repositories, runs, workflowKey } from "./formal-data.js";
-import { currentWorkflowQueue, queuedChildren } from "./workflows.js";
+import { dateTimeSecondFormatter, initialCases, initialNodes, initialQueueOrder, poolId, repositories, runs, timelineRuns, workflowKey } from "./formal-data.js";
+import { currentWorkflowQueue, initialWorkflowHistorySize, queuedChildren, workflowHistoryPageSize } from "./workflows.js";
 import {
   cancelWorkflow as apiCancelWorkflow,
   cancellationDetail as apiCancellationDetail,
@@ -70,7 +71,10 @@ function Header({ page, session, theme, setTheme, open, logout, live }) {
   const nav = session?.role === "Super" ? [...pages, ["users", "用户管理"]] : pages;
   const ThemeIcon = dark ? Sun : Moon;
   return <header className="app-header">
-    <a href="#/pools" className="wordmark" aria-label="Lite Actions 首页">Lite Actions</a>
+    <a href="#/pools" className="wordmark" aria-label="Lite Actions 首页">
+      <img className="wordmark-icon" src={liteActionsIcon} alt="" width="30" height="30" />
+      <span>Lite Actions</span>
+    </a>
     <nav className="top-nav" aria-label="主导航">
       {nav.map(([id, label]) => <a aria-current={id === page ? "page" : undefined} key={id} href={`#/${id}`}>{label}</a>)}
     </nav>
@@ -91,17 +95,17 @@ export function App() {
   const [route, setRoute] = useState(readRoute);
   const [theme, setTheme] = useTheme();
   const [nodes, setNodes] = useState(initialNodes);
+  const [clusterNodes, setClusterNodes] = useState(initialNodes);
   const [clusterPools, setClusterPools] = useState([]);
   const [clusterHistory, setClusterHistory] = useState([]);
   const [cases, setCases] = useState(initialCases);
+  const [timelineCases, setTimelineCases] = useState(initialCases);
   const [workflowOrder, setWorkflowOrder] = useState(initialQueueOrder);
   const [queueVersion, setQueueVersion] = useState(0);
-  const [historyCursor, setHistoryCursor] = useState(null);
-  const [historyHasMore, setHistoryHasMore] = useState(false);
-  const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [workflowHistory, setWorkflowHistory] = useState(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [truncatedByCapacity, setTruncatedByCapacity] = useState(false);
   const [purgedNotice, setPurgedNotice] = useState(null);
-  const [, setHistoryVersion] = useState(0);
   const [accounts, setAccounts] = useState([]);
   const [signedIn, setSignedIn] = useState(null);
   const [audit, setAudit] = useState([]);
@@ -113,18 +117,23 @@ export function App() {
   const [dataMode, setDataMode] = useState("loading");
   const toastTimer = useRef(0);
   const operationTimers = useRef(new Set());
+  const historyRequest = useRef(null);
 
   const session = signedIn && accounts.find(({ name }) => name === signedIn);
   const isSuper = session?.role === "Super";
   const canManage = Boolean(session);
   const access = signedIn ? "admin" : "public";
+  const historyPage = workflowHistory?.access === access ? workflowHistory : null;
+  const history = historyPage?.runs ?? [];
 
   const applySnapshot = (snapshot) => {
     if (!snapshot) return;
     setNodes(snapshot.nodes);
+    setClusterNodes(snapshot.clusterNodes);
     setClusterPools(snapshot.clusterPools || []);
     setClusterHistory(snapshot.clusterHistory || []);
     setCases(snapshot.cases);
+    setTimelineCases(snapshot.timelineCases || snapshot.cases);
     setWorkflowOrder(snapshot.workflowOrder);
     setQueueVersion(snapshot.queueVersion || 0);
     setTruncatedByCapacity(Boolean(snapshot.truncatedByCapacity));
@@ -141,13 +150,6 @@ export function App() {
   };
 
   useEffect(() => {
-    // Switching between public and admin changes IP masking; reset loaded history so it reloads with matching visibility.
-    history.splice(0, history.length);
-    setHistoryCursor(null);
-    setHistoryHasMore(false);
-    setHistoryLoaded(false);
-    setHistoryVersion((version) => version + 1);
-
     let cancelled = false;
     const refresh = async () => {
       const snapshot = await loadControlCenter(signedIn ? "admin" : "public");
@@ -165,6 +167,22 @@ export function App() {
       document.removeEventListener("visibilitychange", refreshWhenVisible);
     };
   }, [signedIn]);
+
+  useEffect(() => {
+    setWorkflowHistory(null);
+    setHistoryLoading(false);
+    return () => {
+      historyRequest.current?.abort();
+      historyRequest.current = null;
+    };
+  }, [access, route.page]);
+
+  const loadInitialHistory = useEffectEvent(() => {
+    if (!historyPage) void loadMoreHistory();
+  });
+  useEffect(() => {
+    if (route.page === "models" && dataMode === "live") loadInitialHistory();
+  }, [access, dataMode, route.page]);
 
   useEffect(() => {
     if (!canManage || dataMode !== "live") {
@@ -262,17 +280,31 @@ export function App() {
   const queue = currentWorkflowQueue(cases, workflowOrder);
 
   const loadMoreHistory = async () => {
-    if (dataMode !== "live") return;
-    if (historyLoaded && (!historyHasMore || !historyCursor)) return;
+    if (dataMode !== "live" || historyRequest.current || (historyPage && !historyPage.cursor)) return false;
+    const controller = new AbortController();
+    historyRequest.current = controller;
+    setHistoryLoading(true);
     try {
-      const page = await apiLoadMoreHistory(access, historyLoaded ? historyCursor : null);
-      setHistoryCursor(page.cursor);
-      setHistoryHasMore(page.hasMore);
-      setHistoryLoaded(true);
+      const page = await apiLoadMoreHistory(access, {
+        cursor: historyPage?.cursor,
+        limit: historyPage ? workflowHistoryPageSize : initialWorkflowHistorySize,
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return false;
+      const existing = new Set(history.map(workflowKey));
+      setWorkflowHistory({...page, access, runs: [...history, ...page.runs.filter((run) => !existing.has(workflowKey(run)))]});
       setTruncatedByCapacity(Boolean(page.truncatedByCapacity));
       setPurgedNotice(page.purgedNotice || null);
-      setHistoryVersion((version) => version + 1);
-    } catch (error) { notify(error.message); }
+      return true;
+    } catch (error) {
+      if (!controller.signal.aborted) notify(error.message);
+      return false;
+    } finally {
+      if (historyRequest.current === controller) {
+        historyRequest.current = null;
+        setHistoryLoading(false);
+      }
+    }
   };
 
   const pollPriorityOp = async (run, opId, attempts = 0) => {
@@ -457,22 +489,28 @@ export function App() {
   };
 
   const viewProps = {
-    nodes, clusterPools, clusterHistory, cases, config, queueVersion,
-    historyHasMore, historyLoaded, truncatedByCapacity, purgedNotice, loadMoreHistory,
+    nodes, clusterPools, clusterHistory, cases, timelineCases, config, queueVersion,
+    history, historyLoading, historyLoaded: Boolean(historyPage), historyHasMore: Boolean(historyPage?.hasMore),
+    historyTotal: historyPage?.historyTotal ?? 0, truncatedByCapacity, purgedNotice, loadMoreHistory,
     rollbackCluster, canManage, access, open, go, audit, live: dataMode === "live",
   };
   const item = modal?.caseId && cases.find(({ id }) => id === modal.caseId);
   const run = modal?.runKey && runs.find((candidate) => workflowKey(candidate) === modal.runKey);
-  const historicalRun = modal?.historyId && history.find((candidate) => workflowKey(candidate) === modal.runKey);
+  const historicalRun = modal?.historyId && [...history, ...timelineRuns].find((candidate) => workflowKey(candidate) === modal.runKey);
   const historicalCase = historicalRun && historicalRun.cases.find(({ historyId }) => historyId === modal.historyId);
   const user = modal?.name && accounts.find(({ name }) => name === modal.name);
-  const dialogProps = { ...viewProps, close };
+  const dialogProps = { ...viewProps, nodes: route.page === "cluster" ? clusterNodes : nodes, close };
 
   return <>
     <Header page={route.page} open={open} session={session} theme={theme} setTheme={setTheme} logout={logout} live={dataMode === "live"} />
-    {route.page === "pools" && <PoolsView {...viewProps} />}
+    {route.page === "pools" && <PoolsView {...viewProps} renderTimelineDetail={(selected, selectedRun, closeDetail) => {
+      const panelProps = {item: selected, run: selectedRun, access, live: viewProps.live, close: closeDetail, inline: true};
+      return selected.historyId
+        ? <HistoryDialog key={selected.id} {...panelProps} />
+        : <CaseDialog key={selected.id} {...panelProps} nodes={nodes} config={config} go={go} />;
+    }} />}
     {route.page === "models" && <ModelsView key={route.model} {...viewProps} model={route.model} cancellations={cancellations} priorities={priorities} queue={queue} />}
-    {route.page === "cluster" && <ClusterView {...viewProps} />}
+    {route.page === "cluster" && <ClusterView {...viewProps} nodes={clusterNodes} />}
     {route.page === "users" && (isSuper
       ? <UsersView accounts={accounts} open={open} audit={audit} />
       : <main className="standard-view"><h1>用户管理</h1><p className="subtle">此页面需要 Super 登录。</p>
@@ -489,7 +527,7 @@ export function App() {
       receipt={priorities[workflowKey(run)]} close={close} />}
     {modal?.type === "config" && canManage && <ConfigDialog {...dialogProps} target={modal.target} action={modal.action}
       confirm={(previewHash) => publishConfig(modal.target, modal.action, null, previewHash)} />}
-    {modal?.type === "add-node" && canManage && <AddNodeDialog worker={modal.worker} nodes={nodes} close={close}
+    {modal?.type === "add-node" && canManage && <AddNodeDialog worker={modal.worker} nodes={clusterNodes} close={close}
       save={(node) => publishConfig({ id: poolId(node.worker, node.pool), worker: node.worker, label: node.id }, "新增", node)} />}
     {modal?.type === "new-user" && isSuper && <NewUserDialog accounts={accounts} create={createUser} close={close} />}
     {modal?.type === "user-key" && isSuper && user && user.key && <UserKeyDialog account={user} close={close} />}

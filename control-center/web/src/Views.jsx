@@ -1,8 +1,9 @@
-import { CalendarBlank, CaretDown, CaretRight, Pause, Play, Plus, Trash, X } from "@phosphor-icons/react";
-import { useEffect, useState } from "react";
-import { beijingClock, clock, displayNodeHost, flagFor, plannedTime, poolId, runs, statusTone, targetFor, workers, workflowKey } from "./formal-data.js";
+import { CalendarBlank, CaretDown, CaretRight, Pause, Play, Plus, Ruler, Trash, X } from "@phosphor-icons/react";
+import { memo, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { displayNodeHost, flagFor, plannedTime, poolId, runs, statusTone, targetFor, timelineClock, timelineLabel, timelineRuns, workers, workflowKey } from "./formal-data.js";
 import { commandStatusLabel, commandStatusTone } from "./command-status.js";
 import { lastSeenDateTime, resourceHealth } from "./resource-health.js";
+import { measuredRange, rangeDuration, timelineSecondAt, timelineTicks } from "./timeline-viewport.js";
 
 export function Tag({ children, tone = "gray" }) {
   return <span className={`tag tag-${tone}`}>{children}</span>;
@@ -23,6 +24,14 @@ export function RunIdentity({ run }) {
 }
 
 const rowHeight = { worker: 39, pool: 39, node: 39, group: 54 };
+const baseChartWidth = 3000;
+const maxChartWidth = 12_288_000;
+const plotInset = 64;
+const timelineShortcuts = [
+  ["w", "放大"], ["s", "缩小"], ["a", "左移"], ["d", "右移"],
+];
+const occupancyLabels = {unknown: "当前未知占用", idle: "当前已确认空闲"};
+const externalOccupancyLabel = "探测到外部占用";
 
 function groupCardCount(node, group) {
   if (node.groupCards?.[group] != null) return node.groupCards[group];
@@ -43,10 +52,9 @@ function resourceRows(nodes, folded) {
       if (folded[key]) continue;
       for (const node of onWorker.filter((item) => item.pool === pool)) {
         const hostLabel = displayNodeHost(node);
-        rows.push({ key: node.id, worker, pool, node, level: "node", label: hostLabel });
-        if (folded[node.id]) continue;
         for (const group of node.groups) {
-          rows.push({ key: targetFor(node, group).id, worker, pool, node, group, level: "group", label: group });
+          const occupancy = node.unknown.includes(group) ? "unknown" : node.confirmedIdle?.includes(group) ? "idle" : null;
+          rows.push({ key: targetFor(node, group).id, worker, pool, node, group, occupancy, level: "group", label: `${hostLabel} 设备组 ${group}` });
         }
       }
     }
@@ -61,13 +69,14 @@ function resourceRows(nodes, folded) {
 }
 
 function ResourceLabel({ row, folded, changeFold, config, selectScope, open }) {
-  const { key, label, level, node, group, worker, pool, height } = row;
+  const { key, label, level, node, group, occupancy, worker, pool, height } = row;
   const GroupMark = folded[key] ? CaretRight : CaretDown;
   const flag = level === "group" ? flagFor(config, node, group) : config.flags[key];
   return <div className={`resource resource-${level} ${worker.toLowerCase()}`} style={{ height }}>
     {level === "group"
       ? <button className="tree-leaf" onClick={() => open({ type: "resource", target: targetFor(node, group) })}>
-          设备组 {group} <span className="subtle">（{groupCardCount(node, group)}P）</span>
+          <span><span className="mono">{displayNodeHost(node)}</span> 设备组 {group} <span className="subtle">（{groupCardCount(node, group)}P）</span></span>
+          {occupancy && <span className={`resource-occupancy occupancy-${occupancy}`}>{occupancyLabels[occupancy]}</span>}
         </button>
       : <button className="tree-item" onClick={() => {
           changeFold(key);
@@ -82,124 +91,345 @@ function ResourceLabel({ row, folded, changeFold, config, selectScope, open }) {
   </div>;
 }
 
-function LeaseBar({ item, run, rows, config, nodes, clockState, selected, onClick }) {
-  const { now, timelineStart, timelineEnd } = clockState;
+function OccupancyHistory({ row, clockState, open }) {
+  const { timelineStart, timelineEnd } = clockState;
+  const width = timelineEnd - timelineStart;
+  return (row.node?.occupancyBlocks?.[row.group] || []).map((block) => {
+    const start = Math.max(timelineStart, block.started_at / 60);
+    const end = Math.min(timelineEnd, (block.ended_at ?? block.last_busy_at) / 60);
+    if (start > end) return null;
+    const lastBusy = timelineLabel(block.last_busy_at / 60, true);
+    const ending = block.ended_at == null
+      ? `最后确认占用 ${lastBusy}，释放时间未知`
+      : `最后确认占用 ${lastBusy}，首次确认空闲 ${timelineLabel(block.ended_at / 60, true)}`;
+    const title = `${row.label} · ${externalOccupancyLabel} · 首次发现 ${timelineLabel(block.started_at / 60, true)} · ${ending}`;
+    return <button key={block.started_at} type="button" className="occupancy-history occupancy-unknown"
+      style={{ left: `${(start - timelineStart) / width * 100}%`, width: `${(end - start) / width * 100}%`,
+        top: row.top + row.height / 2 }}
+      title={title} aria-label={title}
+      onClick={() => open({ type: "resource", target: targetFor(row.node, row.group) })} />;
+  });
+}
+
+const LeaseBar = memo(function LeaseBar({ item, run, rows, config, nodes, clockState, plotWidth, selected, onSelect }) {
+  const { now: timelineNow, timelineStart, timelineEnd } = clockState;
   const marker = (minute) => `${(minute - timelineStart) / Math.max(1, timelineEnd - timelineStart) * 100}%`;
   const queued = item.status === "排队中";
   const actual = item.node && ["准备中", "运行中", "清理中"].includes(item.status);
-  const ended = item.node && item.status === "已取消" && item.finished;
+  const ended = item.node && item.timelineFinished != null && ["成功", "失败", "已取消"].includes(item.status);
   const selectedGroup = queued ? item.plannedGroups : item.groups;
   const node = queued ? item.plannedNode : item.node;
-  const resourceRowsList = rows.filter((row) => row.node?.id === node && selectedGroup?.includes(row.group));
+  const allocations = item.allocations?.length ? item.allocations : item.allocation ? [item.allocation] : [];
+  const poolRows = rows.filter((row) => row.node && row.worker === item.worker && row.pool === item.pool);
+  const resourceRowsList = queued
+    ? poolRows.filter((row) => row.node.id === node && selectedGroup?.includes(row.group))
+    : poolRows.filter((row) => allocations.some((allocation) => {
+        const ids = [...(allocation.devices || [])].sort((a, b) => a - b);
+        const label = ids.length ? `${ids[0]}–${ids.at(-1)}` : null;
+        return row.node?.id === (allocation.node_ref || allocation.id) && row.group === label;
+      }));
   if (!resourceRowsList.length || (!queued && !actual && !ended)) return null;
-  const start = queued ? plannedTime(item, config, nodes) : item.started;
+  const start = queued
+    ? (plannedTime(item, config, nodes) == null ? null : item.timelinePlanned)
+    : item.timelineStarted;
   if (start == null) return null;
   const projectedEnd = queued
-    ? (item.plannedEnd ?? (item.estimate ? start + item.estimate : null))
-    : actual && item.estimate && item.started != null && item.started + item.estimate > now
-      ? item.started + item.estimate
+    ? item.timelinePlannedEnd ?? (item.estimate ? start + item.estimate : null)
+    : actual && item.estimate && item.timelineStarted != null && item.timelineStarted + item.estimate > timelineNow
+      ? item.timelineStarted + item.estimate
       : null;
-  const finish = ended ? item.finished : projectedEnd ?? now;
+  const finish = ended ? item.timelineFinished : projectedEnd ?? timelineNow;
   const visibleStart = Math.max(start, timelineStart);
   const total = Math.min(finish, timelineEnd) - visibleStart;
   if (total <= 0) return null;
-  const solid = queued ? 0 : Math.max(0, Math.min(100, (now - visibleStart) / total * 100));
-  const startLabel = clock(start);
-  const finishLabel = clock(finish);
+  const compact = total / (timelineEnd - timelineStart) * plotWidth < 84;
+  const solid = queued ? 0 : Math.max(0, Math.min(100, (timelineNow - visibleStart) / total * 100));
+  const startLabel = timelineLabel(start);
+  const finishLabel = timelineLabel(finish);
   const style = {
     "--actual": `${solid}%`,
     left: marker(visibleStart),
     width: marker(timelineStart + total),
   };
-  return resourceRowsList.map((row) => <button key={row.key} className={`lease ${item.worker.toLowerCase()} ${selected ? "lease-selected" : ""} ${item.status === "已取消" ? "lease-ended" : ""}`}
-    aria-label={`${run.repo} #${run.pr ?? run.id} · ${item.name} · ${item.status} · ${displayNodeHost(row.node)} 设备组 ${row.group}`}
-    aria-pressed={selected} onClick={onClick} style={{ ...style, top: row.top + 6, height: row.height - 12 }}>
+  const ariaLabel = `${run.repo} #${run.pr ?? run.id} · ${item.name} · ${item.status} · ${resourceRowsList.map((row) => `${displayNodeHost(row.node)} 设备组 ${row.group}`).join("、")}`;
+  return resourceRowsList.map((row) => <button key={row.key} className={`lease ${item.worker.toLowerCase()} ${selected ? "lease-selected" : ""} ${ended ? "lease-ended" : ""} ${compact ? "lease-compact" : ""}`}
+    aria-label={ariaLabel} title={`${ariaLabel}\n${startLabel} → ${finishLabel}`}
+    data-midpoint={visibleStart + total / 2}
+    aria-pressed={selected} aria-controls={selected ? "timeline-task-detail" : undefined}
+    onClick={() => onSelect(item.id)} style={{ ...style, top: row.top + 6, height: row.height - 12 }}>
     {!queued && <span className="lease-actual" />}
     {projectedEnd && <span className="lease-planned" />}
-    <span className="lease-label">
-      <strong>{run.repo} <span className="lease-author">· @{run.author ?? run.actor} #{run.pr ?? run.id}</span></strong>
-      <small>{run.action} #{run.id} / {item.name} · {item.cards}P</small>
-      {actual && <small className="lease-meta">{item.status} · 已用 {Math.max(0, Math.round(now - item.started))} 分钟 · {item.estimate ? `预计 ${item.estimate} 分钟（${item.samples} 样本）` : "暂无估算"}</small>}
-    </span>
-    {start > timelineStart && <span className="lease-time lease-start">{startLabel}</span>}
+    {!compact && <span className="lease-label">
+      <strong>{item.name} · {item.cards}P</strong>
+      <small>{run.repo} <span className="lease-author">· @{run.author ?? run.actor} #{run.pr ?? run.id}</span> / {run.action} #{run.id}</small>
+      {actual && <small className="lease-meta">{item.status} · 已用 {Math.max(0, Math.round(timelineNow - item.timelineStarted))} 分钟 · {item.estimate ? `预计 ${item.estimate} 分钟（${item.samples} 样本）` : "暂无估算"}</small>}
+    </span>}
+    {!compact && start > timelineStart && <span className="lease-time lease-start">{startLabel}</span>}
     {actual && projectedEnd && <span className="lease-time lease-end">{finishLabel}</span>}
   </button>);
-}
+});
 
-export function PoolsView({ nodes, cases, config, open, go, live }) {
+export function PoolsView({ nodes, cases, timelineCases, config, open, go, live, renderTimelineDetail }) {
   const [folded, setFolded] = useState({});
   const [queueScope, selectScope] = useState("");
   const [selected, setSelected] = useState(null);
-  const [clockState, setClockState] = useState(() => beijingClock());
+  const [clockState, setClockState] = useState(() => timelineClock());
+  const [zoom, setZoom] = useState(0);
+  const [viewport, setViewport] = useState({ left: 0, width: 0 });
+  const [measured, setMeasured] = useState(null);
+  const [measuring, setMeasuring] = useState(null);
+  const timelineScrollRef = useRef(null);
+  const panelRef = useRef(null);
+  const gesture = useRef(null);
+  const suppressClick = useRef(false);
+  const previousStart = useRef(null);
+  const pointer = useRef(null);
+  const zoomAnchor = useRef(null);
   useEffect(() => {
-    setClockState(beijingClock());
-    const timer = setInterval(() => setClockState(beijingClock()), 30_000);
+    const timer = setInterval(() => setClockState(timelineClock()), 30_000);
     return () => clearInterval(timer);
-  }, [cases, nodes]);
-  const { dateLabel, now, timelineStart, timelineEnd } = clockState;
-  const ticks = Array.from({ length: 6 }, (_, index) => timelineStart + index * 30);
-  const marker = (minute) => `${(minute - timelineStart) / Math.max(1, timelineEnd - timelineStart) * 100}%`;
+  }, []);
+  const { dateLabel, now: timelineNow, timelineStart, timelineEnd } = clockState;
+  const chartWidthAt = (level) => {
+    const preferred = Math.max(baseChartWidth, viewport.width) * 2 ** level;
+    return Math.min(maxChartWidth, Math.max(preferred, viewport.width, 2 * plotInset + 1));
+  };
+  const chartWidth = chartWidthAt(zoom);
+  const plotWidth = chartWidth - 2 * plotInset;
+  const pixelsPerMinute = plotWidth / (timelineEnd - timelineStart);
+  const marker = (minute) => `${(minute - timelineStart) / (timelineEnd - timelineStart) * 100}%`;
+  const {ticks, withSeconds} = timelineTicks(timelineStart, timelineEnd, plotWidth, viewport.left - plotInset, viewport.width);
+  const range = measuring ?? measured;
+  const rangeStart = range && Math.max(timelineStart * 60, range.start);
+  const rangeEnd = range && Math.min(timelineEnd * 60, range.end);
+  const duration = range && rangeDuration(range.end - range.start);
+  const visibleLeft = viewport.left - plotInset;
+  const visibleRight = visibleLeft + viewport.width;
+  const bandLeft = Math.max(visibleLeft, (rangeStart / 60 - timelineStart) * pixelsPerMinute);
+  const bandRight = Math.min(visibleRight, (rangeEnd / 60 - timelineStart) * pixelsPerMinute);
+  const captionInset = Math.min(95, viewport.width / 2);
+  const captionLeft = Math.max(visibleLeft + captionInset, Math.min(visibleRight - captionInset, (bandLeft + bandRight) / 2));
+  const chartCases = timelineCases || cases;
+  const runByKey = useMemo(() => new Map([...timelineRuns].reverse().map((run) => [workflowKey(run), run])), [chartCases]);
+  const selectedItem = chartCases.find((item) => item.id === selected);
+  const selectedRun = selectedItem && runByKey.get(selectedItem.run);
+  const measureViewport = (scroll) => {
+    const {scrollLeft, clientWidth} = scroll;
+    setViewport((current) => current.left === scrollLeft && current.width === clientWidth
+      ? current : {left: scrollLeft, width: clientWidth});
+  };
+  useLayoutEffect(() => {
+    const scroll = timelineScrollRef.current;
+    const observer = new ResizeObserver(() => measureViewport(scroll));
+    observer.observe(scroll);
+    return () => observer.disconnect();
+  }, []);
+  useLayoutEffect(() => {
+    const scroll = timelineScrollRef.current;
+    const anchor = zoomAnchor.current;
+    const atRightEdge = scroll.scrollWidth - scroll.clientWidth - scroll.scrollLeft <= 2;
+    if (anchor) {
+      scroll.scrollLeft = plotInset + (anchor.minute - timelineStart) * pixelsPerMinute - anchor.offset;
+      zoomAnchor.current = null;
+    } else if (previousStart.current == null || (zoom <= 0 && atRightEdge)) {
+      scroll.scrollLeft = scroll.scrollWidth;
+    } else if (previousStart.current !== timelineStart) {
+      scroll.scrollLeft += (previousStart.current - timelineStart) * pixelsPerMinute;
+    }
+    previousStart.current = timelineStart;
+    measureViewport(scroll);
+  }, [chartWidth, pixelsPerMinute, timelineStart, zoom]);
+  useLayoutEffect(() => {
+    const heading = panelRef.current?.querySelector("header");
+    if (heading?.getBoundingClientRect().bottom > window.innerHeight) {
+      heading.scrollIntoView({block: "nearest"});
+    }
+  }, [selected]);
 
-  const rows = resourceRows(nodes, folded);
+  const handleTimelineKey = useEffectEvent((event) => {
+    if (event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey
+      || document.querySelector("dialog[open]") || event.target.closest?.("input, textarea, select, [contenteditable]")) return;
+    const key = event.key.toLowerCase();
+    if (key === "escape" && (gesture.current || measured || selected)) {
+      if (gesture.current) {
+        gesture.current = null;
+        suppressClick.current = true;
+        setMeasuring(null);
+      } else if (measured) {
+        setMeasured(null);
+      } else {
+        setSelected(null);
+      }
+      event.preventDefault();
+      return;
+    }
+    if (!timelineShortcuts.some(([shortcut]) => shortcut === key)) return;
+    event.preventDefault();
+    moveTimeline(key, true);
+  });
+  useEffect(() => {
+    const handleKey = (event) => handleTimelineKey(event);
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, []);
+
+  function moveTimeline(key, usePointer = false) {
+    if (gesture.current) return;
+    const scroll = timelineScrollRef.current;
+    if (key === "a" || key === "d") {
+      scroll.scrollLeft += scroll.clientWidth * (key === "a" ? -0.3 : 0.3);
+      return;
+    }
+    const next = zoom + (key === "w" ? 1 : -1);
+    if (chartWidthAt(next) === chartWidth) return;
+    const position = usePointer ? pointer.current : null;
+    const bounds = scroll.getBoundingClientRect();
+    const offset = position ? position.x - bounds.left : scroll.clientWidth / 2;
+    const lease = position && document.elementFromPoint(position.x, position.y)?.closest(".lease");
+    // The minimum hit area of a very short lease can be wider than its actual time span.
+    const minute = lease && lease.offsetWidth < 16 ? Number(lease.dataset.midpoint)
+      : timelineStart + (scroll.scrollLeft + offset - plotInset) / pixelsPerMinute;
+    zoomAnchor.current = { offset, minute };
+    setZoom(next);
+  }
+
+  function secondAt(clientX) {
+    const scroll = timelineScrollRef.current;
+    const offset = Math.max(0, Math.min(scroll.clientWidth, clientX - scroll.getBoundingClientRect().left));
+    return timelineSecondAt(scroll.scrollLeft + offset - plotInset, plotWidth, timelineStart, timelineEnd);
+  }
+
+  function startMeasurement(event) {
+    if (event.button !== 0 || !event.isPrimary || event.pointerType === "touch") return;
+    suppressClick.current = false;
+    gesture.current = {id: event.pointerId, x: event.clientX, start: secondAt(event.clientX), active: false};
+    const owner = event.target.closest("button") || event.currentTarget;
+    owner.setPointerCapture(event.pointerId);
+  }
+
+  function updateMeasurement(event) {
+    const drag = gesture.current;
+    if (drag?.id !== event.pointerId || (!drag.active && Math.abs(event.clientX - drag.x) < 4)) return;
+    drag.active = true;
+    setMeasuring(measuredRange(drag.start, secondAt(event.clientX)));
+  }
+
+  function finishMeasurement(event) {
+    const drag = gesture.current;
+    if (drag?.id !== event.pointerId) return;
+    gesture.current = null;
+    if (drag.active || Math.abs(event.clientX - drag.x) >= 4) {
+      suppressClick.current = true;
+      setMeasured(measuredRange(drag.start, secondAt(event.clientX)));
+      setMeasuring(null);
+    }
+  }
+
+  function cancelMeasurement(event) {
+    if (gesture.current?.id !== event.pointerId) return;
+    gesture.current = null;
+    setMeasuring(null);
+  }
+
+  const rows = useMemo(() => resourceRows(nodes, folded), [nodes, folded]);
   const scopes = [...new Set([...nodes, ...cases].map((item) => poolId(item.worker, item.pool)))];
   useEffect(() => {
     if (!scopes.includes(queueScope)) selectScope(scopes[0] || "");
   }, [queueScope, scopes.join("|")]);
   const queue = cases.filter((item) => item.status === "排队中" && queueScope === poolId(item.worker, item.pool))
     .sort((a, b) => a.position - b.position);
-  const showCase = (item) => {
-    setSelected(item.id);
-    open({ type: "case", caseId: item.id });
-  };
   return <main className="pools-view">
     <section aria-labelledby="pools-title">
       <div className="pools-header">
-        <h1 id="pools-title">Pools任务看板</h1>
+        <div className="pools-heading">
+          <h1 id="pools-title">Pools任务看板</h1>
+          <div className="timeline-tools">
+            <span className="timeline-measure-hint"><Ruler size={16} aria-hidden="true" />拖选时间轴测量耗时</span>
+            <div className="timeline-shortcuts" role="group" aria-label="时间轴快捷键">
+              {timelineShortcuts.map(([key, label]) => <button key={key} type="button" aria-keyshortcuts={key.toUpperCase()}
+                title={key === "w" ? "将鼠标指向任务后按 W，可放大查看标签" : undefined}
+                onClick={() => moveTimeline(key)}><kbd>{key.toUpperCase()}</kbd> {label}</button>)}
+            </div>
+          </div>
+        </div>
         <div className="pools-meta">
           <div className="date-info">
             <span><CalendarBlank size={21} /> <time>{dateLabel}</time></span>
-            <span>Asia/Shanghai (UTC+8)</span><span>现在 {clock(now)}（{live ? "实时" : "等待连接"}）</span>
+            <span>Asia/Shanghai (UTC+8)</span><span>近72小时</span><span>现在 {timelineLabel(timelineNow)}（{live ? "实时" : "等待连接"}）</span>
           </div>
           <ul className="legend" aria-label="时间轴图例">
             <li><i className="legend-actual" />实际租约</li>
             <li><i className="legend-planned" />预计使用</li>
-            <li><i className="legend-unknown" />未知占用</li>
-            <li><i className="legend-free" />已确认空闲</li>
+            <li><i className="legend-occupancy occupancy-unknown" />{externalOccupancyLabel}</li>
+            <li><i className="legend-occupancy occupancy-unknown" />{occupancyLabels.unknown}</li>
+            <li><i className="legend-occupancy occupancy-idle" />{occupancyLabels.idle}</li>
           </ul>
         </div>
       </div>
-      <div className="timeline-scroll">
-        <div className="timeline" aria-label="Blue 与 Yellow 资源时间轴">
+      <div className="timeline-board" aria-label="Blue 与 Yellow 资源时间轴">
+        <div className="timeline-fixed">
           <div className="axis-label">资源 <span>（Worker / Pool / 节点 / 设备组）</span></div>
-          <div className="axis">
-            <div className="chart-coordinates">
-              {ticks.map((minute) => <span key={minute} className="axis-tick mono" style={{ left: marker(minute) }}>{clock(minute)}</span>)}
-              <span className="now-label mono" style={{ left: marker(now) }}>现在 {clock(now)}</span>
-            </div>
-          </div>
           <div className="resources">
             {rows.map((row) => <ResourceLabel key={row.key} row={row} config={config} folded={folded}
               selectScope={selectScope} open={open}
               changeFold={(key) => setFolded((previous) => ({ ...previous, [key]: !previous[key] }))} />)}
           </div>
-          <div className="lanes">
-            {rows.map((row) => <div key={row.key} className={`lane lane-${row.level} ${row.worker.toLowerCase()}`} style={{ height: row.height }} />)}
-            <div className="chart-coordinates">
-              {ticks.map((minute) => <i key={minute} className="grid-line" style={{ left: marker(minute) }} />)}
-              {rows.filter((row) => row.level === "group" && row.node.unknown.includes(row.group)).map((row) => (
-                <button key={row.key} className="unknown-block" style={{ left: marker(timelineStart + 2), width: marker(Math.max(timelineStart + 4, now - 2)), top: row.top + 11 }}
-                  onClick={() => open({ type: "resource", target: targetFor(row.node, row.group) })}>未知占用</button>
-              ))}
-              {cases.map((item) => {
-                const run = runs.find((candidate) => workflowKey(candidate) === item.run);
-                return run ? <LeaseBar key={item.id} item={item} run={run}
-                  rows={rows} config={config} nodes={nodes} clockState={clockState} selected={selected === item.id} onClick={() => showCase(item)} /> : null;
-              })}
-              <i className="now-line" style={{ left: marker(now) }} />
+        </div>
+        <div className="timeline-scroll" ref={timelineScrollRef} onScroll={(event) => measureViewport(event.currentTarget)}
+          onPointerMove={(event) => { pointer.current = { x: event.clientX, y: event.clientY }; }}
+          onPointerLeave={() => { pointer.current = null; }}>
+          <div className={`timeline${measuring ? " timeline-measuring" : ""}`} style={{ width: chartWidth, "--plot-inset": `${plotInset}px` }}
+            onPointerDown={startMeasurement} onPointerMove={updateMeasurement} onPointerUp={finishMeasurement}
+            onPointerCancel={cancelMeasurement} onLostPointerCapture={cancelMeasurement}
+            onClickCapture={(event) => {
+              if (!suppressClick.current || event.detail === 0) return;
+              suppressClick.current = false;
+              event.preventDefault();
+              event.stopPropagation();
+            }}>
+            <div className="axis">
+              <div className="chart-coordinates">
+                {ticks.map((minute) => <span key={minute} className="axis-tick mono" style={{ left: marker(minute) }}>{timelineLabel(minute, withSeconds)}</span>)}
+                <span className="now-label mono" style={{ left: marker(timelineNow) }}>现在 {timelineLabel(timelineNow)}</span>
+              </div>
             </div>
+            <div className="lanes">
+              {rows.map((row) => <div key={row.key} className={`lane lane-${row.level} ${row.worker.toLowerCase()}`} style={{ height: row.height }} />)}
+              <div className="chart-coordinates">
+                {ticks.map((minute) => <i key={minute} className="grid-line" style={{ left: marker(minute) }} />)}
+                {rows.map((row) => <OccupancyHistory key={row.key} row={row} clockState={clockState} open={open} />)}
+                {rows.filter((row) => row.occupancy).map((row) => (
+                  <button key={row.key} type="button" className={`occupancy-marker occupancy-${row.occupancy}`}
+                    style={{ left: marker(timelineNow), top: row.top + row.height / 2 }}
+                    aria-label={`${row.label} · ${occupancyLabels[row.occupancy]}`} title={occupancyLabels[row.occupancy]}
+                    onClick={() => open({ type: "resource", target: targetFor(row.node, row.group) })} />
+                ))}
+                {chartCases.map((item) => {
+                  const run = runByKey.get(item.run);
+                  return run ? <LeaseBar key={item.id} item={item} run={run}
+                    rows={rows} config={config} nodes={nodes} clockState={clockState} plotWidth={plotWidth}
+                    selected={selected === item.id} onSelect={setSelected} /> : null;
+                })}
+                <i className="now-line" style={{ left: marker(timelineNow) }} />
+              </div>
+            </div>
+            {range && rangeStart <= rangeEnd && <div className="chart-coordinates timeline-measure-layer" aria-hidden="true">
+              <div className="timeline-measure-band" style={{left: marker(rangeStart / 60), width: marker(timelineStart + (rangeEnd - rangeStart) / 60)}} />
+              {bandRight >= bandLeft && <span className="timeline-measure-caption mono" style={{left: captionLeft}}>{duration}</span>}
+            </div>}
           </div>
         </div>
       </div>
+      {range && <div className="timeline-measure-readout">
+        <div className="timeline-measure-values" role={measuring ? undefined : "status"}>
+          <span><Ruler size={18} aria-hidden="true" />选区耗时 <strong>{duration}</strong></span>
+          <span className="mono timeline-measure-times">{timelineLabel(range.start / 60, true)} → {timelineLabel(range.end / 60, true)}</span>
+        </div>
+        <button className="button small" type="button" onClick={() => setMeasured(null)} disabled={Boolean(measuring)}>清除选区</button>
+      </div>}
+      {selectedRun && <div className="timeline-detail-slot" ref={panelRef}>
+        {renderTimelineDetail(selectedItem, selectedRun, () => setSelected(null))}
+      </div>}
     </section>
     <section className="queue-section" aria-labelledby="queue-title">
       <div className="queue-heading">
@@ -219,14 +449,14 @@ export function PoolsView({ nodes, cases, config, open, go, live }) {
             {queue.map((item) => {
               const run = runs.find((candidate) => workflowKey(candidate) === item.run);
               if (!run) return null;
-              const estimate = plannedTime(item, config, nodes);
+              const estimate = plannedTime(item, config, nodes) == null ? null : item.timelinePlanned;
               return <tr className={item.id === selected ? "is-selected" : ""} key={item.id}>
-                <td><button className="cell-title" onClick={() => showCase(item)}>{item.name}</button><small>{run.repo} · {run.owner}</small></td>
+                <td><button className="cell-title" onClick={() => open({type: "case", caseId: item.id})}>{item.name}</button><small>{run.repo} · {run.owner}</small></td>
                 <td><RunIdentity run={run} /></td>
                 <td>{item.worker} / {item.pool} · {item.cards}P</td>
                 <td>{item.projectionStatus === "WAITING_EXTERNAL"
                   ? "等待外部释放"
-                  : estimate == null ? "暂无估算" : <><span>约 {clock(estimate)}</span><small>排期预估</small></>}
+                  : estimate == null ? "暂无估算" : <><span>约 {timelineLabel(estimate)}</span><small>排期预估</small></>}
                   <small>队列顺位 {item.position}</small>
                 </td>
               </tr>;
@@ -268,7 +498,7 @@ function ClusterRow({ target, status, nodes, config, canManage, open, node, grou
   const quarantined = Boolean(group ? node.quarantinedGroups?.includes(group) : node?.quarantinedGroups?.length);
   return <tr>
     <td><button className={`resource-link ${group ? "group-link" : node ? "node-link" : ""}`} onClick={() => open({ type: "resource", target })}>
-      {group ? `设备组 ${group}` : node ? <span className="mono">{displayNodeHost(node)}</span> : `Pool ${target.pool}`} <CaretRight size={13} />
+      {group ? <><span className="mono">{displayNodeHost(node)}</span> 设备组 {group}</> : node ? <span className="mono">{displayNodeHost(node)}</span> : `Pool ${target.pool}`} <CaretRight size={13} />
     </button></td>
     <td>{node ? <span className="mono">{displayNodeHost(node)}</span> : <span className="subtle">—</span>}</td>
     <td>{group ? `${groupCardCount(node, group)} 卡` : node ? `${node.cards} 卡 · ${node.groups.length} 组` : `${nodes.length} 节点 · ${nodes.reduce((sum, member) => sum + member.cards, 0)} 卡`}</td>
@@ -349,7 +579,10 @@ function ClusterPool({ target, members, config, canManage, open }) {
   const properties = { config, canManage, open };
   return <>
     <ClusterRow {...properties} target={target} nodes={members} status={config.flags[target.id]} />
-    {members.map((node) => <ClusterNode key={node.id} {...properties} node={node} />)}
+    {members.flatMap((node) => node.groups.length
+      ? node.groups.map((group) => <ClusterRow key={`${node.id}/${group}`} {...properties} node={node} group={group}
+          target={targetFor(node, group)} status={flagFor(config, node, group)} />)
+      : [<ClusterRow key={node.id} {...properties} node={node} target={targetFor(node)} status={flagFor(config, node)} />])}
   </>;
 }
 

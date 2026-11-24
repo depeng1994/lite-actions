@@ -1,10 +1,9 @@
 import { ArrowDown, ArrowSquareOut, ArrowUp, CaretUpDown, FunnelSimple, Minus, Plus } from "@phosphor-icons/react";
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { clock, dateFormatter, displayNodeHost, history, plannedTime, poolId, repositories, workflowKey } from "./formal-data.js";
-import { actionsUrl, groupActiveRuns, queuedChildren, summarizeRun, terminalStatuses } from "./workflows.js";
+import { Fragment, useEffect, useState } from "react";
+import { clock, dateFormatter, displayNodeHost, plannedTime, poolId, repositories, workflowKey } from "./formal-data.js";
+import { actionsUrl, groupActiveRuns, initialWorkflowHistorySize, queuedChildren, summarizeRun, terminalStatuses, workflowHistoryPageSize } from "./workflows.js";
 import { Status } from "./Views.jsx";
 
-const pageSize = 50;
 const cardHours = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 });
 
 function WorkflowTime({ value }) {
@@ -139,36 +138,25 @@ function SortHeader({ column, sort, change }) {
 
 export function ModelsView({
   model, cases, nodes, config, cancellations, priorities, queue,
-  historyHasMore, historyLoaded, truncatedByCapacity, purgedNotice, loadMoreHistory, canManage, open,
+  history, historyHasMore, historyLoaded, historyLoading, historyTotal, truncatedByCapacity, purgedNotice, loadMoreHistory, canManage, open,
 }) {
   const [filters, setFilters] = useState({ model, repo: "", platform: "", pool: "", status: "" });
   const [columnFilters, setColumnFilters] = useState({});
   const [showColumns, setShowColumns] = useState(false);
   const [sort, setSort] = useState(null);
-  const [limit, setLimit] = useState(0);
+  const [limit, setLimit] = useState(initialWorkflowHistorySize);
   const [historyCollapsed, setHistoryCollapsed] = useState(false);
-  const historyBoundary = useRef(null);
-  const revealBoundary = useRef(false);
   const [expanded, setExpanded] = useState({});
   // A queue move returns the table to live queue order so the swap is visible.
   useEffect(() => setSort(null), [priorities]);
-  useLayoutEffect(() => {
-    if (!revealBoundary.current) return;
-    revealBoundary.current = false;
-    historyBoundary.current?.focus({ preventScroll: true });
-    historyBoundary.current?.scrollIntoView({ block: "start", inline: "nearest" });
-  }, [limit, history.length]);
   const updateFilter = (filter, value) => {
     setFilters((previous) => ({ ...previous, [filter]: value, ...(filter === "model" ? { repo: "" } : {}) }));
     if (filter === "status" && value === "history") {
       setHistoryCollapsed(false);
-      if (!historyLoaded) loadMoreHistory?.();
     }
-    setLimit((loaded) => loaded || value === "history" ? Math.max(loaded, pageSize) : 0);
   };
   const updateColumn = (key, value) => {
     setColumnFilters((previous) => ({ ...previous, [key]: value }));
-    setLimit((loaded) => loaded ? Math.max(loaded, pageSize) : 0);
   };
   const changeSort = (key) => setSort((previous) => {
     if (previous?.key !== key) return { key, direction: "ascending" };
@@ -199,18 +187,22 @@ export function ModelsView({
   const windowedHistory = sortEntries(historicalMatches, sort).slice(0, limit);
   const shownHistory = historyCollapsed ? [] : windowedHistory;
   const visible = sortEntries([...shownHistory.slice().reverse(), ...activeMatches], sort);
-  const boundary = windowedHistory[Math.min(1, windowedHistory.length - 1)];
-  const canLoadMoreHistory = !historyCollapsed && (!historyLoaded || limit < historicalMatches.length || historyHasMore);
-  const loadHistory = () => {
-    revealBoundary.current = limit === 0 && !sort && activeMatches.length > 0;
-    if (!historyLoaded || (limit >= historicalMatches.length && historyHasMore)) {
-      loadMoreHistory?.();
+  const canLoadMoreHistory = filters.status !== "active" && !historyCollapsed
+    && (!historyLoaded || limit < historicalMatches.length || historyHasMore);
+  const loadHistory = async () => {
+    if (!historyLoaded) {
+      await loadMoreHistory();
+      return;
     }
-    setLimit((count) => count + pageSize);
+    if (limit < historicalMatches.length || await loadMoreHistory()) {
+      setLimit((count) => count + workflowHistoryPageSize);
+    }
   };
   const repos = [...new Set(repositories.filter(({ name }) => !filters.model || name === filters.model).flatMap(({ sources }) => sources))].sort();
   const pools = [...new Set([...entries.flatMap(({ summary }) => summary.pools), ...nodes.map(({ worker, pool }) => poolId(worker, pool))])].sort();
   const activeColumnFilters = Object.values(columnFilters).filter((value) => value.trim()).length;
+  const filtered = filters.model || filters.repo || filters.platform || filters.pool || filters.status === "active" || activeColumnFilters;
+  const totalHistory = filtered ? historicalMatches.length : historyTotal;
 
   return <main className="standard-view">
     <div className="page-heading">
@@ -238,11 +230,13 @@ export function ModelsView({
     </div>
     <div className="workflow-count subtle">
       <div className="workflow-count-main">
-        <span role="status">{activeMatches.length} 个活动 Workflow · 已显示 {shownHistory.length} / {historicalMatches.length} 个历史 Workflow</span>
+        <span role="status">{activeMatches.length} 个活动 Workflow · {historyLoading && !historyLoaded ? "正在加载历史 Workflow" : `已显示 ${shownHistory.length} / ${totalHistory} 个历史 Workflow`}</span>
         {windowedHistory.length > 0 && <button className="button small" aria-expanded={!historyCollapsed}
           onClick={() => setHistoryCollapsed((collapsed) => !collapsed)}>{historyCollapsed ? "展开历史 Workflow" : "折叠历史 Workflow"}</button>}
-        {canLoadMoreHistory && <button className="button small" onClick={loadHistory}>{limit ? "再加载" : "加载"} 50 个历史 Workflow</button>}
-        {activeColumnFilters > 0 && <button className="text-button" onClick={() => { setColumnFilters({}); setLimit((loaded) => loaded ? pageSize : 0); }}>清除列筛选</button>}
+        {canLoadMoreHistory && <button className="button small" onClick={loadHistory} disabled={historyLoading}>
+          {historyLoading ? "加载中…" : historyLoaded ? `再加载 ${workflowHistoryPageSize} 个历史 Workflow` : "加载最近 5 个历史 Workflow"}
+        </button>}
+        {activeColumnFilters > 0 && <button className="text-button" onClick={() => setColumnFilters({})}>清除列筛选</button>}
       </div>
       <div className="workflow-count-main">{sort && <button className="text-button" onClick={() => setSort(null)}>恢复队列顺序</button>}<span>北京时间 (UTC+8)</span></div>
     </div>
@@ -261,8 +255,7 @@ export function ModelsView({
           const isOpen = Boolean(expanded[key]);
           const Expand = isOpen ? Minus : Plus;
           return <Fragment key={key}>
-            <tr aria-label={`Workflow #${run.id} · 尝试 ${run.attempt}`} className={isOpen ? "run-expanded" : undefined}
-              ref={entry === boundary ? historyBoundary : undefined} tabIndex={entry === boundary ? -1 : undefined}>
+            <tr aria-label={`Workflow #${run.id} · 尝试 ${run.attempt}`} className={isOpen ? "run-expanded" : undefined}>
               <td><div className="workflow-sequence"><button className="expand-workflow" aria-label={`${isOpen ? "收起" : "展开"} Workflow #${run.id} 的子用例`} aria-expanded={isOpen}
                 onClick={() => setExpanded((previous) => ({ ...previous, [key]: !isOpen }))}><Expand size={15} weight="bold" /></button>
                 <span className={`mono ${sequence < 0 ? "subtle" : ""}`}>{sequence}</span>
@@ -293,7 +286,7 @@ export function ModelsView({
           <tr><td colSpan={columnCount} className="empty subtle">{purgedNotice}</td></tr>
         )}
         {!visible.length && <tr><td className="empty" colSpan={columnCount}>
-          {historyCollapsed && windowedHistory.length ? "历史 Workflow 已折叠" : "当前筛选没有找到 Workflow"}
+          {historyLoading ? "正在加载历史 Workflow…" : historyCollapsed && windowedHistory.length ? "历史 Workflow 已折叠" : "当前筛选没有找到 Workflow"}
         </td></tr>}</tbody>
       </table>
     </div>

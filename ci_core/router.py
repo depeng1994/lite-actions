@@ -300,8 +300,12 @@ class Router:
         )
         visibility = self.idle_probe.health if self.idle_probe else {}
         probe_round = self.idle_probe.probe_round if self.idle_probe else 0
+        visibility_probe_time = (
+            self.idle_probe.visibility_probe_time if self.idle_probe else None
+        )
         if sampled_pools is not pools:
             probe, probe_time = {}, None
+            visibility_probe_time = None
         blocked = {}
         if self.quarantine_enabled:
             for key, record in records.items():
@@ -343,15 +347,18 @@ class Router:
                             "mc": max(int(base_health.get("mc", 0)), 1),
                             "lo": base_health.get("lo"),
                         }
+                    skipped = state == "leased"
                     entry = {
                         "pool": pool_name,
                         "h": host,
                         "d": ids,
-                        "st": state,
+                        "st": None if skipped else state,
                         "ts": ts,
                         "qu": int(bool(keys) or unavailable),
                         "qid": qid,
                     }
+                    if skipped:
+                        entry["sk"] = 1
                     if health is not None:
                         entry.update(
                             {
@@ -368,7 +375,7 @@ class Router:
             "healthy": self.control_healthy,
             "revision": revision,
             "idle_ts": probe_time,
-            "probe_ts": probe_time,
+            "probe_ts": visibility_probe_time,
             "devices": devices,
             "queues": queue_telemetry(
                 self.worker, pools, records, self.quarantine_enabled

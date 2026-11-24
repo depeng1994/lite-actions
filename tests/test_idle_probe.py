@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from ci_core.idle_probe import observe, observe_health
+from ci_core.idle_probe import IdleProbe, observe, observe_health
 
 
 class IdleProbeTests(unittest.TestCase):
@@ -81,6 +81,21 @@ class IdleProbeTests(unittest.TestCase):
         self.assertEqual(previous[key]["mc"], 5)
         self.assertIsNotNone(previous[key]["lo"])
 
+    def test_probe_marks_group_leased_if_task_starts_during_scan(self):
+        active = {
+            "task": {
+                "phase": "RUNNING",
+                "allocation": [{"host_id": self.node["host_id"], "devices": [0, 1]}],
+            }
+        }
+        refresh = Mock(side_effect=[{}, active])
+        with patch("ci_core.idle_probe._process_rows", return_value=[(0, 1234, "NA")]):
+            result, _, _ = observe_health(
+                "blue", self.pools, {}, execute=self.execute, refresh=refresh
+            )
+        self.assertEqual(result[("test", self.node["host_id"], (0, 1))][0], "leased")
+        self.assertEqual(result[("test", self.node["host_id"], (2, 3))][0], "idle")
+
     def test_missing_card_in_one_group_does_not_fail_healthy_sibling_group(self):
         # Card 1 (chips 2,3) is present and idle; card 0 (chips 0,1) is absent.
         output = "\n".join(
@@ -105,3 +120,24 @@ class IdleProbeTests(unittest.TestCase):
         self.assertIsNotNone(health[good_key]["lo"])
         self.assertEqual(results[("test", "198.51.100.1:22", (0, 1))][0], "probe_error")
         self.assertEqual(results[("test", "198.51.100.1:22", (2, 3))][0], "idle")
+
+    def test_idle_probe_keeps_visibility_timestamp_when_round_is_partial(self):
+        def view():
+            return self.pools, {}
+
+        health = {
+            '["test","198.51.100.1:22",[0,1]]': {"v": 1, "mc": 1, "lo": None, "pr": 1},
+            '["test","198.51.100.1:22",[2,3]]': {"v": 0, "mc": 0, "lo": 1234, "pr": 1},
+        }
+        with patch(
+            "ci_core.idle_probe.observe_health",
+            return_value=({}, None, health),
+        ):
+            probe = IdleProbe("blue", view)
+            probe.cycle()
+
+        self.assertIsNone(probe.sample[1])
+        self.assertIsNotNone(probe.visibility_probe_time)
+        healthy = [entry for entry in probe.health.values() if entry["v"] == 0]
+        self.assertEqual(len(healthy), 1)
+        self.assertEqual(probe.visibility_probe_time, healthy[0]["lo"])

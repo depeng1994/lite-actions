@@ -17,11 +17,16 @@ def group_id(pool, host, devices):
     return pool, host, tuple(sorted(devices))
 
 
-def observe(worker, pools, records, *, execute=run):
+def _leased_resources(records):
     leased = set()
     for record in records.values():
         if record.get("phase") in {"RESERVED", "STAGING", "RUNNING", "CLEANING"}:
             leased.update(resource_keys(record.get("allocation") or []))
+    return leased
+
+
+def observe(worker, pools, records, *, execute=run):
+    leased = _leased_resources(records)
     results = {}
     skipped = False
     for pool_name, pool in pools.items():
@@ -73,7 +78,7 @@ def _health_key(pool, host, devices):
 
 
 def observe_health(
-    worker, pools, records, *, execute=run, previous=None, probe_round=1
+    worker, pools, records, *, execute=run, previous=None, probe_round=1, refresh=None
 ):
     """Probe every configured node and return occupancy plus visibility state.
 
@@ -83,20 +88,18 @@ def observe_health(
     ``last_online_at`` and advance the five-round failure counter exactly once.
     """
     previous = previous or {}
-    leased = set()
-    for record in records.values():
-        if record.get("phase") in {"RESERVED", "STAGING", "RUNNING", "CLEANING"}:
-            leased.update(resource_keys(record.get("allocation") or []))
+    leased = _leased_resources(records)
     results = {}
     health = {}
     complete = True
-    now = int(time.time())
     for pool_name, pool in pools.items():
         if pool.get("owner") != worker:
             continue
         for node in pool["nodes"]:
             host = node["host_id"]
             groups = [group["devices"] for group in node.get("allocation_groups", [])]
+            if refresh:
+                leased.update(_leased_resources(refresh()))
             try:
                 output = execute(
                     node.get("host_ssh") or node["ssh"], "npu-smi info", timeout=20
@@ -104,6 +107,9 @@ def observe_health(
             except Exception:
                 output = None
                 complete = False
+            now = int(time.time())
+            if refresh:
+                leased.update(_leased_resources(refresh()))
             for devices in groups:
                 key = _health_key(pool_name, host, devices)
                 old = previous.get(key, {})
@@ -137,6 +143,7 @@ def observe_health(
                 }
                 resources = resource_keys([{"host_id": host, "devices": devices}])
                 if set(resources).intersection(leased):
+                    results[group_id(pool_name, host, devices)] = ("leased", now)
                     continue
                 state = (
                     "probe_error"
@@ -146,14 +153,15 @@ def observe_health(
                     else "idle"
                 )
                 results[group_id(pool_name, host, devices)] = (state, now)
-    return results, (now if complete else None), health
+    return results, (int(time.time()) if complete else None), health
 
 
 class IdleProbe:
-    def __init__(self, worker, view, *, interval=120, state_dir=None):
+    def __init__(self, worker, view, *, interval=120, state_dir=None, report=None):
         self.worker = worker
         self.view = view
         self.interval = interval
+        self.report = report
         self.state_path = (
             Path(state_dir) / "visibility-probe.json" if state_dir else None
         )
@@ -162,6 +170,7 @@ class IdleProbe:
             target=self.run, name="npu-idle-probe", daemon=True
         )
         self.sample = ({}, None, None)
+        self.visibility_probe_time = None
         self.health = {}
         self.probe_round = 0
         if self.state_path and self.state_path.exists():
@@ -181,9 +190,18 @@ class IdleProbe:
             records,
             previous=self.health,
             probe_round=self.probe_round,
+            refresh=lambda: self.view()[1],
         )
-        self.sample = (states, complete_time, pools)
+        successful_probe_times = [
+            entry["lo"]
+            for entry in health.values()
+            if entry.get("v") == 0 and entry.get("lo") is not None
+        ]
+        self.visibility_probe_time = max(successful_probe_times, default=None)
         self.health = health
+        self.sample = (states, complete_time, pools)
+        if self.report:
+            self.report()
         if self.state_path:
             self.state_path.parent.mkdir(parents=True, exist_ok=True)
             fd, name = tempfile.mkstemp(dir=self.state_path.parent)

@@ -263,7 +263,7 @@ class ControlTests(unittest.TestCase):
             client.snapshot(base, {"queue": pages}, 1)
         self.assertGreater(len(self.calls), 1)
 
-    def test_steady_state_probe_rounds_emit_zero_extra_ip_events(self):
+    def test_every_probe_round_is_persisted_once_for_retry(self):
         client = self.client()
         round1 = [
             {
@@ -297,9 +297,13 @@ class ControlTests(unittest.TestCase):
         self.assertEqual(len(client.outbox.view()["events"]), 1)
         client._capture_devices(round2)
         client._capture_devices(round3)
-        # Steady-state rounds 2 and 3 must emit ZERO additional IP events.
-        self.assertEqual(len(client.outbox.view()["events"]), 1)
+        client._capture_devices(round2 + round3)
+        self.assertEqual(len(client.outbox.view()["events"]), 3)
         client._capture_devices(round4_warn)
-        self.assertEqual(len(client.outbox.view()["events"]), 2)
+        self.assertEqual(len(client.outbox.view()["events"]), 4)
         self.assertEqual(client.outbox.view()["events"][-1]["v"], 1)
         self.assertEqual(client.outbox.view()["events"][-1]["mc"], 1)
+        skipped = {**round1[0], "st": None, "sk": 1, "ts": 1480, "pr": 5}
+        client._capture_devices([skipped, skipped])
+        self.assertEqual(len(client.outbox.view()["events"]), 5)
+        self.assertEqual(client.outbox.view()["events"][-1]["sk"], 1)
