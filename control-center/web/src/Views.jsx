@@ -30,7 +30,7 @@ const plotInset = 64;
 const timelineShortcuts = [
   ["w", "放大"], ["s", "缩小"], ["a", "左移"], ["d", "右移"],
 ];
-const occupancyLabels = {unknown: "当前未知占用", idle: "当前已确认空闲"};
+const occupancyLabels = {unknown: "当前未知占用", leased: "当前实际租约", idle: "当前已确认空闲"};
 const externalOccupancyLabel = "探测到外部占用";
 
 function groupCardCount(node, group) {
@@ -53,7 +53,9 @@ function resourceRows(nodes, folded) {
       for (const node of onWorker.filter((item) => item.pool === pool)) {
         const hostLabel = displayNodeHost(node);
         for (const group of node.groups) {
-          const occupancy = node.unknown.includes(group) ? "unknown" : node.confirmedIdle?.includes(group) ? "idle" : null;
+          const occupancy = node.leased?.includes(group) ? "leased"
+            : node.unknown.includes(group) ? "unknown"
+            : node.confirmedIdle?.includes(group) ? "idle" : null;
           rows.push({ key: targetFor(node, group).id, worker, pool, node, group, occupancy, level: "group", label: `${hostLabel} 设备组 ${group}` });
         }
       }
@@ -75,8 +77,11 @@ function ResourceLabel({ row, folded, changeFold, config, selectScope, showResou
   return <div className={`resource resource-${level} ${worker.toLowerCase()}`} style={{ height }}>
     {level === "group"
       ? <button className="tree-leaf" onClick={() => showResource(targetFor(node, group))}>
-          <span><span className="mono">{displayNodeHost(node)}</span> 设备组 {group} <span className="subtle">（{groupCardCount(node, group)}P）</span></span>
-          {occupancy && <span className={`resource-occupancy occupancy-${occupancy}`}>{occupancyLabels[occupancy]}</span>}
+          <span className="resource-group-name" title={label}><span className="mono">{displayNodeHost(node)}</span> 设备组 {group}</span>
+          <span className="resource-group-size subtle">（{groupCardCount(node, group)}P）</span>
+          {occupancy && <span className={`resource-occupancy occupancy-${occupancy}`} title={occupancyLabels[occupancy]}>
+            <span className="sr-only">{occupancyLabels[occupancy]}</span>
+          </span>}
         </button>
       : <button className="tree-item" onClick={() => {
           changeFold(key);
@@ -405,7 +410,7 @@ export function PoolsView({ nodes, cases, timelineCases, config, go, live, rende
               <div className="chart-coordinates">
                 {ticks.map((minute) => <i key={minute} className="grid-line" style={{ left: marker(minute) }} />)}
                 {rows.map((row) => <OccupancyHistory key={row.key} row={row} clockState={clockState} showResource={showResource} />)}
-                {rows.filter((row) => row.occupancy).map((row) => (
+                {rows.filter((row) => row.occupancy && row.occupancy !== "leased").map((row) => (
                   <button key={row.key} type="button" className={`occupancy-marker occupancy-${row.occupancy}`}
                     style={{ left: marker(timelineNow), top: row.top + row.height - 8 }}
                     aria-label={`${row.label} · ${occupancyLabels[row.occupancy]}`} title={occupancyLabels[row.occupancy]}

@@ -140,6 +140,8 @@ code, .mono { font-family: var(--mono); font-size: .94em; letter-spacing: -.25px
 .legend .legend-actual { background: var(--blue-bar); border-color: var(--blue-stroke); }
 .legend .legend-planned { background: var(--blue-plan); border: 1.5px dashed var(--blue-dash); }
 .occupancy-unknown { --occupancy-fill: repeating-linear-gradient(132deg, var(--plot) 0 3px, var(--unknown) 3px 4px); --occupancy-stroke: var(--line-strong); }
+.occupancy-leased { --occupancy-fill: var(--blue-bar); --occupancy-stroke: var(--blue-stroke); }
+.resource.yellow .occupancy-leased { --occupancy-fill: var(--yellow-bar); --occupancy-stroke: var(--yellow-stroke); }
 .occupancy-idle { --occupancy-fill: var(--accent-tint); --occupancy-stroke: var(--accent); }
 .legend .legend-occupancy { inline-size: 16px; block-size: 16px; border-color: var(--occupancy-stroke); background: var(--occupancy-fill); }
 .timeline-tools { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px 16px; margin-inline-start: auto; }
@@ -181,10 +183,10 @@ code, .mono { font-family: var(--mono); font-size: .94em; letter-spacing: -.25px
 .resource-pool .tree-item { margin-left: 24px; }
 .resource-node .tree-item { margin-left: 42px; gap: 7px; font-size: 16px; }
 .node-address { color: var(--text); font-size: 14px; margin-left: 2px; }
-.tree-leaf { margin-left: 42px; font-size: 17px; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 0; }
-.tree-leaf > span:first-child { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
-.resource-occupancy { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 11px; }
-.resource-occupancy::before { content: ""; width: 10px; height: 10px; border: 1px solid var(--occupancy-stroke); border-radius: 2px; background: var(--occupancy-fill); }
+.tree-leaf { flex: 1; margin-left: 42px; min-width: 0; gap: 4px; padding-inline-end: 12px; }
+.resource-group-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.resource-group-size, .resource-occupancy { flex: none; }
+.resource-occupancy { margin-inline-start: auto; width: 15px; height: 15px; border: 1px solid var(--occupancy-stroke); border-radius: 3px; background: var(--occupancy-fill); }
 .resource-flag { font-size: 12px; color: var(--amber); white-space: nowrap; }
 .lanes { position: relative; }
 .lane-worker, .lane-pool { background: var(--heading); }

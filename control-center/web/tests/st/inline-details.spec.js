@@ -124,6 +124,31 @@ test("Pools opens all task and occupancy entry points in the same detail slot", 
   await setup(page);
   await page.goto("/#/pools");
   const group = "192.0.2.1:22 · 设备组 0–1";
+  await test.step("三种设备状态图标同行显示", async () => {
+    for (const width of [1600, 960]) {
+      await page.setViewportSize({ width, height: 1080 });
+      for (const [device, state, tooltip] of [
+        ["192.0.2.1:22 设备组 0–1", "unknown", "当前未知占用"],
+        ["192.0.2.1:22 设备组 2–3", "leased", "当前实际租约"],
+        ["192.0.2.2:22 设备组 0–1", "idle", "当前已确认空闲"],
+      ]) {
+        const leaf = page.locator(".tree-leaf").getByRole("button").or(page.locator(".tree-leaf"))
+          .filter({ hasText: device });
+        const icon = leaf.locator(`.resource-occupancy.occupancy-${state}`);
+        await expect(icon).toHaveAttribute("title", tooltip);
+        await expect(leaf).toHaveAccessibleName(new RegExp(tooltip));
+        expect(await leaf.evaluate((element) => {
+          const name = element.querySelector(".resource-group-name").getBoundingClientRect();
+          const cards = element.querySelector(".resource-group-size").getBoundingClientRect();
+          const status = element.querySelector(".resource-occupancy").getBoundingClientRect();
+          return status.left >= cards.right && Math.abs((name.top + name.bottom) - (status.top + status.bottom)) < 2
+            && status.right <= element.getBoundingClientRect().right;
+        })).toBe(true);
+      }
+    }
+    await page.setViewportSize({ width: 1600, height: 1080 });
+    await expect(page.locator(".occupancy-marker.occupancy-leased")).toHaveCount(0);
+  });
   for (const [label, start, end] of [
     ["运行用例", "2026-11-24 15:24:00", "—"],
     ["准备中用例", "2026-11-24 15:30:00", "—"],

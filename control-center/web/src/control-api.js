@@ -67,6 +67,7 @@ function nodeFromIdentity(identity, worker, pool, deviceGroups = []) {
     binding: "control-center",
     quarantinedGroups: deviceGroups.filter((group) => group.quarantined).map((group) => rangeLabel(group.devices)).filter(Boolean),
     unknown: deviceGroups.filter((group) => (group.state || group.occupancy_state) === "UNKNOWN_BUSY").map((group) => rangeLabel(group.devices)).filter(Boolean),
+    leased: deviceGroups.filter((group) => (group.state || group.occupancy_state) === "LEASED").map((group) => rangeLabel(group.devices)).filter(Boolean),
     confirmedIdle: deviceGroups.filter((group) => (group.state || group.occupancy_state) === "CONFIRMED_IDLE").map((group) => rangeLabel(group.devices)).filter(Boolean),
     occupancyBlocks: Object.fromEntries(deviceGroups.map((group) => [rangeLabel(group.devices), group.occupancy_blocks || []])),
     health: identity.health || null,
