@@ -61,8 +61,11 @@ class HostProcessTableTests(unittest.TestCase):
     def test_a3_host_process_row_maps_npu_chip_to_physical_device(self):
         output = _table(
             ["| 3 1 | 24680 | python3 | 1024 |"]
-            + [f"| No running processes found in NPU {card} |"
-               for card in range(8) if card != 3]
+            + [
+                f"| No running processes found in NPU {card} |"
+                for card in range(8)
+                if card != 3
+            ]
         )
         self.assertEqual(
             self.parse(output, list(range(16)), require_exclusive=False),
@@ -134,8 +137,11 @@ class HostProcessTableTests(unittest.TestCase):
                 [list(range(8)), list(range(8, 16))],
                 _table(
                     ["| 3 1 | 24680 | python3 | 1024 |"]
-                    + [f"| No running processes found in NPU {card} |"
-                       for card in range(8) if card != 3]
+                    + [
+                        f"| No running processes found in NPU {card} |"
+                        for card in range(8)
+                        if card != 3
+                    ]
                 ),
             ),
             ("card", [list(range(8))], _without_container_column(A5_950_EMPTY)),
@@ -154,8 +160,11 @@ class HostProcessTableTests(unittest.TestCase):
                     }
                 }
                 previous = {
-                    f'["fixture","192.0.2.1:22",[{",".join(map(str, group))}]]':
-                    {"v": 2, "mc": 5, "lo": None}
+                    f'["fixture","192.0.2.1:22",[{",".join(map(str, group))}]]': {
+                        "v": 2,
+                        "mc": 5,
+                        "lo": None,
+                    }
                     for group in groups
                 }
                 execute = Mock(return_value=SimpleNamespace(stdout=output))
