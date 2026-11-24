@@ -635,6 +635,7 @@ class GitCodeWorkflowTests(unittest.TestCase):
             "execution_timeout_seconds": 75,
             "resources": {"nodes": 1, "devices_per_node": 2},
             "docker": None,
+            "env_vars": {},
         }
         self.assertEqual(runtime_case(item, pools, "blue")["docker"], "training")
         node = pool["nodes"][1]

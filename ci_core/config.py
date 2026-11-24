@@ -237,14 +237,15 @@ def runtime_case(item, pools, worker):
         raise ValueError("UNKNOWN_POOL")
     if pool["owner"] != worker:
         raise ValueError("POOL_OWNER_MISMATCH")
+    docker = item["docker"]
+    if docker is None and "env_vars" in item:
+        docker = resolve_pool_default_docker(pool)
     return dict(
         name=item["case_id"],
         pool=item["target_pool"],
         resources=item["resources"],
         enabled=True,
-        docker=item["docker"]
-        if item["docker"] is not None
-        else resolve_pool_default_docker(pool),
+        docker=docker,
         kind=item["kind"],
         timeout_seconds=item["execution_timeout_seconds"] + 780,
         execution_timeout_seconds=item["execution_timeout_seconds"],
