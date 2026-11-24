@@ -128,6 +128,24 @@ test("applied and desired inventories each show one node when the admin response
   assert.equal(nodesByRef.get("n_shared"), nodes[0]);
 });
 
+test("cluster occupancy is joined by worker, pool and exact device membership", () => {
+  const node_ref = "n_shared";
+  const block = {started_at: 120, last_busy_at: 240, ended_at: null};
+  const desired = {devices: [3, 1, 0]};
+  const applied = {devices: [0, 1, 3], occupancy_blocks: [block]};
+  const timeline = {workers: [{worker_id: "blue", pools: [
+    {pool_name: "one", nodes: [{node_ref, device_groups: [applied]}]},
+    {pool_name: "two", nodes: [{node_ref, device_groups: [applied]}]},
+  ]}]};
+  const cluster = {config: {
+    one: {owner: "blue", nodes: [{node_ref, allocation_groups: [desired]}]},
+    two: {owner: "blue", nodes: [{node_ref, allocation_groups: [{devices: [0, 2, 3]}]}]},
+    three: {owner: "yellow", nodes: [{node_ref, allocation_groups: [desired]}]},
+  }};
+  assert.deepEqual(resourceInventories(timeline, cluster).clusterNodes.map((node) => node.occupancyBlocks["0–3"]),
+    [[block], [], []]);
+});
+
 test("timeline ticks include Beijing dates across midnight and expose seconds when zoomed", () => {
   const midnight = Date.parse("2026-11-22T16:00:00Z") / 60_000;
   assert.equal(timelineLabel(midnight + 187), "11-23 03:07");

@@ -105,12 +105,17 @@ function buildProjectionIndex(timeline) {
 
 export function resourceInventories(timeline, cluster) {
   const nodes = [];
-  const appliedByHost = new Map();
+  const appliedByNode = new Map();
+  const nodeKey = (worker, pool, identity) => JSON.stringify([worker, pool, identity.host_id ?? identity.node_ref]);
+  const groupKey = (group) => JSON.stringify([...group.devices].sort((a, b) => a - b));
   for (const worker of timeline?.workers || []) {
     for (const pool of worker.pools || []) {
       for (const node of pool.nodes || []) {
         const entry = nodeFromIdentity(node, worker.worker_id, pool.pool_name, node.device_groups || []);
-        if (entry.hostId) appliedByHost.set(entry.hostId, entry.id);
+        appliedByNode.set(nodeKey(worker.worker_id, pool.pool_name, node), {
+          id: entry.id,
+          groups: new Map((node.device_groups || []).map((group) => [groupKey(group), group.occupancy_blocks])),
+        });
         nodes.push(entry);
       }
     }
@@ -119,8 +124,12 @@ export function resourceInventories(timeline, cluster) {
   for (const [poolName, pool] of Object.entries(cluster?.config || {})) {
     for (const node of pool.nodes || []) {
       // The authenticated cluster response supplies host_id, while the timeline uses node_ref for task allocations.
-      const node_ref = node.node_ref || appliedByHost.get(node.host_id);
-      clusterNodes.push(nodeFromIdentity({...node, node_ref}, pool.owner, poolName, node.allocation_groups || []));
+      const applied = appliedByNode.get(nodeKey(pool.owner, poolName, node));
+      const node_ref = node.node_ref || applied?.id;
+      const groups = (node.allocation_groups || []).map((group) => ({
+        ...group, occupancy_blocks: group.occupancy_blocks ?? applied?.groups.get(groupKey(group)),
+      }));
+      clusterNodes.push(nodeFromIdentity({...node, node_ref}, pool.owner, poolName, groups));
     }
   }
   return {nodes, clusterNodes, nodesByRef: new Map(nodes.map((node) => [node.id, node]))};

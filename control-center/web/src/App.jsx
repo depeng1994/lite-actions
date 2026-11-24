@@ -5,7 +5,7 @@ import { ClusterView, PoolsView, UsersView } from "./Views.jsx";
 import { ModelsView } from "./ModelsView.jsx";
 import {
   AddNodeDialog, buildClusterOperation, CancelDialog, CancellationReceipt, CaseDialog, ConfigDialog, DeleteUserDialog, ExpediteDialog,
-  HistoryDialog, LoginForm, NewUserDialog, PriorityReceipt, ResourceDialog, ResetUserKeyDialog, UserKeyDialog,
+  HistoryDialog, LoginForm, NewUserDialog, PriorityReceipt, ResourceDetail, ResetUserKeyDialog, UserKeyDialog,
 } from "./Dialogs.jsx";
 import { dateTimeSecondFormatter, initialCases, initialNodes, initialQueueOrder, poolId, repositories, runs, timelineRuns, workflowKey } from "./formal-data.js";
 import { currentWorkflowQueue, initialWorkflowHistorySize, queuedChildren, workflowHistoryPageSize } from "./workflows.js";
@@ -500,17 +500,18 @@ export function App() {
   const historicalCase = historicalRun && historicalRun.cases.find(({ historyId }) => historyId === modal.historyId);
   const user = modal?.name && accounts.find(({ name }) => name === modal.name);
   const dialogProps = { ...viewProps, nodes: route.page === "cluster" ? clusterNodes : nodes, close };
+  const renderResourceDetail = (detail) => <ResourceDetail {...detail} cases={cases} config={config} go={go} />;
 
   return <>
     <Header page={route.page} open={open} session={session} theme={theme} setTheme={setTheme} logout={logout} live={dataMode === "live"} />
-    {route.page === "pools" && <PoolsView {...viewProps} renderTimelineDetail={(selected, selectedRun, closeDetail) => {
+    {route.page === "pools" && <PoolsView {...viewProps} renderResourceDetail={renderResourceDetail} renderTimelineDetail={(selected, selectedRun, closeDetail) => {
       const panelProps = {item: selected, run: selectedRun, access, live: viewProps.live, close: closeDetail, inline: true};
       return selected.historyId
         ? <HistoryDialog key={selected.id} {...panelProps} />
         : <CaseDialog key={selected.id} {...panelProps} nodes={nodes} config={config} go={go} />;
     }} />}
     {route.page === "models" && <ModelsView key={route.model} {...viewProps} model={route.model} cancellations={cancellations} priorities={priorities} queue={queue} />}
-    {route.page === "cluster" && <ClusterView {...viewProps} nodes={clusterNodes} />}
+    {route.page === "cluster" && <ClusterView {...viewProps} nodes={clusterNodes} renderResourceDetail={renderResourceDetail} />}
     {route.page === "users" && (isSuper
       ? <UsersView accounts={accounts} open={open} audit={audit} />
       : <main className="standard-view"><h1>用户管理</h1><p className="subtle">此页面需要 Super 登录。</p>
@@ -519,7 +520,6 @@ export function App() {
     {modal?.type === "login" && <LoginForm close={close} login={login} />}
     {modal?.type === "case" && item && <CaseDialog item={item} {...dialogProps} />}
     {modal?.type === "history" && historicalCase && <HistoryDialog run={historicalRun} item={historicalCase} access={access} live={dataMode === "live"} close={close} />}
-    {modal?.type === "resource" && <ResourceDialog target={modal.target} {...dialogProps} />}
     {modal?.type === "cancel" && canManage && run && <CancelDialog run={run} cases={cases} close={close} confirm={() => cancelRun(run)} />}
     {modal?.type === "cancel-receipt" && run && cancellations[workflowKey(run)] && <CancellationReceipt run={run} receipt={cancellations[workflowKey(run)]} close={close} />}
     {modal?.type === "expedite" && canManage && run && <ExpediteDialog run={run} cases={queuedChildren(cases, run)} position={typeof run.sequence === "number" ? run.sequence : (queue.indexOf(workflowKey(run)) + 1)} close={close} confirm={() => expedite(run)} />}

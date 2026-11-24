@@ -1,5 +1,5 @@
 import { CalendarBlank, CaretDown, CaretRight, Pause, Play, Plus, Ruler, Trash, X } from "@phosphor-icons/react";
-import { memo, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { displayNodeHost, flagFor, plannedTime, poolId, runs, statusTone, targetFor, timelineClock, timelineLabel, timelineRuns, workers, workflowKey } from "./formal-data.js";
 import { commandStatusLabel, commandStatusTone } from "./command-status.js";
 import { lastSeenDateTime, resourceHealth } from "./resource-health.js";
@@ -68,13 +68,13 @@ function resourceRows(nodes, folded) {
   });
 }
 
-function ResourceLabel({ row, folded, changeFold, config, selectScope, open }) {
+function ResourceLabel({ row, folded, changeFold, config, selectScope, showResource }) {
   const { key, label, level, node, group, occupancy, worker, pool, height } = row;
   const GroupMark = folded[key] ? CaretRight : CaretDown;
   const flag = level === "group" ? flagFor(config, node, group) : config.flags[key];
   return <div className={`resource resource-${level} ${worker.toLowerCase()}`} style={{ height }}>
     {level === "group"
-      ? <button className="tree-leaf" onClick={() => open({ type: "resource", target: targetFor(node, group) })}>
+      ? <button className="tree-leaf" onClick={() => showResource(targetFor(node, group))}>
           <span><span className="mono">{displayNodeHost(node)}</span> 设备组 {group} <span className="subtle">（{groupCardCount(node, group)}P）</span></span>
           {occupancy && <span className={`resource-occupancy occupancy-${occupancy}`}>{occupancyLabels[occupancy]}</span>}
         </button>
@@ -91,7 +91,7 @@ function ResourceLabel({ row, folded, changeFold, config, selectScope, open }) {
   </div>;
 }
 
-function OccupancyHistory({ row, clockState, open }) {
+function OccupancyHistory({ row, clockState, showResource }) {
   const { timelineStart, timelineEnd } = clockState;
   const width = timelineEnd - timelineStart;
   return (row.node?.occupancyBlocks?.[row.group] || []).map((block) => {
@@ -107,7 +107,7 @@ function OccupancyHistory({ row, clockState, open }) {
       style={{ left: `${(start - timelineStart) / width * 100}%`, width: `${(end - start) / width * 100}%`,
         top: row.top + row.height / 2 }}
       title={title} aria-label={title}
-      onClick={() => open({ type: "resource", target: targetFor(row.node, row.group) })} />;
+      onClick={() => showResource(targetFor(row.node, row.group), block.started_at)} />;
   });
 }
 
@@ -155,7 +155,7 @@ const LeaseBar = memo(function LeaseBar({ item, run, rows, config, nodes, clockS
   return resourceRowsList.map((row) => <button key={row.key} className={`lease ${item.worker.toLowerCase()} ${selected ? "lease-selected" : ""} ${ended ? "lease-ended" : ""} ${compact ? "lease-compact" : ""}`}
     aria-label={ariaLabel} title={`${ariaLabel}\n${startLabel} → ${finishLabel}`}
     data-midpoint={visibleStart + total / 2}
-    aria-pressed={selected} aria-controls={selected ? "timeline-task-detail" : undefined}
+    aria-pressed={selected} aria-controls={selected ? "timeline-detail" : undefined}
     onClick={() => onSelect(item.id)} style={{ ...style, top: row.top + 6, height: row.height - 12 }}>
     {!queued && <span className="lease-actual" />}
     {projectedEnd && <span className="lease-planned" />}
@@ -169,7 +169,18 @@ const LeaseBar = memo(function LeaseBar({ item, run, rows, config, nodes, clockS
   </button>);
 });
 
-export function PoolsView({ nodes, cases, timelineCases, config, open, go, live, renderTimelineDetail }) {
+function InlineDetailSlot({ selected, children }) {
+  const panel = useRef(null);
+  useLayoutEffect(() => {
+    const heading = panel.current?.querySelector("header");
+    if (heading?.getBoundingClientRect().bottom > window.innerHeight) {
+      heading.scrollIntoView({block: "nearest"});
+    }
+  }, [selected]);
+  return <div className="inline-detail-slot" ref={panel}>{children}</div>;
+}
+
+export function PoolsView({ nodes, cases, timelineCases, config, go, live, renderTimelineDetail, renderResourceDetail }) {
   const [folded, setFolded] = useState({});
   const [queueScope, selectScope] = useState("");
   const [selected, setSelected] = useState(null);
@@ -179,7 +190,6 @@ export function PoolsView({ nodes, cases, timelineCases, config, open, go, live,
   const [measured, setMeasured] = useState(null);
   const [measuring, setMeasuring] = useState(null);
   const timelineScrollRef = useRef(null);
-  const panelRef = useRef(null);
   const gesture = useRef(null);
   const suppressClick = useRef(false);
   const previousStart = useRef(null);
@@ -211,8 +221,11 @@ export function PoolsView({ nodes, cases, timelineCases, config, open, go, live,
   const captionLeft = Math.max(visibleLeft + captionInset, Math.min(visibleRight - captionInset, (bandLeft + bandRight) / 2));
   const chartCases = timelineCases || cases;
   const runByKey = useMemo(() => new Map([...timelineRuns].reverse().map((run) => [workflowKey(run), run])), [chartCases]);
-  const selectedItem = chartCases.find((item) => item.id === selected);
+  const selectedItem = selected?.caseId && chartCases.find((item) => item.id === selected.caseId);
   const selectedRun = selectedItem && runByKey.get(selectedItem.run);
+  const closeDetail = () => setSelected(null);
+  const selectCase = useCallback((caseId) => setSelected({ caseId }), []);
+  const showResource = (target, blockStart) => setSelected({ target, blockStart });
   const measureViewport = (scroll) => {
     const {scrollLeft, clientWidth} = scroll;
     setViewport((current) => current.left === scrollLeft && current.width === clientWidth
@@ -239,12 +252,6 @@ export function PoolsView({ nodes, cases, timelineCases, config, open, go, live,
     previousStart.current = timelineStart;
     measureViewport(scroll);
   }, [chartWidth, pixelsPerMinute, timelineStart, zoom]);
-  useLayoutEffect(() => {
-    const heading = panelRef.current?.querySelector("header");
-    if (heading?.getBoundingClientRect().bottom > window.innerHeight) {
-      heading.scrollIntoView({block: "nearest"});
-    }
-  }, [selected]);
 
   const handleTimelineKey = useEffectEvent((event) => {
     if (event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey
@@ -371,7 +378,7 @@ export function PoolsView({ nodes, cases, timelineCases, config, open, go, live,
           <div className="axis-label">资源 <span>（Worker / Pool / 节点 / 设备组）</span></div>
           <div className="resources">
             {rows.map((row) => <ResourceLabel key={row.key} row={row} config={config} folded={folded}
-              selectScope={selectScope} open={open}
+              selectScope={selectScope} showResource={showResource}
               changeFold={(key) => setFolded((previous) => ({ ...previous, [key]: !previous[key] }))} />)}
           </div>
         </div>
@@ -397,18 +404,18 @@ export function PoolsView({ nodes, cases, timelineCases, config, open, go, live,
               {rows.map((row) => <div key={row.key} className={`lane lane-${row.level} ${row.worker.toLowerCase()}`} style={{ height: row.height }} />)}
               <div className="chart-coordinates">
                 {ticks.map((minute) => <i key={minute} className="grid-line" style={{ left: marker(minute) }} />)}
-                {rows.map((row) => <OccupancyHistory key={row.key} row={row} clockState={clockState} open={open} />)}
+                {rows.map((row) => <OccupancyHistory key={row.key} row={row} clockState={clockState} showResource={showResource} />)}
                 {rows.filter((row) => row.occupancy).map((row) => (
                   <button key={row.key} type="button" className={`occupancy-marker occupancy-${row.occupancy}`}
                     style={{ left: marker(timelineNow), top: row.top + row.height / 2 }}
                     aria-label={`${row.label} · ${occupancyLabels[row.occupancy]}`} title={occupancyLabels[row.occupancy]}
-                    onClick={() => open({ type: "resource", target: targetFor(row.node, row.group) })} />
+                    onClick={() => showResource(targetFor(row.node, row.group))} />
                 ))}
                 {chartCases.map((item) => {
                   const run = runByKey.get(item.run);
                   return run ? <LeaseBar key={item.id} item={item} run={run}
                     rows={rows} config={config} nodes={nodes} clockState={clockState} plotWidth={plotWidth}
-                    selected={selected === item.id} onSelect={setSelected} /> : null;
+                    selected={selected?.caseId === item.id} onSelect={selectCase} /> : null;
                 })}
                 <i className="now-line" style={{ left: marker(timelineNow) }} />
               </div>
@@ -427,10 +434,12 @@ export function PoolsView({ nodes, cases, timelineCases, config, open, go, live,
         </div>
         <button className="button small" type="button" onClick={() => setMeasured(null)} disabled={Boolean(measuring)}>清除选区</button>
       </div>}
-      {selectedRun && <div className="timeline-detail-slot" ref={panelRef}>
-        {renderTimelineDetail(selectedItem, selectedRun, () => setSelected(null))}
-      </div>}
     </section>
+    {(selectedRun || selected?.target) && <InlineDetailSlot selected={selected}>
+      {selectedRun
+        ? renderTimelineDetail(selectedItem, selectedRun, closeDetail)
+        : renderResourceDetail({ id: "timeline-detail", target: selected.target, blockStart: selected.blockStart, nodes, close: closeDetail })}
+    </InlineDetailSlot>}
     <section className="queue-section" aria-labelledby="queue-title">
       <div className="queue-heading">
         <div className="queue-heading-main"><h2 id="queue-title">排队用例</h2>
@@ -450,8 +459,8 @@ export function PoolsView({ nodes, cases, timelineCases, config, open, go, live,
               const run = runs.find((candidate) => workflowKey(candidate) === item.run);
               if (!run) return null;
               const estimate = plannedTime(item, config, nodes) == null ? null : item.timelinePlanned;
-              return <tr className={item.id === selected ? "is-selected" : ""} key={item.id}>
-                <td><button className="cell-title" onClick={() => open({type: "case", caseId: item.id})}>{item.name}</button><small>{run.repo} · {run.owner}</small></td>
+              return <tr className={item.id === selected?.caseId ? "is-selected" : ""} key={item.id}>
+                <td><button className="cell-title" onClick={() => selectCase(item.id)}>{item.name}</button><small>{run.repo} · {run.owner}</small></td>
                 <td><RunIdentity run={run} /></td>
                 <td>{item.worker} / {item.pool} · {item.cards}P</td>
                 <td>{item.projectionStatus === "WAITING_EXTERNAL"
@@ -493,11 +502,11 @@ export function ResourceStatus({ health, configStatus, unknown, quarantined = fa
   </div>;
 }
 
-function ClusterRow({ target, status, nodes, config, canManage, open, node, group }) {
+function ClusterRow({ target, status, nodes, config, canManage, open, showResource, node, group }) {
   const health = resourceHealth(node ? [node] : nodes, group);
   const quarantined = Boolean(group ? node.quarantinedGroups?.includes(group) : node?.quarantinedGroups?.length);
   return <tr>
-    <td><button className={`resource-link ${group ? "group-link" : node ? "node-link" : ""}`} onClick={() => open({ type: "resource", target })}>
+    <td><button className={`resource-link ${group ? "group-link" : node ? "node-link" : ""}`} onClick={() => showResource(target)}>
       {group ? <><span className="mono">{displayNodeHost(node)}</span> 设备组 {group}</> : node ? <span className="mono">{displayNodeHost(node)}</span> : `Pool ${target.pool}`} <CaretRight size={13} />
     </button></td>
     <td>{node ? <span className="mono">{displayNodeHost(node)}</span> : <span className="subtle">—</span>}</td>
@@ -519,8 +528,9 @@ function syncStatusBadge(workerInfo, appliedRevision, desiredRevision) {
   return { tone: "amber", label: "等待 Worker 应用" };
 }
 
-export function ClusterView({ config, nodes, clusterPools = [], clusterHistory = [], rollbackCluster, canManage, open, audit }) {
+export function ClusterView({ config, nodes, clusterPools = [], clusterHistory = [], rollbackCluster, canManage, open, audit, renderResourceDetail }) {
   const [worker, setWorker] = useState("Blue");
+  const [selected, setSelected] = useState(null);
   const scoped = nodes.filter((node) => node.worker === worker);
   const pools = [...new Set([...scoped.map((node) => node.pool), ...clusterPools.filter((entry) => entry.worker === worker).map((entry) => entry.pool)])];
   const appliedRevision = config.applied[worker];
@@ -534,7 +544,11 @@ export function ClusterView({ config, nodes, clusterPools = [], clusterHistory =
         onClick={() => open(canManage ? { type: "add-node", worker } : { type: "login" })}>{canManage ? <><Plus size={17} weight="bold" />新增资产</> : "登录后管理"}</button>
     </div>
     <nav className="subnav" aria-label="Worker 页签">
-      {workers.map((name) => <button key={name} aria-current={name === worker ? "page" : undefined} onClick={() => setWorker(name)}>
+      {workers.map((name) => <button key={name} aria-current={name === worker ? "page" : undefined} onClick={() => {
+        if (name === worker) return;
+        setSelected(null);
+        setWorker(name);
+      }}>
         <i className={`worker-dot ${name.toLowerCase()}`} />{name}
       </button>)}
     </nav>
@@ -552,12 +566,15 @@ export function ClusterView({ config, nodes, clusterPools = [], clusterHistory =
         <tbody>{pools.map((pool) => {
           const members = scoped.filter((node) => node.pool === pool);
           const target = { id: poolId(worker, pool), label: `${worker} / ${pool}`, worker, pool, type: "Pool" };
-          return <ClusterPool key={pool} target={target} members={members} config={config} open={open} canManage={canManage} />;
+          return <ClusterPool key={pool} target={target} members={members} config={config} open={open} canManage={canManage} showResource={setSelected} />;
         })}
         {!pools.length && <tr><td className="empty" colSpan={canManage ? 6 : 5}>暂无已配置资源</td></tr>}
         </tbody>
       </table>
     </div>
+    {selected && <InlineDetailSlot selected={selected}>
+      {renderResourceDetail({ id: "cluster-detail", target: selected, nodes, close: () => setSelected(null) })}
+    </InlineDetailSlot>}
     {canManage && <section className="audit-section" aria-label="历史配置版本">
       <h2>历史配置版本</h2>
       <div className="table-scroll"><table className="data-table">
@@ -575,22 +592,14 @@ export function ClusterView({ config, nodes, clusterPools = [], clusterHistory =
   </main>;
 }
 
-function ClusterPool({ target, members, config, canManage, open }) {
-  const properties = { config, canManage, open };
+function ClusterPool({ target, members, config, canManage, open, showResource }) {
+  const properties = { config, canManage, open, showResource };
   return <>
     <ClusterRow {...properties} target={target} nodes={members} status={config.flags[target.id]} />
     {members.flatMap((node) => node.groups.length
       ? node.groups.map((group) => <ClusterRow key={`${node.id}/${group}`} {...properties} node={node} group={group}
           target={targetFor(node, group)} status={flagFor(config, node, group)} />)
       : [<ClusterRow key={node.id} {...properties} node={node} target={targetFor(node)} status={flagFor(config, node)} />])}
-  </>;
-}
-
-function ClusterNode({ node, config, canManage, open }) {
-  const properties = { config, canManage, open, node };
-  return <>
-    <ClusterRow {...properties} target={targetFor(node)} status={flagFor(config, node)} />
-    {node.groups.map((group) => <ClusterRow key={group} {...properties} group={group} target={targetFor(node, group)} status={flagFor(config, node, group)} />)}
   </>;
 }
 
