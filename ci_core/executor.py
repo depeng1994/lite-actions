@@ -340,10 +340,25 @@ def _process_rows(
     may be NA or a PID from a different container's namespace; never kill it.
     Preserve the established A3 card-die PID and chip mapping.
     """
-    if "Process id in container" not in output:
-        raise ValueError("npu-smi process table absent")
     if indexing not in ("card", "card-die"):
         raise ValueError("unknown NPU process index mapping")
+    a3_host_table = False
+    a3_header_line = None
+    if "Process id in container" not in output:
+        # A3 exposes host PIDs in a four-column NPU/Chip table. Restrict
+        # this compatibility path to card-die; leave A5 host semantics intact.
+        if indexing != "card-die" or host_pids:
+            raise ValueError("npu-smi process table absent")
+        for i, line in enumerate(output.splitlines()):
+            if not line.strip().startswith("|"):
+                continue
+            columns = [" ".join(cell.split()) for cell in line.strip().strip("|").split("|")]
+            if columns == ["NPU Chip", "Process id", "Process name", "Process memory(MB)"]:
+                a3_host_table = True
+                a3_header_line = i
+                break
+        if not a3_host_table:
+            raise ValueError("npu-smi process table absent")
     if host_pids:
         _verified_inventory(output, indexing, coverage_devices)
 
@@ -351,7 +366,11 @@ def _process_rows(
     rows: list[tuple[int, int, str]] = []
     has_process_data = False
     covered_cards = set()
-    lines = output.split("Process id in container", 1)[1].splitlines()[1:]
+    lines = (
+        output.splitlines()[a3_header_line + 1 :]
+        if a3_host_table
+        else output.split("Process id in container", 1)[1].splitlines()[1:]
+    )
     if require_end:
         nonempty = [line.strip() for line in lines if line.strip()]
         if not nonempty or not re.fullmatch(
@@ -366,11 +385,16 @@ def _process_rows(
             if not stripped or re.fullmatch(r"[+=-]+", stripped):
                 continue
             empty = re.fullmatch(
-                r"\|\s*No running processes found in NPU (\d+)[^|]*\|", stripped
+                r"\\|\\s*No running processes found in NPU (\\d+)(?:\\.\\.(\\d+))?[^|]*\\|",
+                stripped,
             )
             if empty:
                 has_process_data = True
-                covered_cards.add(int(empty[1]))
+                first = int(empty[1])
+                last = int(empty[2]) if empty[2] is not None else first
+                if last < first or last - first > 255:
+                    raise ValueError("invalid empty NPU range")
+                covered_cards.update(range(first, last + 1))
                 continue
             match = CHIP_PROCESS.match(line)
             if match:
