@@ -186,19 +186,22 @@ export function PoolsView({ nodes, cases, timelineCases, config, open, go, live 
           </ul>
         </div>
       </div>
-      <div className="timeline-scroll" ref={timelineScrollRef}>
-        <div className="timeline" aria-label="Blue 与 Yellow 资源时间轴">
+      <div className="timeline-board" aria-label="Blue 与 Yellow 资源时间轴">
+        <div className="timeline-fixed">
           <div className="axis-label">资源 <span>（Worker / Pool / 节点 / 设备组）</span></div>
+          <div className="resources">
+            {rows.map((row) => <ResourceLabel key={row.key} row={row} config={config} folded={folded}
+              selectScope={selectScope} open={open}
+              changeFold={(key) => setFolded((previous) => ({ ...previous, [key]: !previous[key] }))} />)}
+          </div>
+        </div>
+        <div className="timeline-scroll" ref={timelineScrollRef}>
+          <div className="timeline">
           <div className="axis">
             <div className="chart-coordinates">
               {ticks.map((minute) => <span key={minute} className="axis-tick mono" style={{ left: marker(minute) }}>{clock(minute)}</span>)}
               <span className="now-label mono" style={{ left: marker(timelineNow) }}>现在 {timelineLabel(timelineNow)}</span>
             </div>
-          </div>
-          <div className="resources">
-            {rows.map((row) => <ResourceLabel key={row.key} row={row} config={config} folded={folded}
-              selectScope={selectScope} open={open}
-              changeFold={(key) => setFolded((previous) => ({ ...previous, [key]: !previous[key] }))} />)}
           </div>
           <div className="lanes">
             {rows.map((row) => <div key={row.key} className={`lane lane-${row.level} ${row.worker.toLowerCase()}`} style={{ height: row.height }} />)}
@@ -215,6 +218,7 @@ export function PoolsView({ nodes, cases, timelineCases, config, open, go, live 
               })}
               <i className="now-line" style={{ left: marker(timelineNow) }} />
             </div>
+          </div>
           </div>
         </div>
       </div>

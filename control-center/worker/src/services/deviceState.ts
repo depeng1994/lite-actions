@@ -118,8 +118,12 @@ export function projectDevice(now: number, input: {
   if (node.paused) scopes.push("node");
   if (group.paused) scopes.push("device_group");
   const visibility = observation?.visibility_state ?? "pending";
+  // Older workers keep sending heartbeats before they know the visibility
+  // probe field. Keep an online group fresh from that heartbeat until the
+  // worker starts reporting its dedicated probe timestamp.
+  const latestVisibility = worker?.last_visibility_probe_at ?? worker?.last_heartbeat_at ?? 0;
   const lastOnline = visibility === "online"
-    ? (Math.max(observation?.last_online_at ?? 0, worker?.last_visibility_probe_at ?? 0) || null)
+    ? (Math.max(observation?.last_online_at ?? 0, latestVisibility) || null)
     : (observation?.last_online_at ?? null);
   return {
     devices: group.devices.slice().sort((a, b) => a - b), state, offline: offline(now, worker),

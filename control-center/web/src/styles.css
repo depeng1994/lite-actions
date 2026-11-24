@@ -138,20 +138,22 @@ code, .mono { font-family: var(--mono); font-size: .94em; letter-spacing: -.25px
 .legend .legend-actual { background: var(--blue-bar); border-color: var(--blue-stroke); }
 .legend .legend-planned { background: var(--blue-plan); border: 1.5px dashed var(--blue-dash); }
 .legend .legend-unknown, .unknown-block { background: repeating-linear-gradient(132deg, transparent 0 5px, var(--unknown) 5px 6px); }
-.timeline-scroll { margin: 0 5px; overflow-x: auto; scrollbar-gutter: stable; }
+.timeline-board { display: flex; min-width: 0; margin: 0 5px; border: 1px solid var(--line); border-radius: 2px; overflow: hidden; background: var(--plot); }
+.timeline-fixed { flex: 0 0 clamp(285px, 32vw, 400px); min-width: 285px; background: var(--plot); }
+.timeline-scroll { flex: 1 1 auto; min-width: 0; overflow-x: auto; scrollbar-gutter: stable; }
 .timeline-scroll::-webkit-scrollbar { height: 12px; }
 .timeline-scroll::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 8px; }
 .timeline-scroll::-webkit-scrollbar-track { background: var(--heading); }
-.timeline { min-width: 3000px; display: grid; grid-template-columns: clamp(285px, 27%, 400px) minmax(0, 1fr); grid-template-rows: 61px auto; border: 1px solid var(--line); border-radius: 2px; overflow: hidden; background: var(--plot); }
+.timeline { min-width: 3000px; display: grid; grid-template-rows: 61px auto; overflow: hidden; background: var(--plot); }
 .axis, .axis-label { position: relative; border-bottom: 1px solid var(--line); }
-.axis-label { display: flex; align-items: center; padding: 0 16px; border-right: 1px solid var(--line); font-size: 17px; font-weight: 680; }
+.axis-label { display: flex; align-items: center; min-height: 61px; box-sizing: border-box; padding: 0 16px; border-right: 1px solid var(--line); font-size: 17px; font-weight: 680; }
 .axis-label span { margin-left: 3px; }
 .chart-coordinates { position: absolute; inset: 0 29px 0 27px; }
 .axis-tick { position: absolute; bottom: 15px; transform: translateX(-50%); font-size: 15px; }
 .axis-tick::after { position: absolute; content: ""; top: calc(100% + 4px); left: 50%; height: 10px; border-left: 1px solid var(--line-strong); }
 .now-label { position: absolute; z-index: 3; top: 4px; transform: translateX(-50%); border-radius: 3px; padding: 1px 7px; background: var(--accent); color: var(--accent-ink); font-size: 13px; font-weight: 700; white-space: nowrap; pointer-events: none; }
 .now-label::after { content: ""; position: absolute; left: 50%; top: 100%; height: 40px; border-left: 2px solid var(--accent); }
-.resources { border-right: 1px solid var(--line); }
+.resources { border-right: 1px solid var(--line); background: var(--plot); box-shadow: 5px 0 9px -9px var(--text); }
 .resource, .lane { display: flex; align-items: center; width: 100%; border-bottom: 1px solid var(--chart-line); }
 .resource:last-child, .lane:last-of-type { border-bottom: 0; }
 .resource-worker.blue { background: var(--blue-worker); }
