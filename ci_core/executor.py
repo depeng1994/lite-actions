@@ -408,6 +408,8 @@ def _process_rows(
             continue
 
         if not (line.startswith("|") and line.endswith("|")):
+            if indexing == "card-die" and not host_pids and not require_exclusive:
+                raise ExternalNpuOccupancy("NPU process row cannot be resolved")
             raise ValueError("unrecognized NPU process row")
         cells = [part.strip() for part in line[1:-1].split("|")]
         chip = cells[0].split()
@@ -426,6 +428,8 @@ def _process_rows(
             or not cells[2]
             or not re.fullmatch(r"[0-9]+", cells[3])
         ):
+            if indexing == "card-die" and not host_pids and not require_exclusive:
+                raise ExternalNpuOccupancy("NPU process row cannot be resolved")
             raise ValueError("unrecognized NPU process row")
         card = int(chip[0])
         index = card * 2 + int(chip[1]) if indexing == "card-die" else card
