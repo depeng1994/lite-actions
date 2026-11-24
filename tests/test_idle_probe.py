@@ -107,7 +107,9 @@ class IdleProbeTests(unittest.TestCase):
         self.assertEqual(results[("test", "198.51.100.1:22", (2, 3))][0], "idle")
 
     def test_idle_probe_keeps_visibility_timestamp_when_round_is_partial(self):
-        view = lambda: (self.pools, {})
+        def view():
+            return self.pools, {}
+
         health = {
             '["test","198.51.100.1:22",[0,1]]': {"v": 1, "mc": 1, "lo": None, "pr": 1},
             '["test","198.51.100.1:22",[2,3]]': {"v": 0, "mc": 0, "lo": 1234, "pr": 1},
