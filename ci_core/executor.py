@@ -203,11 +203,16 @@ def _process_table_header(output, indexing, *, legacy_a3=False):
         cells = [" ".join(cell.split()) for cell in line[1:-1].split("|")]
         if cells == required or cells == required + ["Process id in container"]:
             return i, len(cells)
-        if legacy_a3 and indexing == "card-die" and cells == [
-            "NPU ID",
-            "Chip ID",
-            "Process id in container",
-        ]:
+        if (
+            legacy_a3
+            and indexing == "card-die"
+            and cells
+            == [
+                "NPU ID",
+                "Chip ID",
+                "Process id in container",
+            ]
+        ):
             return i, len(cells)
     raise ValueError("npu-smi process table absent")
 
