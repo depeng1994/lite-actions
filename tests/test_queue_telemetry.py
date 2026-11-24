@@ -25,6 +25,7 @@ class QueueTelemetryTests(unittest.TestCase):
     def test_projection_uses_scheduler_sequence_and_verifies_candidates(self):
         node = {
             "host_id": "198.51.100.1:22",
+            "environments": {"training": {"container_id": "a" * 64}},
             "allocation_groups": [
                 {"devices": [0, 1], "verified": True},
                 {"devices": [2, 3], "verified": True},

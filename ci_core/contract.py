@@ -112,6 +112,9 @@ def normalize(test, defaults, order):
         raise ValueError("unknown case override")
     config = dict(defaults)
     for k, v in override.items():
+        if k == "docker" and v is None:
+            config[k] = None
+            continue
         if (
             not isinstance(v, str)
             or not v
@@ -134,7 +137,7 @@ def normalize(test, defaults, order):
         pool, docker = config.get("target_pool"), config.get("docker")
         if not isinstance(pool, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", pool):
             raise ValueError("invalid pool")
-        if (
+        if docker is not None and (
             not isinstance(docker, str)
             or not docker
             or len(docker) > 256
@@ -173,7 +176,9 @@ def normalize(test, defaults, order):
             raise ValueError("probe cannot define environment")
         from ci_core.registry import validate_case_environment
 
-        case["env_vars"] = validate_case_environment(raw_env, kind=kind, execution=True)
+        case["env_vars"] = validate_case_environment(
+            raw_env, kind=kind, require_setup=False
+        )
     return case
 
 

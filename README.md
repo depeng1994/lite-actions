@@ -151,14 +151,42 @@ each preemption request; unconfirmed cleanup is reported as such.
 The runtime `force_reclaim` field is the pool default. `OCCUPANCY_POLICY` log
 lines show the effective policy for each selected node and execution phase.
 
-For GitCode repositories listed in `LITE_ACTIONS_GITCODE_REPOS`, the Worker also
-discovers running workflows whose name starts with `lite-ci-`, regardless of
-event. For the source-profile protocol, each participating worker resolves
-`dispatch_smoke` from the run's fixed model
-commit, accepts only its own cases, and publishes results as the configured
-`LITE_ACTIONS_GITCODE_RESULT_AUTHOR` using that account's token. The waiter job must be uniquely named
-`Dispatcher Smoke`. For NPU tasks the Worker reads the fixed commit's declarative `.ci/lite-actions.json`, never model Python. Missing catalogs stop admission; do not roll back to running the model entrypoint on the host. A new dispatch of the same run gets separate task,
-log and result identities.
+For GitCode repositories listed in `LITE_ACTIONS_GITCODE_REPOS`, the Worker
+discovers running `lite-ci-` workflows. The hosted runner publishes one
+`lite-ci-request-<attempt>` artifact containing `ci-request.json` (schema 3).
+The Worker checks the repository, workflow, run, attempt, source SHA, and plan
+digest, executes its own cases, and posts results as
+`LITE_ACTIONS_GITCODE_RESULT_AUTHOR`. A new dispatch has separate task, log, and
+result identities. Legacy source-profile callers still need the fixed commit's
+declarative `.ci/lite-actions.json`; the Worker does not run model code on its host.
+
+#### Worker site defaults for GitHub and GitCode
+
+NPU cases in GitHub and GitCode schema-3 requests can send `"docker": null` and
+omit deployment-owned paths from `env_vars`. Inline cases send `{}` if there are
+no model-owned entries. For a plan resolved from the pinned `.ci/lite-actions.json`
+catalog, set `ci_overrides.docker` to null in the catalog as well. Keep the
+case's `worker`, `target_pool`, and topology explicit.
+
+- The Worker uses the target pool's `default_docker` when configured. Otherwise it
+  uses the sole container binding name across unpaused, verified nodes that
+  support the requested case kind. Multiple names require an explicit pool
+  default or an explicit case binding. Missing
+  bindings and ambiguous defaults fail the case before execution.
+- `ASCEND_SET_ENV_PATH` and, for training, `HF_ASSETS_PATH` default to the first
+  approved value for the resolved container in the Worker's
+  `case_environments`. Explicit paths keep their precedence and undergo the
+  same path and allowlist checks. Model-owned fields such as `DATASET_PATH`
+  remain in the case definition. Checkpoint input paths require an explicit
+  case value.
+- The plan digest and result schema describe the submitted request, so the
+  result's `docker` can be null. Worker execution uses the resolved, pinned
+  container binding.
+
+Existing explicitly configured plans remain valid. Upgrade and verify both
+participating Workers before switching a caller to omitted paths or
+`docker: null`. Catalog-backed requests still undergo pinned definition checks,
+and Worker probes retain their zero-resource contract.
 
 ### Yellow：GitCode / GitHub 仓库来源配置
 

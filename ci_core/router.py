@@ -15,7 +15,7 @@ from contextlib import ExitStack
 from copy import deepcopy
 from pathlib import Path
 
-from ci_core.config import load_active_pools, runtime_case
+from ci_core.config import PoolDefaultError, load_active_pools, runtime_case
 from ci_core.contract import (
     REPO,
     SELF_REPO,
@@ -1058,14 +1058,24 @@ class Router:
                 raw_env = definition["env_vars"]
             from ci_core.registry import validate_case_environment
 
-            environment = validate_case_environment(raw_env, kind=item["kind"])
             # The model selects values; only the deployment may authorize
             # ASCEND_SET_ENV_PATH and any explicitly constrained keys.
             rules = (
                 self.workers[self.worker]
                 .get("case_environments", {})
-                .get(item["docker"], {})
+                .get(case["docker"], {})
             )
+            raw_env = dict(raw_env)
+            keys = (
+                ("ASCEND_SET_ENV_PATH", "HF_ASSETS_PATH")
+                if item["kind"] == "train"
+                else ("ASCEND_SET_ENV_PATH",)
+            )
+            for name in keys:
+                allowed = rules.get(name)
+                if name not in raw_env and isinstance(allowed, list) and allowed:
+                    raw_env[name] = allowed[0]
+            environment = validate_case_environment(raw_env, kind=item["kind"])
             approved_setup = rules.get("ASCEND_SET_ENV_PATH")
             if type(approved_setup) is not list or (
                 environment.get("ASCEND_SET_ENV_PATH") not in approved_setup
@@ -1292,7 +1302,9 @@ class Router:
                     key,
                     "INFRA_ERROR",
                     125,
-                    [f"Capacity check failed: {type(exc).__name__}"],
+                    [
+                        f"Capacity check failed: {exc if isinstance(exc, PoolDefaultError) else type(exc).__name__}"
+                    ],
                     clean,
                 )
 

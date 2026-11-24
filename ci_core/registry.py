@@ -34,13 +34,13 @@ CASE_ENV_KEY = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 
 
 def validate_case_environment(
-    env: object, *, kind: str = "train", execution: bool = True
+    env: object,
+    *,
+    kind: str = "train",
+    execution: bool = True,
+    require_setup: bool = True,
 ) -> dict[str, str]:
-    """Validate trusted model-derived environment before SSH and preflight.
-
-    An A5 case without configured assets remains discoverable with `inspect`,
-    but cannot be executed until its real paths are defined in model source.
-    """
+    """Check model-owned environment and any explicitly supplied asset paths."""
     if not isinstance(env, dict):
         raise ValueError("model test env_vars must be a dictionary")
     for key, value in env.items():
@@ -63,15 +63,9 @@ def validate_case_environment(
         # Never let one dormant recipe disable every smoke case; enforce mandatory
         # operator-approved paths when the selected case is actually admitted.
         return env.copy()
-    required = ("ASCEND_SET_ENV_PATH",)
-    for key in required:
-        path = env.get(key)
-        if not isinstance(path, str) or not path.startswith("/"):
-            raise ValueError(f"model test must define an absolute {key} in env_vars")
-    for key in ("HF_ASSETS_PATH", "CKPT_INIT_LOAD_PATH"):
-        if key in env:
-            path = env[key]
-            if not isinstance(path, str) or not path.startswith("/"):
+    for key in ASSET_ENV_KEYS:
+        if key in env or (require_setup and key == "ASCEND_SET_ENV_PATH"):
+            if not env.get(key, "").startswith("/"):
                 raise ValueError(
                     f"model test must define an absolute {key} in env_vars"
                 )
@@ -147,8 +141,13 @@ def decode_catalog(data):
                 not isinstance(overrides, dict)
                 or set(overrides) - {"worker", "target_pool", "docker"}
                 or not all(
-                    isinstance(v, str) and 0 < len(v) <= 256 and v.isprintable()
-                    for v in overrides.values()
+                    (key == "docker" and value is None)
+                    or (
+                        isinstance(value, str)
+                        and 0 < len(value) <= 256
+                        and value.isprintable()
+                    )
+                    for key, value in overrides.items()
                 )
             ):
                 raise ValueError
