@@ -194,7 +194,7 @@ def model_archive(
                 )
                 assert pack.stdout is not None
                 with gzip.GzipFile(
-                    fileobj=output, mode="wb", compresslevel=1, mtime=0
+                    fileobj=output, mode="wb", compresslevel=6, mtime=0
                 ) as zipped:
                     shutil.copyfileobj(pack.stdout, zipped)
                 pack.stdout.close()
@@ -246,30 +246,48 @@ def allocations(case: dict, pools: dict) -> list[dict]:
 def stage(
     node: dict, base: str, archive: Path, sha: str, test_case: str | None = None
 ) -> str:
+    import hashlib
+    import posixpath
+
     host = node["ssh"]
     dest = f"{base}/node{node['position']}"
-    ssh(host, f"mkdir -p {q(base)} && mkdir {q(dest)} && mkdir {q(dest + '/repo')}")
+    cache_dir = f"{posixpath.dirname(base)}/.archive-cache"
+    checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
+    cache_file = f"{cache_dir}/{sha}.{checksum[:12]}.tar.gz"
+    ssh(
+        host,
+        f"mkdir -p {q(base)} && mkdir {q(dest)} && mkdir {q(dest + '/repo')} && mkdir -p {q(cache_dir)}",
+    )
     from ci_core.transport import run as transport_run
 
-    for attempt in range(2):
-        try:
-            with archive.open("rb") as source:
-                transport_run(
-                    host,
-                    "cat > " + q(dest + "/source.tar.gz"),
-                    stdin=source,
-                    timeout=240,
-                )
-            break
-        except subprocess.TimeoutExpired:
-            if attempt:
-                raise
-        except RuntimeError as exc:
-            if attempt or "exit=255" not in str(exc):
-                raise
-    import hashlib
+    cache_hit = False
+    try:
+        ssh(
+            host,
+            f"test -f {q(cache_file)} && test {q(checksum)} = \"$(sha256sum {q(cache_file)} | cut -d ' ' -f1)\" && cp {q(cache_file)} {q(dest + '/source.tar.gz')}",
+            timeout=45,
+        )
+        cache_hit = True
+    except (RuntimeError, OSError, subprocess.TimeoutExpired):
+        cache_hit = False
 
-    checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
+    if not cache_hit:
+        for attempt in range(2):
+            try:
+                with archive.open("rb") as source:
+                    transport_run(
+                        host,
+                        "cat > " + q(dest + "/source.tar.gz"),
+                        stdin=source,
+                        timeout=900,
+                    )
+                break
+            except subprocess.TimeoutExpired:
+                if attempt:
+                    raise
+            except RuntimeError as exc:
+                if attempt or "exit=255" not in str(exc):
+                    raise
     ssh(
         host,
         "test "
@@ -278,6 +296,18 @@ def stage(
         + q(dest + "/source.tar.gz")
         + " | cut -d ' ' -f1)\"",
     )
+    if not cache_hit:
+        try:
+            cache_tmp = f"{cache_dir}/.{sha}.{os.getpid()}.tmp"
+            ssh(
+                host,
+                f"cp {q(dest + '/source.tar.gz')} {q(cache_tmp)} && "
+                f"mv -f {q(cache_tmp)} {q(cache_file)} && "
+                f"ls -1t {q(cache_dir)}/*.tar.gz 2>/dev/null | tail -n +11 | xargs -r rm -f",
+                timeout=30,
+            )
+        except (RuntimeError, OSError, subprocess.TimeoutExpired):
+            pass
     ssh(
         host,
         f"cd {q(dest)} && tar -xzf source.tar.gz -C repo && "

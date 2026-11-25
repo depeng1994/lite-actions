@@ -272,8 +272,13 @@ class TestTransientSshRetry(unittest.TestCase):
                 return subprocess.CompletedProcess(["ssh"], 0, stdout="", stderr="")
 
             def fake_ssh(host, cmd, timeout=90):
+                if cmd.startswith("test -f "):
+                    raise RuntimeError("cache miss")
                 self.assertTrue(
-                    "mkdir -p" in cmd or expected_sha256 in cmd or "tar -xzf" in cmd
+                    "mkdir -p" in cmd
+                    or expected_sha256 in cmd
+                    or "tar -xzf" in cmd
+                    or ".archive-cache" in cmd
                 )
                 return subprocess.CompletedProcess(["ssh"], 0, stdout="", stderr="")
 
@@ -291,6 +296,41 @@ class TestTransientSshRetry(unittest.TestCase):
         self.assertEqual(dest, "/tmp/base/node0")
         self.assertEqual(len(upload_attempts), 2)
         self.assertEqual(upload_attempts[1][2], payload)
+
+    def test_stage_skips_upload_on_verified_cache_hit(self):
+        import hashlib
+        import subprocess
+        from unittest.mock import patch
+
+        from ci_core import ssh_runner
+
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = Path(tmp) / "src.tar.gz"
+            payload = b"cached-tar-payload"
+            archive.write_bytes(payload)
+            expected_sha256 = hashlib.sha256(payload).hexdigest()
+            seen_cmds = []
+
+            def fake_transport_run(host, cmd, *, timeout=90, check=True, stdin=None):
+                raise AssertionError("upload should be skipped on verified cache hit")
+
+            def fake_ssh(host, cmd, timeout=90):
+                seen_cmds.append(cmd)
+                return subprocess.CompletedProcess(["ssh"], 0, stdout="", stderr="")
+
+            with (
+                patch("ci_core.transport.run", side_effect=fake_transport_run),
+                patch("ci_core.ssh_runner.ssh", side_effect=fake_ssh),
+            ):
+                dest = ssh_runner.stage(
+                    {"host_id": "h1", "ssh": "h1", "position": 0},
+                    "/tmp/base",
+                    archive,
+                    "abc123def456",
+                )
+
+        self.assertEqual(dest, "/tmp/base/node0")
+        self.assertTrue(any(expected_sha256 in cmd for cmd in seen_cmds))
 
     def test_owned_processes_gone_retries_on_timeout(self):
         import subprocess
