@@ -29,10 +29,12 @@ export function beijingClock(date = new Date()) {
 }
 
 export function timelineClock(date = new Date()) {
-  const now = Math.floor(date.getTime() / 60000);
+  const nowMs = date.getTime();
+  const now = Math.floor(nowMs / 60000);
   return {
     dateLabel: shanghaiLabelFormatter.format(date),
     now,
+    nowMs,
     timelineStart: now - 72 * 60,
     timelineEnd: now + 60,
   };
@@ -65,8 +67,8 @@ export const statusTone = {
   "成功": "teal", "失败": "red", "已取消": "gray",
 };
 
-export function workflowKey({platform, repo, id, attempt}) {
-  return JSON.stringify([platform, repo, id, attempt]);
+export function workflowKey({platform, repo, id, attempt, isTest}) {
+  return isTest ? JSON.stringify([platform, repo, id, attempt, 1]) : JSON.stringify([platform, repo, id, attempt]);
 }
 
 export function clock(minute) {
@@ -90,7 +92,50 @@ export function poolId(worker, pool) {
 }
 
 export function displayNodeHost(node) {
-  return node.displayHost || node.hostId || node.host_id || (node.ip && node.port ? `${node.ip}:${node.port}` : node.id);
+  if (!node) return null;
+  if (typeof node === "string") return node;
+  return node.displayHost || node.hostId || node.host_id || node.display_host_id || (node.ip && node.port ? `${node.ip}:${node.port}` : node.id || node.node_ref || null);
+}
+
+export function deviceRangeLabel(devices) {
+  if (!devices?.length) return null;
+  const sorted = [...devices].sort((a, b) => a - b);
+  return `${sorted[0]}–${sorted.at(-1)}`;
+}
+
+export function allocationEntries(item, detail = null, nodes = []) {
+  const raw = detail?.allocation?.length
+    ? detail.allocation
+    : item?.allocations?.length
+      ? item.allocations
+      : null;
+  if (raw) {
+    return raw.map((alloc) => {
+      const matched = nodes.find((node) => node.id === alloc.node_ref || (alloc.host_id && node.hostId === alloc.host_id));
+      const host = displayNodeHost(alloc) || (matched && displayNodeHost(matched)) || "未知节点";
+      const sorted = alloc.devices?.length ? [...alloc.devices].sort((a, b) => a - b) : [];
+      return {
+        host,
+        group: deviceRangeLabel(sorted),
+        devicesText: sorted.length ? sorted.join(",") : null,
+      };
+    });
+  }
+  const fallback = item?.allocation || (item?.historyId ? item?.node : null);
+  if (!fallback) return [];
+  const resolved = typeof fallback === "string"
+    ? (nodes.find((node) => node.id === fallback) || fallback)
+    : fallback;
+  const host = displayNodeHost(resolved);
+  if (!host) return [];
+  const group = (item?.groups || []).filter(Boolean).join("、") || null;
+  return [{ host, group, devicesText: group }];
+}
+
+export function formatAllocation(item, detail = null, nodes = []) {
+  const entries = allocationEntries(item, detail, nodes);
+  if (!entries.length) return null;
+  return entries.map(({ host, group }) => (group ? `${host} ${group}` : host)).join("、");
 }
 
 export function targetFor(node, group) {
@@ -124,7 +169,14 @@ export function impactOf(target, cases, nodes) {
     const hostId = node.hostId || node.host_id || (node.ip && node.port ? `${node.ip}:${node.port}` : null);
     return node.worker === target.worker && node.pool === target.pool && (!target.node || target.node === node.id || target.node === hostId || target.nodeId === node.id);
   });
-  const leases = cases.filter((item) => item.node && affectedNodes.some((node) => node.id === item.node) && (!target.group || item.groups.includes(target.group)) && ["准备中", "运行中", "清理中"].includes(item.status));
+  const leases = cases.filter((item) => {
+    if (!["准备中", "运行中", "清理中"].includes(item.status)) return false;
+    if (item.allocations?.length) {
+      return item.allocations.some((alloc) => affectedNodes.some((node) => node.id === alloc.node_ref || (node.hostId && node.hostId === alloc.host_id))
+        && (!target.group || deviceRangeLabel(alloc.devices) === target.group));
+    }
+    return item.node && affectedNodes.some((node) => node.id === item.node) && (!target.group || item.groups.includes(target.group));
+  });
   const queue = cases.filter((item) => item.status === "排队中" && item.worker === target.worker && item.pool === target.pool && (!target.group || !item.plannedGroups?.length || item.plannedGroups.includes(target.group)));
   return {affectedNodes, leases, queue};
 }

@@ -1,11 +1,15 @@
 import {body, type Router, HttpError} from "../router";
-import {ingestEvents, ingestSnapshot} from "../services/ingest";
-import {array, integer, member, nullableInt, nullableString, object, POOL, string} from "../utils/validate";
+import {deregisterTestWorker, ingestEvents, ingestSnapshot} from "../services/ingest";
+import {
+  array, integer, isTestWorkerId, member, nullableInt, nullableString, object, POOL, REPO, RUN_ID,
+  SHA40, string, TEST_WORKER_ID, workerZoneOf,
+} from "../utils/validate";
 
 export function workerRoutes(router: Router) {
   const prefix = "/api/v1/worker";
   router.add("POST", prefix + "/heartbeat", async context => {
     const input = await body(context);
+    if (isTestWorkerId(input.w)) throw new HttpError(403, "TEST_WORKER_FORBIDDEN");
     if (input.w !== context.workerId) throw new HttpError(403, "WORKER_MISMATCH");
     const instance = string(input.i, "instance", 8, /^[a-f0-9]{8}$/);
     const sha = string(input.sha ?? "", "code sha", 40, /^[a-f0-9]{0,40}$/);
@@ -43,6 +47,8 @@ export function workerRoutes(router: Router) {
 
   router.add("POST", prefix + "/command-receipts", async context => {
     const data = await body(context);
+    if (isTestWorkerId(data.w)) throw new HttpError(403, "TEST_WORKER_FORBIDDEN");
+    if (data.w !== undefined && data.w !== context.workerId) throw new HttpError(403, "WORKER_MISMATCH");
     const id = string(data.cmd_id, "command", 64, /^[a-zA-Z0-9_-]+$/);
     const status = member(data.status, "status", ["ACKED", "APPLIED", "PARTIAL_APPLIED", "NOOP", "CONFLICT", "FAILED"] as const);
     const pools = data.pools == null ? null : array(data.pools, "pools", 32).map(value => {
@@ -91,6 +97,41 @@ export function workerRoutes(router: Router) {
 
   router.add("POST", prefix + "/events", async context => Response.json(await ingestEvents(context, await body(context))));
   router.add("POST", prefix + "/snapshots", async context => Response.json(await ingestSnapshot(context, await body(context))));
+  router.add("POST", prefix + "/test-workers/register", async context => {
+    const data = await body(context);
+    const workerId = string(data.w, "worker_id", 64, TEST_WORKER_ID);
+    const zone = member(data.z, "zone", ["blue", "yellow"] as const);
+    if (zone !== context.workerId || workerZoneOf(workerId) !== context.workerId) {
+      throw new HttpError(403, "WORKER_MISMATCH");
+    }
+    const repo = string(data.r, "repo", 128, REPO);
+    const pr = nullableInt(data.pr, "pr_number", 1);
+    const sha = nullableString(data.sha ?? null, "pr_head_sha", 40, SHA40);
+    const runId = string(data.rid, "run_id", 128, RUN_ID);
+    const attempt = integer(data.at ?? 1, "attempt", 1, 9999);
+    const ttl = integer(data.ttl ?? 14400, "ttl_seconds", 300, 14400);
+    const expiresAt = integer(data.exp ?? (context.now + ttl), "expires_at");
+    const instanceId = nullableString(data.i ?? null, "instance", 8, /^[a-f0-9]{8}$/);
+    const status = member(data.st ?? "ACTIVE", "status", ["DEPLOYING", "ACTIVE"] as const);
+    await context.env.DB.prepare(`
+      INSERT INTO test_workers(
+        worker_id,zone,repo,pr_number,pr_head_sha,run_id,attempt,status,ttl_seconds,
+        expires_at,registered_at,deregistered_at,instance_id,last_seq,last_snapshot_id,updated_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL,?,0,NULL,?)
+      ON CONFLICT(worker_id) DO UPDATE SET
+        repo=excluded.repo,pr_number=excluded.pr_number,pr_head_sha=excluded.pr_head_sha,
+        run_id=excluded.run_id,attempt=excluded.attempt,status=excluded.status,
+        ttl_seconds=excluded.ttl_seconds,expires_at=excluded.expires_at,
+        deregistered_at=NULL,instance_id=COALESCE(excluded.instance_id,test_workers.instance_id),
+        updated_at=excluded.updated_at
+    `).bind(
+      workerId, zone, repo, pr, sha, runId, attempt, status, ttl,
+      expiresAt, context.now, instanceId, context.now,
+    ).run();
+    return Response.json({ok: true, worker_id: workerId, zone});
+  });
+  router.add("POST", prefix + "/test-workers/deregister", async context =>
+    Response.json(await deregisterTestWorker(context, await body(context))));
   router.add("GET", prefix + "/configs/:revision", async context => {
     const rev = integer(Number(context.params.revision), "revision", 1);
     const row = await context.env.DB.prepare("SELECT revision,sha256,config_json FROM pools_configs WHERE revision=?")

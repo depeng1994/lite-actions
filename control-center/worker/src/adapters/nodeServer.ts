@@ -135,6 +135,7 @@ export function startNodeServer(options: {
   if (options.enableTimers && options.maintenance) {
     const run = options.maintenance;
     const baseEnv = {...options.env, DB: store};
+    scheduleBackground(run("cancellations", baseEnv));
     timers.push(setInterval(() => scheduleBackground(run("cancellations", baseEnv)), 60_000));
     timers.push(setInterval(() => scheduleBackground(run("retention", baseEnv)), 86_400_000));
     for (const timer of timers) timer.unref();

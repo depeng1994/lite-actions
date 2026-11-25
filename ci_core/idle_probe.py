@@ -9,7 +9,11 @@ import time
 from pathlib import Path
 
 from ci_core.executor import _process_rows
-from ci_core.resources import resource_keys
+from ci_core.resources import (
+    PhysicalResourceCoordinator,
+    resource_keys,
+    shared_resource_lock_root,
+)
 from ci_core.transport import run
 
 
@@ -17,16 +21,32 @@ def group_id(pool, host, devices):
     return pool, host, tuple(sorted(devices))
 
 
-def _leased_resources(records):
+def _coordinator_leased_resources(lock_root=None):
+    root = Path(lock_root) if lock_root is not None else shared_resource_lock_root()
+    if (
+        not (root / "active-leases").exists()
+        and not (root / "coordinator.lock").exists()
+    ):
+        return set()
     leased = set()
+    try:
+        for doc in PhysicalResourceCoordinator(root).all_active_leases():
+            leased.update(resource_keys(doc.get("allocation") or []))
+    except Exception:
+        return set()
+    return leased
+
+
+def _leased_resources(records, extra_leased=None):
+    leased = set(extra_leased or ())
     for record in records.values():
         if record.get("phase") in {"RESERVED", "STAGING", "RUNNING", "CLEANING"}:
             leased.update(resource_keys(record.get("allocation") or []))
     return leased
 
 
-def observe(worker, pools, records, *, execute=run):
-    leased = _leased_resources(records)
+def observe(worker, pools, records, *, execute=run, extra_leased=None):
+    leased = _leased_resources(records, extra_leased=extra_leased)
     results = {}
     skipped = False
     for pool_name, pool in pools.items():
@@ -78,7 +98,16 @@ def _health_key(pool, host, devices):
 
 
 def observe_health(
-    worker, pools, records, *, execute=run, previous=None, probe_round=1, refresh=None
+    worker,
+    pools,
+    records,
+    *,
+    execute=run,
+    previous=None,
+    probe_round=1,
+    refresh=None,
+    extra_leased=None,
+    lease_provider=None,
 ):
     """Probe every configured node and return occupancy plus visibility state.
 
@@ -88,7 +117,9 @@ def observe_health(
     ``last_online_at`` and advance the five-round failure counter exactly once.
     """
     previous = previous or {}
-    leased = _leased_resources(records)
+    leased = _leased_resources(records, extra_leased=extra_leased)
+    if lease_provider is not None:
+        leased.update(lease_provider())
     results = {}
     health = {}
     complete = True
@@ -100,6 +131,8 @@ def observe_health(
             groups = [group["devices"] for group in node.get("allocation_groups", [])]
             if refresh:
                 leased.update(_leased_resources(refresh()))
+            if lease_provider is not None:
+                leased.update(lease_provider())
             try:
                 output = execute(
                     node.get("host_ssh") or node["ssh"], "npu-smi info", timeout=20
@@ -110,6 +143,8 @@ def observe_health(
             now = int(time.time())
             if refresh:
                 leased.update(_leased_resources(refresh()))
+            if lease_provider is not None:
+                leased.update(lease_provider())
             for devices in groups:
                 key = _health_key(pool_name, host, devices)
                 old = previous.get(key, {})
@@ -157,11 +192,25 @@ def observe_health(
 
 
 class IdleProbe:
-    def __init__(self, worker, view, *, interval=120, state_dir=None, report=None):
+    def __init__(
+        self,
+        worker,
+        view,
+        *,
+        interval=120,
+        state_dir=None,
+        report=None,
+        lease_provider=None,
+    ):
         self.worker = worker
         self.view = view
         self.interval = interval
         self.report = report
+        self.lease_provider = (
+            lease_provider
+            if lease_provider is not None
+            else _coordinator_leased_resources
+        )
         self.state_path = (
             Path(state_dir) / "visibility-probe.json" if state_dir else None
         )
@@ -191,6 +240,7 @@ class IdleProbe:
             previous=self.health,
             probe_round=self.probe_round,
             refresh=lambda: self.view()[1],
+            lease_provider=self.lease_provider,
         )
         successful_probe_times = [
             entry["lo"]

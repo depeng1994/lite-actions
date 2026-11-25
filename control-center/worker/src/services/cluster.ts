@@ -153,12 +153,12 @@ function validatePools(pools: Pools) {
 }
 
 type ClusterOp = "PAUSE" | "RESUME" | "DRAIN" | "ADD_POOL" | "ADD_NODE" | "ADD_DEVICE_GROUP" |
-  "DELETE_POOL" | "DELETE_NODE" | "DELETE_DEVICE_GROUP";
+  "DELETE_POOL" | "DELETE_NODE" | "DELETE_DEVICE_GROUP" | "SET_OCCUPANCY_POLICY";
 
 function operate(old: Pools, input: Record<string, unknown>): Pools {
   const pools = structuredClone(old);
   const op = member(input.op, "operation", ["PAUSE","RESUME","DRAIN","ADD_POOL","ADD_NODE","ADD_DEVICE_GROUP",
-    "DELETE_POOL","DELETE_NODE","DELETE_DEVICE_GROUP"] as const) as ClusterOp;
+    "DELETE_POOL","DELETE_NODE","DELETE_DEVICE_GROUP","SET_OCCUPANCY_POLICY"] as const) as ClusterOp;
   const name = string(input.pool, "pool", 64, POOL);
   if (!name || ["__proto__","constructor","prototype"].includes(name)) invalid("pool");
   const pool = Object.hasOwn(pools, name) ? pools[name] : undefined;
@@ -181,7 +181,7 @@ function operate(old: Pools, input: Record<string, unknown>): Pools {
 
   const scope = op === "PAUSE" || op === "RESUME" || op === "DRAIN"
     ? member(input.scope, "scope", ["pool","node","device_group"] as const)
-    : op === "DELETE_NODE" ? "node" : "device_group";
+    : op === "DELETE_NODE" || op === "SET_OCCUPANCY_POLICY" ? "node" : "device_group";
   let target: Pool | PoolNode | PoolGroup = pool;
   if (scope !== "pool") {
     const host = hostId(input.host_id);
@@ -190,6 +190,15 @@ function operate(old: Pools, input: Record<string, unknown>): Pools {
     target = node;
     if (op === "ADD_DEVICE_GROUP") {
       (node.allocation_groups ??= []).push(validateGroup(input.value, node.device_ids ?? []));
+      return pools;
+    }
+    if (op === "SET_OCCUPANCY_POLICY") {
+      const policy = member(
+        input.occupancy_policy ?? object(input.value, "occupancy_policy").occupancy_policy,
+        "occupancy_policy",
+        ["wait", "preempt"] as const,
+      );
+      node.occupancy_policy = policy;
       return pools;
     }
     if (op === "DELETE_NODE") {
@@ -308,10 +317,10 @@ async function plan(context: Context, input: Record<string, unknown>, rollback =
       blocking_reasons.push("NODE_QUARANTINED");
     }
     const info = await db.prepare(`
-      SELECT a.task_uid,a.task_key,a.phase,a.worker_id,a.target_pool,a.allocation_json,q.candidate_group_idxs_json
+      SELECT a.task_uid,a.task_key,a.phase,a.worker_id,a.reporter_id,a.is_test,a.target_pool,a.allocation_json,q.candidate_group_idxs_json
       FROM tasks_active a LEFT JOIN queue_orders q ON q.task_uid=a.task_uid AND q.worker_id=a.worker_id
         AND q.pool_name=a.target_pool AND q.kind=a.kind ORDER BY a.task_uid
-    `).all<{task_uid: string; task_key: string; phase: string; worker_id: WorkerId; target_pool: string;
+    `).all<{task_uid: string; task_key: string; phase: string; worker_id: WorkerId; reporter_id: string | null; is_test: number; target_pool: string;
       allocation_json: string; candidate_group_idxs_json: string | null}>();
     for (const row of info.results) {
       const relevant = affected.filter(group => group.worker_id === row.worker_id && group.pool_name === row.target_pool);
@@ -336,9 +345,11 @@ async function plan(context: Context, input: Record<string, unknown>, rollback =
       const drainedWholePool = isDrain && target?.scope === "pool" && target.pool_name === row.target_pool;
       if (!Object.hasOwn(next, row.target_pool) || drainedWholePool || lostAll) {
         drain_cancel_tasks.push(row.task_uid);
-        const keys = drain.get(row.worker_id) ?? [];
-        keys.push(row.task_key);
-        drain.set(row.worker_id, keys);
+        if ((row.reporter_id ?? row.worker_id) === row.worker_id && row.is_test !== 1) {
+          const keys = drain.get(row.worker_id) ?? [];
+          keys.push(row.task_key);
+          drain.set(row.worker_id, keys);
+        }
       }
     }
   }

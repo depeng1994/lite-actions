@@ -317,3 +317,78 @@ class ControlTests(unittest.TestCase):
                 (2740, "idle"),
             ],
         )
+
+    def test_capture_preserves_allocation_across_cleaning_and_terminal_but_clears_on_requeue(
+        self,
+    ):
+        client = self.client()
+        key = "owner/repo:1:1:case_000_demo"
+        alloc = [{"host_id": "198.51.100.1:22", "devices": [0, 1]}]
+        self.records[key]["phase"] = "RUNNING"
+        self.records[key]["allocation"] = alloc
+        self.records[key]["phase_timestamps"]["RUNNING"] = 100
+        client.outbox.change(
+            lambda data: client._capture_into(
+                data, self.records, {"w": "blue", "i": "deadbeef"}
+            )
+        )
+
+        # Missing allocation in CLEANING / REPORTED must not wipe prior allocation.
+        self.records[key]["phase"] = "CLEANING"
+        self.records[key]["allocation"] = []
+        self.records[key]["phase_timestamps"]["CLEANING"] = 105
+        client.outbox.change(
+            lambda data: client._capture_into(
+                data, self.records, {"w": "blue", "i": "deadbeef"}
+            )
+        )
+        self.records[key]["phase"] = "REPORTED"
+        self.records[key]["phase_timestamps"]["FINISHED"] = 110
+        self.records[key]["report"] = {
+            "status": "PASS",
+            "exit_code": 0,
+            "cleanup_verified": True,
+        }
+        client.outbox.change(
+            lambda data: client._capture_into(
+                data, self.records, {"w": "blue", "i": "deadbeef"}
+            )
+        )
+        events = client.outbox.view()["events"]
+        tl_events = [ev for ev in events if ev["t"] == "TL"]
+        self.assertEqual(len(tl_events), 1)
+        self.assertEqual(tl_events[0]["a"], [{"h": "198.51.100.1:22", "d": [0, 1]}])
+        self.assertEqual([ev["t"] for ev in events[-2:]], ["TP", "TF"])
+
+        # Returning to QUEUED must still emit TL(a=[]).
+        dir2 = tempfile.TemporaryDirectory()
+        self.addCleanup(dir2.cleanup)
+        cfg2 = {**self.cfg, "state_dir": dir2.name}
+        client2 = ControlClient(
+            "blue",
+            cfg2,
+            "x" * 64,
+            Egress("blue", cfg2),
+            threading.Event(),
+            lambda: {"records": {}},
+            clock=lambda: self.now,
+        )
+        key2 = "owner/repo:2:1:case_000_requeue"
+        rec2 = record(now=200, phase="RESERVED")
+        rec2["allocation"] = alloc
+        client2.outbox.change(
+            lambda data: client2._capture_into(
+                data, {key2: rec2}, {"w": "blue", "i": "deadbeef"}
+            )
+        )
+        rec2["phase"] = "QUEUED"
+        rec2["allocation"] = []
+        client2.outbox.change(
+            lambda data: client2._capture_into(
+                data, {key2: rec2}, {"w": "blue", "i": "deadbeef"}
+            )
+        )
+        tl2 = [ev for ev in client2.outbox.view()["events"] if ev["t"] == "TL"]
+        self.assertEqual(
+            [ev["a"] for ev in tl2], [[{"h": "198.51.100.1:22", "d": [0, 1]}], []]
+        )

@@ -115,6 +115,8 @@ class ModelOwnedVllmTests(unittest.TestCase):
                             else "0" * 40
                         }
                     }
+                if path.startswith("/compare/"):
+                    return {"merge_base_commit": {"sha": "0" * 40}}
                 if path == "/branches/ci%2Fpilot":
                     return {"commit": {"sha": outer.control}}
                 if path == "/pulls/7":
@@ -583,6 +585,71 @@ class ModelOwnedVllmTests(unittest.TestCase):
                         router.close()
                         self.pr["head"]["sha"] = self.head
                         self.base = self.source["base_sha"]
+
+    def test_artifact_cannot_replace_control_sha_with_arbitrary_or_fork_sha(self):
+        # Tampered arbitrary control_sha on a head-matched workflow run is rejected.
+        arbitrary_source = {**self.source, "control_sha": "f" * 40}
+        head_run = {
+            **self.run,
+            "event": "workflow_dispatch",
+            "head_branch": "main",
+            "head_sha": self.head,
+        }
+        bound = bind_request_source(self.client(), head_run, arbitrary_source)
+        self.assertEqual(bound["_ci_platform_run_sha"], self.head)
+        self.controller_is_ancestor = False
+        with self.assertRaises(ValueError):
+            read_source(self.client(), bound, self.plan, source=arbitrary_source)
+
+        # workflow_dispatch on main cannot adopt fork PR head as control_sha.
+        self.controller_is_ancestor = True
+        fork_control_source = {**self.source, "control_sha": self.head}
+        dispatch_run = {
+            **self.run,
+            "event": "workflow_dispatch",
+            "head_branch": "main",
+            "head_sha": self.head,
+        }
+        bound_fork = bind_request_source(
+            self.client(), dispatch_run, fork_control_source
+        )
+        with self.assertRaisesRegex(ValueError, "trusted repository branch"):
+            read_source(
+                self.client(), bound_fork, self.plan, source=fork_control_source
+            )
+
+        # workflow_dispatch running on self.control rejects swapping control_sha to another branch commit.
+        control_run = {
+            **self.run,
+            "event": "workflow_dispatch",
+            "head_branch": "main",
+            "head_sha": self.control,
+        }
+        with self.assertRaisesRegex(ValueError, "source identity differs"):
+            bind_request_source(
+                self.client(), control_run, {**self.source, "control_sha": self.base}
+            )
+        alt_source = {
+            **self.source,
+            "control_sha": "9" * 40,
+            "source_sha": self.control,
+        }
+        bound_alt = bind_request_source(self.client(), control_run, alt_source)
+        with self.assertRaisesRegex(ValueError, "trusted repository branch"):
+            read_source(self.client(), bound_alt, self.plan, source=alt_source)
+        from ci_core.github_source import approved_controls as _approved
+
+        with self.assertRaisesRegex(ValueError, "unapproved native controller"):
+            _approved(
+                self.client(),
+                {
+                    **control_run,
+                    "_ci_platform_run_sha": self.control,
+                    "_ci_platform_event": "workflow_dispatch",
+                },
+                self.base,
+                source=self.source,
+            )
 
 
 if __name__ == "__main__":

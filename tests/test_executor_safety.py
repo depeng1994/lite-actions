@@ -50,6 +50,9 @@ class ExecutorSafetyTests(unittest.TestCase):
         mocks.owned = stack.enter_context(
             patch("ci_core.ssh_runner.owned_processes_gone")
         )
+        mocks.revoke = stack.enter_context(
+            patch("ci_core.ssh_runner.revoke_remote_lease", return_value={"fixture"})
+        )
         mocks.cancel = stack.enter_context(patch("ci_core.ssh_runner.cancel"))
         stack.enter_context(
             patch(

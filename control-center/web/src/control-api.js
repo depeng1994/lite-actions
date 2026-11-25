@@ -1,4 +1,5 @@
-import { repositories as liveRepositories, runs as liveRuns, timelineRuns as liveTimelineRuns, workflowKey } from "./formal-data.js";
+import { deviceRangeLabel, repositories as liveRepositories, runs as liveRuns, timelineRuns as liveTimelineRuns, workflowKey } from "./formal-data.js";
+import { computeElapsedMinutes } from "./workflows.js";
 
 const configuredBase = import.meta.env?.VITE_CONTROL_CENTER_API;
 const API_BASE = (configuredBase || "").replace(/\/$/, "");
@@ -40,13 +41,12 @@ const timestampMs = (timestamp) => timestamp == null ? null : timestamp * 1000;
 const workerLabel = (value) => value ? value[0].toUpperCase() + value.slice(1) : "—";
 const phaseLabel = (task) => ({
   QUEUED: "排队中", RESERVED: "准备中", STAGING: "准备中", RUNNING: "运行中", CLEANING: "清理中",
-}[task.phase] || ({ PASS: "成功", FAIL: "失败", CANCELLED: "已取消", INFRA_ERROR: "失败" }[task.status] || task.status || "排队中"));
-const resultLabel = (value) => ({ QUEUED: "排队中", PASS: "成功", FAIL: "失败" }[value] || value || "排队中");
-const rangeLabel = (devices) => {
-  if (!devices?.length) return null;
-  const sorted = [...devices].sort((a, b) => a - b);
-  return `${sorted[0]}–${sorted.at(-1)}`;
-};
+}[task.phase] || ({
+  PASS: "成功", FAIL: "失败", TIMED_OUT: "失败", RESOURCE_TIMEOUT: "失败",
+  CANCELLED: "已取消", NOT_RUN: "已取消", INFRA_ERROR: "失败",
+}[task.status] || task.status || "排队中"));
+const resultLabel = (value) => ({ QUEUED: "排队中", RUNNING: "运行中", PASS: "成功", FAIL: "失败" }[value] || value || "排队中");
+const rangeLabel = deviceRangeLabel;
 const platformLabel = (provider) => provider === "gitcode" ? "GitCode" : "GitHub";
 
 function nodeFromIdentity(identity, worker, pool, deviceGroups = []) {
@@ -188,7 +188,7 @@ function taskToCase(task, nodesByRef, projectionIndex, runKey, isHistory = false
   } : null;
   const groups = task.allocation?.map((item) => rangeLabel(item.devices)).filter(Boolean) || [];
   const estimate = task.estimated_sec == null ? null : Math.max(1, Math.round(task.estimated_sec / 60));
-  const elapsed = task.duration_sec == null ? null : Number((task.duration_sec / 60).toFixed(1));
+  const elapsed = task.duration_sec == null ? null : computeElapsedMinutes({ elapsed: task.duration_sec / 60 });
   const projected = projectionIndex?.get(task.task_uid);
   const projection = projected?.projection;
   const scheduled = projection?.projection_status === "SCHEDULED";
@@ -200,6 +200,8 @@ function taskToCase(task, nodesByRef, projectionIndex, runKey, isHistory = false
     historyId: finished ? (task.task_uid || `${runKey}-${task.case_id}`) : undefined,
     run: runKey, name: task.label || task.test_id || task.case_id, status: phaseLabel(task),
     kind: task.kind,
+    reporterId: task.reporter_id || task.worker_id,
+    isTest: Boolean(task.is_test),
     worker: workerLabel(task.worker_id), pool: task.target_pool, nodes: task.req_nodes,
     cards: task.allocated_cards || task.req_nodes * task.req_devices || task.req_devices,
     allocatedCards: task.allocated_cards ?? 0,
@@ -227,6 +229,7 @@ function taskToCase(task, nodesByRef, projectionIndex, runKey, isHistory = false
 function workflowMetadata(row) {
   return {
     id: row.run_id, number: row.run_number, title: row.display_title, attempt: row.attempt, model: row.logical_model,
+    isTest: Boolean(row.is_test), reporterIds: row.reporter_ids || [],
     platform: platformLabel(row.provider), repo: row.repo,
     owner: row.repo_scope || (row.repo?.startsWith("depeng1994/") ? "个人仓" : "组织仓"),
     author: row.pr_author, actor: row.trigger_actor || "—", pr: row.pr_number,
@@ -257,7 +260,7 @@ function groupTimelineTasks(tasks, nodesByRef) {
   const groups = new Map();
   for (const task of tasks) {
     const platform = platformLabel(task.provider);
-    const key = workflowKey({platform, repo: task.repo, id: task.run_id, attempt: task.attempt});
+    const key = workflowKey({platform, repo: task.repo, id: task.run_id, attempt: task.attempt, isTest: Boolean(task.is_test)});
     let run = groups.get(key);
     if (!run) {
       run = {

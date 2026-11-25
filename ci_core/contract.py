@@ -16,6 +16,7 @@ TORCHTITAN_REPO = "cann-framework/torchtitan-npu"
 VLLM_REPO = "cann-framework/vllm-ascend"
 SELF_REPO = "depeng1994/lite-actions"
 SELF_WORKFLOW = "lite_actions_self_smoke.yml"
+PR_SMOKE_WORKFLOW = "lite_actions_pr_smoke.yml"
 SUPPORTED_REPOS = frozenset({TORCHTITAN_REPO, VLLM_REPO, SELF_REPO})
 GITCODE_REPOS = frozenset({"depeng1994/torchtitan-npu", "cann/torchtitan-npu"})
 
@@ -67,9 +68,20 @@ def trusted_gitcode_repositories():
     return GITCODE_REPOS | frozenset(repos)
 
 
-WORKERS = {"blue", "yellow"}
+WORKER_ZONES = frozenset({"blue", "yellow"})
+WORKERS = WORKER_ZONES
+TEST_WORKER_ID = re.compile(r"^(blue|yellow)-test-id([0-9]{1,20})a([0-9]{1,4})\Z")
+TARGET_TEST_SUFFIX = re.compile(r"^id([0-9]{1,20})a([0-9]{1,4})\Z")
+SHA40 = re.compile(r"^[0-9a-f]{40}\Z")
 TEST = re.compile(r"[a-z][a-z0-9_]{0,79}\Z")
-KINDS = {"train", "npu_smoke", "worker_probe"}
+LIFECYCLE_KINDS = frozenset({"test_worker_deploy", "test_worker_cleanup"})
+KINDS = {
+    "train",
+    "npu_smoke",
+    "worker_probe",
+    "test_worker_deploy",
+    "test_worker_cleanup",
+}
 STATUS = {
     "PASS",
     "FAIL",
@@ -91,7 +103,124 @@ CASE_KEYS = {
     "docker",
     "execution_timeout_seconds",
 }
-OPTIONAL_CASE_KEYS = {"env_vars"}
+OPTIONAL_CASE_KEYS = {"env_vars", "lifecycle"}
+
+
+def parse_worker_identity(worker_id: object) -> dict:
+    """Separate physical zone from isolated test worker instance identity."""
+    if not isinstance(worker_id, str):
+        raise ValueError("invalid worker identity")
+    if worker_id in WORKER_ZONES:
+        return {
+            "worker_id": worker_id,
+            "zone": worker_id,
+            "is_test": False,
+            "run_id": None,
+            "attempt": None,
+            "test_suffix": None,
+        }
+    match = TEST_WORKER_ID.fullmatch(worker_id)
+    if not match:
+        raise ValueError("invalid worker identity")
+    run_id = int(match.group(2))
+    attempt = int(match.group(3))
+    if run_id < 1 or attempt < 1:
+        raise ValueError("invalid worker identity")
+    return {
+        "worker_id": worker_id,
+        "zone": match.group(1),
+        "is_test": True,
+        "run_id": run_id,
+        "attempt": attempt,
+        "test_suffix": f"id{match.group(2)}a{match.group(3)}",
+    }
+
+
+def is_valid_worker_id(worker_id: object) -> bool:
+    try:
+        parse_worker_identity(worker_id)
+        return True
+    except ValueError:
+        return False
+
+
+def worker_zone(worker_id: object) -> str:
+    return parse_worker_identity(worker_id)["zone"]
+
+
+def validate_lifecycle_payload(kind, lifecycle, *, worker, run=None):
+    if worker not in WORKER_ZONES or not isinstance(lifecycle, dict):
+        raise ValueError("invalid test worker lifecycle payload")
+    allowed = {
+        "pr_number",
+        "pr_head_sha",
+        "target_test_id",
+        "target_worker",
+        "github_run_id",
+        "github_attempt",
+    }
+    if kind == "test_worker_deploy":
+        allowed = allowed | {"generation", "ttl_seconds"}
+        required = {
+            "pr_number",
+            "pr_head_sha",
+            "target_test_id",
+            "target_worker",
+            "github_run_id",
+            "github_attempt",
+            "ttl_seconds",
+        }
+    elif kind == "test_worker_cleanup":
+        required = {
+            "target_test_id",
+            "target_worker",
+            "github_run_id",
+            "github_attempt",
+        }
+    else:
+        raise ValueError("unsupported lifecycle kind")
+    if not required <= set(lifecycle) or set(lifecycle) - allowed:
+        raise ValueError("invalid test worker lifecycle fields")
+    github_run_id = lifecycle["github_run_id"]
+    github_attempt = lifecycle["github_attempt"]
+    if (
+        type(github_run_id) is not int
+        or github_run_id < 1
+        or type(github_attempt) is not int
+        or not 1 <= github_attempt <= 9999
+    ):
+        raise ValueError("invalid test worker lifecycle run identity")
+    if run is not None and (
+        github_run_id != run["id"] or github_attempt != run.get("run_attempt", 1)
+    ):
+        raise ValueError("test worker lifecycle run mismatch")
+    target_test_id = lifecycle["target_test_id"]
+    if (
+        not isinstance(target_test_id, str)
+        or not TARGET_TEST_SUFFIX.fullmatch(target_test_id)
+        or target_test_id != f"id{github_run_id}a{github_attempt}"
+    ):
+        raise ValueError("invalid target_test_id")
+    expected_worker = f"{worker}-test-{target_test_id}"
+    if lifecycle["target_worker"] != expected_worker:
+        raise ValueError("invalid target_worker")
+    if "pr_number" in lifecycle:
+        pr_number = lifecycle["pr_number"]
+        if type(pr_number) is not int or pr_number < 1:
+            raise ValueError("invalid PR number in lifecycle")
+    if "pr_head_sha" in lifecycle:
+        pr_sha = lifecycle["pr_head_sha"]
+        if not isinstance(pr_sha, str) or not SHA40.fullmatch(pr_sha):
+            raise ValueError("invalid PR SHA in lifecycle")
+    if kind == "test_worker_deploy":
+        ttl = lifecycle["ttl_seconds"]
+        if type(ttl) is not int or not 300 <= ttl <= 14400:
+            raise ValueError("invalid test worker TTL")
+        if "generation" in lifecycle:
+            gen = lifecycle["generation"]
+            if type(gen) is not int or gen < 1:
+                raise ValueError("invalid test worker generation")
+    return dict(lifecycle)
 
 
 def digest(plan):
@@ -124,11 +253,25 @@ def normalize(test, defaults, order):
             raise ValueError("invalid case override")
         config[k] = v
     kind = getattr(test, "ci_kind", "train")
-    if kind not in KINDS or config.get("worker") not in WORKERS:
+    worker = config.get("worker")
+    if kind not in KINDS or not is_valid_worker_id(worker):
         raise ValueError("invalid case kind/worker")
     if not TEST.fullmatch(test.test_name):
         raise ValueError("invalid test ID")
-    if kind == "worker_probe":
+    if kind in LIFECYCLE_KINDS:
+        if worker not in WORKER_ZONES:
+            raise ValueError("lifecycle requests must target main zone worker")
+        if (
+            set(override) & {"target_pool", "docker"}
+            or test.nnodes != 0
+            or test.ngpu != 0
+        ):
+            raise ValueError("lifecycle cannot request resources")
+        if getattr(test, "env_vars", None) is not None:
+            raise ValueError("lifecycle cannot define environment")
+        pool = docker = None
+        nodes = ngpu = 0
+    elif kind == "worker_probe":
         if set(override) & {"target_pool", "docker"}:
             raise ValueError("probe cannot request resources")
         pool = docker = None
@@ -155,7 +298,9 @@ def normalize(test, defaults, order):
     label = test.test_descr.strip()
     if not label or len(label) > 115 or any(ord(c) < 32 for c in label):
         raise ValueError("invalid label")
-    timeout = test.timeout or (90 if kind == "worker_probe" else 7200)
+    timeout = test.timeout or (
+        90 if kind == "worker_probe" or kind in LIFECYCLE_KINDS else 7200
+    )
     if type(timeout) is not int or not 1 <= timeout <= 14400:
         raise ValueError("invalid execution timeout")
     case = dict(
@@ -164,12 +309,16 @@ def normalize(test, defaults, order):
         test_id=test.test_name,
         label=label,
         kind=kind,
-        worker=config["worker"],
+        worker=worker,
         target_pool=pool,
         resources=dict(nodes=nodes, devices_per_node=ngpu),
         docker=docker,
         execution_timeout_seconds=timeout,
     )
+    if kind in LIFECYCLE_KINDS:
+        case["lifecycle"] = validate_lifecycle_payload(
+            kind, getattr(test, "lifecycle", None), worker=worker
+        )
     raw_env = getattr(test, "env_vars", None)
     if raw_env is not None:
         if kind == "worker_probe":
@@ -301,6 +450,14 @@ def parse_plan(plan, run, workflow, *, repo=REPO):
         from types import SimpleNamespace
 
         extra = {"env_vars": c["env_vars"]} if "env_vars" in c else {}
+        if "lifecycle" in c:
+            extra["lifecycle"] = c["lifecycle"]
+        if c["kind"] in LIFECYCLE_KINDS:
+            if repo != SELF_REPO or workflow != PR_SMOKE_WORKFLOW:
+                raise ValueError("lifecycle requests are restricted to PR smoke")
+            validate_lifecycle_payload(
+                c["kind"], c.get("lifecycle"), worker=c["worker"], run=run
+            )
         expected = normalize(
             SimpleNamespace(
                 test_name=c["test_id"],
@@ -310,7 +467,7 @@ def parse_plan(plan, run, workflow, *, repo=REPO):
                 ci_kind=c["kind"],
                 ci_overrides=(
                     {"worker": c["worker"]}
-                    if c["kind"] == "worker_probe"
+                    if c["kind"] == "worker_probe" or c["kind"] in LIFECYCLE_KINDS
                     else {
                         "worker": c["worker"],
                         "target_pool": c["target_pool"],

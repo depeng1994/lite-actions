@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import {test} from "node:test";
-import {beijingClock, displayNodeHost, now, plannedTime, timelineLabel, workflowKey} from "../src/formal-data.js";
+import {allocationEntries, beijingClock, displayNodeHost, formatAllocation, impactOf, now, plannedTime, timelineLabel, workflowKey} from "../src/formal-data.js";
 import {commandStatusLabel, commandStatusTone} from "../src/command-status.js";
 import {resourceInventories} from "../src/control-api.js";
-import {currentWorkflowQueue, groupActiveRuns, moveWorkflow, summarizeRun, workflowResultLabel} from "../src/workflows.js";
+import {computeElapsedMinutes, currentWorkflowQueue, groupActiveRuns, moveWorkflow, summarizeRun, workflowResultLabel} from "../src/workflows.js";
 import {lastSeenDateTime, resourceHealth} from "../src/resource-health.js";
 import {measuredRange, rangeDuration, timelineSecondAt, timelineTicks} from "../src/timeline-viewport.js";
 
@@ -82,12 +82,19 @@ test("resource health distinguishes online, probe misses, offline and unknown", 
   assert.equal(resourceHealth([{groups: ["0–7"], probes: {}}], "0–7").status, "待探测");
 });
 
-test("Workflow results preserve individual outcomes", () => {
-  const result = (...statuses) => summarizeRun({cases: statuses.map((status) => ({status, worker: "Blue", pool: "A3", cards: 8, allocatedCards: 0}))}).result;
-  assert.equal(result("运行中", "排队中"), "排队中");
-  assert.equal(result("成功", "成功"), "成功");
-  assert.equal(result("成功", "失败"), "失败");
-  assert.equal(result("成功", "已取消"), "失败");
+test("Workflow results distinguish all-queued, running, and terminal outcomes", () => {
+  const summarize = (...statuses) => summarizeRun({cases: statuses.map((status) => ({status, worker: "Blue", pool: "A3", cards: 8, allocatedCards: 0}))});
+  assert.deepEqual({active: summarize("排队中", "排队中").active, result: summarize("排队中", "排队中").result}, {active: true, result: "排队中"});
+  assert.deepEqual({active: summarize("运行中", "排队中").active, result: summarize("运行中", "排队中").result}, {active: true, result: "运行中"});
+  assert.deepEqual({active: summarize("准备中", "排队中").active, result: summarize("准备中", "排队中").result}, {active: true, result: "运行中"});
+  assert.deepEqual({active: summarize("清理中", "排队中").active, result: summarize("清理中", "排队中").result}, {active: true, result: "运行中"});
+  assert.deepEqual({active: summarize("成功", "运行中").active, result: summarize("成功", "运行中").result}, {active: true, result: "运行中"});
+  assert.deepEqual({active: summarize("失败", "运行中").active, result: summarize("失败", "运行中").result}, {active: true, result: "运行中"});
+  assert.deepEqual({active: summarize("成功", "排队中").active, result: summarize("成功", "排队中").result}, {active: true, result: "运行中"});
+  assert.deepEqual({active: summarize("失败", "排队中").active, result: summarize("失败", "排队中").result}, {active: true, result: "运行中"});
+  assert.deepEqual({active: summarize("成功", "成功").active, result: summarize("成功", "成功").result}, {active: false, result: "成功"});
+  assert.deepEqual({active: summarize("成功", "失败").active, result: summarize("成功", "失败").result}, {active: false, result: "失败"});
+  assert.deepEqual({active: summarize("成功", "已取消").active, result: summarize("成功", "已取消").result}, {active: false, result: "失败"});
 });
 
 test("dynamic Beijing clock, direct host display, full timestamp formatting, and projection status handling", () => {
@@ -185,16 +192,32 @@ test("summarizeRun prefers formal backend resultLabel/result even when cases are
   assert.equal(partialPassingCasesFailedRun.active, false);
   assert.equal(partialPassingCasesFailedRun.result, "失败");
 
-  const mixedQueuedFromBackend = summarizeRun({
+  const emptyQueuedFromBackend = summarizeRun({
+    result: "QUEUED",
+    cases: [],
+  });
+  assert.equal(emptyQueuedFromBackend.active, true);
+  assert.equal(emptyQueuedFromBackend.result, "排队中");
+
+  const runningFromBackend = summarizeRun({
+    result: "RUNNING",
+    resultLabel: "运行中",
+    cases: [{id: "a1", status: "排队中", worker: "Blue", pool: "A3", cards: 8, allocatedCards: 0}],
+  });
+  assert.equal(runningFromBackend.active, true);
+  assert.equal(runningFromBackend.result, "运行中");
+
+  const mixedActiveFromStaleQueuedBackend = summarizeRun({
     result: "QUEUED",
     cases: [{historyId: "h2", status: "成功", worker: "Blue", pool: "A3", cards: 8, allocatedCards: 8}],
   });
-  assert.equal(mixedQueuedFromBackend.active, true);
-  assert.equal(mixedQueuedFromBackend.result, "排队中");
+  assert.equal(mixedActiveFromStaleQueuedBackend.active, true);
+  assert.equal(mixedActiveFromStaleQueuedBackend.result, "运行中");
 
   assert.equal(workflowResultLabel("PASS"), "成功");
   assert.equal(workflowResultLabel("FAIL"), "失败");
   assert.equal(workflowResultLabel("QUEUED"), "排队中");
+  assert.equal(workflowResultLabel("RUNNING"), "运行中");
 });
 
 test("command status helpers map PARTIAL_APPLIED and all protocol statuses consistently", () => {
@@ -208,4 +231,82 @@ test("command status helpers map PARTIAL_APPLIED and all protocol statuses consi
   assert.equal(commandStatusTone("CONFLICT"), "red");
   assert.equal(commandStatusLabel("NOOP"), "无变化");
   assert.equal(commandStatusTone("NOOP"), "gray");
+});
+
+test("test workflow keys and queue helpers isolate test runs from production expedite controls", () => {
+  const prodKey = workflowKey({platform: "GitHub", repo: "depeng1994/lite-actions", id: "500", attempt: 1});
+  const testKey = workflowKey({platform: "GitHub", repo: "depeng1994/lite-actions", id: "500", attempt: 1, isTest: true});
+  assert.notEqual(prodKey, testKey);
+  const queue = currentWorkflowQueue([
+    {id: "prod-1", run: prodKey, status: "排队中", kind: "npu_smoke", isTest: false},
+    {id: "test-1", run: testKey, status: "排队中", kind: "npu_smoke", isTest: true},
+    {id: "deploy-1", run: testKey, status: "排队中", kind: "test_worker_deploy", isTest: false},
+  ], [prodKey, testKey]);
+  assert.deepEqual(queue, [prodKey]);
+});
+
+test("computeElapsedMinutes and groupActiveRuns compute rounded non-negative elapsed minutes across live, skewed, fractional, and cross-midnight tasks", () => {
+  const lateStart = Date.parse("2026-11-25T13:15:00+08:00");
+  const lateNowMs = lateStart + 100_000;
+  assert.equal(computeElapsedMinutes({start: lateStart, end: null, started: (now + 75) % 1440, elapsed: null}, lateNowMs), 1.67);
+
+  const grouped = groupActiveRuns(
+    [
+      {id: "live-later", run: keyA, status: "运行中", worker: "Blue", pool: "A3", cards: 8, groups: ["0–7"], node: "node-a", start: lateStart, end: null, started: (now + 75) % 1440, elapsed: null},
+      {id: "legacy-fixture", run: keyA, status: "运行中", worker: "Blue", pool: "A3", cards: 8, groups: ["0–7"], node: "node-a", started: 10 * 60 + 10, elapsed: null},
+    ],
+    [{id: "node-a", worker: "Blue", pool: "A3"}],
+    [runA],
+    lateNowMs,
+  );
+  assert.equal(grouped[0].cases[0].elapsed, 1.67);
+  assert.equal(grouped[0].cases[1].elapsed, 186);
+
+  assert.equal(computeElapsedMinutes({start: lateStart + 30_000, end: null, elapsed: null}, lateStart), 0);
+
+  const crossMidnightStart = Date.parse("2026-11-25T23:58:00+08:00");
+  const crossMidnightNowMs = Date.parse("2026-11-26T00:02:00+08:00");
+  assert.equal(computeElapsedMinutes({start: crossMidnightStart, end: null, started: 23 * 60 + 58, elapsed: null}, crossMidnightNowMs), 4);
+
+  assert.equal(computeElapsedMinutes({start: lateStart, end: null, elapsed: null}, lateStart + 40_000), 0.67);
+  assert.equal(computeElapsedMinutes({elapsed: -75.33333333333337}, lateNowMs), 0);
+  assert.equal(computeElapsedMinutes({elapsed: 0.6666666666666288}, lateNowMs), 0.67);
+  assert.equal(computeElapsedMinutes({start: null, started: null, elapsed: null}, lateNowMs), null);
+});
+
+test("formatAllocation, allocationEntries, and impactOf handle multi-node 16P allocations without dropping hosts", () => {
+  const twoNodeAllocations = [
+    {node_ref: "n_153", display_host_id: "113.xxx.xxx.205:153", devices: [8, 9, 10, 11, 12, 13, 14, 15]},
+    {node_ref: "n_154", display_host_id: "113.xxx.xxx.205:154", devices: [0, 1, 2, 3, 4, 5, 6, 7]},
+  ];
+  const item = {
+    worker: "Blue",
+    pool: "a3_shared_blue",
+    status: "运行中",
+    node: "n_153",
+    allocation: {id: "n_153", displayHost: "113.xxx.xxx.205:153"},
+    allocations: twoNodeAllocations,
+    groups: ["8–15", "0–7"],
+  };
+  assert.equal(formatAllocation(item), "113.xxx.xxx.205:153 8–15、113.xxx.xxx.205:154 0–7");
+  assert.deepEqual(allocationEntries(item), [
+    {host: "113.xxx.xxx.205:153", group: "8–15", devicesText: "8,9,10,11,12,13,14,15"},
+    {host: "113.xxx.xxx.205:154", group: "0–7", devicesText: "0,1,2,3,4,5,6,7"},
+  ]);
+
+  const adminDetail = {
+    allocation: [
+      {node_ref: "n_153", host_id: "113.46.17.205:153", display_host_id: "113.46.17.205:153", devices: [8, 9, 10, 11, 12, 13, 14, 15]},
+      {node_ref: "n_154", host_id: "113.46.17.205:154", display_host_id: "113.46.17.205:154", devices: [0, 1, 2, 3, 4, 5, 6, 7]},
+    ],
+  };
+  assert.equal(formatAllocation(item, adminDetail), "113.46.17.205:153 8–15、113.46.17.205:154 0–7");
+  assert.equal(formatAllocation({groups: []}), null);
+
+  const nodes = [
+    {id: "n_153", hostId: "113.46.17.205:153", displayHost: "113.xxx.xxx.205:153", worker: "Blue", pool: "a3_shared_blue"},
+    {id: "n_154", hostId: "113.46.17.205:154", displayHost: "113.xxx.xxx.205:154", worker: "Blue", pool: "a3_shared_blue"},
+  ];
+  const impact = impactOf({worker: "Blue", pool: "a3_shared_blue", node: "n_154", nodeId: "n_154", group: "0–7"}, [item], nodes);
+  assert.equal(impact.leases.length, 1);
 });

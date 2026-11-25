@@ -2,7 +2,7 @@ export type WorkerId = "blue" | "yellow";
 export type Provider = "github" | "gitcode";
 export type Role = "admin" | "super";
 export type Phase = "QUEUED" | "RESERVED" | "STAGING" | "RUNNING" | "CLEANING";
-export type CaseKind = "train" | "npu_smoke" | "worker_probe";
+export type CaseKind = "train" | "npu_smoke" | "worker_probe" | "test_worker_deploy" | "test_worker_cleanup";
 export type Occupancy = "LEASED" | "UNKNOWN_BUSY" | "CONFIRMED_IDLE";
 export type CommandStatus = "PENDING" | "ACKED" | "APPLIED" | "PARTIAL_APPLIED" | "NOOP" | "CONFLICT" | "FAILED" | "EXPIRED";
 
@@ -129,6 +129,8 @@ export interface ModelTab {
 export interface TaskSummary extends RunIdentity {
   task_uid: string;
   worker_id: WorkerId;
+  reporter_id?: string | null;
+  is_test?: boolean;
   logical_model: string;
   dispatch_id: string | null;
   run_number: number | null;
@@ -178,7 +180,8 @@ export type ClusterScope = "pool" | "node" | "device_group";
 export type ClusterOperation =
   | { op: "PAUSE" | "RESUME" | "DRAIN"; scope: ClusterScope; pool: string; host_id?: string; devices?: number[] }
   | { op: "ADD_POOL" | "ADD_NODE" | "ADD_DEVICE_GROUP"; pool: string; host_id?: string; value: unknown }
-  | { op: "DELETE_POOL" | "DELETE_NODE" | "DELETE_DEVICE_GROUP"; pool: string; host_id?: string; devices?: number[] };
+  | { op: "DELETE_POOL" | "DELETE_NODE" | "DELETE_DEVICE_GROUP"; pool: string; host_id?: string; devices?: number[] }
+  | { op: "SET_OCCUPANCY_POLICY"; pool: string; host_id: string; occupancy_policy?: "wait" | "preempt"; value?: unknown };
 export interface ClusterPreview {
   base_revision: number;
   preview_hash: string;
@@ -211,8 +214,10 @@ export interface DeviceHealth {
   last_online_at: number | null;
 }
 
-export type WorkflowResult = "QUEUED" | "PASS" | "FAIL";
+export type WorkflowResult = "QUEUED" | "RUNNING" | "PASS" | "FAIL";
 export interface WorkflowRow extends RunIdentity {
+  is_test?: boolean;
+  reporter_ids?: string[];
   sequence: number;
   submitted_at: number | null;
   run_number: number | null;

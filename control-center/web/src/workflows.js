@@ -1,4 +1,4 @@
-import { timeFromMinutes, now, poolId, runs, workflowKey } from "./formal-data.js";
+import { beijingClock, timeFromMinutes, poolId, runs, workflowKey } from "./formal-data.js";
 
 export const initialWorkflowHistorySize = 5;
 export const workflowHistoryPageSize = 50;
@@ -11,7 +11,27 @@ export function actionsUrl({ platform, repo, id }) {
   return `https://${host}/${repo.split("/").map(encodeURIComponent).join("/")}/actions/runs/${encodeURIComponent(id)}`;
 }
 
-export function groupActiveRuns(cases, nodes, sourceRuns = runs) {
+function roundElapsedMinutes(minutes) {
+  return Number(Math.max(0, Number(minutes)).toFixed(2));
+}
+
+export function computeElapsedMinutes(item, nowMs = Date.now()) {
+  if (!item) return null;
+  if (item.elapsed != null) {
+    return roundElapsedMinutes(item.elapsed);
+  }
+  if (item.start != null) {
+    const endMs = item.end ?? nowMs;
+    return roundElapsedMinutes((endMs - item.start) / 60000);
+  }
+  if (item.started != null) {
+    const currentMinute = item.finished ?? beijingClock(new Date(nowMs)).now;
+    return roundElapsedMinutes(currentMinute - item.started);
+  }
+  return null;
+}
+
+export function groupActiveRuns(cases, nodes, sourceRuns = runs, nowMs = Date.now()) {
   const byId = new Map(nodes.map((node) => [node.id, node]));
   return sourceRuns.map((run) => ({
     ...run,
@@ -20,11 +40,12 @@ export function groupActiveRuns(cases, nodes, sourceRuns = runs) {
       const computedCards = item.allocatedCards ?? (item.node
         ? (item.groups?.reduce((sum, group) => sum + (node?.groupCards?.[group] ?? 0), 0) || item.cards || 0)
         : 0);
+      const elapsed = computeElapsedMinutes(item, nowMs);
       return {
         ...item,
         start: item.start ?? timeFromMinutes(item.started),
         end: item.end ?? timeFromMinutes(item.finished),
-        elapsed: item.elapsed ?? (item.started == null ? null : (item.finished ?? now) - item.started),
+        elapsed,
         allocatedCards: computedCards,
         allocation: node ?? item.allocation,
       };
@@ -34,23 +55,35 @@ export function groupActiveRuns(cases, nodes, sourceRuns = runs) {
 
 const RESULT_MAP = {
   QUEUED: "排队中",
+  RUNNING: "运行中",
   PASS: "成功",
   FAIL: "失败",
+  CANCELLED: "已取消",
   "排队中": "排队中",
+  "运行中": "运行中",
   "成功": "成功",
   "失败": "失败",
+  "已取消": "已取消",
 };
+
+const activeResultLabels = new Set(["排队中", "运行中"]);
 
 export function workflowResultLabel(value) {
   if (!value) return null;
   return RESULT_MAP[value] || null;
 }
 
+function activeWorkflowResult(cases, backendResult) {
+  if (backendResult === "运行中") return "运行中";
+  if (cases.some(({ status }) => status && status !== "排队中")) return "运行中";
+  return "排队中";
+}
+
 export function summarizeRun(run) {
   const { cases = [] } = run;
   const backendResult = workflowResultLabel(run.resultLabel) || workflowResultLabel(run.result);
   const active = backendResult
-    ? backendResult === "排队中"
+    ? activeResultLabels.has(backendResult)
     : typeof run.sequence === "number"
       ? run.sequence >= 0
       : cases.some(({ status }) => !terminalStatuses.has(status));
@@ -74,12 +107,18 @@ export function summarizeRun(run) {
     maxCards: Math.max(0, ...cases.map(({ cards, allocatedCards }) => allocatedCards || cards)),
     partialCardHours: run.cardHoursPartial ?? (measured.length > 0 && measured.length < allocated.length),
     cardHours: run.cardHours ?? (measured.length ? measured.reduce((sum, item) => sum + item.elapsed * item.allocatedCards, 0) / 60 : null),
-    result: backendResult ?? (active ? "排队中" : cases.every(({ status }) => status === "成功") ? "成功" : "失败"),
+    result: active
+      ? activeWorkflowResult(cases, backendResult)
+      : (backendResult ?? (cases.every(({ status }) => status === "成功") ? "成功" : "失败")),
   };
 }
 
 function isQueued(item) {
-  return item.status === "排队中" && item.kind !== "worker_probe";
+  return item.status === "排队中"
+    && !item.isTest
+    && item.kind !== "worker_probe"
+    && item.kind !== "test_worker_deploy"
+    && item.kind !== "test_worker_cleanup";
 }
 
 export function queuedChildren(cases, run) {

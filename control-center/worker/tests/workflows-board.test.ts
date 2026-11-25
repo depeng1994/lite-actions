@@ -182,13 +182,95 @@ test("mixed active and finished cases stay in one active Workflow row", async ()
   ]);
   await syncRuns([{provider: "github", repo: "org/mixed", run_id: run, attempt: 1}]);
   const page = await (await request("/public/workflows?history_limit=50&repo=org%2Fmixed")).json<{
-    active: Array<{sequence: number; finished_at: number | null; cases: unknown[]}>; history: unknown[];
+    active: Array<{sequence: number; finished_at: number | null; result: string; cases: unknown[]}>; history: unknown[];
   }>();
   expect(page.active).toHaveLength(1);
   expect(page.active[0].sequence).toBe(0);
   expect(page.active[0].finished_at).toBeNull();
+  expect(page.active[0].result).toBe("RUNNING");
   expect(page.active[0].cases).toHaveLength(2);
   expect(page.history).toHaveLength(0);
+});
+
+test("active Workflow result distinguishes all-queued from running and partially completed runs", async () => {
+  const repo = "org/wf-status";
+  const model = "wf-status";
+  const insertActive = (uid: string, runId: string, caseId: string, phase: string) => db.prepare(`
+    INSERT INTO tasks_active(task_uid,short_tid,task_key,worker_id,provider,repo,logical_model,run_id,
+      attempt,case_id,test_id,label,kind,target_pool,req_nodes,req_devices,phase,allocation_json,
+      queued_at,reserved_at,running_at,timing_reliable,updated_at,submitted_at,workflow_name)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  `).bind(
+    uid, uid.slice(0, 12), `key:${uid}`, "blue", "github", repo, model, runId, 1,
+    caseId, "npu_smoke", caseId, "npu_smoke", "pool", 1, 8, phase, "[]",
+    now - 100, phase === "QUEUED" ? null : now - 50, phase === "RUNNING" ? now - 40 : null,
+    1, now, now - 100, "Status Matrix",
+  );
+  const insertFinished = (uid: string, runId: string, caseId: string, status: string) => db.prepare(`
+    INSERT INTO task_index(task_uid,finished_at,worker_id,provider,repo,logical_model,run_id,attempt,
+      case_id,test_id,label,kind,target_pool,req_nodes,req_devices,actual_allocation_json,status,
+      timing_reliable,submitted_at,workflow_name)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  `).bind(
+    uid, now - 30, "blue", "github", repo, model, runId, 1,
+    caseId, "npu_smoke", caseId, "npu_smoke", "pool", 1, 8, "[]", status, 1,
+    now - 100, "Status Matrix",
+  );
+
+  await db.batch([
+    // 1. All cases QUEUED -> QUEUED
+    insertActive("st_all_q_1", "status-all-queued", "case_001_q", "QUEUED"),
+    insertActive("st_all_q_2", "status-all-queued", "case_002_q", "QUEUED"),
+    // 2. Mixed QUEUED + RUNNING -> RUNNING
+    insertActive("st_mix_r_1", "status-queued-running", "case_001_q", "QUEUED"),
+    insertActive("st_mix_r_2", "status-queued-running", "case_002_r", "RUNNING"),
+    // 3. Mixed QUEUED + RESERVED / STAGING / CLEANING -> RUNNING
+    insertActive("st_res_1", "status-reserved", "case_001_q", "QUEUED"),
+    insertActive("st_res_2", "status-reserved", "case_002_res", "RESERVED"),
+    insertActive("st_stg_1", "status-staging", "case_001_q", "QUEUED"),
+    insertActive("st_stg_2", "status-staging", "case_002_stg", "STAGING"),
+    insertActive("st_cln_1", "status-cleaning", "case_001_q", "QUEUED"),
+    insertActive("st_cln_2", "status-cleaning", "case_002_cln", "CLEANING"),
+    // 4. Completed (PASS/FAIL) + RUNNING (0 QUEUED) -> RUNNING
+    insertFinished("st_done_r_1", "status-done-running", "case_001_p", "PASS"),
+    insertFinished("st_done_r_2", "status-done-running", "case_002_f", "FAIL"),
+    insertActive("st_done_r_3", "status-done-running", "case_003_r", "RUNNING"),
+    // 5. Completed (PASS/FAIL) + QUEUED (0 executing) -> RUNNING
+    insertFinished("st_done_q_1", "status-done-queued", "case_001_p", "PASS"),
+    insertActive("st_done_q_2", "status-done-queued", "case_002_q", "QUEUED"),
+    // 6. All completed -> PASS / FAIL
+    insertFinished("st_pass_1", "status-all-pass", "case_001_p", "PASS"),
+    insertFinished("st_pass_2", "status-all-pass", "case_002_p", "PASS"),
+    insertFinished("st_fail_1", "status-all-fail", "case_001_p", "PASS"),
+    insertFinished("st_fail_2", "status-all-fail", "case_002_f", "FAIL"),
+  ]);
+
+  const runIds = [
+    "status-all-queued", "status-queued-running", "status-reserved", "status-staging",
+    "status-cleaning", "status-done-running", "status-done-queued", "status-all-pass", "status-all-fail",
+  ];
+  await syncRuns(runIds.map(run_id => ({provider: "github", repo, run_id, attempt: 1})));
+
+  const page = await (await request(`/public/workflows?history_limit=50&repo=${encodeURIComponent(repo)}`)).json<{
+    active: Array<{run_id: string; result: string}>;
+    history: Array<{run_id: string; result: string}>;
+  }>();
+
+  const activeResult = Object.fromEntries(page.active.map(row => [row.run_id, row.result]));
+  expect(activeResult).toEqual({
+    "status-all-queued": "QUEUED",
+    "status-queued-running": "RUNNING",
+    "status-reserved": "RUNNING",
+    "status-staging": "RUNNING",
+    "status-cleaning": "RUNNING",
+    "status-done-running": "RUNNING",
+    "status-done-queued": "RUNNING",
+  });
+  const historyResult = Object.fromEntries(page.history.map(row => [row.run_id, row.result]));
+  expect(historyResult).toEqual({
+    "status-all-pass": "PASS",
+    "status-all-fail": "FAIL",
+  });
 });
 
 test("Workflow summaries expose partial card-hours and three-state outcomes", async () => {

@@ -1,5 +1,7 @@
 """Opt-in, pull-only telemetry and command transport for the control center."""
 
+from __future__ import annotations
+
 import copy
 import datetime as dt
 import hashlib
@@ -15,7 +17,7 @@ import urllib.request
 from pathlib import Path
 from uuid import uuid4
 
-from ci_core.contract import REPO
+from ci_core.contract import REPO, parse_worker_identity
 from ci_core.egress_policy import (
     Rejected,
     control_origin,
@@ -99,10 +101,43 @@ def _allocation(record):
 TASK_DESCRIPTOR_BUDGET = 1240
 
 
-def task_descriptor(key, record):
+def _tid_for_key(key, reporter_id=None):
+    if reporter_id:
+        try:
+            if parse_worker_identity(reporter_id)["is_test"]:
+                return hashlib.sha256(
+                    f"{key}:reporter:{reporter_id}".encode()
+                ).hexdigest()[:12]
+        except ValueError:
+            pass
+    return hashlib.sha256(key.encode()).hexdigest()[:12]
+
+
+def _normalize_queues(raw_queues):
+    if not raw_queues:
+        return {}
+    if isinstance(raw_queues, dict):
+        result = {}
+        for k, v in raw_queues.items():
+            if isinstance(k, tuple) and len(k) == 2:
+                result[(str(k[0]), str(k[1]))] = v
+            elif isinstance(k, str) and "|" in k:
+                pool, kind = k.split("|", 1)
+                result[(pool, kind)] = v
+        return result
+    if isinstance(raw_queues, list):
+        return {
+            (str(entry["pool"]), str(entry["kind"])): entry.get("rows", [])
+            for entry in raw_queues
+            if isinstance(entry, dict) and "pool" in entry and "kind" in entry
+        }
+    return {}
+
+
+def task_descriptor(key, record, *, reporter_id=None):
     run, item = record["run"], record["item"]
     result = {
-        "tid": hashlib.sha256(key.encode()).hexdigest()[:12],
+        "tid": _tid_for_key(key, reporter_id),
         "p": run.get("_ci_provider", "github"),
         "r": run.get("_ci_repo", REPO),
         "run": str(run["id"]),
@@ -233,6 +268,8 @@ class ControlClient:
         self.next_heartbeat = 0
         self.need_snapshot = True
         self.rebase_before = None
+        self._test_reporters = {}
+        self._test_lock = threading.Lock()
         self.thread = threading.Thread(
             target=self.run, name="control-center", daemon=True
         )
@@ -364,74 +401,76 @@ class ControlClient:
             for part, nodes in enumerate(parts, 1)
         ]
 
+    def _capture_into(self, data, records, base, *, reporter_id=None):
+        for key, record in records.items():
+            phase = record.get("phase")
+            current = data["tracked"].get(key)
+            if current and current.get("done"):
+                continue
+            report = record.get("report") or {}
+            finished = record.get("phase_timestamps", {}).get("FINISHED", 0)
+            if phase not in ACTIVE and not (
+                phase in TERMINAL
+                and report
+                and (current or finished >= int(data["started_at"]))
+            ):
+                continue
+            task = task_descriptor(key, record, reporter_id=reporter_id)
+            tid, now = task["tid"], int(time.time())
+            raw_alloc = _allocation(record)
+            alloc = (
+                raw_alloc
+                if (raw_alloc or phase == "QUEUED")
+                else (current or {}).get("allocation", [])
+            )
+            events = []
+            if current is None:
+                events.append({"t": "TU", **task})
+                current = {}
+            if phase in TERMINAL:
+                if alloc != current.get("allocation", []):
+                    events.extend(self._lease_parts(base, tid, now, alloc))
+                events.append(
+                    {
+                        "t": "TF",
+                        "tid": tid,
+                        "ts": finished or now,
+                        "tm": task["tm"],
+                        "st": report.get("status", "INFRA_ERROR"),
+                        "ec": report.get("exit_code"),
+                        "cv": int(bool(report.get("cleanup_verified"))),
+                        "qu": int(bool(record.get("quarantined"))),
+                    }
+                )
+            elif phase != current.get("phase") or task["tm"] != current.get("times"):
+                events.append(
+                    {
+                        "t": "TP",
+                        "tid": tid,
+                        "ts": now,
+                        "ph": phase,
+                        "tm": task["tm"],
+                    }
+                )
+            if phase in ACTIVE and alloc != current.get("allocation", []):
+                events.extend(self._lease_parts(base, tid, now, alloc))
+            if len(data["events"]) + len(events) > OUTBOX_LIMIT:
+                break
+            for event in events:
+                self.outbox.append(data, event)
+            if phase in TERMINAL:
+                # Keep one compact high-water mark per task while JobState retains it.
+                data["tracked"][key] = {"done": True}
+            else:
+                data["tracked"][key] = {
+                    "phase": phase,
+                    "times": task["tm"],
+                    "allocation": alloc,
+                }
+
     def _capture(self, records, base=None):
         base = base or {"w": self.worker, "i": self.outbox.view()["instance"]}
-
-        def observe(data):
-            for key, record in records.items():
-                phase = record.get("phase")
-                current = data["tracked"].get(key)
-                if current and current.get("done"):
-                    continue
-                report = record.get("report") or {}
-                finished = record.get("phase_timestamps", {}).get("FINISHED", 0)
-                if phase not in ACTIVE and not (
-                    phase in TERMINAL
-                    and report
-                    and (current or finished >= int(data["started_at"]))
-                ):
-                    continue
-                task = task_descriptor(key, record)
-                tid, now = task["tid"], int(time.time())
-                alloc = _allocation(record)
-                events = []
-                if current is None:
-                    events.append({"t": "TU", **task})
-                    current = {}
-                if phase in TERMINAL:
-                    if alloc != current.get("allocation", []):
-                        events.extend(self._lease_parts(base, tid, now, alloc))
-                    events.append(
-                        {
-                            "t": "TF",
-                            "tid": tid,
-                            "ts": finished or now,
-                            "tm": task["tm"],
-                            "st": report.get("status", "INFRA_ERROR"),
-                            "ec": report.get("exit_code"),
-                            "cv": int(bool(report.get("cleanup_verified"))),
-                            "qu": int(bool(record.get("quarantined"))),
-                        }
-                    )
-                elif phase != current.get("phase") or task["tm"] != current.get(
-                    "times"
-                ):
-                    events.append(
-                        {
-                            "t": "TP",
-                            "tid": tid,
-                            "ts": now,
-                            "ph": phase,
-                            "tm": task["tm"],
-                        }
-                    )
-                if phase in ACTIVE and alloc != current.get("allocation", []):
-                    events.extend(self._lease_parts(base, tid, now, alloc))
-                if len(data["events"]) + len(events) > OUTBOX_LIMIT:
-                    break
-                for event in events:
-                    self.outbox.append(data, event)
-                if phase in TERMINAL:
-                    # Keep one compact high-water mark per task while JobState retains it.
-                    data["tracked"][key] = {"done": True}
-                else:
-                    data["tracked"][key] = {
-                        "phase": phase,
-                        "times": task["tm"],
-                        "allocation": alloc,
-                    }
-
-        self.outbox.change(observe)
+        self.outbox.change(lambda data: self._capture_into(data, records, base))
 
     def capture_device_probes(self):
         self._capture_devices(self.view().get("devices", []))
@@ -488,91 +527,93 @@ class ControlClient:
 
         self.outbox.change(observe)
 
-    def _queue_pages(self, queues, revision, base):
-        def observe(data):
-            old = data.setdefault("queues", {})
-            version = data.setdefault("queue_version", 0)
-            current = {}
-            for pool, kind in sorted(
-                set(queues) | {tuple(json.loads(name)) for name in old}
-            ):
-                key = json.dumps([pool, kind])
-                rows = queues.get((pool, kind), [])
-                definition = {"pool": pool, "k": kind, "rev": revision}
-                fingerprint = hashlib.sha256(_encode((definition, rows))).hexdigest()
-                previous = old.get(key)
-                if previous and previous["fingerprint"] == fingerprint:
+    def _queue_pages_into(self, data, queues, revision, base):
+        old = data.setdefault("queues", {})
+        version = data.setdefault("queue_version", 0)
+        current = {}
+        for pool, kind in sorted(
+            set(queues) | {tuple(json.loads(name)) for name in old}
+        ):
+            key = json.dumps([pool, kind])
+            rows = queues.get((pool, kind), [])
+            definition = {"pool": pool, "k": kind, "rev": revision}
+            fingerprint = hashlib.sha256(_encode((definition, rows))).hexdigest()
+            previous = old.get(key)
+            if previous and previous["fingerprint"] == fingerprint:
+                current[key] = previous
+                continue
+            version += 1
+            template = {
+                "t": "QP",
+                "ts": int(time.time()),
+                "s": data["seq"] + OUTBOX_LIMIT,
+                "v": version,
+                "last": 1,
+                **definition,
+            }
+            wire_rows = []
+            for row in rows:
+                # A shape can have many valid candidate combinations.
+                # Chunk even a single case's options without truncating them.
+                offset = 0
+                for options in self.packets(
+                    "events",
+                    row["ix"],
+                    lambda options, row=row, template=template: {
+                        **base,
+                        "ev": [
+                            {
+                                **template,
+                                "items": [{**row, "ix": options, "off": 8192}],
+                            }
+                        ],
+                    },
+                    max_items=96,
+                    budget=1800,
+                ):
+                    wire_rows.append({**row, "ix": options, "off": offset})
+                    offset += len(options)
+                if not offset:
+                    wire_rows.append(row)
+            pages = list(
+                self.packets(
+                    "events",
+                    wire_rows,
+                    lambda items, template=template: {
+                        **base,
+                        "ev": [{**template, "items": items}],
+                    },
+                    max_items=8,
+                    budget=1800,
+                )
+            ) or [[]]
+            if len(data["events"]) + len(pages) > OUTBOX_LIMIT:
+                if previous:
                     current[key] = previous
-                    continue
-                version += 1
-                template = {
-                    "t": "QP",
-                    "ts": int(time.time()),
-                    "s": data["seq"] + OUTBOX_LIMIT,
-                    "v": version,
-                    "last": 1,
-                    **definition,
-                }
-                wire_rows = []
-                for row in rows:
-                    # A shape can have many valid candidate combinations.
-                    # Chunk even a single case's options without truncating them.
-                    offset = 0
-                    for options in self.packets(
-                        "events",
-                        row["ix"],
-                        lambda options, row=row, template=template: {
-                            **base,
-                            "ev": [
-                                {
-                                    **template,
-                                    "items": [{**row, "ix": options, "off": 8192}],
-                                }
-                            ],
-                        },
-                        max_items=96,
-                        budget=1800,
-                    ):
-                        wire_rows.append({**row, "ix": options, "off": offset})
-                        offset += len(options)
-                    if not offset:
-                        wire_rows.append(row)
-                pages = list(
-                    self.packets(
-                        "events",
-                        wire_rows,
-                        lambda items, template=template: {
-                            **base,
-                            "ev": [{**template, "items": items}],
-                        },
-                        max_items=8,
-                        budget=1800,
-                    )
-                ) or [[]]
-                if len(data["events"]) + len(pages) > OUTBOX_LIMIT:
-                    if previous:
-                        current[key] = previous
-                    continue
-                published = []
-                for index, items in enumerate(pages):
-                    page = {**definition, "v": version, "items": items}
-                    self.outbox.append(
-                        data,
-                        {
-                            **page,
-                            "t": "QP",
-                            "ts": template["ts"],
-                            "last": int(index == len(pages) - 1),
-                        },
-                    )
-                    published.append(page)
-                if rows:
-                    current[key] = {"fingerprint": fingerprint, "pages": published}
-            data["queues"] = current
-            data["queue_version"] = version
-            return [page for queue in current.values() for page in queue["pages"]]
+                continue
+            published = []
+            for index, items in enumerate(pages):
+                page = {**definition, "v": version, "items": items}
+                self.outbox.append(
+                    data,
+                    {
+                        **page,
+                        "t": "QP",
+                        "ts": template["ts"],
+                        "last": int(index == len(pages) - 1),
+                    },
+                )
+                published.append(page)
+            if rows:
+                current[key] = {"fingerprint": fingerprint, "pages": published}
+        data["queues"] = current
+        data["queue_version"] = version
+        return [page for queue in current.values() for page in queue["pages"]]
 
-        return self.outbox.change(observe)
+    def _queue_pages(self, queues, revision, base):
+        return self.outbox.change(
+            lambda data: self._queue_pages_into(data, queues, revision, base)
+        )
 
     def commands(self):
         return [
@@ -709,6 +750,219 @@ class ControlClient:
                 self.outbox.acknowledge(batch[-1]["s"])
         if self.need_snapshot:
             rebase(journal["seq"])
+
+    def _require_zone_test_worker(self, worker_id: str) -> None:
+        identity = parse_worker_identity(worker_id)
+        if not identity["is_test"] or identity["zone"] != self.worker:
+            raise ValueError("WORKER_ZONE_MISMATCH")
+
+    def _test_reporter_state(self, worker_id: str, instance_id: str | None = None):
+        state = self._test_reporters.get(worker_id)
+        if state is None:
+            inst = (
+                instance_id
+                if isinstance(instance_id, str)
+                and re.fullmatch(r"[0-9a-f]{8}", instance_id)
+                else uuid4().hex[:8]
+            )
+            state = {
+                "instance": inst,
+                "seq": 0,
+                "acked": 0,
+                "events": [],
+                "tracked": {},
+                "queues": {},
+                "queue_version": 0,
+                "started_at": time.time(),
+            }
+            self._test_reporters[worker_id] = state
+        return state
+
+    def register_test_worker(self, record: dict) -> dict:
+        worker_id = str(record["worker_id"])
+        self._require_zone_test_worker(worker_id)
+        with self._test_lock:
+            state = self._test_reporter_state(worker_id, record.get("instance_id"))
+            ttl = int(record.get("ttl_seconds", 14400))
+            payload = {
+                "w": worker_id,
+                "z": self.worker,
+                "r": record["repo"],
+                "rid": str(record["run_id"]),
+                "at": int(record.get("attempt", 1)),
+                "ttl": ttl,
+                "exp": int(record.get("expires_at", int(time.time()) + ttl)),
+                "i": state["instance"],
+                "st": (
+                    record.get("status")
+                    if record.get("status") in {"DEPLOYING", "ACTIVE"}
+                    else "ACTIVE"
+                ),
+            }
+            if record.get("pr_number") is not None:
+                payload["pr"] = int(record["pr_number"])
+            if record.get("pr_head_sha"):
+                payload["sha"] = str(record["pr_head_sha"])
+            return self._send("test-workers/register", payload)
+
+    def deregister_test_worker(
+        self, worker_id: str, *, reason: str = "cleanup"
+    ) -> dict:
+        self._require_zone_test_worker(worker_id)
+        with self._test_lock:
+            self._test_reporters.pop(worker_id, None)
+            return self._send(
+                "test-workers/deregister",
+                {"w": worker_id, "reason": _bounded(reason, 64)},
+            )
+
+    def _send_test_snapshot(
+        self, test_worker_id: str, base: dict, records: dict, queues: list, seq: int
+    ) -> dict:
+        contents = {
+            "task": [
+                task_descriptor(key, record, reporter_id=test_worker_id)
+                for key, record in records.items()
+                if record.get("phase") in ACTIVE
+            ],
+            "lease": [
+                {
+                    "tid": _tid_for_key(key, test_worker_id),
+                    "a": [node],
+                }
+                for key, record in records.items()
+                if record.get("phase") in ACTIVE
+                for node in _allocation(record)
+            ],
+            "queue": queues,
+        }
+        sid = uuid4().hex[:10]
+        pages = []
+        for kind, items in contents.items():
+            template = {
+                **base,
+                "sid": sid,
+                "p": 999999,
+                "n": 999999,
+                "seq": seq,
+                "kind": kind,
+            }
+            pages.extend(
+                (kind, page)
+                for page in self.packets(
+                    "snapshots",
+                    items,
+                    lambda part, template=template: {**template, "items": part},
+                )
+            )
+        pages = pages or [("task", [])]
+        for index, (kind, items) in enumerate(pages, 1):
+            result = self._send(
+                "snapshots",
+                {
+                    **base,
+                    "sid": sid,
+                    "p": index,
+                    "n": len(pages),
+                    "seq": seq,
+                    "kind": kind,
+                    "items": items,
+                },
+            )
+            if index == len(pages) and not result.get("complete"):
+                raise ValueError("CONTROL_SNAPSHOT_INCOMPLETE")
+        return {"ok": True, "complete": True, "parts": len(pages)}
+
+    def forward_test_telemetry(
+        self, test_worker_id: str, *, events=(), snapshot=None
+    ) -> dict:
+        """Proxy Test Worker task/queue telemetry within Main Worker egress bounds."""
+        self._require_zone_test_worker(test_worker_id)
+        with self._test_lock:
+            state = self._test_reporter_state(test_worker_id)
+            base = {"w": test_worker_id, "i": state["instance"]}
+            dropped_probes = 0
+            for raw in events or ():
+                if not isinstance(raw, dict):
+                    continue
+                if raw.get("t") == "IP":
+                    dropped_probes += 1
+                    continue
+                cleaned = {k: v for k, v in raw.items() if k != "s"}
+                self.outbox.append(state, cleaned)
+
+            records = {}
+            queues_list = [
+                page for queue in state["queues"].values() for page in queue["pages"]
+            ]
+            if isinstance(snapshot, dict):
+                records = snapshot.get("records") or {}
+                if snapshot.get("devices"):
+                    dropped_probes += len(snapshot["devices"])
+                self._capture_into(state, records, base, reporter_id=test_worker_id)
+                norm_queues = _normalize_queues(snapshot.get("queues"))
+                queues_list = self._queue_pages_into(
+                    state,
+                    norm_queues,
+                    int(snapshot.get("revision", 0)),
+                    base,
+                )
+
+            sent_events = 0
+            sent_snapshots = 0
+            contiguous = []
+            for event in state["events"]:
+                if not contiguous or event["s"] != contiguous[-1][-1]["s"] + 1:
+                    contiguous.append([])
+                contiguous[-1].append(event)
+            for chunk in contiguous:
+                for batch in self.packets(
+                    "events",
+                    chunk,
+                    lambda rows: {**base, "ev": rows},
+                    max_items=6,
+                ):
+                    result = self._send("events", {**base, "ev": batch})
+                    sent_events += len(batch)
+                    if result.get("need_snapshot"):
+                        rebase_seq = batch[0]["s"] - 1
+                        self._send_test_snapshot(
+                            test_worker_id, base, records, queues_list, rebase_seq
+                        )
+                        sent_snapshots += 1
+                        state["acked"] = rebase_seq
+                        state["events"] = [
+                            e for e in state["events"] if e["s"] > rebase_seq
+                        ]
+                        # Re-send buffered events now that baseline seq matches.
+                        for retry in self.packets(
+                            "events",
+                            state["events"],
+                            lambda rows: {**base, "ev": rows},
+                            max_items=6,
+                        ):
+                            self._send("events", {**base, "ev": retry})
+                            sent_events += len(retry)
+                            state["acked"] = retry[-1]["s"]
+                            state["events"] = [
+                                e for e in state["events"] if e["s"] > state["acked"]
+                            ]
+                        return {
+                            "ok": True,
+                            "events": sent_events,
+                            "snapshots": sent_snapshots,
+                            "dropped_probes": dropped_probes,
+                        }
+                    state["acked"] = batch[-1]["s"]
+                    state["events"] = [
+                        e for e in state["events"] if e["s"] > state["acked"]
+                    ]
+            return {
+                "ok": True,
+                "events": sent_events,
+                "snapshots": sent_snapshots,
+                "dropped_probes": dropped_probes,
+            }
 
     def run(self):
         delay = 30

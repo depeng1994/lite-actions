@@ -17,7 +17,7 @@ try {
   for (const run of runs) {
     const cases = Array.isArray(run.cases) ? run.cases : [];
     const isActive = Boolean(payload.active?.includes(run));
-    const result = run.result === "PASS" ? "PASS" : run.result === "QUEUED" || !run.result ? "QUEUED" : "FAIL";
+    const result = run.result === "PASS" ? "PASS" : run.result === "QUEUED" || run.result === "RUNNING" || !run.result ? "QUEUED" : "FAIL";
     const finishedAt = run.finished_at ?? null;
     const maxCards = Number(run.max_cards ?? cases.reduce((sum, item) => sum + Number(item.allocated_cards ?? 0), 0));
     const cardSeconds = Math.round(Number(run.card_hours ?? 0) * 3600);

@@ -6,6 +6,7 @@ import os
 import re
 from pathlib import Path
 
+from ci_core.contract import parse_worker_identity
 from ci_core.transport import run
 
 
@@ -60,9 +61,10 @@ def node_preempts(pool, node):
 
 
 def load(root, worker):
+    zone = parse_worker_identity(worker)["zone"]
     workers = json.loads((root / "config/workers.json").read_text())
     pools = json.loads((root / "config/pools.json").read_text())
-    if worker not in workers or not workers[worker].get("enabled"):
+    if zone not in workers or not workers[zone].get("enabled"):
         raise ValueError("unknown/disabled worker")
     validate_pools(pools, workers)
     return workers, pools
@@ -149,15 +151,22 @@ def checked_pools(document, workers):
 
 
 def load_active_pools(root, worker, state_dir=None):
+    identity = parse_worker_identity(worker)
+    zone = identity["zone"]
+    override_pools = (
+        os.environ.get("LITE_ACTIONS_ACTIVE_POOLS_PATH", "").strip()
+        if identity["is_test"]
+        else ""
+    )
     directory = Path(
         state_dir or os.environ.get("LITE_ACTIONS_STATE_DIR") or (root / "state")
     )
-    path = directory / "pools-active.json"
+    path = Path(override_pools) if override_pools else (directory / "pools-active.json")
     if not path.exists():
         workers, pools = load(root, worker)
         return workers, pools, 0
     workers = json.loads((root / "config/workers.json").read_text())
-    if worker not in workers or not workers[worker].get("enabled"):
+    if zone not in workers or not workers[zone].get("enabled"):
         raise ValueError("unknown/disabled worker")
     document = json.loads(path.read_text())
     revision = document.get("revision")
@@ -233,10 +242,13 @@ def resolve_pool_default_docker(pool, *, kind):
 
 
 def runtime_case(item, pools, worker):
+    identity = parse_worker_identity(worker)
+    if "worker" in item and item["worker"] != worker:
+        raise ValueError("CASE_WORKER_MISMATCH")
     pool = pools.get(item["target_pool"])
     if not pool:
         raise ValueError("UNKNOWN_POOL")
-    if pool["owner"] != worker:
+    if pool["owner"] != identity["zone"]:
         raise ValueError("POOL_OWNER_MISMATCH")
     docker = item["docker"]
     if docker is None and item["kind"] != "worker_probe":
@@ -263,10 +275,13 @@ def identify_worker(addresses, assigned, asserted=None):
     for ip in assigned.values():
         if not isinstance(ip, str) or str(IPv4Address(ip)) != ip:
             raise ValueError("WORKER_IDENTITY_CONFIG_INVALID")
+    expected_zone = None
+    if asserted is not None:
+        expected_zone = parse_worker_identity(asserted)["zone"]
     matched = [w for w, ip in assigned.items() if ip in addresses]
-    if len(matched) != 1 or asserted is not None and asserted != matched[0]:
+    if len(matched) != 1 or expected_zone is not None and expected_zone != matched[0]:
         raise ValueError("WORKER_IDENTITY_MISMATCH")
-    return matched[0]
+    return asserted if asserted is not None else matched[0]
 
 
 def deployment(asserted=None):
@@ -300,7 +315,10 @@ def deployment(asserted=None):
         if a.get("family") == "inet"
     }
     worker = identify_worker(ips, doc["addresses"], asserted)
-    cfg = doc["workers"][worker]
+    identity = parse_worker_identity(worker)
+    zone = identity["zone"]
+    is_test = identity["is_test"]
+    cfg = doc["workers"][zone]
     if "control_center" in cfg:
         from ci_core.egress_policy import control_origin, control_proxy
 
@@ -317,13 +335,22 @@ def deployment(asserted=None):
         reserve = control.get("ci_reserve_bytes", 262144)
         if type(reserve) is not int or reserve < 0:
             raise ValueError("INVALID_CONTROL_CENTER_RESERVE")
-    state = Path(cfg["state_dir"])
-    if (
-        not state.is_absolute()
-        or state.resolve() != state
-        or Path(os.environ.get("LITE_ACTIONS_STATE_DIR", str(state))) != state
-    ):
-        raise ValueError("STATE_OWNER_MISMATCH")
+    zone_state = Path(cfg["state_dir"])
+    if is_test:
+        raw_state = os.environ.get("LITE_ACTIONS_STATE_DIR", "").strip()
+        if not raw_state:
+            raise ValueError("STATE_OWNER_MISMATCH")
+        state = Path(raw_state)
+        if not state.is_absolute() or state.resolve() != state or state == zone_state:
+            raise ValueError("STATE_OWNER_MISMATCH")
+    else:
+        state = zone_state
+        if (
+            not state.is_absolute()
+            or state.resolve() != state
+            or Path(os.environ.get("LITE_ACTIONS_STATE_DIR", str(state))) != state
+        ):
+            raise ValueError("STATE_OWNER_MISMATCH")
     # Preprovision this marker even for a fresh worker. Never adopt an old directory by writing a marker at startup.
     if (
         not state.is_dir()
@@ -336,12 +363,12 @@ def deployment(asserted=None):
     if (
         not stat.S_ISREG(st.st_mode)
         or st.st_uid not in {0, os.geteuid()}
-        or st.st_size > 8
+        or st.st_size > 64
         or st.st_mode & 0o022
         or owner.read_text().strip() != worker
     ):
         raise ValueError("STATE_OWNER_MISMATCH")
-    if worker == "yellow" and (
+    if zone == "yellow" and (
         type(cfg.get("daily_upload_bytes")) is not int or cfg["daily_upload_bytes"] < 1
     ):
         raise ValueError("YELLOW_DAILY_QUOTA_REQUIRED")
@@ -357,4 +384,12 @@ def deployment(asserted=None):
                 and record.get("item", {}).get("worker") != worker
             ):
                 raise ValueError("STATE_OWNER_MISMATCH")
-    return worker, {**cfg, "address": doc["addresses"][worker]}
+    return worker, {
+        **cfg,
+        "state_dir": str(state),
+        "zone_state_dir": str(zone_state),
+        "zone": zone,
+        "worker_id": worker,
+        "is_test": is_test,
+        "address": doc["addresses"][zone],
+    }

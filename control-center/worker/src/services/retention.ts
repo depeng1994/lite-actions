@@ -1,8 +1,11 @@
 import {type Context} from "../router";
 import type {SqlStore} from "../storage/sqlStore";
+import type {WorkerId} from "../types/api";
 import {auditStatement} from "./audit";
+import {reconcileExpiredTestWorker, reconcileStoppedTestWorker} from "./ingest";
 import {sha256} from "../utils/crypto";
 import {blobBuffer, gunzip, gzip} from "../utils/gzip";
+import {isTestWorkerId, workerZoneOf} from "../utils/validate";
 
 const DAY = 86400;
 const DEFAULT_CAPACITY = 500 * 1024 * 1024;
@@ -67,25 +70,29 @@ function deleteEmptyChunks(db: SqlStore, now: number) {
 function deleteOrphanWorkflowRuns(db: SqlStore) {
   return db.prepare(`DELETE FROM workflow_runs
     WHERE NOT EXISTS (SELECT 1 FROM task_index i WHERE i.provider=workflow_runs.provider
-      AND i.repo=workflow_runs.repo AND i.run_id=workflow_runs.run_id AND i.attempt=workflow_runs.attempt)
+      AND i.repo=workflow_runs.repo AND i.run_id=workflow_runs.run_id
+      AND i.attempt=workflow_runs.attempt AND i.is_test=workflow_runs.is_test)
       AND NOT EXISTS (SELECT 1 FROM tasks_active a WHERE a.provider=workflow_runs.provider
-      AND a.repo=workflow_runs.repo AND a.run_id=workflow_runs.run_id AND a.attempt=workflow_runs.attempt)`);
+      AND a.repo=workflow_runs.repo AND a.run_id=workflow_runs.run_id
+      AND a.attempt=workflow_runs.attempt AND a.is_test=workflow_runs.is_test)`);
 }
 
 function deleteExpiredWorkflows(db: SqlStore, cutoff: number) {
-  // Retention is keyed by the complete Workflow. A mixed or partially finished
+  // Retention is keyed by the complete (Workflow, is_test). A mixed or partially finished
   // Workflow remains available until every child case has passed the cutoff.
   return db.prepare(`DELETE FROM task_index
     WHERE NOT EXISTS (SELECT 1 FROM tasks_active a WHERE a.provider=task_index.provider
-      AND a.repo=task_index.repo AND a.run_id=task_index.run_id AND a.attempt=task_index.attempt)
+      AND a.repo=task_index.repo AND a.run_id=task_index.run_id
+      AND a.attempt=task_index.attempt AND a.is_test=task_index.is_test)
       AND EXISTS (
         SELECT 1 FROM (
-          SELECT provider,repo,run_id,attempt FROM task_index
-          WHERE finished_at<? GROUP BY provider,repo,run_id,attempt
+          SELECT provider,repo,run_id,attempt,is_test FROM task_index
+          WHERE finished_at<? GROUP BY provider,repo,run_id,attempt,is_test
           HAVING MAX(finished_at)<?
         ) expired
         WHERE expired.provider=task_index.provider AND expired.repo=task_index.repo
           AND expired.run_id=task_index.run_id AND expired.attempt=task_index.attempt
+          AND expired.is_test=task_index.is_test
       )`).bind(cutoff, cutoff);
 }
 
@@ -95,17 +102,20 @@ function deleteOldestWorkflow(db: SqlStore) {
   // maintenance step when most runs contain one or two cases.
   return db.prepare(`DELETE FROM task_index
     WHERE NOT EXISTS (SELECT 1 FROM tasks_active a WHERE a.provider=task_index.provider
-      AND a.repo=task_index.repo AND a.run_id=task_index.run_id AND a.attempt=task_index.attempt)
+      AND a.repo=task_index.repo AND a.run_id=task_index.run_id
+      AND a.attempt=task_index.attempt AND a.is_test=task_index.is_test)
       AND EXISTS (
         SELECT 1 FROM (
-          SELECT provider,repo,run_id,attempt FROM task_index
+          SELECT provider,repo,run_id,attempt,is_test FROM task_index
           WHERE NOT EXISTS (SELECT 1 FROM tasks_active a2 WHERE a2.provider=task_index.provider
-            AND a2.repo=task_index.repo AND a2.run_id=task_index.run_id AND a2.attempt=task_index.attempt)
-          GROUP BY provider,repo,run_id,attempt
-          ORDER BY MAX(finished_at),provider,repo,run_id,attempt LIMIT 200
+            AND a2.repo=task_index.repo AND a2.run_id=task_index.run_id
+            AND a2.attempt=task_index.attempt AND a2.is_test=task_index.is_test)
+          GROUP BY provider,repo,run_id,attempt,is_test
+          ORDER BY MAX(finished_at),provider,repo,run_id,attempt,is_test LIMIT 200
         ) oldest
         WHERE oldest.provider=task_index.provider AND oldest.repo=task_index.repo
           AND oldest.run_id=task_index.run_id AND oldest.attempt=task_index.attempt
+          AND oldest.is_test=task_index.is_test
       ) RETURNING finished_at`);
 }
 
@@ -122,6 +132,11 @@ export async function archive(context: Context) {
       AND COALESCE(ended_at,last_busy_at)<?`).bind(now - 30 * DAY),
     db.prepare("DELETE FROM sessions WHERE expires_at<=? OR revoked_at<?").bind(now, now - 7*DAY),
     db.prepare("DELETE FROM snapshot_staging WHERE created_at<?").bind(now - DAY),
+    db.prepare(`DELETE FROM test_workers WHERE status IN ('STOPPED','EXPIRED') AND updated_at<?
+      AND NOT EXISTS (
+        SELECT 1 FROM tasks_active a
+        WHERE a.worker_id=test_workers.zone AND a.is_test=1 AND a.reporter_id=test_workers.worker_id
+      )`).bind(now - 7 * DAY),
     db.prepare("DELETE FROM login_attempts WHERE window_start_at<? AND COALESCE(locked_until,0)<=?").bind(now - DAY, now),
   ]);
   const {results} = await db.prepare(`
@@ -194,7 +209,88 @@ export async function capacity(context: Context, probe: SizeProbe = databaseSize
   }
 }
 
+export async function reapExpiredTestWorkers(context: Context): Promise<number> {
+  const db = context.env.DB;
+  const seen = new Set<string>();
+  const reconcileSet = async (
+    rows: Array<{worker_id: string; zone: WorkerId}>,
+    handler: (row: {worker_id: string; zone: WorkerId}) => Promise<number>,
+  ) => {
+    for (const row of rows) {
+      if (seen.has(row.worker_id)) continue;
+      if (!isTestWorkerId(row.worker_id) || workerZoneOf(row.worker_id) !== row.zone) continue;
+      seen.add(row.worker_id);
+      await handler(row);
+    }
+  };
+
+  const expired = await db.prepare(`
+    SELECT worker_id,zone FROM test_workers
+    WHERE status IN ('DEPLOYING','ACTIVE') AND expires_at<?
+  `).bind(context.now).all<{worker_id: string; zone: WorkerId}>();
+  await reconcileSet(expired.results, row => reconcileExpiredTestWorker(context, row.worker_id, row.zone));
+
+  const gateTerminated = await db.prepare(`
+    SELECT DISTINCT tw.worker_id,tw.zone
+    FROM test_workers tw
+    WHERE tw.status IN ('DEPLOYING','ACTIVE')
+      AND tw.pr_number IS NOT NULL
+      AND tw.pr_head_sha IS NOT NULL
+      AND EXISTS (
+        SELECT 1 FROM pr_gate_generations g
+        WHERE g.repo=tw.repo AND g.pr_number=tw.pr_number AND g.pr_head_sha=tw.pr_head_sha
+          AND (g.github_run_id IS NULL OR g.github_run_id=tw.run_id)
+          AND (g.github_run_attempt IS NULL OR g.github_run_attempt>=tw.attempt)
+          AND g.generation=(
+            SELECT MAX(g2.generation) FROM pr_gate_generations g2
+            WHERE g2.repo=tw.repo AND g2.pr_number=tw.pr_number AND g2.pr_head_sha=tw.pr_head_sha
+              AND (g2.github_run_id IS NULL OR g2.github_run_id=tw.run_id)
+          )
+          AND g.status IN ('PASS','FAIL','CANCELLED','SUPERSEDED')
+      )
+  `).all<{worker_id: string; zone: WorkerId}>();
+  await reconcileSet(gateTerminated.results, row =>
+    reconcileStoppedTestWorker(context, row.worker_id, row.zone, "pr_gate_terminated", true));
+
+  const stoppedOrphans = await db.prepare(`
+    SELECT DISTINCT tw.worker_id,tw.zone
+    FROM test_workers tw
+    WHERE tw.status IN ('STOPPED','EXPIRED')
+      AND (
+        EXISTS (
+          SELECT 1 FROM tasks_active a
+          WHERE a.worker_id=tw.zone AND a.is_test=1 AND a.reporter_id=tw.worker_id
+        )
+        OR EXISTS (
+          SELECT 1 FROM workflow_runs w
+          WHERE w.is_test=1 AND w.is_active=1
+            AND EXISTS (SELECT 1 FROM json_each(w.reporter_ids_json) r WHERE r.value=tw.worker_id)
+            AND NOT EXISTS (
+              SELECT 1 FROM tasks_active a2
+              WHERE a2.provider=w.provider AND a2.repo=w.repo
+                AND a2.run_id=w.run_id AND a2.attempt=w.attempt AND a2.is_test=1
+            )
+        )
+      )
+  `).all<{worker_id: string; zone: WorkerId}>();
+  await reconcileSet(stoppedOrphans.results, row =>
+    reconcileStoppedTestWorker(context, row.worker_id, row.zone, "test_worker_stopped_reconcile", false));
+
+  const missingWorkerOrphans = await db.prepare(`
+    SELECT DISTINCT a.reporter_id AS worker_id,a.worker_id AS zone
+    FROM tasks_active a
+    WHERE a.is_test=1 AND a.reporter_id IS NOT NULL AND a.reporter_id<>a.worker_id
+      AND (a.reporter_id LIKE 'blue-test-%' OR a.reporter_id LIKE 'yellow-test-%')
+      AND NOT EXISTS (SELECT 1 FROM test_workers tw WHERE tw.worker_id=a.reporter_id)
+  `).all<{worker_id: string; zone: WorkerId}>();
+  await reconcileSet(missingWorkerOrphans.results, row =>
+    reconcileStoppedTestWorker(context, row.worker_id, row.zone, "test_worker_missing_reconcile", false));
+
+  return seen.size;
+}
+
 export async function retention(context: Context) {
+  await reapExpiredTestWorkers(context);
   await capacity(context);
   await archive(context);
 }

@@ -6,10 +6,12 @@ import {boardRoutes} from "./routes/board";
 import {cancellationRoutes} from "./routes/cancellations";
 import {clusterRoutes} from "./routes/cluster";
 import {commandRoutes} from "./routes/commands";
+import {prGateRoutes} from "./routes/prGate";
 import {userRoutes} from "./routes/users";
 import {workerRoutes} from "./routes/worker";
 import {trackCancellations} from "./services/cancellations";
-import {capacity, retention} from "./services/retention";
+import {reconcilePrGateIntents} from "./services/prGate";
+import {capacity, reapExpiredTestWorkers, retention} from "./services/retention";
 import type {SqlStore} from "./storage/sqlStore";
 import {sanitizePublic} from "./utils/mask";
 import {PublicCache} from "./utils/microCache";
@@ -22,6 +24,7 @@ clusterRoutes(router);
 authRoutes(router);
 userRoutes(router);
 workerRoutes(router);
+prGateRoutes(router);
 
 const publicCache = new PublicCache();
 const publicHeaders = {"Cache-Control": "public, max-age=10", "Content-Type": "application/json"};
@@ -60,6 +63,8 @@ export async function runMaintenance(kind: "cancellations" | "retention", env: E
   try {
     if (kind === "cancellations") {
       await trackCancellations(context);
+      await reconcilePrGateIntents(context).catch(() => undefined);
+      await reapExpiredTestWorkers(context).catch(() => undefined);
     } else {
       await requireWriteQuota(context);
       await retention(context);

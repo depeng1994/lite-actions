@@ -145,16 +145,35 @@ def approved_controls(client, run, candidate, *, source=None):
     """Prove the controller belongs to a repository branch, independent of trigger."""
     if not isinstance(candidate, str) or not SHA.fullmatch(candidate):
         raise ValueError("invalid controller SHA")
+    platform_event = run.get("_ci_platform_event", run.get("event"))
+    platform_branch = run.get("_ci_platform_head_branch", run.get("head_branch"))
+    platform_run_sha = run.get("_ci_platform_run_sha", run.get("head_sha"))
     if (
         isinstance(source, dict)
+        and "_ci_platform_run_sha" in run
+        and platform_event
+        in {
+            "workflow_dispatch",
+            "schedule",
+            "issue_comment",
+            "push",
+            "pull_request_target",
+        }
+        and platform_run_sha not in (source.get("head_sha"), source.get("source_sha"))
+        and candidate != platform_run_sha
+    ):
+        raise ValueError("unapproved native controller release")
+    if (
+        platform_event == "pull_request"
+        and isinstance(source, dict)
         and source.get("mode") == "merge_result"
         and candidate in (source.get("head_sha"), source.get("source_sha"))
     ):
-        # PR workflows may themselves be loaded from the verified head or merge.
+        # Pull request workflows may execute from the verified PR head or merge commit.
         return {candidate}
     for branch in dict.fromkeys(
         (
-            run.get("head_branch"),
+            platform_branch,
             source.get("base_ref") if isinstance(source, dict) else None,
         )
     ):
@@ -211,7 +230,10 @@ def read_source_artifact(client, run):
 
 def bind_request_source(client, run, source):
     """Bind structured source identity to a run before validating its plan."""
-    if not isinstance(source, dict) or run.get("head_sha") not in (
+    platform_run_sha = run.get("_ci_platform_run_sha", run.get("head_sha"))
+    platform_head_branch = run.get("_ci_platform_head_branch", run.get("head_branch"))
+    platform_event = run.get("_ci_platform_event", run.get("event"))
+    if not isinstance(source, dict) or platform_run_sha not in (
         source.get("control_sha"),
         source.get("head_sha"),
         source.get("source_sha"),
@@ -220,7 +242,14 @@ def bind_request_source(client, run, source):
     head = source.get("head_sha")
     if not isinstance(head, str) or not SHA.fullmatch(head):
         raise ValueError("invalid requested source SHA")
-    bound = {**run, "_ci_control_sha": source.get("control_sha"), "head_sha": head}
+    bound = {
+        **run,
+        "_ci_platform_run_sha": platform_run_sha,
+        "_ci_platform_head_branch": platform_head_branch,
+        "_ci_platform_event": platform_event,
+        "_ci_control_sha": source.get("control_sha"),
+        "head_sha": head,
+    }
     if source.get("mode") == "merge_result":
         number = source.get("pr_number")
         if type(number) is not int or number < 1:

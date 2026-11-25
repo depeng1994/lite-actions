@@ -1,0 +1,22 @@
+[Unit]
+Description=Lite Actions Worker Clock Synchronization Guard
+Wants=network-online.target
+After=network-online.target chronyd.service systemd-timesyncd.service
+
+[Service]
+Type=simple
+User=root
+# Optional host environment overrides (e.g. proxy variables on restricted zones).
+EnvironmentFile=-/etc/lite-actions/timesync.env
+# Install scripts/timesync_guard.py to /usr/local/bin/lite-actions-timesync-guard (0755 root:root).
+ExecStart=/usr/bin/env python3 /usr/local/bin/lite-actions-timesync-guard --apply --interval 300
+Restart=always
+RestartSec=30
+TimeoutStopSec=15
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lite-actions-timesync
+
+[Install]
+WantedBy=multi-user.target

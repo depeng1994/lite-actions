@@ -33,12 +33,20 @@ def actual_sha(root: Path) -> str:
     return value
 
 
-def publish_ready(root: Path, destination: Path) -> dict:
+def publish_ready(
+    root: Path, destination: Path, *, release_sha: str | None = None
+) -> dict:
     """Write after first successful router.tick(); never before it."""
     pid = os.getpid()
     boot, start_ticks = process_identity(pid)
+    if release_sha is not None:
+        if not _SHA.fullmatch(release_sha):
+            raise ValueError("Worker checkout SHA invalid")
+        resolved_sha = release_sha
+    else:
+        resolved_sha = actual_sha(root)
     value = {
-        "release_sha": actual_sha(root),
+        "release_sha": resolved_sha,
         "pid": pid,
         "boot_id": boot,
         "process_start_ticks": start_ticks,

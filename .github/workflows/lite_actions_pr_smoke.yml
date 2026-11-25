@@ -1,0 +1,702 @@
+name: lite-ci-pr-smoke
+run-name: "Lite Actions PR smoke: #${{ inputs.pr_number || github.event.pull_request.number || 'dispatch' }}"
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Open PR number in depeng1994/lite-actions'
+        type: string
+        required: true
+      pr_head_sha:
+        description: 'Expected 40-char PR head SHA'
+        type: string
+        required: true
+      gitcode_repo:
+        description: 'GitCode TorchTitan repository'
+        type: string
+        required: false
+        default: depeng1994/torchtitan-npu
+      gitcode_ref:
+        description: 'GitCode branch/ref to verify against the PR worker'
+        type: string
+        required: false
+        default: master
+      profile:
+        description: 'Smoke profile'
+        type: choice
+        required: false
+        default: full
+        options: [full, blue-only, cpu-only]
+  pull_request:
+    branches: [main]
+    types: [labeled]
+concurrency:
+  group: lite-actions-per-pr-hardware
+  cancel-in-progress: false
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+jobs:
+  prepare:
+    if: >-
+      github.repository == 'depeng1994/lite-actions' && (
+        github.event_name == 'workflow_dispatch' || (
+          github.event_name == 'pull_request' &&
+          (github.event.label.name == 'run-pr-smoke' || github.event.label.name == 'run-pr-smoke-blue') &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        )
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      deploy_matrix: ${{ steps.plan.outputs.deploy_matrix }}
+      smoke_matrix: ${{ steps.plan.outputs.smoke_matrix }}
+      target_test_id: ${{ steps.plan.outputs.target_test_id }}
+      run_head_sha: ${{ steps.resolve.outputs.run_head_sha }}
+      pr_number: ${{ steps.resolve.outputs.pr_number }}
+      pr_head_sha: ${{ steps.resolve.outputs.pr_head_sha }}
+      pr_author: ${{ steps.resolve.outputs.pr_author }}
+      generation: ${{ steps.register.outputs.generation }}
+      gitcode_repo: ${{ steps.resolve.outputs.gitcode_repo }}
+      gitcode_ref: ${{ steps.resolve.outputs.gitcode_ref }}
+      profile: ${{ steps.resolve.outputs.profile }}
+    steps:
+      - name: Resolve PR and run identity
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_PR_NUMBER: ${{ inputs.pr_number }}
+          INPUT_PR_HEAD_SHA: ${{ inputs.pr_head_sha }}
+          INPUT_GITCODE_REPO: ${{ inputs.gitcode_repo }}
+          INPUT_GITCODE_REF: ${{ inputs.gitcode_ref }}
+          INPUT_PROFILE: ${{ inputs.profile }}
+          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_LABEL_NAME: ${{ github.event.label.name }}
+          PR_MAINTAINERS: ${{ vars.LITE_CI_PR_MAINTAINERS || 'depeng1994' }}
+        run: |
+          set -euo pipefail
+          run_head_sha=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .head_sha)
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            pr_number="$INPUT_PR_NUMBER"
+            pr_head_sha="$INPUT_PR_HEAD_SHA"
+            gitcode_repo="${INPUT_GITCODE_REPO:-depeng1994/torchtitan-npu}"
+            gitcode_ref="${INPUT_GITCODE_REF:-master}"
+            profile="${INPUT_PROFILE:-full}"
+          else
+            pr_number="$EVENT_PR_NUMBER"
+            pr_head_sha="$EVENT_PR_HEAD_SHA"
+            gitcode_repo="depeng1994/torchtitan-npu"
+            gitcode_ref="master"
+            if [ "${EVENT_LABEL_NAME:-}" = "run-pr-smoke-blue" ]; then
+              profile="blue-only"
+            else
+              profile="full"
+            fi
+          fi
+          if [ -z "$pr_number" ] || [ -z "$pr_head_sha" ]; then
+            echo "::error::PR number and PR head SHA are required"
+            exit 1
+          fi
+          pr_json=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr_number")
+          pr_state=$(printf '%s' "$pr_json" | jq -r '.state')
+          live_head=$(printf '%s' "$pr_json" | jq -r '.head.sha')
+          pr_author=$(printf '%s' "$pr_json" | jq -r '.user.login')
+          head_repo=$(printf '%s' "$pr_json" | jq -r '.head.repo.full_name // ""')
+          if [ "$pr_state" != "open" ]; then
+            echo "::error::PR #$pr_number is not open ($pr_state)"
+            exit 1
+          fi
+          if [ "$live_head" != "$pr_head_sha" ]; then
+            echo "::error::PR #$pr_number head moved ($live_head != $pr_head_sha)"
+            exit 1
+          fi
+          if [ "$EVENT_NAME" = "pull_request" ] && [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then
+            echo "::error::Unsupported PR head repository $head_repo for pull_request event"
+            exit 1
+          fi
+          if [ "$EVENT_NAME" = "pull_request" ] && [ "$run_head_sha" != "$pr_head_sha" ]; then
+            echo "::error::Run head $run_head_sha differs from PR head $pr_head_sha"
+            exit 1
+          fi
+          if printf ',%s,' "$PR_MAINTAINERS" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' | grep -qF ",$(printf '%s' "$pr_author" | tr '[:upper:]' '[:lower:]'),"; then
+            [ "$head_repo" = "$GITHUB_REPOSITORY" ] || { echo "::error::Maintainer PR head repo $head_repo does not match $GITHUB_REPOSITORY"; exit 1; }
+          else
+            gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/pulls/$pr_number/reviews?per_page=100" | jq -e --arg m "$PR_MAINTAINERS" --arg a "$pr_author" '
+              ($m | ascii_downcase | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))) as $ok |
+              [.[][] | select(.user.login != null) | {u: (.user.login | ascii_downcase), s: (.state | ascii_upcase)}
+               | select(.u != ($a | ascii_downcase) and (.u | IN($ok[])) and (.s | IN("APPROVED","CHANGES_REQUESTED","DISMISSED")))]
+              | group_by(.u) | any(last.s == "APPROVED")
+            ' >/dev/null || { echo "::error::PR by @$pr_author requires maintainer APPROVED review"; exit 1; }
+          fi
+          {
+            echo "run_head_sha=$run_head_sha"
+            echo "pr_number=$pr_number"
+            echo "pr_head_sha=$pr_head_sha"
+            echo "pr_author=$pr_author"
+            echo "gitcode_repo=$gitcode_repo"
+            echo "gitcode_ref=$gitcode_ref"
+            echo "profile=$profile"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Register running gate generation
+        id: register
+        env:
+          CC_URL: ${{ vars.LITE_CI_CONTROL_CENTER_URL }}
+          GATE_TOKEN: ${{ secrets.LITE_CI_GATE_TOKEN }}
+          REPO_NAME: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          PR_HEAD_SHA: ${{ steps.resolve.outputs.pr_head_sha }}
+          PR_AUTHOR: ${{ steps.resolve.outputs.pr_author }}
+          TRIGGER_ACTOR: ${{ github.actor }}
+          PROFILE: ${{ steps.resolve.outputs.profile }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CC_URL:-}" ] || [ -z "${GATE_TOKEN:-}" ]; then
+            echo "generation=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          base = os.environ["CC_URL"].rstrip("/")
+          suites = ["deploy", "smoke_self", "cleanup"]
+          if os.environ["PROFILE"] == "full":
+              suites.insert(2, "smoke_gitcode")
+          target_url = (
+              f"{os.environ['SERVER_URL']}/{os.environ['REPO_NAME']}"
+              f"/actions/runs/{os.environ['RUN_ID']}"
+          )
+          payload = json.dumps(
+              {
+                  "repo": os.environ["REPO_NAME"],
+                  "pr_number": int(os.environ["PR_NUMBER"]),
+                  "pr_head_sha": os.environ["PR_HEAD_SHA"],
+                  "status": "RUNNING",
+                  "github_run_id": os.environ["RUN_ID"],
+                  "github_run_attempt": int(os.environ["RUN_ATTEMPT"]),
+                  "required_suites": suites,
+                  "target_url": target_url,
+                  "summary": f"PR #{os.environ['PR_NUMBER']} run {os.environ['RUN_ID']} running",
+                  "author_login": os.environ["PR_AUTHOR"],
+                  "trigger_actor": os.environ["TRIGGER_ACTOR"],
+              }
+          ).encode("utf-8")
+          req = urllib.request.Request(
+              f"{base}/api/v1/pr-gate/register",
+              data=payload,
+              headers={
+                  "Authorization": f"Bearer {os.environ['GATE_TOKEN']}",
+                  "Content-Type": "application/json",
+                  "Accept": "application/json",
+                  "User-Agent": "lite-actions-pr-smoke",
+              },
+              method="POST",
+          )
+          with urllib.request.urlopen(req, timeout=20) as resp:
+              data = json.loads(resp.read().decode("utf-8"))
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"generation={data['generation']}\n")
+          print(f"Registered gate generation {data['generation']}")
+          PY
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.resolve.outputs.run_head_sha }}
+          persist-credentials: false
+
+      - name: Prepare per-PR smoke and dynamic worker plan
+        id: plan
+        env:
+          SELF_SMOKE_SHA: ${{ steps.resolve.outputs.run_head_sha }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          PR_HEAD_SHA: ${{ steps.resolve.outputs.pr_head_sha }}
+          PR_GATE_GENERATION: ${{ steps.register.outputs.generation }}
+          SELF_SMOKE_PROFILE: ${{ steps.resolve.outputs.profile }}
+        run: |
+          set -euo pipefail
+          python3 -m ci_core.self_smoke prepare-pr
+          jq -r '.cases[] | "\(.case_id): \(.worker) [\(.kind)]"' .ci-request/ci-request.json | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lite-ci-request-${{ github.run_attempt }}
+          path: .ci-request/ci-request.json
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Mark PR gate failed if prepare fails after registration
+        if: failure() && steps.register.outputs.generation != ''
+        env:
+          CC_URL: ${{ vars.LITE_CI_CONTROL_CENTER_URL }}
+          GATE_TOKEN: ${{ secrets.LITE_CI_GATE_TOKEN }}
+          REPO_NAME: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          PR_HEAD_SHA: ${{ steps.resolve.outputs.pr_head_sha }}
+          GENERATION: ${{ steps.register.outputs.generation }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          cc_url = (os.environ.get("CC_URL") or "").rstrip("/")
+          token = os.environ.get("GATE_TOKEN") or ""
+          if cc_url and token:
+              req = urllib.request.Request(
+                  f"{cc_url}/api/v1/pr-gate/report",
+                  data=json.dumps(
+                      {
+                          "repo": os.environ["REPO_NAME"],
+                          "pr_number": int(os.environ["PR_NUMBER"]),
+                          "pr_head_sha": os.environ["PR_HEAD_SHA"],
+                          "generation": int(os.environ["GENERATION"]),
+                          "status": "FAIL",
+                          "github_run_id": os.environ["RUN_ID"],
+                          "github_run_attempt": int(os.environ["RUN_ATTEMPT"]),
+                          "summary": "prepare job failed",
+                      }
+                  ).encode("utf-8"),
+                  headers={
+                      "Authorization": f"Bearer {token}",
+                      "Content-Type": "application/json",
+                  },
+                  method="POST",
+              )
+              urllib.request.urlopen(req, timeout=15).close()
+          PY
+
+  deploy:
+    needs: prepare
+    runs-on: ubuntu-latest
+    name: "deploy-${{ matrix.worker }}"
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.deploy_matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.run_head_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: lite-ci-request-${{ github.run_attempt }}
+          path: .ci-request
+      - name: Deploy sandboxed Test Worker on ${{ matrix.worker }}
+        env:
+          SELF_SMOKE_CASE_ID: ${{ matrix.case_id }}
+          SELF_SMOKE_SHA: ${{ needs.prepare.outputs.run_head_sha }}
+          SELF_SMOKE_WAIT_SECONDS: '900'
+          GH_TOKEN: ${{ github.token }}
+          CI_RESULT_AUTHOR: ${{ vars.LITE_CI_RESULT_ACTOR }}
+        run: python3 -m ci_core.self_smoke wait-case
+
+  smoke_self:
+    needs: [prepare, deploy]
+    runs-on: ubuntu-latest
+    name: "self-${{ matrix.case_id }}"
+    timeout-minutes: ${{ needs.prepare.outputs.profile == 'cpu-only' && 15 || 180 }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.smoke_matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.run_head_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: lite-ci-request-${{ github.run_attempt }}
+          path: .ci-request
+      - name: Wait for Test Worker result (${{ matrix.worker }})
+        env:
+          SELF_SMOKE_CASE_ID: ${{ matrix.case_id }}
+          SELF_SMOKE_SHA: ${{ needs.prepare.outputs.run_head_sha }}
+          SELF_SMOKE_PROFILE: ${{ needs.prepare.outputs.profile }}
+          GH_TOKEN: ${{ github.token }}
+          CI_RESULT_AUTHOR: ${{ vars.LITE_CI_RESULT_ACTOR }}
+        run: python3 -m ci_core.self_smoke wait-case
+
+  smoke_gitcode:
+    needs: [prepare, deploy]
+    if: >-
+      needs.prepare.result == 'success' &&
+      needs.deploy.result == 'success' &&
+      needs.prepare.outputs.profile == 'full'
+    runs-on: ubuntu-latest
+    name: gitcode-torchtitan-smoke
+    timeout-minutes: 180
+    environment: gitcode-torchtitan-smoke
+    steps:
+      - name: Dispatch and wait for GitCode TorchTitan smoke against Test Worker
+        env:
+          GITCODE_TOKEN: ${{ secrets.GITCODE_TORCHTITAN_DISPATCH_TOKEN }}
+          GITCODE_REPO: ${{ needs.prepare.outputs.gitcode_repo }}
+          GITCODE_REF: ${{ needs.prepare.outputs.gitcode_ref }}
+          TARGET_TEST_ID: ${{ needs.prepare.outputs.target_test_id }}
+          CC_URL: ${{ vars.LITE_CI_CONTROL_CENTER_URL }}
+          GATE_TOKEN: ${{ secrets.LITE_CI_GATE_TOKEN }}
+          REPO_NAME: ${{ github.repository }}
+          PR_NUMBER: ${{ needs.prepare.outputs.pr_number }}
+          PR_HEAD_SHA: ${{ needs.prepare.outputs.pr_head_sha }}
+          GENERATION: ${{ needs.prepare.outputs.generation }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          gc_token = os.environ["GITCODE_TOKEN"]
+          gc_repo = os.environ["GITCODE_REPO"]
+          gc_ref = os.environ["GITCODE_REF"]
+          target_test_id = os.environ["TARGET_TEST_ID"]
+          gc_base = f"https://api.gitcode.com/api/v8/repos/{gc_repo}"
+          gc_headers = {
+              "PRIVATE-TOKEN": gc_token,
+              "Accept": "application/json",
+              "Content-Type": "application/json",
+              "User-Agent": "lite-actions-pr-gate",
+          }
+
+          cc_url = (os.environ.get("CC_URL") or "").rstrip("/")
+          gate_token = os.environ.get("GATE_TOKEN") or ""
+          intent_id = None
+
+          def cc_post(path, payload):
+              if not cc_url or not gate_token:
+                  return None
+              req = urllib.request.Request(
+                  f"{cc_url}{path}",
+                  data=json.dumps(payload).encode("utf-8"),
+                  headers={
+                      "Authorization": f"Bearer {gate_token}",
+                      "Content-Type": "application/json",
+                      "Accept": "application/json",
+                      "User-Agent": "lite-actions-pr-gate",
+                  },
+                  method="POST",
+              )
+              with urllib.request.urlopen(req, timeout=20) as resp:
+                  return json.loads(resp.read().decode("utf-8"))
+
+          def gc_req(method, path, body=None):
+              data = json.dumps(body).encode("utf-8") if body is not None else None
+              req = urllib.request.Request(
+                  f"{gc_base}{path}", data=data, headers=gc_headers, method=method
+              )
+              with urllib.request.urlopen(req, timeout=30) as resp:
+                  raw = resp.read().decode("utf-8")
+                  return json.loads(raw) if raw else {}
+
+          wf_list = gc_req("GET", "/actions/workflows?per_page=50").get("workflows") or []
+          matched_wf = [
+              w
+              for w in wf_list
+              if str(w.get("file_path") or "").endswith("/dispatcher_smoke.yml")
+              or str(w.get("file_path") or "") == ".gitcode/workflows/dispatcher_smoke.yml"
+          ]
+          if not matched_wf:
+              raise SystemExit(f"dispatcher_smoke.yml not found in {gc_repo}")
+          workflow_id = str(matched_wf[0]["workflow_id"])
+
+          before_runs = gc_req("GET", "/actions/runs?per_page=30").get("workflow_runs") or []
+          before_ids = {str(r.get("workflow_run_id") or r.get("id")) for r in before_runs}
+
+          if cc_url and gate_token:
+              gen_val = os.environ.get("GENERATION", "").strip()
+              intent_resp = cc_post(
+                  "/api/v1/pr-gate/intents",
+                  {
+                      "repo": os.environ["REPO_NAME"],
+                      "pr_number": int(os.environ["PR_NUMBER"]),
+                      "pr_head_sha": os.environ["PR_HEAD_SHA"],
+                      "generation": int(gen_val) if gen_val else None,
+                      "github_run_id": os.environ["RUN_ID"],
+                      "github_run_attempt": int(os.environ["RUN_ATTEMPT"]),
+                      "target_test_id": target_test_id,
+                      "gitcode_repo": gc_repo,
+                      "gitcode_workflow": "dispatcher_smoke.yml",
+                      "gitcode_ref": gc_ref,
+                  },
+              )
+              intent_id = intent_resp["intent_id"]
+
+          dispatch_started_ms = int(time.time() * 1000) - 5000
+          gc_req(
+              "POST",
+              f"/actions/workflows/{urllib.parse.quote(workflow_id, safe='')}/dispatches",
+              {
+                  "ref": gc_ref,
+                  "inputs": {
+                      "profile": "dispatch_smoke",
+                      "target_test_id": target_test_id,
+                  },
+              },
+          )
+
+          gc_run_id = None
+          for _ in range(18):
+              time.sleep(10)
+              runs = gc_req("GET", "/actions/runs?per_page=30").get("workflow_runs") or []
+              candidates = [
+                  r
+                  for r in runs
+                  if str(r.get("workflow_run_id") or r.get("id")) not in before_ids
+                  and str(r.get("file_path") or "").endswith("dispatcher_smoke.yml")
+                  and str(r.get("head_branch") or "") == gc_ref
+              ]
+              if candidates:
+                  candidates.sort(key=lambda r: int(r.get("start_time") or 0), reverse=True)
+                  recent = [
+                      r
+                      for r in candidates
+                      if not r.get("start_time") or int(r["start_time"]) >= dispatch_started_ms
+                  ]
+                  chosen = recent[0] if recent else candidates[0]
+                  gc_run_id = str(chosen.get("workflow_run_id") or chosen.get("id"))
+                  break
+
+          if not gc_run_id:
+              if intent_id:
+                  cc_post(
+                      f"/api/v1/pr-gate/intents/{intent_id}",
+                      {"status": "NEEDS_RECONCILIATION", "last_error": "DISCOVERY_TIMEOUT"},
+                  )
+              raise SystemExit("Timed out discovering dispatched GitCode workflow_run_id")
+
+          print(f"Discovered GitCode run {gc_run_id} for target_test_id={target_test_id}", flush=True)
+          if intent_id:
+              cc_post(
+                  f"/api/v1/pr-gate/intents/{intent_id}",
+                  {"status": "DISPATCHED", "gitcode_run_id": gc_run_id},
+              )
+
+          deadline = time.monotonic() + 10200
+          last_status = None
+          final_run = None
+          while time.monotonic() < deadline:
+              try:
+                  detail = gc_req("GET", f"/actions/runs/{urllib.parse.quote(gc_run_id, safe='')}")
+              except urllib.error.HTTPError:
+                  detail = None
+              if not detail or "status" not in detail:
+                  rows = gc_req("GET", "/actions/runs?per_page=30").get("workflow_runs") or []
+                  detail = next(
+                      (r for r in rows if str(r.get("workflow_run_id") or r.get("id")) == gc_run_id),
+                      None,
+                  )
+              if detail:
+                  st = str(detail.get("status") or "").upper()
+                  if st != last_status:
+                      print(f"GitCode run {gc_run_id} status={st}", flush=True)
+                      last_status = st
+                  if st in {
+                      "SUCCESS",
+                      "SUCCEEDED",
+                      "COMPLETED",
+                      "FAILED",
+                      "FAILURE",
+                      "CANCELED",
+                      "CANCELLED",
+                      "IGNORED",
+                      "STOPPED",
+                      "TIMED_OUT",
+                  }:
+                      final_run = detail
+                      break
+              time.sleep(20)
+
+          if final_run is None:
+              if intent_id:
+                  cc_post(
+                      f"/api/v1/pr-gate/intents/{intent_id}",
+                      {"status": "EXPIRED", "gitcode_run_id": gc_run_id, "last_error": "POLL_TIMEOUT"},
+                  )
+              raise SystemExit(f"GitCode run {gc_run_id} timed out")
+
+          st = str(final_run.get("status") or "").upper()
+          conclusion = str(final_run.get("conclusion") or "").upper()
+          bad_jobs = [
+              j
+              for stage in (final_run.get("stages") or [])
+              for j in (stage.get("jobs") or [])
+              if str(j.get("status") or "").upper()
+              in {"FAILED", "FAILURE", "CANCELED", "CANCELLED", "TIMED_OUT"}
+          ]
+          passed = (
+              (st in {"SUCCESS", "SUCCEEDED"} or (st == "COMPLETED" and conclusion in {"", "SUCCESS", "SUCCEEDED"}))
+              and not bad_jobs
+          )
+          if intent_id:
+              cc_post(
+                  f"/api/v1/pr-gate/intents/{intent_id}",
+                  {
+                      "status": "COMPLETED" if passed else "FAILED",
+                      "gitcode_run_id": gc_run_id,
+                      "last_error": None if passed else f"STATUS_{st}_{conclusion}".strip("_"),
+                  },
+              )
+          summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_file:
+              with open(summary_file, "a", encoding="utf-8") as fh:
+                  fh.write(
+                      f"- GitCode repo: `{gc_repo}` (`{gc_ref}`)\n"
+                      f"- GitCode run ID: `{gc_run_id}`\n"
+                      f"- Target Test ID: `{target_test_id}`\n"
+                      f"- Outcome: `{'PASS' if passed else 'FAIL'}` (`status={st}`)\n"
+                  )
+          if not passed:
+              raise SystemExit(f"GitCode run {gc_run_id} did not succeed: status={st} conclusion={conclusion}")
+          PY
+
+  cleanup:
+    if: always() && needs.prepare.result == 'success'
+    needs: [prepare, deploy, smoke_self, smoke_gitcode]
+    runs-on: ubuntu-latest
+    name: cleanup-and-report
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.run_head_sha }}
+          persist-credentials: false
+
+      - name: Prepare per-PR cleanup plan
+        env:
+          SELF_SMOKE_SHA: ${{ needs.prepare.outputs.run_head_sha }}
+          SELF_SMOKE_PROFILE: ${{ needs.prepare.outputs.profile }}
+          PR_NUMBER: ${{ needs.prepare.outputs.pr_number }}
+          PR_HEAD_SHA: ${{ needs.prepare.outputs.pr_head_sha }}
+        run: python3 -m ci_core.self_smoke prepare-pr-cleanup
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lite-ci-cleanup-${{ github.run_attempt }}
+          path: .ci-cleanup/ci-request.json
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Wait for Blue and Yellow Test Worker cleanup
+        id: cleanup_wait
+        env:
+          SELF_SMOKE_PLAN: .ci-cleanup/ci-request.json
+          SELF_SMOKE_SHA: ${{ needs.prepare.outputs.run_head_sha }}
+          SELF_SMOKE_WAIT_SECONDS: '600'
+          GH_TOKEN: ${{ github.token }}
+          CI_RESULT_AUTHOR: ${{ vars.LITE_CI_RESULT_ACTOR }}
+        run: |
+          set +e
+          python3 -m ci_core.self_smoke wait
+          rc=$?
+          echo "cleanup_rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Report final PR gate status
+        env:
+          CC_URL: ${{ vars.LITE_CI_CONTROL_CENTER_URL }}
+          GATE_TOKEN: ${{ secrets.LITE_CI_GATE_TOKEN }}
+          REPO_NAME: ${{ github.repository }}
+          PR_NUMBER: ${{ needs.prepare.outputs.pr_number }}
+          PR_HEAD_SHA: ${{ needs.prepare.outputs.pr_head_sha }}
+          PR_AUTHOR: ${{ needs.prepare.outputs.pr_author }}
+          GENERATION: ${{ needs.prepare.outputs.generation }}
+          PROFILE: ${{ needs.prepare.outputs.profile }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+          SMOKE_SELF_RESULT: ${{ needs.smoke_self.result }}
+          SMOKE_GITCODE_RESULT: ${{ needs.smoke_gitcode.result }}
+          CLEANUP_RC: ${{ steps.cleanup_wait.outputs.cleanup_rc }}
+          TRIGGER_ACTOR: ${{ github.actor }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.request
+
+          deploy_res = os.environ["DEPLOY_RESULT"]
+          self_res = os.environ["SMOKE_SELF_RESULT"]
+          gc_res = os.environ["SMOKE_GITCODE_RESULT"]
+          profile = os.environ["PROFILE"]
+          cleanup_ok = int(os.environ.get("CLEANUP_RC") or "1") == 0
+
+          def map_suite(val):
+              if val == "success":
+                  return "PASS"
+              if val == "cancelled":
+                  return "CANCELLED"
+              return "FAIL"
+
+          suites = {
+              "deploy": map_suite(deploy_res),
+              "smoke_self": map_suite(self_res),
+              "cleanup": "PASS" if cleanup_ok else "FAIL",
+          }
+          if profile == "full":
+              suites["smoke_gitcode"] = map_suite(gc_res)
+
+          gc_ok = (gc_res == "success") if profile == "full" else (gc_res == "skipped")
+          overall_pass = deploy_res == "success" and self_res == "success" and gc_ok and cleanup_ok
+          cancelled = (not overall_pass) and any(
+              val == "cancelled" for val in (deploy_res, self_res, gc_res)
+          )
+          overall = "PASS" if overall_pass else ("CANCELLED" if cancelled else "FAIL")
+
+          cc_url = (os.environ.get("CC_URL") or "").rstrip("/")
+          gate_token = os.environ.get("GATE_TOKEN") or ""
+          if cc_url and gate_token:
+              pr_author = os.environ.get("PR_AUTHOR") or ""
+              gen_val = os.environ.get("GENERATION", "").strip()
+              payload = {
+                  "repo": os.environ["REPO_NAME"],
+                  "pr_number": int(os.environ["PR_NUMBER"]),
+                  "pr_head_sha": os.environ["PR_HEAD_SHA"],
+                  "generation": int(gen_val) if gen_val else None,
+                  "status": overall,
+                  "github_run_id": os.environ["RUN_ID"],
+                  "github_run_attempt": int(os.environ["RUN_ATTEMPT"]),
+                  "suite_results": suites,
+                  "target_url": (
+                      f"{os.environ['SERVER_URL']}/{os.environ['REPO_NAME']}"
+                      f"/actions/runs/{os.environ['RUN_ID']}"
+                  ),
+                  "summary": f"PR #{os.environ['PR_NUMBER']} {overall}: {json.dumps(suites, sort_keys=True)}",
+                  "author_login": pr_author,
+                  "trigger_actor": os.environ["TRIGGER_ACTOR"],
+              }
+              req = urllib.request.Request(
+                  f"{cc_url}/api/v1/pr-gate/report",
+                  data=json.dumps(payload).encode("utf-8"),
+                  headers={
+                      "Authorization": f"Bearer {gate_token}",
+                      "Content-Type": "application/json",
+                      "Accept": "application/json",
+                      "User-Agent": "lite-actions-pr-gate",
+                  },
+                  method="POST",
+              )
+              with urllib.request.urlopen(req, timeout=20) as resp:
+                  print(resp.read().decode("utf-8"))
+          if not overall_pass:
+              raise SystemExit(f"PR gate finished with {overall}: {suites}")
+          PY

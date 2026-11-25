@@ -14,6 +14,12 @@ export interface Env {
   DEV_INSECURE_COOKIE?: string;
   GITHUB_APP_ID?: string;
   GITHUB_APP_PRIVATE_KEY?: string;
+  GITHUB_APP_INSTALLATION_ID?: string;
+  GITHUB_GATE_TOKEN?: string;
+  GATE_COORD_KEY_HASH?: string;
+  GITCODE_GATE_TOKEN?: string;
+  GATE_TRUSTED_OWNERS?: string;
+  GATE_STATUS_CONTEXT?: string;
   GITCODE_CANCEL_TOKEN?: string;
   DB_LIMIT_BYTES?: string;
   FORCE_CANCEL_WAIT_SECONDS?: string;
@@ -34,6 +40,7 @@ export interface Context {
   clientIp?: string;
   principal?: Principal;
   workerId?: WorkerId;
+  gateAuthorized?: boolean;
 }
 export type Handler = (context: Context) => Response | Promise<Response>;
 

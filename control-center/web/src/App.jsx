@@ -507,7 +507,7 @@ export function App() {
     {route.page === "pools" && <PoolsView {...viewProps} renderResourceDetail={renderResourceDetail} renderTimelineDetail={(selected, selectedRun, closeDetail) => {
       const panelProps = {item: selected, run: selectedRun, access, live: viewProps.live, close: closeDetail, inline: true};
       return selected.historyId
-        ? <HistoryDialog key={selected.id} {...panelProps} />
+        ? <HistoryDialog key={selected.id} {...panelProps} nodes={nodes} />
         : <CaseDialog key={selected.id} {...panelProps} nodes={nodes} config={config} go={go} />;
     }} />}
     {route.page === "models" && <ModelsView key={route.model} {...viewProps} model={route.model} cancellations={cancellations} priorities={priorities} queue={queue} />}
@@ -519,7 +519,7 @@ export function App() {
 
     {modal?.type === "login" && <LoginForm close={close} login={login} />}
     {modal?.type === "case" && item && <CaseDialog item={item} {...dialogProps} />}
-    {modal?.type === "history" && historicalCase && <HistoryDialog run={historicalRun} item={historicalCase} access={access} live={dataMode === "live"} close={close} />}
+    {modal?.type === "history" && historicalCase && <HistoryDialog run={historicalRun} item={historicalCase} nodes={nodes} access={access} live={dataMode === "live"} close={close} />}
     {modal?.type === "cancel" && canManage && run && <CancelDialog run={run} cases={cases} close={close} confirm={() => cancelRun(run)} />}
     {modal?.type === "cancel-receipt" && run && cancellations[workflowKey(run)] && <CancellationReceipt run={run} receipt={cancellations[workflowKey(run)]} close={close} />}
     {modal?.type === "expedite" && canManage && run && <ExpediteDialog run={run} cases={queuedChildren(cases, run)} position={typeof run.sequence === "number" ? run.sequence : (queue.indexOf(workflowKey(run)) + 1)} close={close} confirm={() => expedite(run)} />}

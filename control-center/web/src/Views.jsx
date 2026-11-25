@@ -4,6 +4,7 @@ import { displayNodeHost, flagFor, plannedTime, poolId, runs, statusTone, target
 import { commandStatusLabel, commandStatusTone } from "./command-status.js";
 import { lastSeenDateTime, resourceHealth } from "./resource-health.js";
 import { measuredRange, rangeDuration, timelineSecondAt, timelineTicks } from "./timeline-viewport.js";
+import { computeElapsedMinutes } from "./workflows.js";
 
 export function Tag({ children, tone = "gray" }) {
   return <span className={`tag tag-${tone}`}>{children}</span>;
@@ -20,7 +21,7 @@ export function Details({ entries }) {
 }
 
 export function RunIdentity({ run }) {
-  return <span>{run.pr ? `@${run.author} #${run.pr}` : `${run.trigger}触发`} <span className="middot">·</span> {run.action} #{run.id}</span>;
+  return <span>{run.isTest && <><Tag tone="amber">TEST</Tag> </>}{run.pr ? `@${run.author} #${run.pr}` : `${run.trigger}触发`} <span className="middot">·</span> {run.action} #{run.id}</span>;
 }
 
 const rowHeight = { worker: 39, pool: 39, group: 54 };
@@ -143,6 +144,14 @@ const LeaseBar = memo(function LeaseBar({ item, run, rows, config, nodes, clockS
   if (total <= 0) return null;
   const compact = total / (timelineEnd - timelineStart) * plotWidth < 84;
   const solid = queued ? 0 : Math.max(0, Math.min(100, (timelineNow - visibleStart) / total * 100));
+  const elapsed = actual
+    ? computeElapsedMinutes(
+        item.start != null || item.started != null || item.elapsed != null
+          ? item
+          : { ...item, start: item.timelineStarted != null ? item.timelineStarted * 60000 : null },
+        clockState.nowMs ?? Date.now(),
+      )
+    : null;
   const startLabel = timelineLabel(start);
   const finishLabel = timelineLabel(finish);
   const style = {
@@ -161,7 +170,7 @@ const LeaseBar = memo(function LeaseBar({ item, run, rows, config, nodes, clockS
     {!compact && <span className="lease-label">
       <strong>{item.name} · {item.cards}P</strong>
       <small>{run.repo} <span className="lease-author">· @{run.author ?? run.actor} #{run.pr ?? run.id}</span> / {run.action} #{run.id}</small>
-      {actual && <small className="lease-meta">{item.status} · 已用 {Math.max(0, Math.round(timelineNow - item.timelineStarted))} 分钟 · {item.estimate ? `预计 ${item.estimate} 分钟（${item.samples} 样本）` : "暂无估算"}</small>}
+      {actual && <small className="lease-meta">{item.status} · 已用 {elapsed ?? 0} 分钟 · {item.estimate ? `预计 ${item.estimate} 分钟（${item.samples} 样本）` : "暂无估算"}</small>}
     </span>}
     {!compact && start > timelineStart && <span className="lease-time lease-start">{startLabel}</span>}
     {actual && projectedEnd && <span className="lease-time lease-end">{finishLabel}</span>}
@@ -198,6 +207,9 @@ export function PoolsView({ nodes, cases, timelineCases, config, go, live, rende
     const timer = setInterval(() => setClockState(timelineClock()), 30_000);
     return () => clearInterval(timer);
   }, []);
+  useEffect(() => {
+    setClockState(timelineClock());
+  }, [cases, timelineCases]);
   const { dateLabel, now: timelineNow, timelineStart, timelineEnd } = clockState;
   const chartWidthAt = (level) => {
     const preferred = Math.max(baseChartWidth, viewport.width) * 2 ** level;
