@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import gzip
 import hashlib
 import json
 import logging
@@ -141,12 +142,18 @@ def build_protected_baseline_archive(
         )
         if check.returncode == 0:
             proc = subprocess.run(
-                ["git", "-C", str(root), "archive", "--format=tar.gz", ref],
+                ["git", "-C", str(root), "archive", "--format=tar", ref],
                 capture_output=True,
                 check=False,
             )
             if proc.returncode == 0 and proc.stdout:
-                archive_path.write_bytes(proc.stdout)
+                with (
+                    archive_path.open("wb") as raw_out,
+                    gzip.GzipFile(
+                        fileobj=raw_out, mode="wb", compresslevel=6, mtime=0
+                    ) as gz_out,
+                ):
+                    gz_out.write(proc.stdout)
                 return archive_path
     # Fallback for non-.git synthetic test trees on trusted Main Worker checkout.
     excluded_top = {
@@ -160,12 +167,30 @@ def build_protected_baseline_archive(
         "node_modules",
         "state",
     }
-    with tarfile.open(archive_path, "w:gz") as tar:
+
+    def _normalize_tarinfo(info: tarfile.TarInfo) -> tarfile.TarInfo:
+        info.uid = 0
+        info.gid = 0
+        info.uname = ""
+        info.gname = ""
+        info.mtime = 0
+        return info
+
+    with (
+        archive_path.open("wb") as raw_out,
+        gzip.GzipFile(fileobj=raw_out, mode="wb", compresslevel=6, mtime=0) as gz_out,
+        tarfile.open(fileobj=gz_out, mode="w") as tar,
+    ):
         for path in sorted(root.rglob("*")):
             rel = path.relative_to(root)
             if any(part in excluded_top or part == "__pycache__" for part in rel.parts):
                 continue
-            tar.add(path, arcname=rel.as_posix(), recursive=False)
+            tar.add(
+                path,
+                arcname=rel.as_posix(),
+                recursive=False,
+                filter=_normalize_tarinfo,
+            )
     return archive_path
 
 
