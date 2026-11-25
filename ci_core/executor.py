@@ -1050,9 +1050,10 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
                             if lease_obj is not None:
                                 lease_obj.mark_active()
                             callback("RUNNING")
-                            deadline = (
-                                time.monotonic() + case["execution_timeout_seconds"]
+                            exec_budget = max(
+                                case["execution_timeout_seconds"] + 90, 180
                             )
+                            deadline = time.monotonic() + exec_budget
                     if proc.poll() is not None:
                         rc = proc.returncode
                         break
@@ -1062,7 +1063,9 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
                     if remaining <= 0:
                         raise subprocess.TimeoutExpired(
                             command,
-                            case["execution_timeout_seconds"] if staged else 600,
+                            max(case["execution_timeout_seconds"] + 90, 180)
+                            if staged
+                            else 600,
                         )
                     try:
                         rc = proc.wait(timeout=min(5.0, remaining))

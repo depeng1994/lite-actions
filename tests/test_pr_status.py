@@ -209,7 +209,7 @@ class PrFeedbackEndToEndST(unittest.TestCase):
         )
         text = wf_path.read_text(encoding="utf-8")
         resolve_section = text.split("        id: resolve\n", 1)[1].split(
-            "\n      - name: Register running gate generation\n", 1
+            "\n      - uses: actions/checkout@v4\n", 1
         )[0]
         resolve_script = textwrap.dedent(
             resolve_section.split("        run: |\n", 1)[1]

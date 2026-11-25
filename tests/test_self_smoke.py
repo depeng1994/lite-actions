@@ -1272,7 +1272,7 @@ class SelfSmokeTests(unittest.TestCase):
             / ".github/workflows/lite_actions_pr_smoke.yml"
         )
         text = wf_path.read_text(encoding="utf-8")
-        on_section = text.split("\nconcurrency:", 1)[0]
+        on_section = text.split("\npermissions:", 1)[0]
         self.assertIn("workflow_dispatch:", on_section)
         self.assertIn("issue_comment:", on_section)
         self.assertIn("pull_request_review:", on_section)

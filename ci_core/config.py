@@ -186,15 +186,15 @@ def _run_node_probe(host, script, *, timeout=45):
     """Run one read-only container check with retries on transient SSH failure."""
     import time
 
-    for attempt, delay in enumerate((2, 5, 0)):
+    for attempt, delay in enumerate((3, 6, 12, 0)):
         try:
             return run(host, script, timeout=timeout)
         except subprocess.TimeoutExpired:
-            if attempt == 2:
+            if attempt == 3:
                 raise
             time.sleep(delay)
         except RuntimeError as exc:
-            if attempt == 2 or "exit=255" not in str(exc):
+            if attempt == 3 or "exit=255" not in str(exc):
                 raise
             time.sleep(delay)
 

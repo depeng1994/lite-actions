@@ -1102,6 +1102,101 @@ class DispatchSmokeEndToEndST(unittest.TestCase):
             self.assertEqual(coord.all_quarantined_resources(), set())
             self.assertEqual(coord.all_active_leases(), [])
 
+    # =========================================================================
+    # ST-8：拦截旧分支 PR 部署 TestWorker 运行过期 router 代码导致 PR 烟测卡死的故障模式
+    #
+    # 故障场景：
+    #   当 PR 基于旧版 main 创建（如文档 PR #60/#61 或外部 Fork PR）且 main 随后合入了
+    #   router/控制面修复时，若 TestSupervisor 直接拉取原始 pr_head_sha，TestWorker 会
+    #   运行旧版 router 代码并忽略新事件触发。必须优先部署 GitHub 的 merge_commit_sha
+    #   (refs/pull/<pr>/merge = main + PR)，同时保持对外门禁仍绑定 pr_head_sha。
+    # =========================================================================
+    def test_st_deploy_uses_pr_merge_commit_so_stale_pr_inherits_main_fixes(self):
+        from ci_core.test_supervisor import TestSupervisor
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "worker"
+            write_workspace(root)
+            head_sha = "1" * 40
+            merge_sha = "2" * 40
+            prepared = {}
+
+            class _FakeClient:
+                repo = SELF_REPO
+
+                def request(self, method, path, **_kw):
+                    if path == "/pulls/61":
+                        return {
+                            "state": "open",
+                            "head": {"sha": head_sha},
+                            "user": {"login": "depeng1994"},
+                            "mergeable": True,
+                            "merge_commit_sha": merge_sha,
+                        }
+                    raise AssertionError(path)
+
+                def workflow_status(self, run_id):
+                    return {"status": "in_progress", "run_attempt": 1}
+
+            def fake_prepare(client, run, lifecycle, code_dir):
+                prepared["sha"] = run.get("_ci_execution_sha")
+                prepared["use_merge_ref"] = run.get("_ci_use_pr_merge_ref")
+                code_dir.mkdir(parents=True, exist_ok=True)
+
+            sup = TestSupervisor(
+                zone="blue",
+                main_root=root,
+                state_dir=Path(tmp) / "state",
+                worktree_root=Path(tmp) / "wt",
+                runtime_root=Path(tmp) / "rt",
+                pools={},
+                pools_revision=1,
+                workers={"blue": {"enabled": True}},
+                author="depeng1994",
+                address="127.0.0.1",
+                release_sha="9" * 40,
+                code_preparer=fake_prepare,
+                launcher=lambda rec, **_kw: {
+                    "pid": os.getpid(),
+                    "boot_id": "b",
+                    "start_ticks": 1,
+                    "skip_ready_check": True,
+                },
+                stopper=lambda *_a, **_kw: None,
+                alive_checker=lambda _rec: True,
+                enforce_peercred=False,
+            )
+            run = {
+                "_ci_repo": SELF_REPO,
+                "id": 777,
+                "run_attempt": 1,
+                "head_sha": "9" * 40,
+            }
+            item = {
+                "case_id": "case_000_deploy_blue",
+                "kind": "test_worker_deploy",
+                "lifecycle": {
+                    "target_worker": "blue-test-id777a1",
+                    "target_test_id": "id777a1",
+                    "pr_number": 61,
+                    "pr_head_sha": head_sha,
+                    "github_run_id": 777,
+                    "github_attempt": 1,
+                    "ttl_seconds": 600,
+                },
+            }
+            try:
+                outcome = sup.handle_deploy(_FakeClient(), run, item)
+                self.assertEqual(outcome["status"], "PASS", outcome)
+                self.assertEqual(prepared["sha"], merge_sha)
+                self.assertTrue(prepared["use_merge_ref"])
+                self.assertEqual(
+                    sup._brokers["blue-test-id777a1"].release_sha, merge_sha
+                )
+            finally:
+                for broker in list(sup._brokers.values()):
+                    broker.stop()
+
 
 if __name__ == "__main__":
     unittest.main()
