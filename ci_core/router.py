@@ -4,7 +4,6 @@ import hashlib
 import json
 import logging
 import os
-import re
 import subprocess
 import tempfile
 import threading
@@ -66,35 +65,6 @@ def _is_pr_smoke(run):
         and run.get("_ci_repo") == SELF_REPO
         and run.get("path") == f".github/workflows/{PR_SMOKE_WORKFLOW}"
     )
-
-
-def _verify_self_smoke_run(client, run, *, plan=None, expected_digest=None):
-    if not _is_self_smoke(run):
-        raise ValueError("self-smoke run identity invalid")
-    event = run.get("_ci_platform_event", run.get("event"))
-    branch = run.get("_ci_platform_head_branch", run.get("head_branch"))
-    sha = run.get("_ci_platform_run_sha", run.get("head_sha"))
-    if event not in {"push", "workflow_dispatch"} or branch != "main":
-        raise ValueError("self-smoke requires push or workflow_dispatch on main")
-    if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
-        raise ValueError("self-smoke commit SHA invalid")
-    if client is None:
-        raise ValueError("self-smoke GitHub client unavailable")
-    main_head = client.request("GET", "/branches/main").get("commit", {}).get("sha")
-    if not isinstance(main_head, str) or not re.fullmatch(r"[0-9a-f]{40}", main_head):
-        raise ValueError("main branch SHA invalid")
-    if sha != main_head:
-        comparison = client.request("GET", f"/compare/{sha}...{main_head}?per_page=1")
-        if comparison.get("merge_base_commit", {}).get("sha") != sha:
-            raise ValueError("self-smoke commit is not on main")
-    from ci_core.self_smoke import expected_plan
-
-    approved = expected_plan(run)
-    if plan is not None and plan != approved:
-        raise ValueError("self-smoke plan differs from its pinned profile")
-    if expected_digest is not None and expected_digest != approved["plan_digest"]:
-        raise ValueError("self-smoke digest differs from its pinned profile")
-    return approved
 
 
 def task_key(run, item):
@@ -670,31 +640,8 @@ class Router:
             "status"
         ) not in {"queued", "in_progress"}:
             return False
-        if _is_pr_smoke(run):
-            event = run.get("_ci_platform_event", run.get("event"))
-            if event in {
-                "workflow_dispatch",
-                "pull_request_target",
-                "issue_comment",
-                "pull_request_review",
-            }:
-                return (
-                    run.get("_ci_platform_head_branch", run.get("head_branch"))
-                    == "main"
-                )
-            if event == "pull_request":
-                return (run.get("head_repository") or {}).get("full_name") == SELF_REPO
+        if _is_self_smoke(run) and getattr(self, "is_test", False) is True:
             return False
-        if _is_self_smoke(run):
-            if getattr(self, "is_test", False) is True:
-                return False
-            event = run.get("_ci_platform_event", run.get("event"))
-            branch = run.get("_ci_platform_head_branch", run.get("head_branch"))
-            if event not in {"push", "workflow_dispatch"} or branch != "main":
-                return False
-            if getattr(self, "client", None) is not None:
-                _verify_self_smoke_run(self.client_for(run), run)
-            return True
         return True
 
     def transition(self, key, phase, **fields):
@@ -955,8 +902,6 @@ class Router:
                     run["path"].rsplit("/", 1)[-1],
                     repo=run.get("_ci_repo", REPO),
                 )
-                if _is_self_smoke(run):
-                    _verify_self_smoke_run(self.client_for(run), run, plan=plan)
                 self.plans[identity] = plan
                 self._admit_plan(run, plan)
             else:
@@ -988,8 +933,6 @@ class Router:
                         run["path"].rsplit("/", 1)[-1],
                         repo=run.get("_ci_repo", REPO),
                     )
-                    if _is_self_smoke(run):
-                        _verify_self_smoke_run(self.client_for(run), run, plan=plan)
                     self.plans[identity] = plan
                 else:
                     plan = cached
@@ -1305,14 +1248,6 @@ class Router:
                     published_by_broker=bool(outcome.get("published_by_broker")),
                 )
                 return
-            if _is_self_smoke(run):
-                approved = _verify_self_smoke_run(
-                    self.client_for(run),
-                    run,
-                    expected_digest=r["digest"],
-                )
-                if item not in approved["cases"]:
-                    raise ValueError("self-smoke case identity mismatch")
             if run.get("_ci_provider") == "gitcode":
                 self.client_for(run).validate_current(run)
             if run.get("_ci_source"):
@@ -1362,15 +1297,6 @@ class Router:
                         or run.get("_ci_dispatch_id") != f"os-{proof['job_id']}"
                     ):
                         raise ValueError("INFRA_STALE_PROBE")
-                elif _is_self_smoke(run):
-                    from ci_core.self_smoke import expected_plan
-
-                    approved = expected_plan(run)
-                    if (
-                        r["digest"] != approved["plan_digest"]
-                        or item not in approved["cases"]
-                    ):
-                        raise ValueError("self-smoke probe identity mismatch")
                 else:
                     if (
                         "env_vars" in item

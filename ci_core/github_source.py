@@ -156,7 +156,6 @@ def approved_controls(client, run, candidate, *, source=None):
             "workflow_dispatch",
             "schedule",
             "issue_comment",
-            "pull_request_review",
             "push",
             "pull_request_target",
         }
