@@ -233,7 +233,19 @@ def wait_for_turn(
     api_get = _make_api_get(repo=repo, token=token, api_base=api_base, opener=opener)
     started = monotonic_fn()
     deadline = started + max(1.0, float(timeout_seconds))
-    self_run = api_get(f"/actions/runs/{run_id}")
+    self_run: dict[str, Any] = {}
+    for _init_attempt in range(5):
+        try:
+            self_run = api_get(f"/actions/runs/{run_id}")
+            break
+        except urllib.error.HTTPError as exc:
+            if exc.code not in (RETRYABLE_HTTP_CODES | {404}) or _init_attempt == 4:
+                raise
+            sleep_fn(min(max(0.0, poll_seconds), 3.0))
+        except (urllib.error.URLError, OSError, TimeoutError):
+            if _init_attempt == 4:
+                raise
+            sleep_fn(min(max(0.0, poll_seconds), 3.0))
     if str(self_run.get("status") or "").lower() == "completed":
         raise RuntimeError(f"Workflow run #{run_id} is already completed")
     my_key = queue_sort_key(self_run)
