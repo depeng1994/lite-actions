@@ -270,7 +270,7 @@ export async function reportPrGate(
   const approvedBy = nullableString(input.approved_by ?? null, "approved_by", 64, /^[A-Za-z0-9_.\[\]-]+$/);
   const approvalMode = input.approval_mode == null
     ? null
-    : member(input.approval_mode, "approval_mode", ["review", "self_env_approved"] as const);
+    : member(input.approval_mode, "approval_mode", ["review", "direct"] as const);
 
   const db = context.env.DB;
   const now = context.now;
@@ -679,8 +679,10 @@ export async function mergePrWithGate(
   for (const rev of reviews) {
     const login = String(rev.user?.login || "").toLowerCase();
     if (!login || login === prAuthor) continue;
+    const state = String(rev.state || "").toUpperCase();
+    if (!["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].includes(state)) continue;
     latestByReviewer.set(login, {
-      state: String(rev.state || ""),
+      state,
       commitId: String(rev.commit_id || ""),
       assoc: String(rev.author_association || ""),
     });
@@ -689,8 +691,7 @@ export async function mergePrWithGate(
     rev => MAINTAINER_ASSOC.has(rev.assoc) && rev.state === "APPROVED" && rev.commitId === sha,
   );
   const selfPr = trustedOwners(context.env).has(prAuthor);
-  const selfEnvApproved = selfPr && gate.approval_mode === "self_env_approved";
-  if (!hasValidShaReview && !selfEnvApproved) {
+  if (!selfPr && !hasValidShaReview) {
     await db.prepare(`
       UPDATE pr_gate_generations SET status='CANCELLED',updated_at=?,finished_at=COALESCE(finished_at,?)
       WHERE repo=? AND pr_number=? AND pr_head_sha=? AND generation=?

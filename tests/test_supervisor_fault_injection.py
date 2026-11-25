@@ -68,18 +68,28 @@ class FakeGitHubClient:
         run_status="in_progress",
         run_attempt=1,
         jobs=None,
+        pr_author="depeng1994",
+        reviews=None,
     ):
         self.pr_state = pr_state
         self.head_sha = head_sha
         self.run_status = run_status
         self.run_attempt = run_attempt
         self.jobs = jobs if jobs is not None else []
+        self.pr_author = pr_author
+        self.reviews = reviews if reviews is not None else []
 
     def request(self, method, path, data=None, *, egress_category=None):
-        if path.startswith("/pulls/"):
-            return {"state": self.pr_state, "head": {"sha": self.head_sha}}
         if "/attempts/" in path and path.endswith("/jobs"):
             return {"jobs": list(self.jobs)}
+        if "/reviews" in path:
+            return list(self.reviews)
+        if path.startswith("/pulls/"):
+            return {
+                "state": self.pr_state,
+                "head": {"sha": self.head_sha},
+                "user": {"login": self.pr_author},
+            }
         raise AssertionError(f"unexpected request {method} {path}")
 
     def workflow_status(self, run_id):
@@ -560,6 +570,76 @@ class SupervisorFaultInjectionTests(unittest.TestCase):
             second = sup.handle_cleanup(gh_closed, run, cleanup_item)
             self.assertEqual(first["status"], "PASS")
             self.assertEqual(second["status"], "PASS")
+
+    def test_08_deploy_authority_enforces_maintainer_and_review_rules(self):
+        sha, stale = "a" * 40, "b" * 40
+        cases = [
+            ("self_pr_direct", "depeng1994", [], True),
+            ("external_unreviewed", "contributor", [], False),
+            (
+                "external_stale_sha",
+                "contributor",
+                [
+                    {
+                        "user": {"login": "depeng1994"},
+                        "state": "APPROVED",
+                        "commit_id": stale,
+                    }
+                ],
+                False,
+            ),
+            (
+                "external_dismissed",
+                "contributor",
+                [
+                    {
+                        "user": {"login": "depeng1994"},
+                        "state": "APPROVED",
+                        "commit_id": sha,
+                    },
+                    {
+                        "user": {"login": "depeng1994"},
+                        "state": "DISMISSED",
+                        "commit_id": sha,
+                    },
+                ],
+                False,
+            ),
+            (
+                "external_approved_then_commented",
+                "contributor",
+                [
+                    {
+                        "user": {"login": "depeng1994"},
+                        "state": "APPROVED",
+                        "commit_id": sha,
+                    },
+                    {
+                        "user": {"login": "depeng1994"},
+                        "state": "COMMENTED",
+                        "commit_id": sha,
+                    },
+                ],
+                True,
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            sup, _ = self._make_supervisor(Path(tmp))
+            run, deploy_item, _, _ = self._deploy_run_and_item(run_id=701, head_sha=sha)
+            for name, author, reviews, ok in cases:
+                with self.subTest(name=name):
+                    gh = FakeGitHubClient(
+                        head_sha=sha, pr_author=author, reviews=reviews
+                    )
+                    if ok:
+                        sup.verify_deploy_authority(gh, run, deploy_item["lifecycle"])
+                    else:
+                        with self.assertRaisesRegex(
+                            ValueError, "requires maintainer APPROVED review"
+                        ):
+                            sup.verify_deploy_authority(
+                                gh, run, deploy_item["lifecycle"]
+                            )
 
 
 if __name__ == "__main__":

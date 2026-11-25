@@ -82,7 +82,7 @@ test("pr-gate enforces auth, single serial status updates, stale generation bloc
 
   await reportPrGate(ctxFor(), {
     repo: "depeng1994/lite-actions", pr_number: 10, pr_head_sha: shaB, status: "PASS",
-    github_run_id: "1002", github_run_attempt: 2, approval_mode: "self_env_approved",
+    github_run_id: "1002", github_run_attempt: 2, approval_mode: "direct",
     suite_results: {self_smoke: "PASS", torchtitan_smoke: "PASS"},
   }, fetchMock);
 
@@ -240,7 +240,7 @@ test("merge coordinator enforces SHA binding, same-SHA PR isolation, and live ap
   }, dismissedReviewFetch)).rejects.toMatchObject({status: 403, code: "AUTH_REVOKED_OR_RUN_CANCELLED"});
   expect(publishedFailure).toEqual(["failure"]);
 
-  // Happy path for maintainer-approved external PR (re-report PASS first since revocation transitioned to CANCELLED).
+  // Happy path for external PR with APPROVED on exact SHA followed by a COMMENTED note.
   await registerPrGate(ctxFor(), {
     repo: "depeng1994/lite-actions", pr_number: 50, pr_head_sha: shaA,
     github_run_id: "5002", github_run_attempt: 1, author_login: "contributor",
@@ -256,7 +256,10 @@ test("merge coordinator enforces SHA binding, same-SHA PR isolation, and live ap
     if (href.endsWith("/pulls/50")) return Response.json({state: "open", head: {sha: shaA}, user: {login: "contributor"}});
     if (href.endsWith("/actions/runs/5002")) return Response.json({status: "completed", conclusion: "success", run_attempt: 1});
     if (href.includes("/pulls/50/reviews")) {
-      return Response.json([{user: {login: "depeng1994"}, state: "APPROVED", commit_id: shaA, author_association: "OWNER"}]);
+      return Response.json([
+        {user: {login: "depeng1994"}, state: "APPROVED", commit_id: shaA, author_association: "OWNER"},
+        {user: {login: "depeng1994"}, state: "COMMENTED", commit_id: shaA, author_association: "OWNER"},
+      ]);
     }
     if (href.endsWith("/pulls/50/merge") && init?.method === "PUT") {
       mergeBodies.push(JSON.parse(String(init.body)));
@@ -270,6 +273,27 @@ test("merge coordinator enforces SHA binding, same-SHA PR isolation, and live ap
   expect(mergedExt).toEqual({ok: true, merged: true, sha: "f".repeat(40), pr_number: 50, generation: 2});
   expect(mergeBodies[0]).toMatchObject({sha: shaA, merge_method: "merge"});
 
+  // External PR cannot bypass review requirement even if direct mode is claimed.
+  await registerPrGate(ctxFor(), {
+    repo: "depeng1994/lite-actions", pr_number: 53, pr_head_sha: shaA,
+    github_run_id: "5301", github_run_attempt: 1, author_login: "contributor",
+  }, noOpFetch);
+  await reportPrGate(ctxFor(), {
+    repo: "depeng1994/lite-actions", pr_number: 53, pr_head_sha: shaA, status: "PASS",
+    github_run_id: "5301", github_run_attempt: 1, approval_mode: "direct",
+  }, noOpFetch);
+  const unapprovedExtFetch: FetchLike = async url => {
+    const href = String(url);
+    if (href.endsWith("/pulls/53")) return Response.json({state: "open", head: {sha: shaA}, user: {login: "contributor"}});
+    if (href.endsWith("/actions/runs/5301")) return Response.json({status: "completed", conclusion: "success", run_attempt: 1});
+    if (href.includes("/pulls/53/reviews")) return Response.json([]);
+    if (href.includes("/statuses/")) return new Response("{}", {status: 201});
+    return new Response("{}", {status: 200});
+  };
+  await expect(mergePrWithGate(ctxFor(), {
+    repo: "depeng1994/lite-actions", pr_number: 53, pr_head_sha: shaA, generation: 1,
+  }, unapprovedExtFetch)).rejects.toMatchObject({status: 403, code: "AUTH_REVOKED_OR_RUN_CANCELLED"});
+
   // Cancelled GitHub run caught synchronously even while DB still says PASS.
   await registerPrGate(ctxFor(), {
     repo: "depeng1994/lite-actions", pr_number: 52, pr_head_sha: shaB,
@@ -277,7 +301,7 @@ test("merge coordinator enforces SHA binding, same-SHA PR isolation, and live ap
   }, noOpFetch);
   await reportPrGate(ctxFor(), {
     repo: "depeng1994/lite-actions", pr_number: 52, pr_head_sha: shaB, status: "PASS",
-    github_run_id: "5201", github_run_attempt: 1, approval_mode: "self_env_approved",
+    github_run_id: "5201", github_run_attempt: 1, approval_mode: "direct",
   }, noOpFetch);
 
   const cancelledRunFetch: FetchLike = async url => {
@@ -291,14 +315,14 @@ test("merge coordinator enforces SHA binding, same-SHA PR isolation, and live ap
     repo: "depeng1994/lite-actions", pr_number: 52, pr_head_sha: shaB,
   }, cancelledRunFetch)).rejects.toMatchObject({status: 409, code: "AUTH_REVOKED_OR_RUN_CANCELLED"});
 
-  // Happy path for depeng1994 self-PR via protected environment approval binding.
+  // Happy path for depeng1994 self-PR directly (zero reviews or environment approvals needed).
   await registerPrGate(ctxFor(), {
     repo: "depeng1994/lite-actions", pr_number: 52, pr_head_sha: shaB,
     github_run_id: "5202", github_run_attempt: 1, author_login: "depeng1994",
   }, noOpFetch);
   await reportPrGate(ctxFor(), {
     repo: "depeng1994/lite-actions", pr_number: 52, pr_head_sha: shaB, status: "PASS",
-    github_run_id: "5202", github_run_attempt: 1, approval_mode: "self_env_approved",
+    github_run_id: "5202", github_run_attempt: 1, approval_mode: "direct",
   }, noOpFetch);
   const happySelfFetch: FetchLike = async (url, init) => {
     const href = String(url);

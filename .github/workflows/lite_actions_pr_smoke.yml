@@ -49,7 +49,6 @@ jobs:
       )
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment: gitcode-torchtitan-smoke
     outputs:
       deploy_matrix: ${{ steps.plan.outputs.deploy_matrix }}
       smoke_matrix: ${{ steps.plan.outputs.smoke_matrix }}
@@ -75,6 +74,7 @@ jobs:
           INPUT_PROFILE: ${{ inputs.profile }}
           EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
           EVENT_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_MAINTAINERS: ${{ vars.LITE_CI_PR_MAINTAINERS || 'depeng1994' }}
         run: |
           set -euo pipefail
           run_head_sha=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .head_sha)
@@ -99,7 +99,7 @@ jobs:
           pr_state=$(printf '%s' "$pr_json" | jq -r '.state')
           live_head=$(printf '%s' "$pr_json" | jq -r '.head.sha')
           pr_author=$(printf '%s' "$pr_json" | jq -r '.user.login')
-          head_repo=$(printf '%s' "$pr_json" | jq -r '.head.repo.full_name')
+          head_repo=$(printf '%s' "$pr_json" | jq -r '.head.repo.full_name // ""')
           if [ "$pr_state" != "open" ]; then
             echo "::error::PR #$pr_number is not open ($pr_state)"
             exit 1
@@ -108,13 +108,36 @@ jobs:
             echo "::error::PR #$pr_number head moved ($live_head != $pr_head_sha)"
             exit 1
           fi
-          if [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then
-            echo "::error::Unsupported PR head repository $head_repo"
+          if [ "$EVENT_NAME" = "pull_request" ] && [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then
+            echo "::error::Unsupported PR head repository $head_repo for pull_request event"
             exit 1
           fi
           if [ "$EVENT_NAME" = "pull_request" ] && [ "$run_head_sha" != "$pr_head_sha" ]; then
             echo "::error::Run head $run_head_sha differs from PR head $pr_head_sha"
             exit 1
+          fi
+          if printf ',%s,' "$PR_MAINTAINERS" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' | grep -qF ",$(printf '%s' "$pr_author" | tr '[:upper:]' '[:lower:]'),"; then
+            if [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then
+              echo "::error::Maintainer PR head repo $head_repo does not match $GITHUB_REPOSITORY"
+              exit 1
+            fi
+          else
+            gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/pulls/$pr_number/reviews?per_page=100" | \
+              PR_AUTHOR="$pr_author" PR_HEAD_SHA="$pr_head_sha" python3 - <<'PY'
+          import json, os, sys
+          maintainers = {x.strip().lower() for x in os.environ["PR_MAINTAINERS"].split(",") if x.strip()} or {"depeng1994"}
+          author = os.environ["PR_AUTHOR"].strip().lower()
+          latest = {}
+          for page in json.load(sys.stdin) or []:
+              for r in (page if isinstance(page, list) else [page]):
+                  u = ((r.get("user") or {}).get("login") or "").strip().lower()
+                  st = str(r.get("state") or "").upper()
+                  if u and u != author and st in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}:
+                      latest[u] = (st, str(r.get("commit_id") or ""))
+          if not any(u in maintainers and st == "APPROVED" and sha == os.environ["PR_HEAD_SHA"] for u, (st, sha) in latest.items()):
+              print(f"::error::PR by @{os.environ['PR_AUTHOR']} requires maintainer APPROVED review bound to {os.environ['PR_HEAD_SHA']}", file=sys.stderr)
+              raise SystemExit(1)
+          PY
           fi
           {
             echo "run_head_sha=$run_head_sha"
@@ -650,7 +673,6 @@ jobs:
           gate_token = os.environ.get("GATE_TOKEN") or ""
           if cc_url and gate_token:
               pr_author = os.environ.get("PR_AUTHOR") or ""
-              approval_mode = "self_env_approved" if pr_author.lower() == "depeng1994" else "review"
               gen_val = os.environ.get("GENERATION", "").strip()
               payload = {
                   "repo": os.environ["REPO_NAME"],
@@ -668,8 +690,6 @@ jobs:
                   "summary": f"PR #{os.environ['PR_NUMBER']} {overall}: {json.dumps(suites, sort_keys=True)}",
                   "author_login": pr_author,
                   "trigger_actor": os.environ["TRIGGER_ACTOR"],
-                  "approved_by": pr_author if approval_mode == "self_env_approved" else None,
-                  "approval_mode": approval_mode,
               }
               req = urllib.request.Request(
                   f"{cc_url}/api/v1/pr-gate/report",

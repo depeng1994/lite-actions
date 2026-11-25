@@ -327,7 +327,7 @@ class TestSupervisor:
                 )
 
     def verify_deploy_authority(self, client, run: dict, lifecycle: dict) -> None:
-        """Directly verify PR state, head SHA, and run attempt via platform REST API."""
+        """Directly verify PR state, head SHA, maintainer/review authority, and run attempt via platform REST API."""
         c = self._client_for(client, run)
         pr_number = lifecycle["pr_number"]
         run_id = lifecycle["github_run_id"]
@@ -340,6 +340,44 @@ class TestSupervisor:
             raise ValueError(
                 f"PR #{pr_number} head moved: expected {lifecycle['pr_head_sha']}, got {head_sha}"
             )
+        pr_author = ((pr.get("user") or {}).get("login") or "").strip().lower()
+        if not pr_author:
+            raise ValueError(f"PR #{pr_number} missing author identity")
+        trusted_owners = {
+            item.strip().lower()
+            for item in os.environ.get(
+                "LITE_ACTIONS_PR_MAINTAINERS", "depeng1994"
+            ).split(",")
+            if item.strip()
+        } or {"depeng1994"}
+        if pr_author not in trusted_owners:
+            reviews = c.request(
+                "GET",
+                f"/pulls/{pr_number}/reviews?per_page=100",
+                egress_category="metadata_get",
+            )
+            if not isinstance(reviews, list):
+                raise ValueError(f"PR #{pr_number} reviews payload invalid")
+            latest_decisive: dict[str, tuple[str, str]] = {}
+            for rev in reviews:
+                if not isinstance(rev, dict):
+                    continue
+                reviewer = ((rev.get("user") or {}).get("login") or "").strip().lower()
+                if not reviewer or reviewer == pr_author:
+                    continue
+                state = str(rev.get("state") or "").upper()
+                if state not in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}:
+                    continue
+                latest_decisive[reviewer] = (state, str(rev.get("commit_id") or ""))
+            if not any(
+                reviewer in trusted_owners
+                and state == "APPROVED"
+                and commit_id == lifecycle["pr_head_sha"]
+                for reviewer, (state, commit_id) in latest_decisive.items()
+            ):
+                raise ValueError(
+                    f"PR #{pr_number} by {pr_author} requires maintainer APPROVED review on {lifecycle['pr_head_sha']}"
+                )
         run_info = c.workflow_status(run_id)
         if run_info.get("status") not in {"queued", "in_progress"}:
             raise ValueError(f"GitHub run {run_id} is not active")
