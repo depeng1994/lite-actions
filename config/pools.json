@@ -115,6 +115,7 @@
     "nodes": [
       {
         "host_id": "7.246.125.19:22",
+        "occupancy_policy": "preempt",
         "ssh": "7.246.125.19:22",
         "host_ssh": "7.246.125.19:22",
         "broadcast_ssh": [
@@ -144,6 +145,7 @@
       },
       {
         "host_id": "7.246.125.20:22",
+        "occupancy_policy": "preempt",
         "ssh": "7.246.125.20:22",
         "host_ssh": "7.246.125.20:22",
         "broadcast_ssh": [
@@ -173,6 +175,7 @@
       },
       {
         "host_id": "7.246.125.21:22",
+        "occupancy_policy": "preempt",
         "ssh": "7.246.125.21:22",
         "host_ssh": "7.246.125.21:22",
         "broadcast_ssh": [
@@ -202,6 +205,7 @@
       },
       {
         "host_id": "7.246.125.26:22",
+        "occupancy_policy": "preempt",
         "ssh": "7.246.125.26:22",
         "host_ssh": "7.246.125.26:22",
         "broadcast_ssh": [
