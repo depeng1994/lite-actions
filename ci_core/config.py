@@ -183,15 +183,20 @@ def execution_pools(root, case):
 
 
 def _run_node_probe(host, script, *, timeout=45):
-    """Run one read-only container check with a single retry on transient SSH failure."""
-    try:
-        return run(host, script, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return run(host, script, timeout=timeout)
-    except RuntimeError as exc:
-        if "exit=255" not in str(exc):
-            raise
-        return run(host, script, timeout=timeout)
+    """Run one read-only container check with retries on transient SSH failure."""
+    import time
+
+    for attempt, delay in enumerate((2, 5, 0)):
+        try:
+            return run(host, script, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            if attempt == 2:
+                raise
+            time.sleep(delay)
+        except RuntimeError as exc:
+            if attempt == 2 or "exit=255" not in str(exc):
+                raise
+            time.sleep(delay)
 
 
 def execution_node(node, environment):

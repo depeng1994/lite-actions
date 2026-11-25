@@ -822,3 +822,97 @@ class PhysicalResourceCoordinator:
                     "remote lease revocation unverified for " + ",".join(missing)
                 )
             path.unlink(missing_ok=True)
+
+    def reconcile_quarantined_leases(self, *, revoke_fn=None) -> list[str]:
+        """Re-verify REVOKE_FAILED leases and automatically clear recovered quarantines."""
+        import logging
+        import time
+
+        if revoke_fn is None:
+            from ci_core.ssh_runner import revoke_remote_lease as revoke_fn
+
+        with self._locked():
+            failed_leases = [
+                dict(doc)
+                for doc in self._active_leases_unlocked()
+                if doc.get("state") == "REVOKE_FAILED" and doc.get("lease_id")
+            ]
+            active_ids = {
+                doc.get("lease_id")
+                for doc in self._active_leases_unlocked()
+                if doc.get("lease_id")
+            }
+            if self.quarantine_dir.exists():
+                for qpath in sorted(self.quarantine_dir.glob("*.json")):
+                    qdoc = self._read_json(qpath, None)
+                    if (
+                        isinstance(qdoc, dict)
+                        and qdoc.get("source") == "coordinator_revoke_failed"
+                        and qdoc.get("lease_id")
+                        and qdoc.get("lease_id") not in active_ids
+                    ):
+                        qpath.unlink(missing_ok=True)
+
+        recovered: list[str] = []
+        for doc in failed_leases:
+            lease_id = doc["lease_id"]
+            remote_nodes = list(doc.get("remote_nodes") or [])
+            missing = set(doc.get("missing_revoked_hosts") or ())
+            required = set(doc.get("remote_hosts") or ())
+            if not missing and required:
+                missing = set(required)
+            pending_nodes = [
+                n
+                for n in remote_nodes
+                if isinstance(n, dict) and n.get("ssh") in missing
+            ]
+            if not pending_nodes and remote_nodes and missing:
+                pending_nodes = remote_nodes
+            revoked: set[str] = set()
+            if pending_nodes:
+                try:
+                    revoked = set(
+                        revoke_fn(
+                            {
+                                "lease_id": lease_id,
+                                "remote_nodes": pending_nodes,
+                                "remote_lease_dir": doc.get("remote_lease_dir"),
+                            },
+                            check_npu=True,
+                        )
+                    )
+                except Exception:
+                    logging.warning(
+                        "deferred quarantine reconcile retry failed for lease %s",
+                        lease_id,
+                    )
+                    continue
+            remaining = sorted(missing - revoked)
+            with self._locked():
+                path = self.active_dir / f"{lease_id}.json"
+                current = self._read_json(path, None)
+                if (
+                    not isinstance(current, dict)
+                    or current.get("state") != "REVOKE_FAILED"
+                ):
+                    continue
+                if not remaining:
+                    path.unlink(missing_ok=True)
+                    if self.quarantine_dir.exists():
+                        for qpath in sorted(self.quarantine_dir.glob("*.json")):
+                            qdoc = self._read_json(qpath, None)
+                            if (
+                                isinstance(qdoc, dict)
+                                and qdoc.get("lease_id") == lease_id
+                            ):
+                                qpath.unlink(missing_ok=True)
+                    recovered.append(lease_id)
+                    logging.info(
+                        "automatically recovered quarantined lease %s after remote revoke succeeded",
+                        lease_id,
+                    )
+                elif len(remaining) < len(missing):
+                    current["missing_revoked_hosts"] = remaining
+                    current["updated_at"] = time.time()
+                    self._write_json(path, current)
+        return recovered

@@ -1795,6 +1795,17 @@ class Router:
                 if Router._zone_name(self) == "yellow"
                 else 60.0,
             )
+        if (
+            getattr(self, "_coordinator_active", False) is True
+            and getattr(self, "is_test", False) is not True
+            and now >= getattr(self, "_next_quarantine_reconcile", 0.0)
+        ):
+            self._next_quarantine_reconcile = now + 30.0
+            try:
+                if self.coordinator.all_quarantined_resources():
+                    self.coordinator.reconcile_quarantined_leases()
+            except Exception:
+                logging.warning("quarantine reconciliation tick failed", exc_info=True)
         self.pump()
         self.flush()
 
