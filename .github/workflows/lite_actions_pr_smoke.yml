@@ -104,7 +104,14 @@ jobs:
             fi
             exit 1
           }
-          run_head_sha=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .head_sha)
+          run_head_sha="${GITHUB_SHA:-}"
+          if [ -z "$run_head_sha" ]; then
+            for _attempt in 1 2 3 4 5; do
+              run_head_sha=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .head_sha 2>/dev/null || true)
+              [ -n "$run_head_sha" ] && break
+              sleep 2
+            done
+          fi
           gitcode_repo="${INPUT_GITCODE_REPO:-depeng1994/torchtitan-npu}"
           gitcode_ref="${INPUT_GITCODE_REF:-master}"
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
