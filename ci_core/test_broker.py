@@ -1138,6 +1138,12 @@ class BrokerClient:
         self.worker_id = worker_id
         self.repo = None
 
+    def for_run(self, run: dict):
+        return self
+
+    def for_repo(self, repo: str):
+        return self
+
     def _call(
         self, op: str, payload: dict | None = None, *, timeout: float = 30.0
     ) -> dict:

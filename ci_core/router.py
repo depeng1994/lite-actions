@@ -654,6 +654,8 @@ class Router:
         return True
 
     def client_for(self, run):
+        if getattr(self, "_broker_active", False) is True:
+            return self.broker
         repo = run.get("_ci_repo", REPO)
         if hasattr(self.client, "for_run"):
             return self.client.for_run(run)
@@ -732,7 +734,6 @@ class Router:
         n = r.get("ack_attempts", 0)
         if n >= 8:
             return
-        client = self.client_for(r["run"])
         run = r["run"]
         item = r["item"]
         author = (
@@ -755,6 +756,7 @@ class Router:
                 )
                 self.state.update(key, progress_id=ident, last_sent_phase="QUEUED")
                 return
+            client = self.client_for(run)
             if n:
                 target = progress_body(run, item, r["digest"], "QUEUED")
                 matches = [

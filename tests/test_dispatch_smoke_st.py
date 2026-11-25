@@ -525,6 +525,163 @@ class DispatchSmokeEndToEndST(unittest.TestCase):
             self.assertNotIn("::error::", fail_text)
             self.assertNotIn("##[warning]", fail_text)
 
+    # =========================================================================
+    # ST-4：拦截 Yellow 隔离测试 Worker 在 tick()/maybe_ack() 中因 BrokerClient 缺多仓路由而崩溃瘫痪的问题
+    #
+    # 故障场景：
+    #   在 Yellow 区的 sandboxed test worker（如 yellow-test-id45558549653a1）运行期间，
+    #   Router.tick() 会因 _zone_name=="yellow" 对未 ACK 的 PR/GitCode 用例调用 maybe_ack()。
+    #   此前 maybe_ack() 在进入 _broker_active 分支前先调用了 self.client_for(run)，
+    #   而 BrokerClient 未实现 for_run()/for_repo() 且 self.repo=None，导致对
+    #   depeng1994/lite-actions 与 depeng1994/torchtitan-npu 均抛出
+    #   `ValueError: run belongs to another GitHub repository`，使整个 tick() 循环反复异常退出，
+    #   无法继续拉取 GitCode 流水线、发送 ACK 或重试外部占卡等待的 case_007。
+    #
+    # 拦截目标：
+    #   端到端使用真实 BrokerClient + Yellow Test Router（yellow-test-id999a1）驱动 tick()，
+    #   分别验证 depeng1994/lite-actions PR smoke 与 GitCode depeng1994/torchtitan-npu 用例：
+    #     1) maybe_ack() 通过 broker.post_progress() 正常发送 QUEUED ACK 且不抛仓库不匹配异常；
+    #     2) tick() 后续继续推进 discovery（running_workflows）与 pump/flush，不再瘫痪。
+    # =========================================================================
+    def test_st_yellow_test_worker_broker_client_acks_and_ticks_multi_repo_runs(self):
+        from ci_core.router import Router
+        from ci_core.test_broker import BrokerClient
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_workspace(root)
+            broker = BrokerClient(root / "broker.sock", worker_id="yellow-test-id999a1")
+            posted_progress = []
+
+            def fake_post_progress(
+                run, item, digest, phase, progress_id=None, *, retry=False
+            ):
+                posted_progress.append((run.get("_ci_repo"), item["case_id"], phase))
+                return f"prog-{len(posted_progress)}"
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "LITE_ACTIONS_STATE_DIR": str(root / "state"),
+                        "LITE_ACTIONS_RESOURCE_LOCK_ROOT": str(root / "leases"),
+                    },
+                    clear=False,
+                ),
+                patch.object(broker, "post_progress", side_effect=fake_post_progress),
+                patch.object(
+                    broker,
+                    "check_run_status",
+                    return_value={"status": "in_progress", "run_attempt": 1},
+                ),
+                patch.object(broker, "running_workflows", return_value=[]) as poll_mock,
+            ):
+                router = Router(
+                    root,
+                    "yellow-test-id999a1",
+                    broker,
+                    "depeng1994",
+                    broker_client=broker,
+                )
+                try:
+                    router.next_discovery = 0
+                    pr_run = {
+                        "id": 999,
+                        "run_attempt": 1,
+                        "head_sha": "a" * 40,
+                        "path": ".github/workflows/lite_actions_pr_smoke.yml",
+                        "name": "lite-ci-pr-smoke",
+                        "_ci_repo": SELF_REPO,
+                        "_ci_provider": "github",
+                    }
+                    gc_run = {
+                        "id": "gcrun999",
+                        "run_attempt": 1,
+                        "head_sha": "b" * 40,
+                        "path": ".gitcode/workflows/dispatcher_smoke.yml",
+                        "name": "lite-ci-dispatcher-smoke",
+                        "_ci_repo": "depeng1994/torchtitan-npu",
+                        "_ci_provider": "gitcode",
+                        "_ci_dispatch_id": "disp999",
+                    }
+                    router.state.admit(
+                        [
+                            (
+                                "depeng1994/lite-actions:999:1:case_007_dispatch_smoke_yellow_a3_8p",
+                                {
+                                    "phase": "QUEUED",
+                                    "run": pr_run,
+                                    "item": {
+                                        "case_id": "case_007_dispatch_smoke_yellow_a3_8p",
+                                        "order": 0,
+                                        "test_id": "dispatch_smoke_yellow_a3_8p",
+                                        "kind": "npu_smoke",
+                                        "worker": "yellow-test-id999a1",
+                                        "target_pool": "a3_shared_yellow",
+                                        "docker": "torchtitan_ci_a3_r2",
+                                        "resources": {
+                                            "nodes": 1,
+                                            "devices_per_node": 8,
+                                        },
+                                        "execution_timeout_seconds": 75,
+                                    },
+                                    "digest": "1" * 64,
+                                    "defaults": {},
+                                    "created_at": 1.0,
+                                    "retry_after": 9999999999.0,
+                                },
+                            )
+                        ]
+                    )
+                    router.state.admit(
+                        [
+                            (
+                                "gitcode:depeng1994/torchtitan-npu:gcrun999:1:disp999:case_005_dispatch_smoke_yellow_a3_8p",
+                                {
+                                    "phase": "QUEUED",
+                                    "run": gc_run,
+                                    "item": {
+                                        "case_id": "case_005_dispatch_smoke_yellow_a3_8p",
+                                        "order": 0,
+                                        "test_id": "dispatch_smoke_yellow_a3_8p",
+                                        "kind": "npu_smoke",
+                                        "worker": "yellow-test-id999a1",
+                                        "target_pool": "a3_shared_yellow",
+                                        "docker": "torchtitan_ci_a3_r2",
+                                        "resources": {
+                                            "nodes": 1,
+                                            "devices_per_node": 8,
+                                        },
+                                        "execution_timeout_seconds": 75,
+                                    },
+                                    "digest": "2" * 64,
+                                    "defaults": {},
+                                    "created_at": 2.0,
+                                    "retry_after": 9999999999.0,
+                                },
+                            )
+                        ]
+                    )
+                    router.tick()
+                    self.assertEqual(
+                        posted_progress,
+                        [
+                            (
+                                SELF_REPO,
+                                "case_007_dispatch_smoke_yellow_a3_8p",
+                                "QUEUED",
+                            ),
+                            (
+                                "depeng1994/torchtitan-npu",
+                                "case_005_dispatch_smoke_yellow_a3_8p",
+                                "QUEUED",
+                            ),
+                        ],
+                    )
+                    self.assertEqual(poll_mock.call_count, 1)
+                finally:
+                    router.close()
+
 
 if __name__ == "__main__":
     unittest.main()
