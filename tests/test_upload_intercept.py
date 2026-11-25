@@ -32,6 +32,7 @@ UPLOAD_CALLSITE_REGISTRY = {
     "ci_core/github.py:ReleaseLogs.deliver:api_call",
     "ci_core/gitcode.py:GitCodeClient.request:Request",
     "ci_core/gitcode.py:GitCodeClient.send_result:request",
+    "ci_core/pr_status.py:_github_request:Request",
     "ci_core/reporting.py:post:send_result",
     "ci_core/reporting.py:progress:request",
     "ci_core/reporting.py:progress:send_result",
