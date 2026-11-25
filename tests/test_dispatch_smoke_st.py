@@ -682,6 +682,63 @@ class DispatchSmokeEndToEndST(unittest.TestCase):
                 finally:
                     router.close()
 
+    # =========================================================================
+    # ST-5：拦截宿主机 Health 列非 OK（Warning/Alarm/Critical）导致硬件映射校验误报失败的问题
+    #
+    # 故障场景：
+    #   Yellow A3 节点（7.246.124.101:22）切换为 `occupancy_policy="preempt"` 后，
+    #   preflight 阶段启用 `_verified_inventory` 校验整机 `npu-smi info` 硬件映射表；
+    #   宿主机部分 NPU 的 Health 列为 `Warning`/`Alarm`/`Critical` 时，旧代码硬性校验
+    #   `npu_cells[1] != "OK"`，导致直接抛出 `ValueError: unrecognized NPU hardware mapping`，
+    #   阻断整机全部抢占模式任务。
+    #
+    # 拦截目标：
+    #   验证 `_verified_inventory` 不再对 Health 列做任何阻断校验（OK/Warning/Alarm/Critical
+    #   均放行），仅严格校验 NPU/Chip/Phy-ID/Bus-Id 硬件拓扑映射本身。
+    # =========================================================================
+    def test_st_verified_inventory_ignores_health_column_values(self):
+        from ci_core.executor import _verified_inventory
+
+        def make_a3_inventory(npu6_health: str) -> str:
+            lines = [
+                "+------------------------------------------------------------------------------------------------+",
+                "| npu-smi 25.3.rc1.b071            Version: 25.3.rc1.b071                                        |",
+                "+---------------------------+---------------+----------------------------------------------------+",
+                "| NPU   Name                | Health        | Power(W)    Temp(C)           Hugepages-Usage(page)|",
+                "| Chip  Phy-ID              | Bus-Id        | AICore(%)   Memory-Usage(MB)  HBM-Usage(MB)        |",
+                "+===========================+===============+====================================================+",
+            ]
+            for card in range(8):
+                for die in (0, 1):
+                    phy = card * 2 + die
+                    health = npu6_health if (card == 6 and die == 0) else "OK"
+                    bus = f"0000:{0x80 + phy:02X}:00.0"
+                    lines.append(
+                        f"| {card:<5} Ascend910           | {health:<13} | 160.0       41                0    / 0             |"
+                    )
+                    lines.append(
+                        f"| {die:<5} {phy:<19} | {bus:<13} | 0           0    / 0          3200 / 65536         |"
+                    )
+                    lines.append(
+                        "+------------------------------------------------------------------------------------------------+"
+                    )
+            lines.extend(
+                [
+                    "+---------------------------+---------------+----------------------------------------------------+",
+                    "| NPU     Chip              | Process id    | Process name             | Process memory(MB)      |",
+                    "+===========================+===============+====================================================+",
+                    "| No running processes found in NPU 0                                                             |",
+                    "+===========================+===============+====================================================+",
+                ]
+            )
+            return "\n".join(lines)
+
+        for health in ("OK", "Warning", "Alarm", "Critical"):
+            with self.subTest(health=health):
+                _verified_inventory(
+                    make_a3_inventory(health), "card-die", list(range(16))
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

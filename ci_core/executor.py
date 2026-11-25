@@ -277,7 +277,6 @@ def _verified_inventory(output, indexing, expected_devices):
                 or len(status_cells) < 3
                 or not re.fullmatch(r"[0-9]+", npu_cells[0])
                 or not re.fullmatch(r"Ascend950[A-Za-z0-9_.-]*", npu_cells[1])
-                or npu_cells[2] != "OK"
             ):
                 raise ValueError("unrecognized NPU hardware mapping")
             card = int(npu_cells[0])
@@ -320,7 +319,6 @@ def _verified_inventory(output, indexing, expected_devices):
             or len(chip_cells) < 2
             or not npu
             or not chip
-            or npu_cells[1] != "OK"
             or not re.fullmatch(
                 r"[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]", chip_cells[1]
             )
