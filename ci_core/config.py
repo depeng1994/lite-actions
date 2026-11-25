@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 from pathlib import Path
 
 from ci_core.contract import parse_worker_identity
@@ -181,6 +182,18 @@ def execution_pools(root, case):
     return json.loads((root / "config/pools.json").read_text())
 
 
+def _run_node_probe(host, script, *, timeout=45):
+    """Run one read-only container check with a single retry on transient SSH failure."""
+    try:
+        return run(host, script, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return run(host, script, timeout=timeout)
+    except RuntimeError as exc:
+        if "exit=255" not in str(exc):
+            raise
+        return run(host, script, timeout=timeout)
+
+
 def execution_node(node, environment):
     env = node.get("environments", {}).get(environment)
     if not env or not all(
@@ -194,20 +207,20 @@ def execution_node(node, environment):
         'docker inspect --format \'{"Name":{{json .Name}},"Id":{{json .Id}},"Image":{{json .Image}},"State":{"Running":{{json .State.Running}}}}\' '
         + container
     )
-    data = json.loads(run(node["ssh"], script, timeout=30).stdout)
+    data = json.loads(_run_node_probe(node["ssh"], script, timeout=45).stdout)
     if not data.get("State", {}).get("Running") or data.get("Image") != env["image_id"]:
         raise ValueError("CONTAINER_IDENTITY_MISMATCH")
     import shlex
 
-    actual = run(
+    actual = _run_node_probe(
         node["ssh"],
         "docker image inspect --format '{{.Id}}' " + shlex.quote(env["image_ref"]),
-        timeout=30,
+        timeout=45,
     ).stdout.strip()
     if actual != env["image_id"]:
         raise ValueError("IMAGE_TAG_CHANGED")
     execution_ssh = node["ssh"] + "/" + container
-    if run(execution_ssh, "id -u", timeout=30).stdout.strip() != "0":
+    if _run_node_probe(execution_ssh, "id -u", timeout=45).stdout.strip() != "0":
         raise ValueError("EXECUTION_PID_VISIBILITY_REQUIRED")
     return {**node, "ssh": execution_ssh}
 

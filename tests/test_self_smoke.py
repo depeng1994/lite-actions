@@ -1321,6 +1321,21 @@ class SelfSmokeTests(unittest.TestCase):
         )
         self.assertEqual([c["worker"] for c in cleanup_plan["cases"]], ["blue"])
 
+    def test_pr_smoke_workflow_uses_main_context_triggers_without_sha_input(self):
+        wf_path = (
+            Path(__file__).resolve().parents[1]
+            / ".github/workflows/lite_actions_pr_smoke.yml"
+        )
+        text = wf_path.read_text(encoding="utf-8")
+        on_section = text.split("\nconcurrency:", 1)[0]
+        self.assertIn("workflow_dispatch:", on_section)
+        self.assertIn("issue_comment:", on_section)
+        self.assertIn("pull_request_review:", on_section)
+        self.assertNotIn("pull_request:", on_section)
+        self.assertIn("pr_number:", on_section)
+        self.assertNotIn("pr_head_sha:", on_section)
+        self.assertIn("/pr-test", text)
+
 
 if __name__ == "__main__":
     unittest.main()

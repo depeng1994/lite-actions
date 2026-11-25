@@ -177,16 +177,16 @@ def broadcast_job(
                             "-o",
                             "BatchMode=yes",
                             "-o",
-                            "ConnectTimeout=10",
+                            "ConnectTimeout=25",
                             "-o",
-                            "ServerAliveInterval=10",
+                            "ServerAliveInterval=20",
                             target,
                             "wall -n",
                         ],
                         input=msg,
                         text=True,
                         capture_output=True,
-                        timeout=22,
+                        timeout=40,
                         check=False,
                     )
                     if finished.returncode:
@@ -210,7 +210,7 @@ def broadcast_job(
                         type(exc).__name__,
                     )
                     if attempt + 1 < retries:
-                        time.sleep(2)
+                        time.sleep(4)
             if not delivered and n == 0:
                 failures.append(target)
     return failures

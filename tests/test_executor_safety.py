@@ -195,5 +195,168 @@ class ExecutorSafetyTests(unittest.TestCase):
                 mocks.launch.assert_called_once()
 
 
+class TestTransientSshRetry(unittest.TestCase):
+    def test_transport_command_uses_30s_connect_timeout(self):
+        from ci_core import transport
+
+        cmd = transport.command("node-a", "echo ok")
+        self.assertIn("ConnectTimeout=30", cmd)
+
+    def test_execution_node_retries_once_on_timeout(self):
+        import json
+        import subprocess
+        from unittest.mock import patch
+
+        from ci_core.config import execution_node
+
+        node = {
+            "ssh": "node-a",
+            "environments": {
+                "img": {
+                    "container_id": "a" * 64,
+                    "image_id": "sha256:1234",
+                    "image_ref": "repo/img:tag",
+                }
+            },
+        }
+        calls = []
+
+        def fake_run(host, script, *, timeout=90, check=True, stdin=None):
+            calls.append((host, script, timeout))
+            if len(calls) == 1:
+                raise subprocess.TimeoutExpired(["ssh"], timeout)
+            if "docker inspect" in script:
+                return subprocess.CompletedProcess(
+                    ["ssh"],
+                    0,
+                    stdout=json.dumps(
+                        {
+                            "Name": "/c",
+                            "Id": "a" * 64,
+                            "Image": "sha256:1234",
+                            "State": {"Running": True},
+                        }
+                    ),
+                    stderr="",
+                )
+            if "docker image inspect" in script:
+                return subprocess.CompletedProcess(
+                    ["ssh"], 0, stdout="sha256:1234\n", stderr=""
+                )
+            return subprocess.CompletedProcess(["ssh"], 0, stdout="0\n", stderr="")
+
+        with patch("ci_core.config.run", side_effect=fake_run):
+            bound = execution_node(node, "img")
+
+        self.assertEqual(bound["ssh"], "node-a/" + ("a" * 64))
+        self.assertEqual(len(calls), 4)
+
+    def test_stage_retries_archive_upload_once_on_timeout(self):
+        import hashlib
+        import subprocess
+        from unittest.mock import patch
+
+        from ci_core import ssh_runner
+
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = Path(tmp) / "src.tar.gz"
+            payload = b"dummy-tar-payload"
+            archive.write_bytes(payload)
+            expected_sha256 = hashlib.sha256(payload).hexdigest()
+            upload_attempts = []
+
+            def fake_transport_run(host, cmd, *, timeout=90, check=True, stdin=None):
+                upload_attempts.append((host, timeout, stdin.read()))
+                if len(upload_attempts) == 1:
+                    raise subprocess.TimeoutExpired(["ssh"], timeout)
+                return subprocess.CompletedProcess(["ssh"], 0, stdout="", stderr="")
+
+            def fake_ssh(host, cmd, timeout=90):
+                if cmd.startswith("test -f "):
+                    raise RuntimeError("cache miss")
+                self.assertTrue(
+                    "mkdir -p" in cmd
+                    or expected_sha256 in cmd
+                    or "tar -xzf" in cmd
+                    or ".archive-cache" in cmd
+                )
+                return subprocess.CompletedProcess(["ssh"], 0, stdout="", stderr="")
+
+            with (
+                patch("ci_core.transport.run", side_effect=fake_transport_run),
+                patch("ci_core.ssh_runner.ssh", side_effect=fake_ssh),
+            ):
+                dest = ssh_runner.stage(
+                    {"host_id": "h1", "ssh": "h1", "position": 0},
+                    "/tmp/base",
+                    archive,
+                    "abc123def456",
+                )
+
+        self.assertEqual(dest, "/tmp/base/node0")
+        self.assertEqual(len(upload_attempts), 2)
+        self.assertEqual(upload_attempts[1][2], payload)
+
+    def test_stage_skips_upload_on_verified_cache_hit(self):
+        import hashlib
+        import subprocess
+        from unittest.mock import patch
+
+        from ci_core import ssh_runner
+
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = Path(tmp) / "src.tar.gz"
+            payload = b"cached-tar-payload"
+            archive.write_bytes(payload)
+            expected_sha256 = hashlib.sha256(payload).hexdigest()
+            seen_cmds = []
+
+            def fake_transport_run(host, cmd, *, timeout=90, check=True, stdin=None):
+                raise AssertionError("upload should be skipped on verified cache hit")
+
+            def fake_ssh(host, cmd, timeout=90):
+                seen_cmds.append(cmd)
+                return subprocess.CompletedProcess(["ssh"], 0, stdout="", stderr="")
+
+            with (
+                patch("ci_core.transport.run", side_effect=fake_transport_run),
+                patch("ci_core.ssh_runner.ssh", side_effect=fake_ssh),
+            ):
+                dest = ssh_runner.stage(
+                    {"host_id": "h1", "ssh": "h1", "position": 0},
+                    "/tmp/base",
+                    archive,
+                    "abc123def456",
+                )
+
+        self.assertEqual(dest, "/tmp/base/node0")
+        self.assertTrue(any(expected_sha256 in cmd for cmd in seen_cmds))
+
+    def test_owned_processes_gone_retries_on_timeout(self):
+        import subprocess
+        from unittest.mock import patch
+
+        from ci_core import ssh_runner
+
+        calls = []
+
+        def fake_ssh(host, cmd, timeout=90):
+            calls.append((host, timeout))
+            if len(calls) == 1:
+                raise subprocess.TimeoutExpired(["ssh"], timeout)
+            return subprocess.CompletedProcess(["ssh"], 0, stdout="", stderr="")
+
+        with (
+            patch("ci_core.ssh_runner.ssh", side_effect=fake_ssh),
+            patch("time.sleep"),
+        ):
+            ssh_runner.owned_processes_gone(
+                {"host_id": "h1", "ssh": "h1/c1"}, "/tmp/dest", "stamp1"
+            )
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][1], 60)
+
+
 if __name__ == "__main__":
     unittest.main()
