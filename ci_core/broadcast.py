@@ -13,7 +13,7 @@ import subprocess
 import time
 from ipaddress import ip_address
 
-from ci_core.contract import REPO, trusted_gitcode_repositories
+from ci_core.contract import REPO, REPOSITORY
 
 BEIJING = dt.timezone(dt.timedelta(hours=8))
 BORDER = "*" * 80
@@ -40,21 +40,31 @@ def device_range(devices: list[int]) -> str:
     return ",".join(result)
 
 
+def run_repo(run: dict) -> str:
+    repo = run.get("_ci_repo")
+    if not repo and run.get("_ci_provider", "github") != "gitcode":
+        repo = (run.get("repository") or {}).get("full_name") or REPO
+    if not isinstance(repo, str) or not REPOSITORY.fullmatch(repo):
+        raise ValueError("invalid run repository")
+    return repo
+
+
 def action_url(run: dict) -> str:
+    repo = run_repo(run)
     if run.get("_ci_provider") == "gitcode":
-        repo, ident = run.get("_ci_repo"), run.get("id")
-        if (
-            repo not in trusted_gitcode_repositories()
-            or not isinstance(ident, str)
-            or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", ident)
+        ident = run.get("id")
+        if not isinstance(ident, str) or not re.fullmatch(
+            r"[A-Za-z0-9_-]{1,128}", ident
         ):
             raise ValueError("invalid GitCode run identity")
         return f"https://gitcode.com/{repo}/actions/runs/{ident}"
-    ident = int(run["id"])
+    raw_id = run.get("id")
+    if isinstance(raw_id, bool):
+        raise ValueError("invalid GitHub run id")
+    ident = int(raw_id)
     if ident <= 0:
         raise ValueError("invalid GitHub run id")
-    # Derived from trusted numeric run_id, never accepts arbitrary remote URL.
-    return f"https://github.com/{REPO}/actions/runs/{ident}"
+    return f"https://github.com/{repo}/actions/runs/{ident}"
 
 
 def notification(
@@ -91,7 +101,7 @@ def notification(
     if phase == "begin":
         title = "资源占用 🔒"
         section = "本机资源占用"
-        advice = "以上 Device 正在进行 CI 验证，请勿占用。"
+        advice = "以上 Device 正在执行 Lite Actions 任务，请勿占用。"
     elif released:
         title = "资源释放 ✅"
         section = "本机资源释放"
@@ -99,13 +109,16 @@ def notification(
     else:
         title = "任务结束 ⚠️"
         section = "本机资源状态"
-        advice = "CI 验证已结束，但 Device 释放尚未确认，请勿占用。"
+        advice = "Lite Actions 任务已结束，但 Device 释放尚未确认，请勿占用。"
 
+    repo = run_repo(run)
+    url = action_url(run)
     return (
-        f"************** TorchTitan CI · {title} {timestamp} **************\n"
+        f"************** Lite Actions · {title} {timestamp} **************\n"
         f"\n"
+        f"【任务仓库】：{repo}\n"
         f"【任务ID】：{run['id']}\n"
-        f"{action_url(run)}\n"
+        f"{url}\n"
         f"\n"
         f"【任务总体资源】：nodes={nnodes}，ngpus_per_node={ngpus_per_node}\n"
         f"\n"
