@@ -29,10 +29,12 @@ export function beijingClock(date = new Date()) {
 }
 
 export function timelineClock(date = new Date()) {
-  const now = Math.floor(date.getTime() / 60000);
+  const nowMs = date.getTime();
+  const now = Math.floor(nowMs / 60000);
   return {
     dateLabel: shanghaiLabelFormatter.format(date),
     now,
+    nowMs,
     timelineStart: now - 72 * 60,
     timelineEnd: now + 60,
   };

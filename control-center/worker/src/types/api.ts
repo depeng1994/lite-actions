@@ -180,7 +180,8 @@ export type ClusterScope = "pool" | "node" | "device_group";
 export type ClusterOperation =
   | { op: "PAUSE" | "RESUME" | "DRAIN"; scope: ClusterScope; pool: string; host_id?: string; devices?: number[] }
   | { op: "ADD_POOL" | "ADD_NODE" | "ADD_DEVICE_GROUP"; pool: string; host_id?: string; value: unknown }
-  | { op: "DELETE_POOL" | "DELETE_NODE" | "DELETE_DEVICE_GROUP"; pool: string; host_id?: string; devices?: number[] };
+  | { op: "DELETE_POOL" | "DELETE_NODE" | "DELETE_DEVICE_GROUP"; pool: string; host_id?: string; devices?: number[] }
+  | { op: "SET_OCCUPANCY_POLICY"; pool: string; host_id: string; occupancy_policy?: "wait" | "preempt"; value?: unknown };
 export interface ClusterPreview {
   base_revision: number;
   preview_hash: string;

@@ -296,6 +296,16 @@ class TestSupervisor:
             return c.for_repo(repo)
         return c
 
+    def _broker_client(self, client):
+        """Prefer multi-platform or multi-repo clients over a single-repo deploy client."""
+        for candidate in (self.client, client):
+            if candidate is not None and hasattr(candidate, "for_run"):
+                return candidate
+        for candidate in (self.client, client):
+            if candidate is not None and hasattr(candidate, "for_repo"):
+                return candidate
+        return client or self.client
+
     def _control(self):
         return self.control_provider() if self.control_provider else None
 
@@ -826,7 +836,7 @@ class TestSupervisor:
                     address=self.address,
                     release_sha=code_sha,
                     baseline_sha=self.release_sha,
-                    client=client or self.client,
+                    client=self._broker_client(client),
                     coordinator=self.coordinator,
                     repos=self.repos,
                     gitcode_repos=self.gitcode_repos,

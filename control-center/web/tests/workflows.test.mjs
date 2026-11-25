@@ -3,7 +3,7 @@ import {test} from "node:test";
 import {beijingClock, displayNodeHost, now, plannedTime, timelineLabel, workflowKey} from "../src/formal-data.js";
 import {commandStatusLabel, commandStatusTone} from "../src/command-status.js";
 import {resourceInventories} from "../src/control-api.js";
-import {currentWorkflowQueue, groupActiveRuns, moveWorkflow, summarizeRun, workflowResultLabel} from "../src/workflows.js";
+import {computeElapsedMinutes, currentWorkflowQueue, groupActiveRuns, moveWorkflow, summarizeRun, workflowResultLabel} from "../src/workflows.js";
 import {lastSeenDateTime, resourceHealth} from "../src/resource-health.js";
 import {measuredRange, rangeDuration, timelineSecondAt, timelineTicks} from "../src/timeline-viewport.js";
 
@@ -220,4 +220,33 @@ test("test workflow keys and queue helpers isolate test runs from production exp
     {id: "deploy-1", run: testKey, status: "排队中", kind: "test_worker_deploy", isTest: false},
   ], [prodKey, testKey]);
   assert.deepEqual(queue, [prodKey]);
+});
+
+test("computeElapsedMinutes and groupActiveRuns compute rounded non-negative elapsed minutes across live, skewed, fractional, and cross-midnight tasks", () => {
+  const lateStart = Date.parse("2026-11-25T13:15:00+08:00");
+  const lateNowMs = lateStart + 100_000;
+  assert.equal(computeElapsedMinutes({start: lateStart, end: null, started: (now + 75) % 1440, elapsed: null}, lateNowMs), 1.67);
+
+  const grouped = groupActiveRuns(
+    [
+      {id: "live-later", run: keyA, status: "运行中", worker: "Blue", pool: "A3", cards: 8, groups: ["0–7"], node: "node-a", start: lateStart, end: null, started: (now + 75) % 1440, elapsed: null},
+      {id: "legacy-fixture", run: keyA, status: "运行中", worker: "Blue", pool: "A3", cards: 8, groups: ["0–7"], node: "node-a", started: 10 * 60 + 10, elapsed: null},
+    ],
+    [{id: "node-a", worker: "Blue", pool: "A3"}],
+    [runA],
+    lateNowMs,
+  );
+  assert.equal(grouped[0].cases[0].elapsed, 1.67);
+  assert.equal(grouped[0].cases[1].elapsed, 186);
+
+  assert.equal(computeElapsedMinutes({start: lateStart + 30_000, end: null, elapsed: null}, lateStart), 0);
+
+  const crossMidnightStart = Date.parse("2026-11-25T23:58:00+08:00");
+  const crossMidnightNowMs = Date.parse("2026-11-26T00:02:00+08:00");
+  assert.equal(computeElapsedMinutes({start: crossMidnightStart, end: null, started: 23 * 60 + 58, elapsed: null}, crossMidnightNowMs), 4);
+
+  assert.equal(computeElapsedMinutes({start: lateStart, end: null, elapsed: null}, lateStart + 40_000), 0.67);
+  assert.equal(computeElapsedMinutes({elapsed: -75.33333333333337}, lateNowMs), 0);
+  assert.equal(computeElapsedMinutes({elapsed: 0.6666666666666288}, lateNowMs), 0.67);
+  assert.equal(computeElapsedMinutes({start: null, started: null, elapsed: null}, lateNowMs), null);
 });

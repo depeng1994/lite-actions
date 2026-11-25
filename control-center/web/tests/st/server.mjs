@@ -18,7 +18,7 @@ for (const file of readdirSync(migrations).filter((name) => name.endsWith(".sql"
   raw.exec(readFileSync(new URL(file, migrations), "utf8"));
 }
 
-const groups = [[0, 1], [2, 3], [4, 5], [6, 7], [8, 9]];
+const groups = [[0, 1], [2, 3], [4, 5], [6, 7], [8, 9], [12, 13], [14, 15]];
 const host = "192.0.2.1:22";
 const yellowHost = "192.0.2.2:22";
 const pool = "blue_pool";
@@ -64,6 +64,9 @@ const occupied = (ts, st, d = groups[0]) => ({ t: "IP", pool, h: host, d, st, ts
 const queued = descriptor(0, "排期用例", "QUEUED", ago(1));
 const waiting = descriptor(1, "等待外部释放用例", "QUEUED", ago(1));
 const finished = descriptor(5, "历史用例", "RUNNING", ago(150), [...groups[1], ...groups[2]], ago(151));
+const shortActive = descriptor(6, "零碎秒活跃任务", "RUNNING", now - 40, groups[5], now - 40, "101");
+const shortHistory = descriptor(7, "零碎秒归档任务", "RUNNING", ago(180) - 40, groups[5], ago(180) - 40, "102");
+const longActive = descriptor(8, "长时零碎秒任务", "RUNNING", now - (150 * 60 + 40), groups[6], now - (150 * 60 + 40), "103");
 const samplesEnd = ago(73 * 60);
 const samples = Array.from({ length: 5 }, (_, index) => {
   const start = samplesEnd - 1800;
@@ -76,13 +79,16 @@ const blue = [
   descriptor(3, "准备中用例", "STAGING", ago(30), groups[2]),
   descriptor(4, "清理中用例", "CLEANING", ago(25), groups[3]), finished,
   { t: "TF", tid: finished.tid, ts: ago(120), st: "PASS", ec: 0, cv: 1 },
+  shortActive, shortHistory,
+  { t: "TF", tid: shortHistory.tid, ts: ago(180), st: "PASS", ec: 0, cv: 1 },
+  longActive,
   { t: "QP", ts: now, pool, k: "npu_smoke", v: 1, rev: 1, last: 1,
     items: [{ tid: queued.tid, pos: 0, ix: [[4]] }, { tid: waiting.tid, pos: 1, ix: [[0]] }] },
   occupied(ago(240), "busy"), occupied(ago(238), "idle"),
   occupied(ago(8), "busy"), occupied(ago(4), "busy"), occupied(now, "busy"),
   occupied(now, "idle", groups[4]),
 ];
-await post("blue", "heartbeat", { rev: 1, ok: 1, act: 3, q: 2 });
+await post("blue", "heartbeat", { rev: 1, ok: 1, act: 5, q: 2 });
 for (let i = 0; i < blue.length; i += 6) {
   await post("blue", "events", { ev: blue.slice(i, i + 6).map((event, index) => ({ ...event, s: i + index + 1 })) });
 }

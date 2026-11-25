@@ -174,3 +174,33 @@ test("PARTIAL_APPLIED receipts update applied_rev, expose admin error_msg safely
   expect(publicView.workers.find(w => w.worker_id === "blue")?.error_msg).toBeUndefined();
   expect(publicView.config.alpha.health.status).toBe("OFFLINE");
 });
+
+test("SET_OCCUPANCY_POLICY updates node policy without dropping multinode bundles", async () => {
+  const cookie = sessionCookie(await signIn());
+  const host2 = "198.51.100.10:22";
+  const rev0 = await db.prepare("SELECT MAX(revision) AS r FROM pools_configs").first<number>("r");
+  const addPool = {base_revision: rev0, operation: {op: "ADD_POOL", pool: "preempt_pool", value: {
+    owner: "blue", type: "ascend-a3", enabled: true, force_reclaim: true, process_indexing: "card-die",
+    nodes: [
+      {host_id: host, ssh: host, node_ip: "192.0.2.1", network_interface: "eth0",
+        machine_fingerprint: "c".repeat(64), device_ids: [0, 1], occupancy_policy: "wait",
+        allocation_groups: [{devices: [0, 1], verified: true}]},
+      {host_id: host2, ssh: host2, node_ip: "192.0.2.10", network_interface: "eth0",
+        machine_fingerprint: "d".repeat(64), device_ids: [0, 1], occupancy_policy: "wait",
+        allocation_groups: [{devices: [0, 1], verified: true}]},
+    ],
+    verified_multinode_allocations: [[{host_id: host, devices: [0, 1]}, {host_id: host2, devices: [0, 1]}]],
+  }}};
+  const p0 = await (await request("/admin/cluster/preview", {cookie, data: addPool})).json<ClusterPreview>();
+  const r1 = await (await request("/admin/cluster/publish", {cookie, data: {...addPool, preview_hash: p0.preview_hash}})).json<ClusterSync>();
+
+  const op = {base_revision: r1.revision, operation: {op: "SET_OCCUPANCY_POLICY", pool: "preempt_pool", host_id: host, occupancy_policy: "preempt"}};
+  const preview = await (await request("/admin/cluster/preview", {cookie, data: op})).json<ClusterPreview>();
+  expect(preview.blocking_reasons ?? []).toEqual([]);
+  const synced = await (await request("/admin/cluster/publish", {cookie, data: {...op, preview_hash: preview.preview_hash}})).json<ClusterSync>();
+  expect(synced.command_ids).toHaveLength(1);
+  const stored = JSON.parse((await db.prepare("SELECT config_json FROM pools_configs WHERE revision=?").bind(synced.revision).first<string>("config_json"))!);
+  expect(stored.preempt_pool.nodes.find((n: {host_id: string}) => n.host_id === host).occupancy_policy).toBe("preempt");
+  expect(stored.preempt_pool.nodes.find((n: {host_id: string}) => n.host_id === host2).occupancy_policy).toBe("wait");
+  expect(stored.preempt_pool.verified_multinode_allocations).toHaveLength(1);
+});

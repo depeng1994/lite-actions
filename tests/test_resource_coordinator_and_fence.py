@@ -14,13 +14,16 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from ci_core.config import execution_pools
 from ci_core.contract import SELF_REPO
-from ci_core.executor import Execution
+from ci_core.egress_policy import Deferred
+from ci_core.executor import Execution, ExternalNpuOccupancy
 from ci_core.resources import (
     PhysicalResourceCoordinator,
     ResourceBusy,
     UnverifiedRemoteRevoke,
 )
+from ci_core.scheduler import validate_allocation
 from ci_core.ssh_runner import remote_command, revoke_remote_lease
 from ci_core.test_broker import (
     BrokerClient,
@@ -683,6 +686,209 @@ class TestBrokerAndWorkerSandboxTests(unittest.TestCase):
                 self.assertTrue(sink_calls[0][2])
                 sanitized_pools = json.loads(pools_file.read_text())["pools"]
                 self.assertNotIn("ssh", sanitized_pools["a3_shared_pool"]["nodes"][0])
+            finally:
+                broker.stop()
+
+    def test_request_run_attaches_live_pools_snapshot_over_empty_static_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            broker, sock, main_root = self._make_broker(root)
+            static_empty = {
+                "a3_shared_pool": {
+                    "enabled": False,
+                    "owner": "yellow",
+                    "type": "ascend-a3",
+                    "nodes": [],
+                }
+            }
+            (main_root / "config/pools.json").write_text(
+                json.dumps(static_empty), encoding="utf-8"
+            )
+            seen_cases = []
+
+            def fake_execute(case, subrun, *, root=None):
+                seen_cases.append(case)
+                pools = execution_pools(root, case)
+                validate_allocation(
+                    case, pools, case["allocation"], include_paused=True
+                )
+                log = root / "run.log"
+                log.write_text("CASE_RESULT smoke_8p PASS 0\n", encoding="utf-8")
+                return Execution(0, ["OK"], log, True)
+
+            broker.start()
+            try:
+                client = BrokerClient(sock, worker_id="yellow-test-id77a1")
+                run = {
+                    "id": 78,
+                    "run_attempt": 1,
+                    "head_sha": "b" * 40,
+                    "path": ".github/workflows/lite_actions_pr_smoke.yml",
+                    "_ci_repo": SELF_REPO,
+                    "pull_requests": [{"number": 77}],
+                }
+                item = {
+                    "case_id": "yellow_case",
+                    "test_id": "smoke_8p",
+                    "worker": "yellow-test-id77a1",
+                    "kind": "npu_smoke",
+                    "target_pool": "a3_shared_pool",
+                    "docker": "torchtitan_ci_a3_r2",
+                    "resources": {"nodes": 1, "devices_per_node": 8},
+                    "execution_timeout_seconds": 90,
+                    "env_vars": {"ASCEND_SET_ENV_PATH": "/usr/local/Ascend/set_env.sh"},
+                }
+                with (
+                    patch("ci_core.test_broker.execute", side_effect=fake_execute),
+                    patch("ci_core.test_broker.check_current", create=True),
+                ):
+                    res = client.request_run(
+                        key="snapshot-key",
+                        run=run,
+                        item=item,
+                        digest="e" * 64,
+                        defaults={},
+                    )
+                self.assertEqual(res["status"], "PASS")
+                self.assertTrue(res["published_by_broker"])
+                self.assertEqual(
+                    seen_cases[0]["pools_snapshot"]["a3_shared_pool"],
+                    broker.pools["a3_shared_pool"],
+                )
+            finally:
+                broker.stop()
+
+    def test_publish_result_retries_transient_deferred_and_preserves_client_deferred(
+        self,
+    ):
+        class FlakyBudgetClient:
+            def __init__(self):
+                self.comments = []
+                self.send_attempts = 0
+                self.progress_calls = 0
+
+            def commit_comments(self, sha, **kwargs):
+                return list(self.comments)
+
+            def send_result(self, sha, body, *, category=None):
+                if category == "ack":
+                    self.progress_calls += 1
+                    raise Deferred("YELLOW_BUDGET_EXHAUSTED")
+                self.send_attempts += 1
+                if self.send_attempts == 1:
+                    raise Deferred("YELLOW_BUDGET_EXHAUSTED")
+                self.comments.append(
+                    {
+                        "id": len(self.comments) + 1,
+                        "sha": sha,
+                        "body": body,
+                        "category": category,
+                    }
+                )
+                return self.comments[-1]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            client_stub = FlakyBudgetClient()
+            broker, sock, _ = self._make_broker(root, client=client_stub)
+            broker.publish_retry_timeout = 1.0
+            broker.publish_retry_interval = 0.01
+            broker.workers["yellow"].pop("expected_hostname", None)
+            broker.start()
+            try:
+                client = BrokerClient(sock, worker_id="yellow-test-id77a1")
+                run = {
+                    "id": 79,
+                    "run_attempt": 1,
+                    "head_sha": "b" * 40,
+                    "path": ".github/workflows/lite_actions_pr_smoke.yml",
+                    "_ci_repo": SELF_REPO,
+                    "pull_requests": [{"number": 77}],
+                }
+                item = {
+                    "case_id": "probe_yellow",
+                    "test_id": "probe",
+                    "worker": "yellow-test-id77a1",
+                    "kind": "worker_probe",
+                    "target_pool": None,
+                    "docker": None,
+                    "resources": {"nodes": 0, "devices_per_node": 0},
+                }
+                fake_proc = subprocess.CompletedProcess(
+                    args=["probe"], returncode=0, stdout="WORKER_OK\n", stderr=""
+                )
+                with (
+                    patch("ci_core.test_broker.probe_worker", return_value=fake_proc),
+                    patch("ci_core.test_broker.check_current", create=True),
+                ):
+                    res = client.request_run(
+                        key="probe-deferred-key",
+                        run=run,
+                        item=item,
+                        digest="f" * 64,
+                        defaults={},
+                    )
+                self.assertEqual(res["status"], "PASS")
+                self.assertTrue(res["published_by_broker"])
+                self.assertEqual(client_stub.send_attempts, 2)
+                self.assertEqual(client_stub.comments[0]["category"], "terminal_retry")
+
+                with self.assertRaisesRegex(Deferred, "YELLOW_BUDGET_EXHAUSTED"):
+                    client.post_progress(run, item, "f" * 64, "QUEUED")
+                self.assertEqual(client_stub.progress_calls, 1)
+            finally:
+                broker.stop()
+
+    def test_request_run_rotates_candidate_on_prelaunch_external_occupancy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            broker, sock, main_root = self._make_broker(root)
+            tried_hosts = []
+
+            def fake_execute(case, subrun, *, root=None):
+                host_id = case["allocation"][0]["host_id"]
+                tried_hosts.append(host_id)
+                if host_id == "192.0.2.10:22":
+                    raise ExternalNpuOccupancy("external job on .10")
+                log = root / "run.log"
+                log.write_text("CASE_RESULT smoke_8p PASS 0\n", encoding="utf-8")
+                return Execution(0, ["ROTATED_OK"], log, True)
+
+            broker.start()
+            try:
+                client = BrokerClient(sock, worker_id="yellow-test-id77a1")
+                run = {
+                    "id": 80,
+                    "run_attempt": 1,
+                    "head_sha": "b" * 40,
+                    "path": ".github/workflows/lite_actions_pr_smoke.yml",
+                    "_ci_repo": SELF_REPO,
+                    "pull_requests": [{"number": 77}],
+                }
+                item = {
+                    "case_id": "rotate_case",
+                    "test_id": "smoke_8p",
+                    "worker": "yellow-test-id77a1",
+                    "kind": "npu_smoke",
+                    "target_pool": "a3_shared_pool",
+                    "docker": "torchtitan_ci_a3_r2",
+                    "resources": {"nodes": 1, "devices_per_node": 8},
+                    "execution_timeout_seconds": 90,
+                    "env_vars": {"ASCEND_SET_ENV_PATH": "/usr/local/Ascend/set_env.sh"},
+                }
+                with (
+                    patch("ci_core.test_broker.execute", side_effect=fake_execute),
+                    patch("ci_core.test_broker.check_current", create=True),
+                ):
+                    res = client.request_run(
+                        key="rotate-key",
+                        run=run,
+                        item=item,
+                        digest="1" * 64,
+                        defaults={},
+                    )
+                self.assertEqual(res["status"], "PASS")
+                self.assertEqual(tried_hosts, ["192.0.2.10:22", "192.0.2.11:22"])
             finally:
                 broker.stop()
 

@@ -1,4 +1,4 @@
-import { timeFromMinutes, now, poolId, runs, workflowKey } from "./formal-data.js";
+import { beijingClock, timeFromMinutes, poolId, runs, workflowKey } from "./formal-data.js";
 
 export const initialWorkflowHistorySize = 5;
 export const workflowHistoryPageSize = 50;
@@ -11,7 +11,27 @@ export function actionsUrl({ platform, repo, id }) {
   return `https://${host}/${repo.split("/").map(encodeURIComponent).join("/")}/actions/runs/${encodeURIComponent(id)}`;
 }
 
-export function groupActiveRuns(cases, nodes, sourceRuns = runs) {
+function roundElapsedMinutes(minutes) {
+  return Number(Math.max(0, Number(minutes)).toFixed(2));
+}
+
+export function computeElapsedMinutes(item, nowMs = Date.now()) {
+  if (!item) return null;
+  if (item.elapsed != null) {
+    return roundElapsedMinutes(item.elapsed);
+  }
+  if (item.start != null) {
+    const endMs = item.end ?? nowMs;
+    return roundElapsedMinutes((endMs - item.start) / 60000);
+  }
+  if (item.started != null) {
+    const currentMinute = item.finished ?? beijingClock(new Date(nowMs)).now;
+    return roundElapsedMinutes(currentMinute - item.started);
+  }
+  return null;
+}
+
+export function groupActiveRuns(cases, nodes, sourceRuns = runs, nowMs = Date.now()) {
   const byId = new Map(nodes.map((node) => [node.id, node]));
   return sourceRuns.map((run) => ({
     ...run,
@@ -20,11 +40,12 @@ export function groupActiveRuns(cases, nodes, sourceRuns = runs) {
       const computedCards = item.allocatedCards ?? (item.node
         ? (item.groups?.reduce((sum, group) => sum + (node?.groupCards?.[group] ?? 0), 0) || item.cards || 0)
         : 0);
+      const elapsed = computeElapsedMinutes(item, nowMs);
       return {
         ...item,
         start: item.start ?? timeFromMinutes(item.started),
         end: item.end ?? timeFromMinutes(item.finished),
-        elapsed: item.elapsed ?? (item.started == null ? null : (item.finished ?? now) - item.started),
+        elapsed,
         allocatedCards: computedCards,
         allocation: node ?? item.allocation,
       };

@@ -1,11 +1,11 @@
 import { ArrowRight, ArrowSquareOut, ArrowUp, Check, Copy, Pause, ShieldCheck, StopCircle, Warning } from "@phosphor-icons/react";
 import { useEffect, useRef, useState } from "react";
-import { beijingClock, clock, dateFormatter, dateTimeSecondFormatter, displayNodeHost, flagFor, impactOf, plannedTime, runs, workflowKey } from "./formal-data.js";
+import { clock, dateFormatter, dateTimeSecondFormatter, displayNodeHost, flagFor, impactOf, plannedTime, runs, workflowKey } from "./formal-data.js";
 import { Details, DialogActions, DialogClose, ResourceStatus, Status, Tag } from "./Views.jsx";
 import { lastSeenDateTime, resourceHealth } from "./resource-health.js";
 import { clusterPreview, getTaskDetail } from "./control-api.js";
 import { commandStatusLabel, commandStatusTone } from "./command-status.js";
-import { actionsUrl } from "./workflows.js";
+import { actionsUrl, computeElapsedMinutes } from "./workflows.js";
 
 async function copyToClipboard(value) {
   if (navigator.clipboard?.writeText) {
@@ -152,11 +152,12 @@ export function CaseDialog({ item, run: suppliedRun, nodes, config, access = "pu
   const run = suppliedRun || runs.find((candidate) => workflowKey(candidate) === item.run);
   const node = nodes.find(({ id }) => id === item.node);
   const detail = useTaskDetail(access, item.taskUid, live);
-  const nowMinute = beijingClock().now;
   const isQueued = item.status === "排队中";
   const elapsed = detail?.duration_sec != null
-    ? Number((detail.duration_sec / 60).toFixed(1))
-    : item.started != null ? Math.max(0, Math.round((item.finished ?? nowMinute) - item.started)) : null;
+    ? computeElapsedMinutes({ elapsed: detail.duration_sec / 60 })
+    : computeElapsedMinutes(detail?.started_at != null
+      ? { ...item, elapsed: null, start: detail.started_at * 1000, end: detail.finished_at != null ? detail.finished_at * 1000 : item.end }
+      : item);
   const planned = plannedTime(item, config, nodes);
   const allocHost = detail?.allocation?.[0]
     ? (detail.allocation[0].host_id || detail.allocation[0].display_host_id)
@@ -193,9 +194,10 @@ export function CaseDialog({ item, run: suppliedRun, nodes, config, access = "pu
 
 export function HistoryDialog({ run, item, access = "public", live = false, inline = false, close }) {
   const detail = useTaskDetail(access, item.taskUid || item.historyId, live);
-  const elapsed = detail?.duration_sec != null
-    ? `${Number((detail.duration_sec / 60).toFixed(1))} 分钟`
-    : item.elapsed == null ? "—" : `${item.elapsed} 分钟`;
+  const elapsedMinutes = detail?.duration_sec != null
+    ? computeElapsedMinutes({ elapsed: detail.duration_sec / 60 })
+    : item.elapsed == null ? null : computeElapsedMinutes({ elapsed: item.elapsed });
+  const elapsed = elapsedMinutes == null ? "—" : `${elapsedMinutes} 分钟`;
   const start = detail?.started_at ? detail.started_at * 1000 : item.start;
   const end = detail?.finished_at ? detail.finished_at * 1000 : item.end;
   const allocHost = detail?.allocation?.[0]

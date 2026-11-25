@@ -27,6 +27,7 @@ from ci_core.contract import (
     parse_plan,
     parse_worker_identity,
 )
+from ci_core.egress_policy import Deferred
 from ci_core.executor import ExternalNpuOccupancy, execute
 from ci_core.gitcode import RunChanged
 from ci_core.plan import verify_definition
@@ -198,6 +199,8 @@ class TestBrokerServer:
         protected_baseline_root: Path | None = None,
         quarantine_enabled: bool = True,
         runs_provider=None,
+        publish_retry_timeout: float = 120.0,
+        publish_retry_interval: float = 2.5,
     ):
         if not is_valid_worker_id(worker_id):
             raise ValueError(f"invalid test worker id: {worker_id!r}")
@@ -231,6 +234,8 @@ class TestBrokerServer:
         self.protected_baseline_root = Path(protected_baseline_root or self.main_root)
         self.quarantine_enabled = quarantine_enabled
         self.runs_provider = runs_provider
+        self.publish_retry_timeout = float(publish_retry_timeout)
+        self.publish_retry_interval = float(publish_retry_interval)
         self._cancel_events: dict[str, threading.Event] = {}
         self._cancel_lock = threading.Lock()
         self._uid_lock = threading.Lock()
@@ -429,6 +434,13 @@ class TestBrokerServer:
                     resp = {
                         "ok": False,
                         "error": str(exc) or "LEASE_CONFINEMENT_VIOLATION",
+                    }
+                except Deferred as exc:
+                    logging.warning("broker request deferred: %s", exc)
+                    resp = {
+                        "ok": False,
+                        "error_type": "Deferred",
+                        "error": str(exc) or "DEFERRED",
                     }
                 except Exception as exc:
                     logging.exception("broker request failed")
@@ -782,14 +794,31 @@ class TestBrokerServer:
         if locator is not None:
             res["log_locator"] = locator
         res["finished_at"] = int(time.time())
-        post(
-            self.client_for(run),
-            run,
-            item,
-            res,
-            self._result_author(run),
-            local_worker=self.worker_id,
-        )
+        deadline = time.monotonic() + max(0.0, self.publish_retry_timeout)
+        attempt = 0
+        while True:
+            try:
+                post(
+                    self.client_for(run),
+                    run,
+                    item,
+                    res,
+                    self._result_author(run),
+                    local_worker=self.worker_id,
+                    retry=attempt > 0,
+                )
+                break
+            except Deferred as exc:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise
+                logging.warning(
+                    "broker result publish deferred for %s (%s); retrying",
+                    key,
+                    exc,
+                )
+                time.sleep(min(max(0.0, self.publish_retry_interval), remaining))
+                attempt += 1
         return {
             "status": status,
             "exit_code": rc,
@@ -844,24 +873,44 @@ class TestBrokerServer:
                     key, run, item, digest, status, proc.returncode, tail, True, None
                 )
 
-            case = runtime_case(item, self.pools, self.worker_id)
-            if self.pools.get(case["pool"], {}).get("owner") != self.zone:
-                raise LeaseConfinementViolation("LEASE_CONFINEMENT_VIOLATION")
-            environment = self._resolve_verified_env(run, item, case, defaults)
-            case = {**case, "verified_env": environment}
-            if run.get("_ci_source"):
-                case = {**case, "native_source": run["_ci_source"]}
-            if run.get("_ci_provider") == "gitcode":
-                self.client_for(run).validate_current(run)
-            if run.get("_ci_source"):
-                from ci_core.github_source import check_current
+            try:
+                case = runtime_case(item, self.pools, self.worker_id)
+                if self.pools.get(case["pool"], {}).get("owner") != self.zone:
+                    raise LeaseConfinementViolation("LEASE_CONFINEMENT_VIOLATION")
+                environment = self._resolve_verified_env(run, item, case, defaults)
+                case = {**case, "verified_env": environment}
+                if run.get("_ci_source"):
+                    case = {**case, "native_source": run["_ci_source"]}
+                if run.get("_ci_provider") == "gitcode":
+                    self.client_for(run).validate_current(run)
+                if run.get("_ci_source"):
+                    from ci_core.github_source import check_current
 
-                check_current(self.client_for(run), run["_ci_source"], check_run=True)
+                    check_current(
+                        self.client_for(run), run["_ci_source"], check_run=True
+                    )
+            except Deferred as exc:
+                return {
+                    "retry_busy": True,
+                    "reason": f"DEFERRED:{exc}",
+                    "retry_after": 15,
+                    "allocation": [],
+                }
 
-            lease = None
-            leased_case = None
             last_busy = "RESOURCE_BUSY"
             for allocation in candidates(case, self.pools):
+                if cancel.is_set():
+                    return self._publish_result(
+                        key,
+                        run,
+                        item,
+                        digest,
+                        "CANCELLED",
+                        130,
+                        ["Cancelled before launch"],
+                        True,
+                        None,
+                    )
                 try:
                     lease = self.coordinator.acquire(
                         allocation,
@@ -876,163 +925,167 @@ class TestBrokerServer:
                         docker=case.get("docker"),
                         enforce_quarantine=True,
                     )
-                    leased_case = {
-                        **case,
-                        "allocation": allocation,
-                        "host_budget_slots": lease.host_budget_slots,
-                        "lease_id": lease.lease_id,
-                        **lease.ports,
-                    }
-                    break
                 except ResourceBusy as exc:
                     last_busy = str(exc) or "RESOURCE_BUSY"
-            if lease is None or leased_case is None:
-                return {
-                    "retry_busy": True,
-                    "reason": last_busy,
-                    "retry_after": 15,
-                    "allocation": [],
+                    continue
+                leased_case = {
+                    **case,
+                    "allocation": allocation,
+                    "pools_snapshot": {
+                        case["pool"]: copy.deepcopy(self.pools[case["pool"]])
+                    },
+                    "host_budget_slots": lease.host_budget_slots,
+                    "lease_id": lease.lease_id,
+                    **lease.ports,
                 }
-
-            launched = False
-            self._set_active_allocation(key, leased_case["allocation"])
-            try:
-                is_self_repo = run.get("_ci_repo", REPO) == SELF_REPO
-                incremental_ids = [
-                    str(x)
-                    for x in (item.get("pr_incremental_test_ids") or ())
-                    if isinstance(x, str) and x
-                ]
-                log_dir = (
-                    self.state_dir
-                    / "logs"
-                    / "runs"
-                    / hashlib.sha256(key.encode()).hexdigest()
-                )
-                log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-                subrun = {
-                    **run,
-                    "_ci_test_id": item["test_id"],
-                    "_ci_cancel_event": cancel,
-                    "_ci_lease": lease,
-                    "_ci_zone": self.zone,
-                    "_ci_worker_address": self.address,
-                    "_ci_pipeline_folder": log_dir,
-                }
-                if payload.get("use_instance_id") or run.get("_ci_dispatch_id"):
-                    subrun["_ci_case_id"] = item["case_id"]
-                if is_self_repo:
-                    # Mandatory baseline Smoke MUST execute from protected main checkout, never PR code.
-                    defer_revoke = bool(incremental_ids)
-                    execution = None
-                    try:
-                        with tempfile.TemporaryDirectory(
-                            prefix="lite-baseline-"
-                        ) as btmp:
-                            baseline_archive = build_protected_baseline_archive(
-                                self.protected_baseline_root,
-                                Path(btmp),
-                                sha=self.baseline_sha or None,
-                            )
-                            subrun["_ci_stage_archive"] = str(baseline_archive)
-                            subrun["_ci_defer_lease_revoke"] = defer_revoke
-                            execution = execute(
-                                leased_case, subrun, root=self.main_root
-                            )
-                            launched = True
-                            valid = case_passed(execution.log, item["test_id"])
-                            if incremental_ids and execution.exit_code == 0 and valid:
-                                for inc_idx, inc_test_id in enumerate(incremental_ids):
-                                    inc_subrun = {
-                                        **run,
-                                        "_ci_test_id": inc_test_id,
-                                        "_ci_case_id": f"{item['case_id']}-inc-{inc_idx}",
-                                        "_ci_cancel_event": cancel,
-                                        "_ci_lease": lease,
-                                        "_ci_zone": self.zone,
-                                        "_ci_worker_address": self.address,
-                                        "_ci_pipeline_folder": log_dir,
-                                        "_ci_defer_lease_revoke": True,
-                                    }
-                                    inc_exec = execute(
-                                        leased_case, inc_subrun, root=self.main_root
-                                    )
-                                    if inc_exec.exit_code != 0 or not case_passed(
-                                        inc_exec.log, inc_test_id
-                                    ):
-                                        execution = inc_exec
-                                        valid = False
-                                        break
-                    finally:
-                        if defer_revoke and (
-                            launched or lease.state in {"LAUNCHING", "ACTIVE"}
-                        ):
-                            revoked = revoke_remote_lease(
-                                {
-                                    "lease_id": lease.lease_id,
-                                    "remote_nodes": lease.remote_nodes,
-                                    "remote_lease_dir": remote_lease_dir(),
-                                },
-                                check_npu=True,
-                            )
-                            lease.set_remote_revoked_hosts(revoked)
-                            expected = {
-                                n["ssh"] for n in lease.remote_nodes if n.get("ssh")
-                            }
-                            if execution is not None:
-                                execution.release_verified = (
-                                    execution.release_verified
-                                    and expected.issubset(revoked)
+                launched = False
+                self._set_active_allocation(key, leased_case["allocation"])
+                try:
+                    is_self_repo = run.get("_ci_repo", REPO) == SELF_REPO
+                    incremental_ids = [
+                        str(x)
+                        for x in (item.get("pr_incremental_test_ids") or ())
+                        if isinstance(x, str) and x
+                    ]
+                    log_dir = (
+                        self.state_dir
+                        / "logs"
+                        / "runs"
+                        / hashlib.sha256(key.encode()).hexdigest()
+                    )
+                    log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    subrun = {
+                        **run,
+                        "_ci_test_id": item["test_id"],
+                        "_ci_cancel_event": cancel,
+                        "_ci_lease": lease,
+                        "_ci_zone": self.zone,
+                        "_ci_worker_address": self.address,
+                        "_ci_pipeline_folder": log_dir,
+                    }
+                    if payload.get("use_instance_id") or run.get("_ci_dispatch_id"):
+                        subrun["_ci_case_id"] = item["case_id"]
+                    if is_self_repo:
+                        # Mandatory baseline Smoke MUST execute from protected main checkout, never PR code.
+                        defer_revoke = bool(incremental_ids)
+                        execution = None
+                        try:
+                            with tempfile.TemporaryDirectory(
+                                prefix="lite-baseline-"
+                            ) as btmp:
+                                baseline_archive = build_protected_baseline_archive(
+                                    self.protected_baseline_root,
+                                    Path(btmp),
+                                    sha=self.baseline_sha or None,
                                 )
-                else:
-                    execution = execute(leased_case, subrun, root=self.main_root)
-                    launched = True
-                    valid = case_passed(execution.log, item["test_id"])
-                status = (
-                    "CANCELLED"
-                    if cancel.is_set() or execution.exit_code == 130
-                    else "TIMED_OUT"
-                    if execution.exit_code == 124
-                    else "INFRA_ERROR"
-                    if not execution.release_verified
-                    else "PASS"
-                    if execution.exit_code == 0 and valid
-                    else "FAIL"
-                )
-                return self._publish_result(
-                    key,
-                    run,
-                    item,
-                    digest,
-                    status,
-                    130 if status == "CANCELLED" else execution.exit_code,
-                    execution.tail,
-                    execution.release_verified,
-                    execution.locator,
-                )
-            except ExternalNpuOccupancy:
-                if launched:
+                                subrun["_ci_stage_archive"] = str(baseline_archive)
+                                subrun["_ci_defer_lease_revoke"] = defer_revoke
+                                execution = execute(
+                                    leased_case, subrun, root=self.main_root
+                                )
+                                launched = True
+                                valid = case_passed(execution.log, item["test_id"])
+                                if (
+                                    incremental_ids
+                                    and execution.exit_code == 0
+                                    and valid
+                                ):
+                                    for inc_idx, inc_test_id in enumerate(
+                                        incremental_ids
+                                    ):
+                                        inc_subrun = {
+                                            **run,
+                                            "_ci_test_id": inc_test_id,
+                                            "_ci_case_id": f"{item['case_id']}-inc-{inc_idx}",
+                                            "_ci_cancel_event": cancel,
+                                            "_ci_lease": lease,
+                                            "_ci_zone": self.zone,
+                                            "_ci_worker_address": self.address,
+                                            "_ci_pipeline_folder": log_dir,
+                                            "_ci_defer_lease_revoke": True,
+                                        }
+                                        inc_exec = execute(
+                                            leased_case, inc_subrun, root=self.main_root
+                                        )
+                                        if inc_exec.exit_code != 0 or not case_passed(
+                                            inc_exec.log, inc_test_id
+                                        ):
+                                            execution = inc_exec
+                                            valid = False
+                                            break
+                        finally:
+                            if defer_revoke and (
+                                launched or lease.state in {"LAUNCHING", "ACTIVE"}
+                            ):
+                                revoked = revoke_remote_lease(
+                                    {
+                                        "lease_id": lease.lease_id,
+                                        "remote_nodes": lease.remote_nodes,
+                                        "remote_lease_dir": remote_lease_dir(),
+                                    },
+                                    check_npu=True,
+                                )
+                                lease.set_remote_revoked_hosts(revoked)
+                                expected = {
+                                    n["ssh"] for n in lease.remote_nodes if n.get("ssh")
+                                }
+                                if execution is not None:
+                                    execution.release_verified = (
+                                        execution.release_verified
+                                        and expected.issubset(revoked)
+                                    )
+                    else:
+                        execution = execute(leased_case, subrun, root=self.main_root)
+                        launched = True
+                        valid = case_passed(execution.log, item["test_id"])
+                    status = (
+                        "CANCELLED"
+                        if cancel.is_set() or execution.exit_code == 130
+                        else "TIMED_OUT"
+                        if execution.exit_code == 124
+                        else "INFRA_ERROR"
+                        if not execution.release_verified
+                        else "PASS"
+                        if execution.exit_code == 0 and valid
+                        else "FAIL"
+                    )
                     return self._publish_result(
                         key,
                         run,
                         item,
                         digest,
-                        "INFRA_ERROR",
-                        125,
-                        ["Occupancy after launch"],
-                        False,
-                        None,
+                        status,
+                        130 if status == "CANCELLED" else execution.exit_code,
+                        execution.tail,
+                        execution.release_verified,
+                        execution.locator,
                     )
-                return {
-                    "retry_busy": True,
-                    "reason": "EXTERNAL_OCCUPANCY",
-                    "retry_after": 60,
-                }
-            except RunChanged:
-                return {"run_changed": True}
-            finally:
-                self._set_active_allocation(key, None)
-                lease.close()
+                except ExternalNpuOccupancy:
+                    if launched:
+                        return self._publish_result(
+                            key,
+                            run,
+                            item,
+                            digest,
+                            "INFRA_ERROR",
+                            125,
+                            ["Occupancy after launch"],
+                            False,
+                            None,
+                        )
+                    last_busy = "EXTERNAL_OCCUPANCY"
+                    continue
+                except RunChanged:
+                    return {"run_changed": True}
+                finally:
+                    self._set_active_allocation(key, None)
+                    lease.close()
+            return {
+                "retry_busy": True,
+                "reason": last_busy,
+                "retry_after": 60 if last_busy == "EXTERNAL_OCCUPANCY" else 15,
+                "allocation": [],
+            }
         finally:
             with self._cancel_lock:
                 self._cancel_events.pop(key, None)
@@ -1073,6 +1126,8 @@ class BrokerClient:
         resp = json.loads(line)
         if not resp.get("ok"):
             err = str(resp.get("error") or "BROKER_ERROR")
+            if resp.get("error_type") == "Deferred":
+                raise Deferred(err)
             if "LEASE_CONFINEMENT_VIOLATION" in err:
                 raise LeaseConfinementViolation(err)
             raise RuntimeError(err)

@@ -1,7 +1,7 @@
 import { ArrowDown, ArrowSquareOut, ArrowUp, CaretUpDown, FunnelSimple, Minus, Plus } from "@phosphor-icons/react";
 import { Fragment, useEffect, useState } from "react";
 import { clock, dateFormatter, displayNodeHost, plannedTime, poolId, repositories, workflowKey } from "./formal-data.js";
-import { actionsUrl, groupActiveRuns, initialWorkflowHistorySize, queuedChildren, summarizeRun, terminalStatuses, workflowHistoryPageSize } from "./workflows.js";
+import { actionsUrl, computeElapsedMinutes, groupActiveRuns, initialWorkflowHistorySize, queuedChildren, summarizeRun, terminalStatuses, workflowHistoryPageSize } from "./workflows.js";
 import { Status, Tag } from "./Views.jsx";
 
 const cardHours = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 });
@@ -25,9 +25,10 @@ function CasePhase({ item, config, nodes }) {
 }
 
 function CaseDuration({ item }) {
-  if (item.elapsed == null) return "—";
-  if (terminalStatuses.has(item.status)) return `${item.elapsed} 分钟`;
-  return <>已用 {item.elapsed} 分钟
+  const elapsed = item.elapsed == null ? null : computeElapsedMinutes({ elapsed: item.elapsed });
+  if (elapsed == null) return "—";
+  if (terminalStatuses.has(item.status)) return `${elapsed} 分钟`;
+  return <>已用 {elapsed} 分钟
     <small>{item.estimate ? `预计 ${item.estimate} 分钟 · ${item.samples} 个样本` : "暂无估算"}</small>
   </>;
 }

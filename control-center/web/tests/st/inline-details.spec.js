@@ -121,3 +121,82 @@ test("cluster reuses the detail slot checks for Pool, node and device groups", a
   await panel.getByRole("button", { name: "关闭" }).click();
   await expect(panel).toHaveCount(0);
 });
+
+async function expectPageDurationsRounded(page) {
+  const invalid = await page.evaluate(() => {
+    const text = document.body.innerText;
+    const matches = [...text.matchAll(/(?:已用|已用时长|耗时)[^\d\n-]*(-?\d+(?:\.\d+)?)\s*分钟/g)];
+    return matches
+      .map((match) => match[1])
+      .filter((num) => Number(num) < 0 || /\.\d{3,}$/.test(num));
+  });
+  expect(invalid).toEqual([]);
+}
+
+test("all elapsed durations across Pools, Models, and detail dialogs round to at most 2 decimal places even after long uptime", async ({ page }) => {
+  // Load 76 minutes before backend `now` so module-level clock stays 75+ minutes behind live tasks.
+  await page.clock.setFixedTime(new Date("2026-11-24T06:44:00Z"));
+  const login = await page.request.post("/api/v1/auth/login", {
+    data: { username: "super", secret: "browser-fixture-super-secret" },
+  });
+  expect(login.ok()).toBe(true);
+  await page.goto("/#/models");
+  await expect(page.getByRole("row", { name: /Workflow #101/ })).toBeVisible();
+
+  await page.clock.setFixedTime(new Date("2026-11-24T08:00:00Z"));
+
+  // ModelsView: expand active (#101, #103) and historical (#102) workflows and check table + modal durations.
+  await page.getByRole("button", { name: "展开 Workflow #101 的子用例" }).click();
+  await page.getByRole("button", { name: "展开 Workflow #102 的子用例" }).click();
+  await page.getByRole("button", { name: "展开 Workflow #103 的子用例" }).click();
+
+  const row101 = page.getByRole("row", { name: "Workflow #101 · 尝试 1", exact: true });
+  const row103 = page.getByRole("row", { name: "Workflow #103 · 尝试 1", exact: true });
+  await expect(row101).toContainText("0.02");
+  await expect(row103).toContainText("5.02");
+
+  const shortActiveCell = page.locator("tr", { hasText: "零碎秒活跃任务" }).locator("td").last();
+  const longActiveCell = page.locator("tr", { hasText: "长时零碎秒任务" }).locator("td").last();
+  const shortHistoryCell = page.locator("tr", { hasText: "零碎秒归档任务" }).locator("td").last();
+  await expect(shortActiveCell).toHaveText(/已用 0\.67 分钟/);
+  await expect(longActiveCell).toHaveText(/已用 150\.67 分钟/);
+  await expect(shortHistoryCell).toHaveText("0.67 分钟");
+  await expectPageDurationsRounded(page);
+
+  await page.getByRole("button", { name: "零碎秒活跃任务" }).click();
+  const modal = page.locator("dialog[open]");
+  await expect(modal.getByText("已用时长", { exact: true }).locator("..").locator("dd")).toHaveText("0.67 分钟");
+  await expectPageDurationsRounded(page);
+  await modal.getByRole("button", { name: "关闭" }).click();
+
+  await page.getByRole("button", { name: "零碎秒归档任务" }).click();
+  await expect(modal.getByText("耗时", { exact: true }).locator("..").locator("dd")).toHaveText("0.67 分钟");
+  await expectPageDurationsRounded(page);
+  await modal.getByRole("button", { name: "关闭" }).click();
+
+  // PoolsView: check timeline bar `.lease-meta` and inline CaseDialog / HistoryDialog durations.
+  await page.goto("/#/pools");
+  const longBar = page.locator(".lease").and(page.getByRole("button", { name: /长时零碎秒任务/ }));
+  await expect(longBar.locator(".lease-meta")).toHaveText(/运行中 · 已用 150\.67 分钟/);
+  await expectPageDurationsRounded(page);
+
+  const inlinePanel = await expectInline(page, longBar, pools, "长时零碎秒任务");
+  await expect(inlinePanel.getByText("已用时长", { exact: true }).locator("..").locator("dd")).toHaveText("150.67 分钟");
+
+  const shortBar = page.locator(".lease").and(page.getByRole("button", { name: /零碎秒活跃任务/ }));
+  await expectInline(page, shortBar, pools, "零碎秒活跃任务");
+  await expect(inlinePanel.getByText("已用时长", { exact: true }).locator("..").locator("dd")).toHaveText("0.67 分钟");
+
+  const shortHistBar = page.locator(".lease").and(page.getByRole("button", { name: /零碎秒归档任务/ }));
+  await expectInline(page, shortHistBar, pools, "零碎秒归档任务");
+  await expect(inlinePanel.getByText("耗时", { exact: true }).locator("..").locator("dd")).toHaveText("0.67 分钟");
+
+  const intActiveBar = page.locator(".lease").and(page.getByRole("button", { name: /运行用例/ }));
+  await expectInline(page, intActiveBar, pools, "运行用例");
+  await expect(inlinePanel.getByText("已用时长", { exact: true }).locator("..").locator("dd")).toHaveText("35 分钟");
+
+  const intHistBar = page.locator(".lease").and(page.getByRole("button", { name: /历史用例/ })).first();
+  await expectInline(page, intHistBar, pools, "历史用例");
+  await expect(inlinePanel.getByText("耗时", { exact: true }).locator("..").locator("dd")).toHaveText("30 分钟");
+  await expectPageDurationsRounded(page);
+});

@@ -1,4 +1,5 @@
 import { repositories as liveRepositories, runs as liveRuns, timelineRuns as liveTimelineRuns, workflowKey } from "./formal-data.js";
+import { computeElapsedMinutes } from "./workflows.js";
 
 const configuredBase = import.meta.env?.VITE_CONTROL_CENTER_API;
 const API_BASE = (configuredBase || "").replace(/\/$/, "");
@@ -188,7 +189,7 @@ function taskToCase(task, nodesByRef, projectionIndex, runKey, isHistory = false
   } : null;
   const groups = task.allocation?.map((item) => rangeLabel(item.devices)).filter(Boolean) || [];
   const estimate = task.estimated_sec == null ? null : Math.max(1, Math.round(task.estimated_sec / 60));
-  const elapsed = task.duration_sec == null ? null : Number((task.duration_sec / 60).toFixed(1));
+  const elapsed = task.duration_sec == null ? null : computeElapsedMinutes({ elapsed: task.duration_sec / 60 });
   const projected = projectionIndex?.get(task.task_uid);
   const projection = projected?.projection;
   const scheduled = projection?.projection_status === "SCHEDULED";

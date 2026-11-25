@@ -153,12 +153,12 @@ function validatePools(pools: Pools) {
 }
 
 type ClusterOp = "PAUSE" | "RESUME" | "DRAIN" | "ADD_POOL" | "ADD_NODE" | "ADD_DEVICE_GROUP" |
-  "DELETE_POOL" | "DELETE_NODE" | "DELETE_DEVICE_GROUP";
+  "DELETE_POOL" | "DELETE_NODE" | "DELETE_DEVICE_GROUP" | "SET_OCCUPANCY_POLICY";
 
 function operate(old: Pools, input: Record<string, unknown>): Pools {
   const pools = structuredClone(old);
   const op = member(input.op, "operation", ["PAUSE","RESUME","DRAIN","ADD_POOL","ADD_NODE","ADD_DEVICE_GROUP",
-    "DELETE_POOL","DELETE_NODE","DELETE_DEVICE_GROUP"] as const) as ClusterOp;
+    "DELETE_POOL","DELETE_NODE","DELETE_DEVICE_GROUP","SET_OCCUPANCY_POLICY"] as const) as ClusterOp;
   const name = string(input.pool, "pool", 64, POOL);
   if (!name || ["__proto__","constructor","prototype"].includes(name)) invalid("pool");
   const pool = Object.hasOwn(pools, name) ? pools[name] : undefined;
@@ -181,7 +181,7 @@ function operate(old: Pools, input: Record<string, unknown>): Pools {
 
   const scope = op === "PAUSE" || op === "RESUME" || op === "DRAIN"
     ? member(input.scope, "scope", ["pool","node","device_group"] as const)
-    : op === "DELETE_NODE" ? "node" : "device_group";
+    : op === "DELETE_NODE" || op === "SET_OCCUPANCY_POLICY" ? "node" : "device_group";
   let target: Pool | PoolNode | PoolGroup = pool;
   if (scope !== "pool") {
     const host = hostId(input.host_id);
@@ -190,6 +190,15 @@ function operate(old: Pools, input: Record<string, unknown>): Pools {
     target = node;
     if (op === "ADD_DEVICE_GROUP") {
       (node.allocation_groups ??= []).push(validateGroup(input.value, node.device_ids ?? []));
+      return pools;
+    }
+    if (op === "SET_OCCUPANCY_POLICY") {
+      const policy = member(
+        input.occupancy_policy ?? object(input.value, "occupancy_policy").occupancy_policy,
+        "occupancy_policy",
+        ["wait", "preempt"] as const,
+      );
+      node.occupancy_policy = policy;
       return pools;
     }
     if (op === "DELETE_NODE") {

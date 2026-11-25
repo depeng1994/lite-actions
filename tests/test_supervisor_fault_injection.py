@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 
 from ci_core.contract import SELF_REPO
+from ci_core.gitcode import MultiPlatformClient
 from ci_core.resources import PhysicalResourceCoordinator, ResourceBusy
 from ci_core.ssh_runner import remote_command, revoke_remote_lease
 from ci_core.test_supervisor import TestSupervisor
@@ -616,6 +617,44 @@ class SupervisorFaultInjectionTests(unittest.TestCase):
                             sup.verify_deploy_authority(
                                 gh, run, deploy_item["lifecycle"]
                             )
+
+    def test_09_deploy_broker_preserves_multiplatform_client_for_gitcode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            gh_self = FakeGitHubClient()
+            gh_self.repo = SELF_REPO
+            gc_torchtitan = FakeGitHubClient()
+            multi = MultiPlatformClient(
+                gh_self, {"depeng1994/torchtitan-npu": gc_torchtitan}
+            )
+            sup, _ = self._make_supervisor(
+                root,
+                client=multi,
+                gitcode_repos=("depeng1994/torchtitan-npu",),
+            )
+            run, deploy_item, cleanup_item, target = self._deploy_run_and_item(
+                run_id=702
+            )
+            # Production Router passes a per-repo GitHub client to handle_deploy;
+            # the broker must still keep MultiPlatformClient for GitCode runs.
+            per_repo_gh = FakeGitHubClient()
+            out = sup.handle_deploy(per_repo_gh, run, deploy_item)
+            self.assertEqual(out["status"], "PASS")
+            broker = sup._brokers[target]
+            self.assertIs(
+                broker.client_for(
+                    {
+                        "_ci_provider": "gitcode",
+                        "_ci_repo": "depeng1994/torchtitan-npu",
+                    }
+                ),
+                gc_torchtitan,
+            )
+            self.assertIs(
+                broker.client_for({"_ci_provider": "github", "_ci_repo": SELF_REPO}),
+                gh_self,
+            )
+            sup.handle_cleanup(per_repo_gh, run, cleanup_item)
 
 
 if __name__ == "__main__":
