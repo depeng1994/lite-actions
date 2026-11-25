@@ -502,6 +502,7 @@ def _bound_host_signal(pid, devices, fingerprint, indexing, coverage_devices):
     import select
     import signal
     import subprocess
+    import time
     from pathlib import Path
 
     if not callable(getattr(signal, "pidfd_send_signal", None)):
@@ -538,20 +539,35 @@ def _bound_host_signal(pid, devices, fingerprint, indexing, coverage_devices):
         if poller.poll(0):
             return False
         try:
-            probe = subprocess.run(
-                ["npu-smi", "info"], capture_output=True, text=True, timeout=40
-            )
-            if probe.returncode:
-                raise RuntimeError("host NPU confirmation failed")
-            found = _process_rows(
-                probe.stdout,
-                devices,
-                indexing=indexing,
-                host_pids=True,
-                coverage_devices=coverage_devices,
-                require_end=True,
-            )
-            if not any(current == pid for _, current, _ in found):
+            found = None
+            for retry in range(3):
+                probe = subprocess.run(
+                    ["npu-smi", "info"], capture_output=True, text=True, timeout=40
+                )
+                try:
+                    if probe.returncode:
+                        raise RuntimeError("host NPU confirmation failed")
+                    found = _process_rows(
+                        probe.stdout,
+                        devices,
+                        indexing=indexing,
+                        host_pids=True,
+                        coverage_devices=coverage_devices,
+                        require_end=True,
+                    )
+                    break
+                except (RuntimeError, ValueError, ExternalNpuOccupancy) as exc:
+                    if poller.poll(0):
+                        return False
+                    msg = str(exc)
+                    if (
+                        "spans allocated" in msg
+                        or "unsafe NPU process PID" in msg
+                        or retry == 2
+                    ):
+                        raise
+                    time.sleep(1)
+            if not found or not any(current == pid for _, current, _ in found):
                 return False
             # pidfd remains bound to the process opened above, even if the
             # numeric PID is reused after the NPU probe.
@@ -773,11 +789,38 @@ def remote_preflight(
                     timeout=60 if host_pids else 20,
                     check=False,
                 )
+                if host_pids and result.returncode == 255:
+                    check_cancel(signalling=True)
+                    result = transport_run(
+                        kill_host,
+                        signal_command,
+                        timeout=60,
+                        check=False,
+                    )
                 if host_pids and (
                     result.returncode
                     or result.stdout.strip() not in ("SIGNALED", "GONE")
                 ):
-                    raise RuntimeError("PID-bound host reclaim could not be verified")
+                    detail = (
+                        (getattr(result, "stderr", "") or result.stdout or "")
+                        .strip()
+                        .replace("\n", " ")[:240]
+                    )
+                    if evidence is not None:
+                        evidence.write(
+                            f"RECLAIM_UNVERIFIED host={request['host_id']} "
+                            f"ssh={kill_host} chips={chips} host_pid={pid} "
+                            f"rc={result.returncode} detail={detail}\n"
+                        )
+                        evidence.flush()
+                    suffix = (
+                        f" (rc={result.returncode}: {detail})"
+                        if detail
+                        else f" (rc={result.returncode})"
+                    )
+                    raise RuntimeError(
+                        "PID-bound host reclaim could not be verified" + suffix
+                    )
                 if evidence is not None:
                     action = (
                         "KILL"

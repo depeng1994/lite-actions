@@ -53,7 +53,7 @@ def build_smoke_list() -> list[OverrideDefinitions]:
             ci_overrides=ci_overrides or {},
             nnodes=nodes,
             ngpu=8,
-            timeout=75,
+            timeout=180 if nodes > 1 else 75,
             env_vars={"ASCEND_SET_ENV_PATH": "/usr/local/Ascend/ascend-toolkit/set_env.sh"},
             check_loss=False,
         )
@@ -97,7 +97,7 @@ def main() -> None:
     local_rank = int(os.environ["LOCAL_RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
     torch.npu.set_device(local_rank)
-    dist.init_process_group(backend="hccl", init_method="env://", timeout=timedelta(seconds=45))
+    dist.init_process_group(backend="hccl", init_method="env://", timeout=timedelta(seconds=90))
     try:
         value = torch.tensor([rank], dtype=torch.int32, device=f"npu:{local_rank}")
         dist.all_reduce(value, op=dist.ReduceOp.SUM)

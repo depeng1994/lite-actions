@@ -2,6 +2,7 @@
 
 import ast
 import hashlib
+import io
 import json
 import os
 import shlex
@@ -434,6 +435,85 @@ class NodeOccupancyTests(unittest.TestCase):
             path.write_text(json.dumps(pools))
             with self.assertRaisesRegex(ValueError, "boolean"):
                 load(root, "blue")
+
+    def test_bound_host_signal_returns_gone_when_process_exits_during_probe(self):
+        poller = Mock()
+        # Alive before probe, exited by the time npu-smi returns a teardown glitch.
+        poller.poll.side_effect = [[], [(7, 1)]]
+        with (
+            patch.object(os, "pidfd_open", return_value=7, create=True),
+            patch.object(os, "close"),
+            patch.object(signal, "pidfd_send_signal", create=True) as send,
+            patch("select.poll", return_value=poller),
+            patch("pathlib.Path.read_bytes", return_value=HOST_ID),
+            patch(
+                "subprocess.run",
+                return_value=SimpleNamespace(returncode=1, stdout=""),
+            ),
+        ):
+            self.assertFalse(
+                _bound_host_signal(123456, [0], FINGERPRINT, "card-die", [0, 1, 2, 3])
+            )
+        send.assert_not_called()
+
+    def test_bound_host_signal_retries_transient_probe_error_for_live_pid(self):
+        poller = Mock()
+        poller.poll.return_value = []
+        with (
+            patch.object(os, "pidfd_open", return_value=7, create=True),
+            patch.object(os, "close"),
+            patch.object(signal, "pidfd_send_signal", create=True) as send,
+            patch("select.poll", return_value=poller),
+            patch("pathlib.Path.read_bytes", return_value=HOST_ID),
+            patch("time.sleep"),
+            patch(
+                "subprocess.run",
+                side_effect=[
+                    SimpleNamespace(returncode=1, stdout=""),
+                    SimpleNamespace(returncode=0, stdout=BUSY),
+                ],
+            ) as probe,
+        ):
+            self.assertTrue(
+                _bound_host_signal(123456, [0], FINGERPRINT, "card-die", [0, 1, 2, 3])
+            )
+        self.assertEqual(probe.call_count, 2)
+        send.assert_called_once_with(7, signal.SIGKILL)
+
+    def test_bound_host_signal_fails_closed_immediately_on_shared_pid(self):
+        poller = Mock()
+        poller.poll.return_value = []
+        with (
+            patch.object(os, "pidfd_open", return_value=7, create=True),
+            patch.object(os, "close"),
+            patch.object(signal, "pidfd_send_signal", create=True) as send,
+            patch("select.poll", return_value=poller),
+            patch("pathlib.Path.read_bytes", return_value=HOST_ID),
+            patch("time.sleep") as sleep_mock,
+            patch(
+                "subprocess.run",
+                return_value=SimpleNamespace(returncode=0, stdout=SHARED),
+            ) as probe,
+        ):
+            with self.assertRaisesRegex(ValueError, "spans allocated"):
+                _bound_host_signal(123456, [0], FINGERPRINT, "card-die", [0, 1, 2, 3])
+        self.assertEqual(probe.call_count, 1)
+        sleep_mock.assert_not_called()
+        send.assert_not_called()
+
+    def test_preflight_logs_reclaim_unverified_detail(self):
+        evidence = io.StringIO()
+        with self.assertRaisesRegex(RuntimeError, "PID-bound.*rc=1.*dcmi busy"):
+            self.preflight(
+                [EMPTY, EMPTY],
+                [BUSY, BUSY],
+                evidence=evidence,
+                signal_result=SimpleNamespace(
+                    returncode=1, stdout="", stderr="RuntimeError: dcmi busy\n"
+                ),
+            )
+        self.assertIn("RECLAIM_UNVERIFIED", evidence.getvalue())
+        self.assertIn("dcmi busy", evidence.getvalue())
 
 
 if __name__ == "__main__":

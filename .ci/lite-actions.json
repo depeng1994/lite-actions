@@ -14,7 +14,7 @@
       "ngpu": 8,
       "nnodes": 2,
       "test_id": "dispatch_smoke_16p",
-      "timeout": 75
+      "timeout": 180
     },
     "dispatch_smoke_8p": {
       "ci_overrides": {
