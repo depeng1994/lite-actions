@@ -515,6 +515,23 @@ class NodeOccupancyTests(unittest.TestCase):
         self.assertIn("RECLAIM_UNVERIFIED", evidence.getvalue())
         self.assertIn("dcmi busy", evidence.getvalue())
 
+    def test_container_npu_smi_blank_process_name_is_parsed_cleanly(self):
+        # Processes belonging to other containers appear with an empty Process name
+        # column inside docker exec npu-smi output; unallocated NPUs must not fail
+        # cleanup verification for our allocated devices.
+        foreign_on_npu0 = (
+            HEADER
+            + "| 0       0                 | 999970        |                    | 16805                 | 1032417                 |\n"
+            + "| No running processes found in NPU 1 |\n"
+            + FOOTER
+        )
+        self.case["allocation"] = [{"host_id": self.wait["host_id"], "devices": [2, 3]}]
+        self.preflight([foreign_on_npu0], [])
+        self.assertEqual(
+            process_evidence(foreign_on_npu0, [0], indexing="card-die"),
+            [(0, 999970)],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -314,9 +314,12 @@ def remote_command(
         env["NODE_RANK"] = str(position)
     if node.get("network_interface"):
         env["Network_Interface"] = node["network_interface"]
-        if VLLM:
-            env["HCCL_SOCKET_IFNAME"] = "=" + node["network_interface"]
-            env["GLOO_SOCKET_IFNAME"] = "=" + node["network_interface"]
+        iface_value = (
+            "=" + node["network_interface"] if VLLM else node["network_interface"]
+        )
+        env["HCCL_SOCKET_IFNAME"] = iface_value
+        env["GLOO_SOCKET_IFNAME"] = iface_value
+        if node.get("node_ip"):
             env["HCCL_IF_IP"] = node["node_ip"]
     for key in ("LITE_CI_MASTER_PORT", "LITE_CI_HCCL_IF_BASE_PORT"):
         if key in runner:

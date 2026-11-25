@@ -318,6 +318,46 @@ def results(comments, plan, author, *, only=None):
     return found
 
 
+def _safe_action_log_line(line):
+    text = str(line).replace("\r", " ").replace("\n", " ")
+    text = "".join(ch for ch in text if 32 <= ord(ch) <= 126 or ord(ch) >= 160)
+    # Neutralize GitHub Actions workflow commands (`::cmd::` / `##[cmd]`).
+    return text.replace("::", ": :").replace("##[", "# #[")[:240]
+
+
+def _progress_events(comments, plan, author, *, only=None):
+    authors = {name.strip() for name in str(author or "").split(",") if name.strip()}
+    if not authors:
+        return []
+    prefix = "Lite-CI-PROGRESS "
+    events = []
+    for comment in comments:
+        body = comment.get("body", "")
+        if comment.get("user", {}).get("login") not in authors or not body.startswith(
+            prefix
+        ):
+            continue
+        try:
+            payload = json.loads(body[len(prefix) :], object_pairs_hook=_unique_object)
+        except ValueError:
+            continue
+        if (
+            not isinstance(payload, dict)
+            or payload.get("run_id") != plan["run_id"]
+            or payload.get("attempt") != plan["attempt"]
+            or payload.get("plan_digest") != plan["plan_digest"]
+        ):
+            continue
+        case_id = payload.get("case_id")
+        if only is not None and case_id != only:
+            continue
+        phase = payload.get("phase")
+        worker = payload.get("worker") or ""
+        if isinstance(case_id, str) and isinstance(phase, str):
+            events.append((case_id, phase, str(worker)))
+    return events
+
+
 def print_probe_receipt(result):
     # Never evaluate the payload as shell/Actions commands or sample the hosted runner.
     lines = result.get("last_20_lines")
@@ -326,6 +366,35 @@ def print_probe_receipt(result):
     for line in lines:
         if safe_probe_line(line):
             print(line, flush=True)
+
+
+def print_case_receipt(result):
+    """Print sanitized metadata and diagnostic tail for non-probe receipts."""
+    meta = []
+    if result.get("worker"):
+        meta.append(f"worker={_safe_action_log_line(result['worker'])}")
+    if result.get("target_pool"):
+        meta.append(f"pool={_safe_action_log_line(result['target_pool'])}")
+    resources = result.get("resources")
+    if isinstance(resources, dict):
+        nodes = resources.get("nodes")
+        devs = resources.get("devices_per_node")
+        if nodes is not None and devs is not None:
+            meta.append(f"resources={nodes}x{devs}")
+    locator = result.get("log_locator")
+    if isinstance(locator, dict) and locator.get("host") and locator.get("path"):
+        meta.append(
+            f"log={_safe_action_log_line(locator['host'])}:"
+            f"{_safe_action_log_line(locator['path'])}"
+        )
+    if meta:
+        print("  " + " ".join(meta), flush=True)
+    lines = result.get("last_20_lines")
+    if isinstance(lines, list) and lines:
+        print("--- Worker diagnostic tail (last_20_lines) ---", flush=True)
+        for line in lines[:20]:
+            print("  " + _safe_action_log_line(line), flush=True)
+        print("--- end diagnostic tail ---", flush=True)
 
 
 def wait(environ=os.environ, *, only=None, once=False):
@@ -371,8 +440,19 @@ def wait(environ=os.environ, *, only=None, once=False):
     )
     deadline = time.monotonic() + timeout_s
     shown = set()
+    shown_progress = set()
     while True:
-        found = results(client.commit_comments(plan["sha"]), plan, author, only=only)
+        comments = client.commit_comments(plan["sha"])
+        for event in _progress_events(comments, plan, author, only=only):
+            if event not in shown_progress and event[0] in selected:
+                shown_progress.add(event)
+                c_id, phase, worker = event
+                print(
+                    f"[progress] {c_id}: phase={_safe_action_log_line(phase)}"
+                    + (f" worker={_safe_action_log_line(worker)}" if worker else ""),
+                    flush=True,
+                )
+        found = results(comments, plan, author, only=only)
         for case_id in sorted(found.keys() - shown):
             result = found[case_id]
             outcome = (
@@ -384,6 +464,8 @@ def wait(environ=os.environ, *, only=None, once=False):
             print(f"{case_id}: {outcome}", flush=True)
             if only is not None and selected[case_id]["kind"] == "worker_probe":
                 print_probe_receipt(result)
+            elif selected[case_id]["kind"] != "worker_probe":
+                print_case_receipt(result)
         shown.update(found)
         failures = [
             case_id for case_id, result in found.items() if not case_passed(result)

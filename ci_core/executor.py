@@ -430,7 +430,6 @@ def _process_rows(
             or not valid_chip
             or not re.fullmatch(r"[0-9]+", cells[1])
             or int(cells[1]) <= 1
-            or not cells[2]
             or not re.fullmatch(r"[0-9]+", cells[3])
         ):
             if indexing == "card-die" and not host_pids and not require_exclusive:
@@ -1174,7 +1173,16 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
                             lease_obj.set_remote_revoked_hosts(revoked_hosts)
                         release_verified = True
                         break
-                    except (RuntimeError, subprocess.SubprocessError, ValueError):
+                    except (
+                        RuntimeError,
+                        subprocess.SubprocessError,
+                        ValueError,
+                    ) as exc:
+                        stream.write(
+                            f"CLEANUP_RETRY attempt={attempt} "
+                            f"error={type(exc).__name__}: {str(exc)[:180]}\n"
+                        )
+                        stream.flush()
                         if attempt < 2:
                             time.sleep(2)
                 try:

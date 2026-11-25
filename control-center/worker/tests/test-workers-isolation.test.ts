@@ -258,11 +258,16 @@ test("dual-zone test aggregation, cross-reporter non-hijack, duration_samples, a
   })).status).toBe(200);
 
   const publicWf = await (await request("/public/workflows?history_limit=10")).json<{
-    active: Array<{run_id: string; is_test: boolean; can_move_up: boolean; reporter_ids: string[]}>;
+    active: Array<{run_id: string; is_test: boolean; can_move_up: boolean; result: string; reporter_ids: string[]}>;
   }>();
+  const prodRun100 = publicWf.active.find(r => r.run_id === "100" && !r.is_test)!;
+  expect(prodRun100.result).toBe("QUEUED");
   const testRun100 = publicWf.active.find(r => r.run_id === "100" && r.is_test)!;
   expect(testRun100.can_move_up).toBe(false);
+  expect(testRun100.result).toBe("RUNNING");
   expect(testRun100.reporter_ids.sort()).toEqual(["blue-test-id100a1", "yellow-test-id100a1"]);
+  const testRun102 = publicWf.active.find(r => r.run_id === "102" && r.is_test)!;
+  expect(testRun102.result).toBe("QUEUED");
 
   const cookie = sessionCookie(await signIn());
   const moveResp = await request("/admin/workflows/move-up", {

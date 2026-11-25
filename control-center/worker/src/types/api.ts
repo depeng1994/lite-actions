@@ -214,7 +214,7 @@ export interface DeviceHealth {
   last_online_at: number | null;
 }
 
-export type WorkflowResult = "QUEUED" | "PASS" | "FAIL";
+export type WorkflowResult = "QUEUED" | "RUNNING" | "PASS" | "FAIL";
 export interface WorkflowRow extends RunIdentity {
   is_test?: boolean;
   reporter_ids?: string[];

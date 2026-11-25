@@ -94,3 +94,45 @@ test("ModelsView keeps parent and child cases visible when expanding in a tall t
   await expectRowVisibleInViewport(parent100);
   await expectRowVisibleInViewport(firstChild100);
 });
+
+test("ModelsView displays 运行中 for in-flight or partially completed active workflows and 排队中 only when all cases are queued", async ({ page }) => {
+  await openModels(page, { width: 1280, height: 900 });
+
+  const expectWorkflowStatus = async (runId, label, toneClass) => {
+    const row = page.getByRole("row", { name: `Workflow #${runId} · 尝试 1`, exact: true });
+    await expect(row).toBeVisible();
+    const badge = row.locator("td").nth(6).locator(".tag");
+    await expect(badge).toHaveText(label);
+    await expect(badge).toHaveClass(new RegExp(`\\b${toneClass}\\b`));
+  };
+
+  // Mixed queued + running + staging + cleaning + completed -> 运行中
+  await expectWorkflowStatus("100", "运行中", "tag-teal");
+  // Single running case -> 运行中
+  await expectWorkflowStatus("101", "运行中", "tag-teal");
+  // All cases queued -> 排队中
+  await expectWorkflowStatus("105", "排队中", "tag-amber");
+  // Completed case + queued case (already started workflow) -> 运行中
+  await expectWorkflowStatus("106", "运行中", "tag-teal");
+  // Multi-zone merged TEST workflow (Blue running + Yellow queued) -> 运行中
+  await expectWorkflowStatus("107", "运行中", "tag-teal");
+  // Terminal history workflows keep terminal statuses
+  await expectWorkflowStatus("102", "成功", "tag-teal");
+  await expectWorkflowStatus("104", "成功", "tag-teal");
+
+  // Status filter "仅活动" keeps both 运行中 and 排队中 active rows while hiding history.
+  await page.getByLabel("状态").selectOption("active");
+  await expect(page.getByRole("row", { name: "Workflow #100 · 尝试 1", exact: true })).toBeVisible();
+  await expect(page.getByRole("row", { name: "Workflow #105 · 尝试 1", exact: true })).toBeVisible();
+  await expect(page.getByRole("row", { name: "Workflow #106 · 尝试 1", exact: true })).toBeVisible();
+  await expect(page.getByRole("row", { name: "Workflow #107 · 尝试 1", exact: true })).toBeVisible();
+  await expect(page.getByRole("row", { name: "Workflow #102 · 尝试 1", exact: true })).toHaveCount(0);
+
+  // Column filter "调度结果" filters Running vs Queued accurately.
+  await page.getByRole("button", { name: /列筛选/ }).click();
+  await page.getByLabel("筛选调度结果").fill("运行中");
+  await expect(page.getByRole("row", { name: "Workflow #100 · 尝试 1", exact: true })).toBeVisible();
+  await expect(page.getByRole("row", { name: "Workflow #106 · 尝试 1", exact: true })).toBeVisible();
+  await expect(page.getByRole("row", { name: "Workflow #107 · 尝试 1", exact: true })).toBeVisible();
+  await expect(page.getByRole("row", { name: "Workflow #105 · 尝试 1", exact: true })).toHaveCount(0);
+});

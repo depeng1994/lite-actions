@@ -45,7 +45,7 @@ const phaseLabel = (task) => ({
   PASS: "成功", FAIL: "失败", TIMED_OUT: "失败", RESOURCE_TIMEOUT: "失败",
   CANCELLED: "已取消", NOT_RUN: "已取消", INFRA_ERROR: "失败",
 }[task.status] || task.status || "排队中"));
-const resultLabel = (value) => ({ QUEUED: "排队中", PASS: "成功", FAIL: "失败" }[value] || value || "排队中");
+const resultLabel = (value) => ({ QUEUED: "排队中", RUNNING: "运行中", PASS: "成功", FAIL: "失败" }[value] || value || "排队中");
 const rangeLabel = deviceRangeLabel;
 const platformLabel = (provider) => provider === "gitcode" ? "GitCode" : "GitHub";
 

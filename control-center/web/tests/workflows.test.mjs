@@ -82,12 +82,19 @@ test("resource health distinguishes online, probe misses, offline and unknown", 
   assert.equal(resourceHealth([{groups: ["0–7"], probes: {}}], "0–7").status, "待探测");
 });
 
-test("Workflow results preserve individual outcomes", () => {
-  const result = (...statuses) => summarizeRun({cases: statuses.map((status) => ({status, worker: "Blue", pool: "A3", cards: 8, allocatedCards: 0}))}).result;
-  assert.equal(result("运行中", "排队中"), "排队中");
-  assert.equal(result("成功", "成功"), "成功");
-  assert.equal(result("成功", "失败"), "失败");
-  assert.equal(result("成功", "已取消"), "失败");
+test("Workflow results distinguish all-queued, running, and terminal outcomes", () => {
+  const summarize = (...statuses) => summarizeRun({cases: statuses.map((status) => ({status, worker: "Blue", pool: "A3", cards: 8, allocatedCards: 0}))});
+  assert.deepEqual({active: summarize("排队中", "排队中").active, result: summarize("排队中", "排队中").result}, {active: true, result: "排队中"});
+  assert.deepEqual({active: summarize("运行中", "排队中").active, result: summarize("运行中", "排队中").result}, {active: true, result: "运行中"});
+  assert.deepEqual({active: summarize("准备中", "排队中").active, result: summarize("准备中", "排队中").result}, {active: true, result: "运行中"});
+  assert.deepEqual({active: summarize("清理中", "排队中").active, result: summarize("清理中", "排队中").result}, {active: true, result: "运行中"});
+  assert.deepEqual({active: summarize("成功", "运行中").active, result: summarize("成功", "运行中").result}, {active: true, result: "运行中"});
+  assert.deepEqual({active: summarize("失败", "运行中").active, result: summarize("失败", "运行中").result}, {active: true, result: "运行中"});
+  assert.deepEqual({active: summarize("成功", "排队中").active, result: summarize("成功", "排队中").result}, {active: true, result: "运行中"});
+  assert.deepEqual({active: summarize("失败", "排队中").active, result: summarize("失败", "排队中").result}, {active: true, result: "运行中"});
+  assert.deepEqual({active: summarize("成功", "成功").active, result: summarize("成功", "成功").result}, {active: false, result: "成功"});
+  assert.deepEqual({active: summarize("成功", "失败").active, result: summarize("成功", "失败").result}, {active: false, result: "失败"});
+  assert.deepEqual({active: summarize("成功", "已取消").active, result: summarize("成功", "已取消").result}, {active: false, result: "失败"});
 });
 
 test("dynamic Beijing clock, direct host display, full timestamp formatting, and projection status handling", () => {
@@ -185,16 +192,32 @@ test("summarizeRun prefers formal backend resultLabel/result even when cases are
   assert.equal(partialPassingCasesFailedRun.active, false);
   assert.equal(partialPassingCasesFailedRun.result, "失败");
 
-  const mixedQueuedFromBackend = summarizeRun({
+  const emptyQueuedFromBackend = summarizeRun({
+    result: "QUEUED",
+    cases: [],
+  });
+  assert.equal(emptyQueuedFromBackend.active, true);
+  assert.equal(emptyQueuedFromBackend.result, "排队中");
+
+  const runningFromBackend = summarizeRun({
+    result: "RUNNING",
+    resultLabel: "运行中",
+    cases: [{id: "a1", status: "排队中", worker: "Blue", pool: "A3", cards: 8, allocatedCards: 0}],
+  });
+  assert.equal(runningFromBackend.active, true);
+  assert.equal(runningFromBackend.result, "运行中");
+
+  const mixedActiveFromStaleQueuedBackend = summarizeRun({
     result: "QUEUED",
     cases: [{historyId: "h2", status: "成功", worker: "Blue", pool: "A3", cards: 8, allocatedCards: 8}],
   });
-  assert.equal(mixedQueuedFromBackend.active, true);
-  assert.equal(mixedQueuedFromBackend.result, "排队中");
+  assert.equal(mixedActiveFromStaleQueuedBackend.active, true);
+  assert.equal(mixedActiveFromStaleQueuedBackend.result, "运行中");
 
   assert.equal(workflowResultLabel("PASS"), "成功");
   assert.equal(workflowResultLabel("FAIL"), "失败");
   assert.equal(workflowResultLabel("QUEUED"), "排队中");
+  assert.equal(workflowResultLabel("RUNNING"), "运行中");
 });
 
 test("command status helpers map PARTIAL_APPLIED and all protocol statuses consistently", () => {

@@ -55,23 +55,35 @@ export function groupActiveRuns(cases, nodes, sourceRuns = runs, nowMs = Date.no
 
 const RESULT_MAP = {
   QUEUED: "排队中",
+  RUNNING: "运行中",
   PASS: "成功",
   FAIL: "失败",
+  CANCELLED: "已取消",
   "排队中": "排队中",
+  "运行中": "运行中",
   "成功": "成功",
   "失败": "失败",
+  "已取消": "已取消",
 };
+
+const activeResultLabels = new Set(["排队中", "运行中"]);
 
 export function workflowResultLabel(value) {
   if (!value) return null;
   return RESULT_MAP[value] || null;
 }
 
+function activeWorkflowResult(cases, backendResult) {
+  if (backendResult === "运行中") return "运行中";
+  if (cases.some(({ status }) => status && status !== "排队中")) return "运行中";
+  return "排队中";
+}
+
 export function summarizeRun(run) {
   const { cases = [] } = run;
   const backendResult = workflowResultLabel(run.resultLabel) || workflowResultLabel(run.result);
   const active = backendResult
-    ? backendResult === "排队中"
+    ? activeResultLabels.has(backendResult)
     : typeof run.sequence === "number"
       ? run.sequence >= 0
       : cases.some(({ status }) => !terminalStatuses.has(status));
@@ -95,7 +107,9 @@ export function summarizeRun(run) {
     maxCards: Math.max(0, ...cases.map(({ cards, allocatedCards }) => allocatedCards || cards)),
     partialCardHours: run.cardHoursPartial ?? (measured.length > 0 && measured.length < allocated.length),
     cardHours: run.cardHours ?? (measured.length ? measured.reduce((sum, item) => sum + item.elapsed * item.allocatedCards, 0) / 60 : null),
-    result: backendResult ?? (active ? "排队中" : cases.every(({ status }) => status === "成功") ? "成功" : "失败"),
+    result: active
+      ? activeWorkflowResult(cases, backendResult)
+      : (backendResult ?? (cases.every(({ status }) => status === "成功") ? "成功" : "失败")),
   };
 }
 

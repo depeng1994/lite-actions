@@ -2,7 +2,7 @@ import {installation, supportsCancel} from "./cancelPlatform";
 import {modelMap} from "../modelMap";
 import {type Context, HttpError} from "../router";
 import type {SqlStatement} from "../storage/sqlStore";
-import type {CaseKind, DeviceGroup, ModelRepo, ModelTab, OccupancyBlock, Phase, Projection, Provider, TaskDetail, TaskSummary, Timeline, WorkflowList, WorkflowRow, WorkerId} from "../types/api";
+import type {CaseKind, DeviceGroup, ModelRepo, ModelTab, OccupancyBlock, Phase, Projection, Provider, TaskDetail, TaskSummary, Timeline, WorkflowList, WorkflowResult, WorkflowRow, WorkerId} from "../types/api";
 import {pepper} from "./auth";
 import {aggregateHealth, type GroupRow, offline, overlaps, type Pools, projectDevice, type RawAllocation, type WorkerRow, workerStatus} from "./deviceState";
 import {refreshWorkflowRuns, type WorkflowIdentity as IngestWorkflowIdentity} from "./ingest";
@@ -144,6 +144,15 @@ function workflowScope(provider: Provider, repo: string): ModelRepo["repo_scope"
   return undefined;
 }
 
+function resolveWorkflowResult(run: WorkflowRunRecord, cases: TaskSummary[]): WorkflowResult {
+  if (run.is_active === 0) return run.result_state;
+  const hasNonQueuedCase = cases.some(item => item.phase !== "QUEUED");
+  if (run.has_in_flight === 1 || run.total_case_count > run.active_case_count || hasNonQueuedCase) {
+    return "RUNNING";
+  }
+  return "QUEUED";
+}
+
 function buildWorkflowRow(
   run: WorkflowRunRecord,
   cases: TaskSummary[],
@@ -183,7 +192,7 @@ function buildWorkflowRow(
     workflow_file: run.workflow_file,
     pools: pools.length ? pools : fallbackPools,
     max_cards: maxCards,
-    result: run.result_state,
+    result: resolveWorkflowResult(run, cases),
     trigger_actor: run.trigger_actor,
     event_type: run.event_type,
     pr_number: run.pr_number,

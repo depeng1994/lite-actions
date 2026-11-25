@@ -98,8 +98,21 @@ await post("blue", "heartbeat", { rev: 1, ok: 1, act: 5, q: 2 });
 for (let i = 0; i < blue.length; i += 6) {
   await post("blue", "events", { ev: blue.slice(i, i + 6).map((event, index) => ({ ...event, s: i + index + 1 })) });
 }
-await post("yellow", "heartbeat", { rev: 1, ok: 1, act: 0, q: 0 });
-await post("yellow", "events", { ev: [{ ...occupied(now, "idle"), h: yellowHost, pool: "yellow_pool", s: 1 }] });
+await post("yellow", "heartbeat", { rev: 1, ok: 1, act: 0, q: 3 });
+const allQueued1 = { ...descriptor(0, "全排队用例一", "QUEUED", ago(2), [], ago(2), "105"), pool: "yellow_pool" };
+const allQueued2 = { ...descriptor(1, "全排队用例二", "QUEUED", ago(2), [], ago(2), "105"), pool: "yellow_pool" };
+const doneAndQueuedDone = { ...descriptor(0, "部分完成已结束用例", "RUNNING", ago(20), [], ago(20), "106"), pool: "yellow_pool" };
+const doneAndQueuedWait = { ...descriptor(1, "部分完成排队中用例", "QUEUED", ago(1), [], ago(1), "106"), pool: "yellow_pool" };
+await post("yellow", "events", {
+  ev: [
+    { ...occupied(now, "idle"), h: yellowHost, pool: "yellow_pool", s: 1 },
+    { ...allQueued1, s: 2 },
+    { ...allQueued2, s: 3 },
+    { ...doneAndQueuedDone, s: 4 },
+    { t: "TF", tid: doneAndQueuedDone.tid, ts: ago(5), st: "PASS", ec: 0, cv: 1, s: 5 },
+    { ...doneAndQueuedWait, s: 6 },
+  ],
+});
 
 const testWid = "blue-test-id104a1";
 const testInst = "bb104001";
@@ -123,6 +136,21 @@ await postAs("blue", "events", {
     { t: "TF", tid: testMulti.tid, ts: ago(10), st: "PASS", ec: 0, cv: 1, a: [], s: 6 },
   ],
 });
+
+const activeBlueTestWid = "blue-test-id107a1";
+const activeYellowTestWid = "yellow-test-id107a1";
+await postAs("blue", "test-workers/register", {
+  w: activeBlueTestWid, z: "blue", r: repo, pr: 107, sha: "b".repeat(40),
+  rid: "107", at: 1, ttl: 3600, exp: now + 3600, i: "bb107001", st: "ACTIVE",
+});
+await postAs("yellow", "test-workers/register", {
+  w: activeYellowTestWid, z: "yellow", r: repo, pr: 107, sha: "b".repeat(40),
+  rid: "107", at: 1, ttl: 3600, exp: now + 3600, i: "cc107001", st: "ACTIVE",
+});
+const testActiveBlue = descriptor(0, "测试蓝区运行用例", "RUNNING", ago(12), [], ago(12), "107", activeBlueTestWid);
+const testActiveYellow = { ...descriptor(1, "测试黄区排队用例", "QUEUED", ago(12), [], ago(12), "107", activeYellowTestWid), pool: "yellow_pool" };
+await postAs("blue", "events", { w: activeBlueTestWid, i: "bb107001", ev: [{ ...testActiveBlue, s: 1 }] });
+await postAs("yellow", "events", { w: activeYellowTestWid, i: "cc107001", ev: [{ ...testActiveYellow, s: 1 }] });
 DB.close();
 
 const app = startNodeServer({

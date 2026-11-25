@@ -1209,6 +1209,89 @@ class SelfSmokeTests(unittest.TestCase):
         self.assertEqual(calls[1][:4], ["systemctl", "kill", "-s", "SIGKILL"])
         self.assertEqual(calls[2][:2], ["systemctl", "reset-failed"])
 
+    def test_wait_prints_progress_locator_and_sanitized_diagnostic_tail(self):
+        plan_path = Path(self.temp.name) / "plan.json"
+        plan_path.write_text(json.dumps(self.plan))
+        target = next(c for c in self.plan["cases"] if c["kind"] == "npu_smoke")
+        run = {
+            "id": self.plan["run_id"],
+            "run_attempt": self.plan["attempt"],
+            "head_sha": self.plan["sha"],
+            "path": ".github/workflows/" + SELF_WORKFLOW,
+            "_ci_repo": SELF_REPO,
+        }
+        receipt = report(
+            run,
+            target,
+            self.plan["plan_digest"],
+            "FAIL",
+            1,
+            [
+                "DISPATCH_SMOKE_LAUNCH",
+                "::error::injected-command",
+                "##[warning]also-neutralized",
+                "RuntimeError: boom",
+            ],
+            True,
+        )
+        receipt["log_locator"] = {"host": "192.0.2.10:153", "path": "/tmp/run.log"}
+        receipt_body = body_for(run, target, receipt)
+        progress_body = "Lite-CI-PROGRESS " + json.dumps(
+            {
+                "run_id": self.plan["run_id"],
+                "attempt": self.plan["attempt"],
+                "case_id": target["case_id"],
+                "worker": target["worker"],
+                "plan_digest": self.plan["plan_digest"],
+                "phase": "RUNNING",
+            },
+            separators=(",", ":"),
+        )
+        client = Mock()
+        client.commit_comments.return_value = [
+            {"user": {"login": "reporter"}, "body": progress_body},
+            {"user": {"login": "reporter"}, "body": receipt_body},
+        ]
+        env = {**self.env, "CI_RESULT_AUTHOR": "reporter", "GH_TOKEN": "token"}
+        out = io.StringIO()
+        with (
+            patch("ci_core.self_smoke.PLAN", plan_path),
+            patch("ci_core.self_smoke.GitHubClient", return_value=client),
+            redirect_stdout(out),
+            self.assertRaisesRegex(ValueError, "self-smoke cases failed"),
+        ):
+            wait(env, only=target["case_id"], once=True)
+        text = out.getvalue()
+        self.assertIn(f"[progress] {target['case_id']}: phase=RUNNING", text)
+        self.assertIn("log=192.0.2.10:153:/tmp/run.log", text)
+        self.assertIn("RuntimeError: boom", text)
+        self.assertNotIn("::error::", text)
+        self.assertNotIn("##[warning]", text)
+
+    def test_ssh_runner_exports_hccl_socket_ifname_and_ip_for_non_vllm(self):
+        from ci_core import ssh_runner
+
+        node = {
+            "host_id": "192.0.2.10:153",
+            "node_ip": "192.168.0.30",
+            "network_interface": "enp23s0f3",
+            "devices": [0, 1, 2, 3, 4, 5, 6, 7],
+            "position": 0,
+        }
+        runner = {
+            "kind": "npu_smoke",
+            "env_vars": {
+                "ASCEND_SET_ENV_PATH": "/usr/local/Ascend/ascend-toolkit/set_env.sh"
+            },
+        }
+        with patch.object(ssh_runner, "VLLM", False):
+            cmd = ssh_runner.remote_command(
+                node, [node], runner, "/tmp/job", "stamp1", 180, "dispatch_smoke_16p"
+            )
+        self.assertIn("HCCL_SOCKET_IFNAME=enp23s0f3", cmd)
+        self.assertIn("GLOO_SOCKET_IFNAME=enp23s0f3", cmd)
+        self.assertIn("HCCL_IF_IP=192.168.0.30", cmd)
+
 
 if __name__ == "__main__":
     unittest.main()
