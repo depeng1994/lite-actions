@@ -560,19 +560,27 @@ def integration(root):
                 else None
             )
         )
-        status, pub, cache = http("/public/timeline")
+
+        def idle_timeline():
+            status, body, headers = http("/public/timeline")
+            if status != 200:
+                return None
+            if any(
+                g["state"] == "CONFIRMED_IDLE"
+                for zone in body["workers"]
+                for pool in zone["pools"]
+                for node in pool["nodes"]
+                for g in node["device_groups"]
+            ):
+                return status, body, headers
+            return None
+
+        status, pub, cache = until(idle_timeline)
         assert status == 200 and cache["Cache-Control"] == "public, max-age=10"
         assert "192.0.2." not in encode(pub) and "198.51.100." not in encode(pub)
         admin = http("/admin/timeline", session=cookie)
         assert admin[0] == 200 and "192.0.2." in encode(admin[1])
         assert http("/admin/cluster")[0] == 401
-        assert any(
-            g["state"] == "CONFIRMED_IDLE"
-            for zone in pub["workers"]
-            for pool in zone["pools"]
-            for node in pool["nodes"]
-            for g in node["device_groups"]
-        ), pub
 
         def reported_occupancy(reason):
             status, timeline, _ = http(
