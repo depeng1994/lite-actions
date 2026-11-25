@@ -739,6 +739,196 @@ class DispatchSmokeEndToEndST(unittest.TestCase):
                     make_a3_inventory(health), "card-die", list(range(16))
                 )
 
+    # =========================================================================
+    # ST-6：拦截并发执行场景下容器清理 `revoke_remote_lease` 遇瞬态 SSH 255 或详情丢失导致误判失败的问题
+    #
+    # 故障场景：
+    #   Run 45579526201 中 `case_006_dispatch_smoke_8p`（:153 0–7）已输出
+    #   `DISPATCH_SMOKE_PASS`，但由于同容器另一用例并发重负载，旧 `revoke_remote_lease`
+    #   仅设 45s 超时且未重试瞬态 SSH `exit=255`、同时吞掉了 `failed[host_ssh]` 原因，
+    #   导致连续 3 次返回空集合并触发 `UnverifiedRemoteRevoke`，将正常卡组误写入隔离区。
+    #
+    # 拦截目标：
+    #   端到端驱动 `executor.execute()` 在清理阶段先后注入一次 `revoke_remote_lease`
+    #   SSH 瞬态 `exit=255`（验证自动重试恢复与 >=90s 超时裕度使 `cleanup_verified=True`），
+    #   以及在全 3 次均失败时验证 `pipeline.log` 精确记录 `REVOKE_ERROR host=... detail=...`。
+    # =========================================================================
+    def test_st_concurrent_cleanup_retries_ssh_255_and_surfaces_revoke_detail(self):
+        from types import SimpleNamespace
+
+        from ci_core import ssh_runner
+        from ci_core.executor import execute
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_dir = root / "config"
+            config_dir.mkdir(parents=True)
+            host = "192.0.2.153:153"
+            container_ssh = f"{host}/{'a' * 64}"
+            pools = {
+                "a3_shared_blue": {
+                    "type": "ascend-a3",
+                    "owner": "blue",
+                    "enabled": True,
+                    "force_reclaim": False,
+                    "indexing": "card-die",
+                    "process_indexing": "card-die",
+                    "nodes": [
+                        {
+                            "host_id": host,
+                            "ssh": host,
+                            "host_ssh": host,
+                            "node_ip": "192.0.2.153",
+                            "network_interface": "enp23s0f3",
+                            "device_ids": list(range(16)),
+                            "allocation_groups": [
+                                {"devices": list(range(8)), "verified": True},
+                                {"devices": list(range(8, 16)), "verified": True},
+                            ],
+                            "environments": {
+                                "cann_master_torchtitan_master_xyj": {
+                                    "container_id": "a" * 64,
+                                    "image_id": "sha256:" + "1" * 64,
+                                    "image_ref": "cann:latest",
+                                }
+                            },
+                            "machine_fingerprint": "a" * 64,
+                        }
+                    ],
+                }
+            }
+            (config_dir / "pools.json").write_text(json.dumps(pools), encoding="utf-8")
+            (config_dir / "workers.json").write_text(
+                json.dumps({"blue": {"enabled": True}}), encoding="utf-8"
+            )
+            setup = root / "set_env.sh"
+            setup.write_text("# setup\n", encoding="utf-8")
+            run = {
+                "id": 99002,
+                "run_attempt": 1,
+                "run_number": 99,
+                "name": "lite-ci-self-smoke",
+                "created_at": "2026-11-25T09:00:00Z",
+                "head_sha": "c" * 40,
+                "path": ".github/workflows/lite_actions_self_smoke.yml",
+                "_ci_repo": SELF_REPO,
+                "_ci_provider": "github",
+                "_ci_test_id": "dispatch_smoke_8p",
+                "_ci_lease": SimpleNamespace(
+                    lease_id="leaseconc001",
+                    state="RESERVED",
+                    mark_launching=lambda **kwargs: None,
+                    mark_active=lambda: None,
+                    set_remote_revoked_hosts=lambda hosts: None,
+                ),
+            }
+            case = {
+                "case_id": "case_006_dispatch_smoke_8p",
+                "enabled": True,
+                "kind": "npu_smoke",
+                "pool": "a3_shared_blue",
+                "docker": "cann_master_torchtitan_master_xyj",
+                "lease_id": "leaseconc001",
+                "resources": {"nodes": 1, "devices_per_node": 8},
+                "execution_timeout_seconds": 60,
+                "verified_env": {"ASCEND_SET_ENV_PATH": str(setup)},
+                "allocation": [
+                    {"host_id": host, "devices": [8, 9, 10, 11, 12, 13, 14, 15]}
+                ],
+                "timeout_seconds": 120,
+            }
+
+            revoke_calls = []
+
+            def fake_revoke_ssh(target, command, *, timeout=45, check=False):
+                revoke_calls.append((target, timeout))
+                if len(revoke_calls) == 1:
+                    return SimpleNamespace(
+                        returncode=255, stdout="", stderr="Connection closed by relay"
+                    )
+                return SimpleNamespace(
+                    returncode=0, stdout="REVOKED:leaseconc001\n", stderr=""
+                )
+
+            errors: dict[str, str] = {}
+            revoked = ssh_runner.revoke_remote_lease(
+                {
+                    "lease_id": "leaseconc001",
+                    "remote_nodes": [
+                        {
+                            "ssh": container_ssh,
+                            "devices": list(range(8)),
+                            "indexing": "card-die",
+                        }
+                    ],
+                },
+                execute=fake_revoke_ssh,
+                check_npu=False,
+                errors=errors,
+            )
+            self.assertEqual(revoked, {container_ssh})
+            self.assertEqual(errors, {})
+            self.assertEqual(len(revoke_calls), 2)
+            self.assertTrue(all(t >= 90 for _, t in revoke_calls))
+
+            # Now simulate persistent failure inside execute() cleanup and assert detail is logged.
+            def fake_transport(target, script, *, timeout=90, check=True, stdin=None):
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=A3_CONTAINER_FOREIGN_BLANK_NAME,
+                    stderr="",
+                )
+
+            def fake_popen(cmd, stdout=None, **kwargs):
+                stdout.write("CASE_START dispatch_smoke_8p\n")
+                stdout.write(f"RESULT_HOST: {container_ssh}\n")
+                stdout.write("RESULT_LOG: /mnt/share/ci_tests/st_conc/node0/run.log\n")
+                stdout.write("RESULT_EXIT_CODE: 0\n")
+                stdout.write("CASE_RESULT dispatch_smoke_8p PASS 0\n")
+                stdout.flush()
+                proc = Mock()
+                proc.pid = 434343
+                proc.returncode = 0
+                proc.wait.return_value = 0
+                return proc
+
+            def failing_revoke(lease, **kwargs):
+                err_map = kwargs.get("errors")
+                if err_map is not None:
+                    err_map[container_ssh] = "leased npu remains occupied: [(0, 12345)]"
+                return set()
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {"LITE_ACTIONS_STATE_DIR": str(root / "state")},
+                    clear=False,
+                ),
+                patch(
+                    "ci_core.config.execution_node",
+                    side_effect=lambda node, _env: {**node, "ssh": container_ssh},
+                ),
+                patch("ci_core.transport.run", side_effect=fake_transport),
+                patch("ci_core.executor.subprocess.Popen", side_effect=fake_popen),
+                patch(
+                    "ci_core.executor.select_remote",
+                    return_value=["DISPATCH_SMOKE_PASS world_size=8 all_reduce_sum=28"],
+                ),
+                patch(
+                    "ci_core.ssh_runner.revoke_remote_lease", side_effect=failing_revoke
+                ),
+                patch("ci_core.ssh_runner.cancel"),
+                patch("ci_core.ssh_runner.owned_processes_gone"),
+                patch("ci_core.executor.broadcast_job", return_value=[]),
+                patch("ci_core.executor.time.sleep"),
+            ):
+                execution = execute(case, run, root=root)
+
+            pipeline_text = execution.log.read_text()
+            self.assertFalse(execution.release_verified)
+            self.assertIn(f"REVOKE_ERROR host={container_ssh}", pipeline_text)
+            self.assertIn("leased npu remains occupied: [(0, 12345)]", pipeline_text)
+
 
 if __name__ == "__main__":
     unittest.main()

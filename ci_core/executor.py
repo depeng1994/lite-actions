@@ -701,6 +701,8 @@ def remote_preflight(
         check_cancel()
         probe_command = "npu-smi info" if host_pids else command
         proc = transport_run(probe_host, probe_command, timeout=40, check=False)
+        if proc.returncode == 255:
+            proc = transport_run(probe_host, probe_command, timeout=40, check=False)
         if proc.returncode != 0:
             raise RuntimeError(f"NPU occupancy query failed on {request['host_id']}")
         found = _process_rows(
@@ -1120,6 +1122,7 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
                 for attempt in range(3):
                     try:
                         revoked_hosts = set()
+                        revoke_errors: dict[str, str] = {}
                         revoke_ok = True
                         if launched_lease:
                             nodes_for_revoke = remote_nodes_meta or [
@@ -1142,6 +1145,7 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
                                     "remote_lease_dir": case.get("remote_lease_dir"),
                                 },
                                 check_npu=True,
+                                errors=revoke_errors,
                             )
                             revoke_ok = expected_hosts.issubset(revoked_hosts)
                         if child_started:
@@ -1166,6 +1170,11 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
                         if launched_lease and not revoke_ok:
                             if lease_obj is not None:
                                 lease_obj.set_remote_revoked_hosts(revoked_hosts)
+                            for host, detail in sorted(revoke_errors.items()):
+                                stream.write(
+                                    f"REVOKE_ERROR host={host} detail={detail[:220]}\n"
+                                )
+                            stream.flush()
                             raise RuntimeError("UNVERIFIED_REMOTE_LEASE_REVOKE")
                         if lease_obj is not None and launched_lease:
                             lease_obj.set_remote_revoked_hosts(revoked_hosts)

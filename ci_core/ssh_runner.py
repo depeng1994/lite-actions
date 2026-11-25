@@ -574,7 +574,12 @@ for entry in Path('/proc').glob('[0-9]*'):
             raise SystemExit('owned process remains')
     except (FileNotFoundError,ProcessLookupError): pass
 """
-    ssh(node["ssh"], f"python3 -c {q(code)} {q(dest)} {q(stamp)}", timeout=30)
+    try:
+        ssh(node["ssh"], f"python3 -c {q(code)} {q(dest)} {q(stamp)}", timeout=30)
+    except RuntimeError as exc:
+        if "exit=255" not in str(exc):
+            raise
+        ssh(node["ssh"], f"python3 -c {q(code)} {q(dest)} {q(stamp)}", timeout=30)
 
 
 def revoke_remote_lease(
@@ -584,6 +589,7 @@ def revoke_remote_lease(
     lease_dir: str | None = None,
     check_npu: bool = True,
     strict: bool = False,
+    errors: dict[str, str] | None = None,
 ) -> set[str]:
     """Atomically fence future launches and terminate ONLY this lease's processes on all nodes."""
     lease_id = lease.get("lease_id")
@@ -718,9 +724,18 @@ try:
             (dp / 'cleanup_verified.txt').write_text(marker)
     if do_npu and devices and shutil.which('npu-smi'):
         pat = re.compile(r'^\\|\\s*(\\d+)(?:\\s+([01]))?\\s*\\|\\s*(\\d+)\\s*\\|')
-        for attempt in range(3):
-            proc = subprocess.run(['npu-smi', 'info'], capture_output=True, text=True, check=False)
+        for attempt in range(5):
+            try:
+                proc = subprocess.run(['npu-smi', 'info'], capture_output=True, text=True, check=False, timeout=25)
+            except subprocess.TimeoutExpired:
+                if attempt < 4:
+                    time.sleep(1.5)
+                    continue
+                raise SystemExit('npu-smi info timed out')
             if proc.returncode != 0:
+                if attempt < 4:
+                    time.sleep(1.5)
+                    continue
                 raise SystemExit('npu-smi info failed')
             busy = []
             for raw in proc.stdout.splitlines():
@@ -735,8 +750,8 @@ try:
                     busy.append((chip, pid))
             if not busy:
                 break
-            if attempt < 2:
-                time.sleep(2)
+            if attempt < 4:
+                time.sleep(1.5)
             else:
                 raise SystemExit('leased npu remains occupied: ' + str(busy))
     print('REVOKED:' + lid, flush=True)
@@ -752,17 +767,26 @@ finally:
             f"{q(json.dumps(sorted(target['devices'])))} {q(target['indexing'])} "
             f"{'1' if check_npu else '0'}"
         )
-        try:
-            res = runner(host_ssh, cmd, timeout=45, check=False)
-            out = (
-                (getattr(res, "stdout", "") or "")
-                + "\n"
-                + (getattr(res, "stderr", "") or "")
-            )
-            ok = getattr(res, "returncode", 1) == 0 and f"REVOKED:{lease_id}" in out
-            return host_ssh, ok, out.strip()
-        except Exception as exc:
-            return host_ssh, False, str(exc)
+        last_err = ""
+        for _ in range(2):
+            try:
+                res = runner(host_ssh, cmd, timeout=90, check=False)
+                out = (
+                    (getattr(res, "stdout", "") or "")
+                    + "\n"
+                    + (getattr(res, "stderr", "") or "")
+                )
+                rc = getattr(res, "returncode", 1)
+                if rc == 0 and f"REVOKED:{lease_id}" in out:
+                    return host_ssh, True, out.strip()
+                last_err = out.strip() or f"exit={rc}"
+                if rc == 255:
+                    continue
+                return host_ssh, False, last_err
+            except Exception as exc:
+                last_err = f"{type(exc).__name__}: {exc}"
+                return host_ssh, False, last_err
+        return host_ssh, False, last_err
 
     revoked: set[str] = set()
     failed: dict[str, str] = {}
@@ -773,8 +797,14 @@ finally:
                 revoked.add(host_ssh)
             else:
                 failed[host_ssh] = err
+    if errors is not None:
+        errors.update(failed)
     if strict and failed:
-        raise RuntimeError("remote lease revoke failed on " + ",".join(sorted(failed)))
+        details = "; ".join(
+            f"{host} ({failed[host][:120]})" if failed.get(host) else host
+            for host in sorted(failed)
+        )
+        raise RuntimeError("remote lease revoke failed on " + details)
     return revoked
 
 
