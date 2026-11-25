@@ -562,7 +562,7 @@ if (folder / 'job.intent').exists() and (folder / 'job.intent').read_text() == m
     (folder / 'cleanup_verified.txt').write_text(marker)
 """
     try:
-        ssh(node["ssh"], f"python3 -c {q(code)} {q(dest)} {q(stamp)}", timeout=35)
+        ssh(node["ssh"], f"python3 -c {q(code)} {q(dest)} {q(stamp)}", timeout=60)
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
         print(f"CLEANUP_UNVERIFIED: {node['host_id']} {type(exc).__name__}", flush=True)
 
@@ -586,12 +586,20 @@ for entry in Path('/proc').glob('[0-9]*'):
             raise SystemExit('owned process remains')
     except (FileNotFoundError,ProcessLookupError): pass
 """
-    try:
-        ssh(node["ssh"], f"python3 -c {q(code)} {q(dest)} {q(stamp)}", timeout=30)
-    except RuntimeError as exc:
-        if "exit=255" not in str(exc):
-            raise
-        ssh(node["ssh"], f"python3 -c {q(code)} {q(dest)} {q(stamp)}", timeout=30)
+    import time
+
+    cmd = f"python3 -c {q(code)} {q(dest)} {q(stamp)}"
+    for attempt in range(3):
+        try:
+            ssh(node["ssh"], cmd, timeout=60)
+            return
+        except subprocess.TimeoutExpired:
+            if attempt >= 2:
+                raise
+        except RuntimeError as exc:
+            if attempt >= 2 or "exit=255" not in str(exc):
+                raise
+        time.sleep(3)
 
 
 def revoke_remote_lease(

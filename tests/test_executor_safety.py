@@ -292,6 +292,31 @@ class TestTransientSshRetry(unittest.TestCase):
         self.assertEqual(len(upload_attempts), 2)
         self.assertEqual(upload_attempts[1][2], payload)
 
+    def test_owned_processes_gone_retries_on_timeout(self):
+        import subprocess
+        from unittest.mock import patch
+
+        from ci_core import ssh_runner
+
+        calls = []
+
+        def fake_ssh(host, cmd, timeout=90):
+            calls.append((host, timeout))
+            if len(calls) == 1:
+                raise subprocess.TimeoutExpired(["ssh"], timeout)
+            return subprocess.CompletedProcess(["ssh"], 0, stdout="", stderr="")
+
+        with (
+            patch("ci_core.ssh_runner.ssh", side_effect=fake_ssh),
+            patch("time.sleep"),
+        ):
+            ssh_runner.owned_processes_gone(
+                {"host_id": "h1", "ssh": "h1/c1"}, "/tmp/dest", "stamp1"
+            )
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][1], 60)
+
 
 if __name__ == "__main__":
     unittest.main()

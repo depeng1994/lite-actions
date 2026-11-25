@@ -1196,7 +1196,7 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
                         )
                         stream.flush()
                         if attempt < 2:
-                            time.sleep(2)
+                            time.sleep(5)
                 try:
                     if announced:
                         broadcast_job(
