@@ -672,7 +672,12 @@ class Router:
             return False
         if _is_pr_smoke(run):
             event = run.get("_ci_platform_event", run.get("event"))
-            if event in {"workflow_dispatch", "pull_request_target"}:
+            if event in {
+                "workflow_dispatch",
+                "pull_request_target",
+                "issue_comment",
+                "pull_request_review",
+            }:
                 return (
                     run.get("_ci_platform_head_branch", run.get("head_branch"))
                     == "main"

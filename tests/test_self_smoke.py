@@ -843,6 +843,26 @@ class SelfSmokeTests(unittest.TestCase):
                         {**run, "event": "pull_request_target", "head_branch": "other"}
                     )
                 )
+                self.assertTrue(
+                    router.eligible(
+                        {**run, "event": "issue_comment", "head_branch": "main"}
+                    )
+                )
+                self.assertFalse(
+                    router.eligible(
+                        {**run, "event": "issue_comment", "head_branch": "other"}
+                    )
+                )
+                self.assertTrue(
+                    router.eligible(
+                        {**run, "event": "pull_request_review", "head_branch": "main"}
+                    )
+                )
+                self.assertFalse(
+                    router.eligible(
+                        {**run, "event": "pull_request_review", "head_branch": "other"}
+                    )
+                )
                 with patch.object(router, "transition"):
                     router.receive([run])
                 keys = sorted(router.state.read().keys())
