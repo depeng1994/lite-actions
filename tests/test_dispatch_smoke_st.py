@@ -929,6 +929,179 @@ class DispatchSmokeEndToEndST(unittest.TestCase):
             self.assertIn(f"REVOKE_ERROR host={container_ssh}", pipeline_text)
             self.assertIn("leased npu remains occupied: [(0, 12345)]", pipeline_text)
 
+    # =========================================================================
+    # ST-7：拦截任务取消后残留永久 quarantine 隔离锁的故障模式
+    #
+    # 故障场景：
+    #   1) 任务在 STAGING 阶段被取消，远端尚未写入 job.intent；此前 execute() 在
+    #      owned_processes_gone 报错后跳过 set_remote_revoked_hosts，导致即使远端
+    #      revoke 已成功，本地 lease.close() 仍将整机 NPU 卡写入永久 quarantine。
+    #   2) 取消瞬间若 SSH 通道瞬断触发 REVOKE_FAILED 隔离锁，此前缺乏自动对账恢复，
+    #      网络恢复后隔离锁永久死锁后续所有 CI 任务。
+    # =========================================================================
+    def test_st_cancel_preserves_revoked_hosts_and_auto_recovers_quarantine(self):
+        import threading
+
+        from ci_core.resources import (
+            PhysicalResourceCoordinator,
+            UnverifiedRemoteRevoke,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "worker"
+            write_workspace(root)
+            coord = PhysicalResourceCoordinator(Path(tmp) / "leases")
+            container_ssh = "192.0.2.153:153/" + "a" * 64
+            pools = {
+                "a3_shared_blue": {
+                    "owner": "blue",
+                    "type": "ascend-a3",
+                    "process_indexing": "card-die",
+                    "enabled": True,
+                    "nodes": [
+                        {
+                            "host_id": "192.0.2.153:153",
+                            "ssh": "192.0.2.153:153",
+                            "node_ip": "192.168.0.30",
+                            "network_interface": "enp23s0f3",
+                            "capabilities": ["train", "npu_smoke"],
+                            "device_ids": list(range(8)),
+                            "allocation_groups": [
+                                {"devices": list(range(8)), "verified": True}
+                            ],
+                            "environments": {
+                                "cann_master_torchtitan_master_xyj": {
+                                    "container_id": "a" * 64,
+                                    "image_id": "sha256:" + "1" * 64,
+                                    "image_ref": "img:a",
+                                }
+                            },
+                        }
+                    ],
+                }
+            }
+            alloc = [{"host_id": "192.0.2.153:153", "devices": list(range(8))}]
+            lease = coord.acquire(
+                alloc,
+                owner_worker="blue-test-id1a1",
+                pool="a3_shared_blue",
+                is_production=False,
+                task_key="cancel-during-staging",
+                docker="cann_master_torchtitan_master_xyj",
+            )
+            cancel_ev = threading.Event()
+            case = {
+                "case_id": "case_004_dispatch_smoke_8p",
+                "enabled": True,
+                "kind": "npu_smoke",
+                "pool": "a3_shared_blue",
+                "docker": "cann_master_torchtitan_master_xyj",
+                "resources": {"nodes": 1, "devices_per_node": 8},
+                "allocation": alloc,
+                "pools_snapshot": pools,
+                "timeout_seconds": 180,
+                "execution_timeout_seconds": 150,
+                "verified_env": {
+                    "ASCEND_SET_ENV_PATH": "/usr/local/Ascend/ascend-toolkit/set_env.sh"
+                },
+                "master_port": 16000,
+                "hccl_if_base_port": 20000,
+                "hccl_host_port_range": "24000-24063",
+                "hccl_npu_port_range": "28000-28063",
+                "port_slot": 0,
+            }
+            run = {
+                "_ci_repo": SELF_REPO,
+                "_ci_test_id": "dispatch_smoke_8p",
+                "_ci_zone": "blue",
+                "_ci_lease": lease,
+                "_ci_cancel_event": cancel_ev,
+                "id": 909,
+                "run_number": 1,
+                "run_attempt": 1,
+                "name": "lite-ci-pr-smoke",
+                "path": ".github/workflows/lite_actions_pr_smoke.yml",
+                "head_sha": "c" * 40,
+                "created_at": "2026-11-25T12:00:00Z",
+            }
+
+            def fake_popen(cmd, stdout=None, **kwargs):
+                cancel_ev.set()
+                proc = Mock()
+                proc.pid = 454545
+                proc.poll.return_value = None
+                proc.returncode = -15
+                proc.wait.return_value = -15
+                return proc
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {"LITE_ACTIONS_STATE_DIR": str(root / "state")},
+                    clear=False,
+                ),
+                patch(
+                    "ci_core.config.execution_node",
+                    side_effect=lambda node, _env: {**node, "ssh": container_ssh},
+                ),
+                patch(
+                    "ci_core.transport.run",
+                    return_value=SimpleNamespace(
+                        returncode=0, stdout=A3_ALL_IDLE, stderr=""
+                    ),
+                ),
+                patch("ci_core.executor.subprocess.Popen", side_effect=fake_popen),
+                patch("ci_core.executor.os.killpg"),
+                patch(
+                    "ci_core.ssh_runner.revoke_remote_lease",
+                    return_value={container_ssh},
+                ),
+                patch("ci_core.ssh_runner.cancel"),
+                patch(
+                    "ci_core.ssh_runner.owned_processes_gone",
+                    side_effect=AssertionError(
+                        "should not require job.intent before staging"
+                    ),
+                ),
+                patch("ci_core.executor.broadcast_job", return_value=[]),
+            ):
+                execution = execute(case, run, root=root)
+                lease.close()
+
+            self.assertTrue(execution.release_verified)
+            self.assertEqual(coord.all_quarantined_resources(), set())
+            self.assertEqual(coord.all_active_leases(), [])
+
+            # 场景 2：瞬时 SSH 断连导致 REVOKE_FAILED + quarantine 后，网络恢复自动自愈释放
+            lease2 = coord.acquire(
+                alloc,
+                owner_worker="blue-test-id2a1",
+                pool="a3_shared_blue",
+                is_production=False,
+                task_key="cancel-ssh-blip",
+                docker="cann_master_torchtitan_master_xyj",
+            )
+            lease2.mark_launching(
+                remote_nodes=[
+                    {
+                        "host_id": "192.0.2.153:153",
+                        "ssh": container_ssh,
+                        "devices": list(range(8)),
+                        "indexing": "card-die",
+                    }
+                ]
+            )
+            with self.assertRaises(UnverifiedRemoteRevoke):
+                lease2.release(remote_revoked_hosts=set())
+            self.assertEqual(len(coord.all_quarantined_resources()), 8)
+
+            recovered = coord.reconcile_quarantined_leases(
+                revoke_fn=lambda doc, **_kw: {container_ssh}
+            )
+            self.assertEqual(recovered, [lease2.lease_id])
+            self.assertEqual(coord.all_quarantined_resources(), set())
+            self.assertEqual(coord.all_active_leases(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

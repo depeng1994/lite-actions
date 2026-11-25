@@ -909,6 +909,8 @@ def check_a5_multinode_rootinfo(case: dict, pools: dict) -> None:
 
 def summarize(log: Path, rc: int) -> list[str]:
     """Use selected remote diagnostics; fallback to local dispatcher tail."""
+    if not log.exists():
+        return [f"Execution returned {rc} without local log"]
     inside = False
     chosen = collections.deque(maxlen=20)
     tail = collections.deque(maxlen=20)
@@ -979,6 +981,7 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
     announced = False
     reclaim_started = False
     child_started = False
+    staged = False
     with logfile.open("w", encoding="utf-8") as stream:
         rc = 125
         try:
@@ -1037,7 +1040,6 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
             child_started = True
             try:
                 deadline = time.monotonic() + 600
-                staged = False
                 while True:
                     if not staged:
                         stream.flush()
@@ -1124,11 +1126,18 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
                 )
                 from ci_core.ssh_runner import cancel as cancel_owned
 
+                all_revoked_hosts: set[str] = set()
                 for attempt in range(3):
                     try:
-                        revoked_hosts = set()
                         revoke_errors: dict[str, str] = {}
                         revoke_ok = True
+                        if child_started:
+                            for node in allocations(case, pools):
+                                destination = (
+                                    f"{DEST_ROOT}/{remote_task_name(run)}"
+                                    f"/node{node['position']}"
+                                )
+                                cancel_owned(node, destination, log_dir.name)
                         if launched_lease:
                             nodes_for_revoke = remote_nodes_meta or [
                                 {
@@ -1143,23 +1152,27 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
                                 for n in allocations(case, pools)
                             ]
                             expected_hosts = {n["ssh"] for n in nodes_for_revoke}
-                            revoked_hosts = revoke_remote_lease(
-                                {
-                                    "lease_id": case["lease_id"],
-                                    "remote_nodes": nodes_for_revoke,
-                                    "remote_lease_dir": case.get("remote_lease_dir"),
-                                },
-                                check_npu=True,
-                                errors=revoke_errors,
-                            )
-                            revoke_ok = expected_hosts.issubset(revoked_hosts)
-                        if child_started:
-                            for node in allocations(case, pools):
-                                destination = (
-                                    f"{DEST_ROOT}/{remote_task_name(run)}"
-                                    f"/node{node['position']}"
+                            pending_nodes = [
+                                n
+                                for n in nodes_for_revoke
+                                if n["ssh"] not in all_revoked_hosts
+                            ]
+                            if pending_nodes:
+                                newly_revoked = revoke_remote_lease(
+                                    {
+                                        "lease_id": case["lease_id"],
+                                        "remote_nodes": pending_nodes,
+                                        "remote_lease_dir": case.get(
+                                            "remote_lease_dir"
+                                        ),
+                                    },
+                                    check_npu=True,
+                                    errors=revoke_errors,
                                 )
-                                cancel_owned(node, destination, log_dir.name)
+                                all_revoked_hosts.update(newly_revoked)
+                            if lease_obj is not None:
+                                lease_obj.set_remote_revoked_hosts(all_revoked_hosts)
+                            revoke_ok = expected_hosts.issubset(all_revoked_hosts)
                         remote_preflight(
                             case,
                             pools,
@@ -1168,21 +1181,17 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
                             cleanup=True,
                             cancel=cancel,
                         )
-                        if child_started:
+                        if child_started and (staged or not launched_lease):
                             for node in allocations(case, pools):
                                 destination = f"{DEST_ROOT}/{remote_task_name(run)}/node{node['position']}"
                                 owned_processes_gone(node, destination, log_dir.name)
                         if launched_lease and not revoke_ok:
-                            if lease_obj is not None:
-                                lease_obj.set_remote_revoked_hosts(revoked_hosts)
                             for host, detail in sorted(revoke_errors.items()):
                                 stream.write(
                                     f"REVOKE_ERROR host={host} detail={detail[:220]}\n"
                                 )
                             stream.flush()
                             raise RuntimeError("UNVERIFIED_REMOTE_LEASE_REVOKE")
-                        if lease_obj is not None and launched_lease:
-                            lease_obj.set_remote_revoked_hosts(revoked_hosts)
                         release_verified = True
                         break
                     except (
