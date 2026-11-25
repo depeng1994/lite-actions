@@ -16,6 +16,7 @@ import {POOL, REPO} from "../utils/validate";
 type TaskRow = Pick<TaskSummary, "task_uid" | "worker_id" | "provider" | "repo" | "logical_model" | "run_id" |
   "attempt" | "dispatch_id" | "run_number" | "display_title" | "case_id" | "test_id" | "label" | "kind" | "target_pool" | "req_nodes" | "req_devices" |
   "pr_number" | "pr_author" | "trigger_actor" | "event_type" | "workflow_file"> & {
+  reporter_id?: string | null; is_test?: number;
   phase?: Phase; status?: string; queued_at?: number; finished_at?: number;
   reserved_at?: number; staging_at?: number; running_at?: number; cleaning_at?: number; started_at?: number;
   exit_code?: number; cleanup_verified?: number; duration_sec?: number; timing_reliable: number;
@@ -55,7 +56,8 @@ async function summaries(context: Context, rows: TaskRow[]): Promise<TaskSummary
     const shape = {logical_model, test_id, target_pool, req_nodes, req_devices};
     const allocations = await Promise.all(allocation(row).map(async alloc => ({...await node(alloc.host_id), devices: alloc.devices})));
     return {
-      task_uid, worker_id, provider, repo, run_id, attempt, dispatch_id, run_number: row.run_number ?? null,
+      task_uid, worker_id, reporter_id: row.reporter_id ?? worker_id, is_test: row.is_test === 1,
+      provider, repo, run_id, attempt, dispatch_id, run_number: row.run_number ?? null,
       display_title: row.display_title ?? null, case_id, label, kind,
       pr_number, pr_author, trigger_actor, event_type, workflow_file, ...shape,
       phase: row.phase ?? null, status: row.status ?? null, queued_at: row.queued_at ?? null,
@@ -68,7 +70,8 @@ async function summaries(context: Context, rows: TaskRow[]): Promise<TaskSummary
       storage_tier: row.storage_tier ?? null,
       allocation: allocations,
       ...estimate(samples.get(durationKey(shape)) ?? [], context.now, row.running_at ?? row.reserved_at),
-      can_move_up: row.phase === "QUEUED" && kind !== "worker_probe" && (row.queue_pos ?? 0) > 0,
+      can_move_up: row.phase === "QUEUED" && row.is_test !== 1 && kind !== "worker_probe"
+        && kind !== "test_worker_deploy" && kind !== "test_worker_cleanup" && (row.queue_pos ?? 0) > 0,
       cancel_supported: Boolean(row.phase) && canCancel(context, provider, repo), run_url: runUrl(row),
     };
   }));
@@ -118,7 +121,7 @@ export async function models(context: Context) {
 }
 
 type WorkflowRunRecord = {
-  provider: Provider; repo: string; run_id: string; attempt: number;
+  provider: Provider; repo: string; run_id: string; attempt: number; is_test: number; reporter_ids_json?: string;
   logical_model: string; submitted_at: number | null; workflow_name: string | null;
   run_number: number | null; display_title: string | null; workflow_file: string | null;
   pr_number: number | null; pr_author: string | null; trigger_actor: string | null;
@@ -129,8 +132,8 @@ type WorkflowRunRecord = {
   card_seconds_finished: number; has_unmeasured_allocated: number;
 };
 
-function workflowIdentity(row: {provider: Provider; repo: string; run_id: string; attempt: number}) {
-  return JSON.stringify([row.provider, row.repo, row.run_id, row.attempt]);
+function workflowIdentity(row: {provider: Provider; repo: string; run_id: string; attempt: number; is_test?: number | boolean}) {
+  return JSON.stringify([row.provider, row.repo, row.run_id, row.attempt, row.is_test ? 1 : 0]);
 }
 
 function workflowScope(provider: Provider, repo: string): ModelRepo["repo_scope"] {
@@ -165,8 +168,11 @@ function buildWorkflowRow(
     ? Math.max(0, ...cases.map(item => item.allocated_cards || item.req_nodes * item.req_devices))
     : run.max_cards;
   const starts = cases.map(item => item.started_at).filter((v): v is number => v != null);
+  const reporterIds = (JSON.parse(run.reporter_ids_json || "[]") as string[]).filter(Boolean);
   return {
     provider: run.provider, repo: run.repo, run_id: run.run_id, attempt: run.attempt,
+    is_test: run.is_test === 1,
+    reporter_ids: reporterIds,
     sequence,
     submitted_at: run.submitted_at,
     run_number: run.run_number ?? null,
@@ -188,7 +194,7 @@ function buildWorkflowRow(
     card_hours_as_of_now: !history && inFlight && measured.length > 0 && cardSeconds > 0,
     card_hours_partial: measured.length > 0 && measured.length < allocated.length,
     cancel_supported: !history && cases.some(item => item.cancel_supported),
-    can_move_up: !history && sequence >= 2,
+    can_move_up: !history && run.is_test !== 1 && sequence >= 2,
     cases,
   };
 }
@@ -197,11 +203,12 @@ function parseWorkflowCursor(cursor: string | null) {
   if (!cursor) return null;
   try {
     const decoded = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(cursor.replaceAll("-", "+").replaceAll("_", "/")), c => c.charCodeAt(0))));
-    if (!Array.isArray(decoded) || decoded.length !== 5) throw new Error();
-    const [finished, provider, repo, runId, attempt] = decoded as [number, string, string, string, number];
+    if (!Array.isArray(decoded) || (decoded.length !== 5 && decoded.length !== 6)) throw new Error();
+    const [finished, provider, repo, runId, attempt, rawIsTest = 0] = decoded as [number, string, string, string, number, number?];
+    const isTest = rawIsTest ? 1 : 0;
     if (!Number.isSafeInteger(finished) || typeof provider !== "string" || typeof repo !== "string" ||
       typeof runId !== "string" || !Number.isSafeInteger(attempt)) throw new Error();
-    return {finished, provider, repo, runId, attempt};
+    return {finished, provider, repo, runId, attempt, isTest};
   } catch {
     throw new HttpError(400, "INVALID_CURSOR");
   }
@@ -230,10 +237,10 @@ export async function workflows(context: Context): Promise<WorkflowList> {
   // Backfill only active tasks missing from workflow_runs (e.g. direct SQL test
   // inserts). Never scan task_index on this path.
   const missingActive = await db.prepare(`
-    SELECT DISTINCT a.provider,a.repo,a.run_id,a.attempt FROM tasks_active a
+    SELECT DISTINCT a.provider,a.repo,a.run_id,a.attempt,a.is_test FROM tasks_active a
     WHERE NOT EXISTS (
       SELECT 1 FROM workflow_runs w
-      WHERE w.provider=a.provider AND w.repo=a.repo AND w.run_id=a.run_id AND w.attempt=a.attempt
+      WHERE w.provider=a.provider AND w.repo=a.repo AND w.run_id=a.run_id AND w.attempt=a.attempt AND w.is_test=a.is_test
     )
   `).all<IngestWorkflowIdentity>();
   if (missingActive.results.length) {
@@ -259,25 +266,25 @@ export async function workflows(context: Context): Promise<WorkflowList> {
     metaStatements.push(db.prepare(`
       SELECT * FROM workflow_runs WHERE is_active=1
       ORDER BY has_in_flight DESC,
-        CASE WHEN queue_order_rank IS NULL THEN 1 ELSE 0 END,
+        CASE WHEN is_test=0 AND queue_order_rank IS NOT NULL THEN 0 ELSE 1 END,
         queue_order_rank ASC,
         COALESCE(submitted_at, 9223372036854775807) ASC,
-        provider ASC, repo ASC, run_id ASC, attempt ASC
+        provider ASC, repo ASC, run_id ASC, attempt ASC, is_test ASC
     `));
   }
   const cursorSql = cursor
     ? ` AND (COALESCE(finished_at,0)<? OR (COALESCE(finished_at,0)=? AND (
-        provider>? OR (provider=? AND (repo>? OR (repo=? AND (run_id>? OR (run_id=? AND attempt>?)))))
+        provider>? OR (provider=? AND (repo>? OR (repo=? AND (run_id>? OR (run_id=? AND (attempt>? OR (attempt=? AND is_test>?)))))))
       )))`
     : "";
   const cursorParams = cursor
-    ? [cursor.finished, cursor.finished, cursor.provider, cursor.provider, cursor.repo, cursor.repo, cursor.runId, cursor.runId, cursor.attempt]
+    ? [cursor.finished, cursor.finished, cursor.provider, cursor.provider, cursor.repo, cursor.repo, cursor.runId, cursor.runId, cursor.attempt, cursor.attempt, cursor.isTest]
     : [];
   if (showHistory) {
     metaStatements.push(
       db.prepare(`
         SELECT * FROM workflow_runs WHERE is_active=0${filterSql}${cursorSql}
-        ORDER BY finished_at DESC, provider ASC, repo ASC, run_id ASC, attempt ASC
+        ORDER BY finished_at DESC, provider ASC, repo ASC, run_id ASC, attempt ASC, is_test ASC
         LIMIT ?
       `).bind(...filterParams, ...cursorParams, historyLimit + 1),
       db.prepare(`SELECT COUNT(*) AS count FROM workflow_runs WHERE is_active=0${filterSql}`).bind(...filterParams),
@@ -294,7 +301,7 @@ export async function workflows(context: Context): Promise<WorkflowList> {
   // Assign global waiting sequence before filtering so filters never renumber.
   let waitingSeq = 0;
   const activeWithSeq = allActiveRuns.map(run => {
-    const seq = run.has_in_flight === 1 || run.has_waiting_resource_case === 0 ? 0 : ++waitingSeq;
+    const seq = run.is_test === 1 || run.has_in_flight === 1 || run.has_waiting_resource_case === 0 ? 0 : ++waitingSeq;
     return {run, sequence: seq};
   }).filter(({run}) => {
     const pools = JSON.parse(run.pools_json || "[]") as string[];
@@ -306,11 +313,11 @@ export async function workflows(context: Context): Promise<WorkflowList> {
   const pageHistoryRuns = showHistory ? rawHistoryRuns.slice(0, historyLimit) : [];
 
   // Load case rows only for the visible workflows on this response.
-  const activeRunIdentities = activeWithSeq.map(({run}) => ({provider: run.provider, repo: run.repo, run_id: run.run_id, attempt: run.attempt}));
+  const activeRunIdentities = activeWithSeq.map(({run}) => ({provider: run.provider, repo: run.repo, run_id: run.run_id, attempt: run.attempt, is_test: run.is_test}));
   const mixedActiveIdentities = activeWithSeq
     .filter(({run}) => run.total_case_count > run.active_case_count)
-    .map(({run}) => ({provider: run.provider, repo: run.repo, run_id: run.run_id, attempt: run.attempt}));
-  const historyRunIdentities = pageHistoryRuns.map(run => ({provider: run.provider, repo: run.repo, run_id: run.run_id, attempt: run.attempt}));
+    .map(({run}) => ({provider: run.provider, repo: run.repo, run_id: run.run_id, attempt: run.attempt, is_test: run.is_test}));
+  const historyRunIdentities = pageHistoryRuns.map(run => ({provider: run.provider, repo: run.repo, run_id: run.run_id, attempt: run.attempt, is_test: run.is_test}));
 
   const detailStatements: SqlStatement[] = [];
   const activeCasesIdx = activeRunIdentities.length ? detailStatements.push(db.prepare(`
@@ -319,6 +326,7 @@ export async function workflows(context: Context): Promise<WorkflowList> {
     FROM tasks_active a JOIN json_each(?) k
       ON a.provider=json_extract(k.value,'$.provider') AND a.repo=json_extract(k.value,'$.repo')
       AND a.run_id=json_extract(k.value,'$.run_id') AND a.attempt=json_extract(k.value,'$.attempt')
+      AND a.is_test=json_extract(k.value,'$.is_test')
     ORDER BY a.queued_at,a.task_uid
   `).bind(JSON.stringify(activeRunIdentities))) - 1 : -1;
 
@@ -327,17 +335,18 @@ export async function workflows(context: Context): Promise<WorkflowList> {
     SELECT i.* FROM task_index i JOIN json_each(?) k
       ON i.provider=json_extract(k.value,'$.provider') AND i.repo=json_extract(k.value,'$.repo')
       AND i.run_id=json_extract(k.value,'$.run_id') AND i.attempt=json_extract(k.value,'$.attempt')
+      AND i.is_test=json_extract(k.value,'$.is_test')
     ORDER BY i.finished_at DESC, i.task_uid
   `).bind(JSON.stringify(indexTargets))) - 1 : -1;
 
   const historyRanksIdx = historyRunIdentities.length ? detailStatements.push(db.prepare(`
-    SELECT r.provider,r.repo,r.run_id,r.attempt,
+    SELECT r.provider,r.repo,r.run_id,r.attempt,r.is_test,
       1 + (SELECT COUNT(*) FROM workflow_runs w WHERE w.is_active=0 AND (
         COALESCE(w.finished_at,0)>COALESCE(r.finished_at,0) OR (
           COALESCE(w.finished_at,0)=COALESCE(r.finished_at,0) AND (
             w.provider<r.provider OR (w.provider=r.provider AND (
               w.repo<r.repo OR (w.repo=r.repo AND (
-                w.run_id<r.run_id OR (w.run_id=r.run_id AND w.attempt<r.attempt)
+                w.run_id<r.run_id OR (w.run_id=r.run_id AND (w.attempt<r.attempt OR (w.attempt=r.attempt AND w.is_test<r.is_test)))
               ))
             ))
           )
@@ -346,6 +355,7 @@ export async function workflows(context: Context): Promise<WorkflowList> {
     FROM workflow_runs r JOIN json_each(?) k
       ON r.provider=json_extract(k.value,'$.provider') AND r.repo=json_extract(k.value,'$.repo')
       AND r.run_id=json_extract(k.value,'$.run_id') AND r.attempt=json_extract(k.value,'$.attempt')
+      AND r.is_test=json_extract(k.value,'$.is_test')
   `).bind(JSON.stringify(historyRunIdentities))) - 1 : -1;
 
   const detailResults = detailStatements.length ? await db.batch(detailStatements) : [];
@@ -372,7 +382,7 @@ export async function workflows(context: Context): Promise<WorkflowList> {
 
   const last = historyRows.at(-1);
   const next_cursor = hasMore && last ? base64url(new TextEncoder().encode(JSON.stringify([
-    last.finished_at ?? 0, last.provider, last.repo, last.run_id, last.attempt,
+    last.finished_at ?? 0, last.provider, last.repo, last.run_id, last.attempt, last.is_test ? 1 : 0,
   ]))) : null;
 
   return {

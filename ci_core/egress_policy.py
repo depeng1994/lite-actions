@@ -22,17 +22,18 @@ class Rejected(ValueError):
 
 # Only the API reads needed for source proof, discovery, status and result correlation.
 _READ = re.compile(
-    r"(?:|/actions/runs(?:/[A-Za-z0-9_-]{1,128}(?:/artifacts|/attempts/[1-9][0-9]*(?:/jobs)?)?)?|/actions/workflows/[0-9]+|/actions/artifacts/[A-Za-z0-9_-]{1,128}/zip|/pulls/[0-9]+|/branches/[A-Za-z0-9._/%-]{1,300}|/compare/[a-f0-9]{40}\.\.\.[a-f0-9]{40}|/commits/[a-f0-9]{40}/comments|/git/commits/[a-f0-9]{40})\Z"
+    r"(?:|/actions/runs(?:/[A-Za-z0-9_-]{1,128}(?:/artifacts|/attempts/[1-9][0-9]*(?:/jobs)?)?)?|/actions/workflows/[0-9]+|/actions/artifacts/[A-Za-z0-9_-]{1,128}/zip|/pulls/[0-9]+(?:/reviews)?|/branches/[A-Za-z0-9._/%-]{1,300}|/compare/[a-f0-9]{40}\.\.\.[a-f0-9]{40}|/commits/[a-f0-9]{40}/comments|/git/commits/[a-f0-9]{40})\Z"
 )
 _QUERY = {
     "status": r"queued|in_progress|RUNNING",
     "page": r"[1-9][0-9]?",
     "per_page": r"100|10|1",
-    "name": r"lite-ci-(?:source|request)-[1-9][0-9]*",
+    "name": r"lite-ci-(?:source|request|cleanup)-[1-9][0-9]*",
 }
 
 
-def yellow_body(payload, commit):
+def yellow_body(payload, commit, *, expected_worker="yellow"):
+    from ci_core.contract import is_valid_worker_id, worker_zone
     from ci_core.logs import yellow_lines
 
     if not payload:
@@ -183,7 +184,14 @@ def yellow_body(payload, commit):
             IPv4Address(ip)
             if port and (not port.isdigit() or not 1 <= int(port) <= 65535):
                 raise Rejected("YELLOW_LOCATOR_INVALID")
-    if r.get("worker") != "yellow":
+    worker_id = r.get("worker")
+    if not is_valid_worker_id(worker_id) or worker_zone(worker_id) != "yellow":
+        raise Rejected("YELLOW_IDENTITY_MISMATCH")
+    if (
+        expected_worker is not None
+        and expected_worker != "yellow"
+        and worker_id != expected_worker
+    ):
         raise Rejected("YELLOW_IDENTITY_MISMATCH")
 
 
@@ -239,7 +247,7 @@ def estimate_http1_request_bytes(request):
 
 _CONTROL_READ = re.compile(r"/api/v1/worker/(?:commands|configs/[1-9][0-9]*)")
 _CONTROL_WRITE = re.compile(
-    r"/api/v1/worker/(?:heartbeat|command-receipts|events|snapshots)"
+    r"/api/v1/worker/(?:heartbeat|command-receipts|events|snapshots|test-workers/(?:register|deregister))"
 )
 
 
@@ -289,18 +297,29 @@ def control_proxy(url):
 
 class Egress:
     def __init__(self, worker, cfg, clock=time.time):
-        if worker not in {"blue", "yellow"}:
-            raise Rejected("UNKNOWN_WORKER")
+        from ci_core.contract import parse_worker_identity
+
+        try:
+            identity = parse_worker_identity(worker)
+        except ValueError as exc:
+            raise Rejected("UNKNOWN_WORKER") from exc
         self.worker = worker
+        self.zone = identity["zone"]
+        self.is_test = identity["is_test"]
         self.cfg = cfg
         self.clock = clock
-        self.root = Path(cfg["state_dir"])
+        ledger_dir = (
+            cfg.get("egress_ledger_dir")
+            or cfg.get("zone_state_dir")
+            or cfg["state_dir"]
+        )
+        self.root = Path(ledger_dir)
         self.path = self.root / "http-egress.json"
 
     def before(self, request, *, repo, provider, storage=False, category=None):
         if provider == "control":
             return self._control(request)
-        if self.worker != "yellow":
+        if self.zone != "yellow":
             return request
         url = urllib.parse.urlsplit(request.full_url)
         method = request.get_method()
@@ -365,7 +384,7 @@ class Egress:
                 m = re.fullmatch(r"/commits/([a-f0-9]{40})/comments", path)
                 if method != "POST" or url.query or not m:
                     raise Rejected("UNSUPPORTED_WRITE")
-                yellow_body(payload, m[1])
+                yellow_body(payload, m[1], expected_worker=self.worker)
         size = estimate_http1_request_bytes(request)
         category = _category(
             provider, method, path if not storage else url.path, payload, category
@@ -424,13 +443,15 @@ class Egress:
             or (not read and (method != "POST" or request.data is None))
         ):
             raise Rejected("UNTRUSTED_CONTROL_DESTINATION")
+        if self.is_test:
+            raise Rejected("UNTRUSTED_CONTROL_DESTINATION")
         size = estimate_http1_request_bytes(request)
         category = url.path.split("/")[4].replace("-", "_")
         if size >= 2000:
-            if self.worker == "yellow":
+            if self.zone == "yellow":
                 self.record_rejection("control", category, size)
             raise Rejected("REQUEST_SIZE_LIMIT")
-        if self.worker == "yellow":
+        if self.zone == "yellow":
             self.reserve(
                 read,
                 size,
@@ -556,7 +577,7 @@ class Egress:
             elapsed = now - saved["at"]
             saved["at"] = now
             if day > saved["day"]:
-                saved.update(day=day, used=0)
+                saved.update(day=day, used=0, by_worker={})
             for key, cap, rate in [
                 ("reads", 10, 60),
                 ("writes", 4, 12),
@@ -596,6 +617,8 @@ class Egress:
             saved[key] -= 1
             saved["bytes"] -= size
             saved["used"] += size
+            by_worker = saved.setdefault("by_worker", {})
+            by_worker[self.worker] = by_worker.get(self.worker, 0) + size
             saved["requests"] += 1
             saved["body_bytes"] = saved.get("body_bytes", 0) + body_bytes
             counter = "read_attempts" if read else "write_attempts"

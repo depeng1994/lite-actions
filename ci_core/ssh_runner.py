@@ -33,6 +33,22 @@ VLLM = MODEL_REPO == "cann-framework/vllm-ascend"
 DEST_ROOT = "/mnt/share/ci_tests"
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 STAMP = re.compile(r"[0-9A-Za-z_-]+\Z")
+LEASE_ID = re.compile(r"[0-9A-Za-z_-]{1,64}\Z")
+
+
+def remote_lease_dir(explicit: str | None = None) -> str:
+    raw = (
+        explicit
+        if explicit is not None
+        else os.environ.get("LITE_ACTIONS_REMOTE_LEASE_DIR", "")
+    ).strip() or "/run/lite-actions-leases"
+    if (
+        not raw.startswith("/")
+        or ".." in Path(raw).parts
+        or not re.fullmatch(r"/[A-Za-z0-9_./-]{1,240}", raw)
+    ):
+        raise ValueError("unsafe remote lease directory")
+    return raw
 
 
 def q(value: object) -> str:
@@ -268,6 +284,9 @@ def remote_command(
     stamp: str,
     timeout: int,
     test_case: str,
+    *,
+    lease_id: str | None = None,
+    lease_dir: str | None = None,
 ) -> str:
     """Remote job owns its own process group; its complete log stays remote."""
     # Generic, fixed model-owned entrypoint; never interpolate GitHub modules.
@@ -341,6 +360,103 @@ def remote_command(
     # The previous `setsid ... & pid=$!` occasionally recorded a wrapper PID
     # instead of the process-group leader. Python's start_new_session creates
     # the exact PGID/PID that we persist and may safely cancel by job marker.
+    if lease_id is not None:
+        if not LEASE_ID.fullmatch(lease_id):
+            raise ValueError("unsafe lease identifier")
+        resolved_lease_dir = remote_lease_dir(lease_dir)
+        meta_json = json.dumps(
+            {
+                "lease_id": lease_id,
+                "marker": stamp,
+                "dest": dest,
+                "devices": list(node.get("devices") or []),
+                "ports": {
+                    k: runner[k]
+                    for k in (
+                        "LITE_CI_MASTER_PORT",
+                        "LITE_CI_HCCL_IF_BASE_PORT",
+                        "LITE_CI_HCCL_HOST_PORT_RANGE",
+                        "LITE_CI_HCCL_NPU_PORT_RANGE",
+                    )
+                    if k in runner
+                },
+            },
+            separators=(",", ":"),
+        )
+        supervisor = """\
+import fcntl, json, os, pathlib, subprocess, sys
+dest = pathlib.Path(sys.argv[1])
+marker = sys.argv[2]
+inner = sys.argv[3]
+ldir = pathlib.Path(sys.argv[4])
+lid = sys.argv[5]
+meta = json.loads(sys.argv[6])
+ldir.mkdir(parents=True, exist_ok=True)
+(dest / 'job.intent').write_text(marker)
+log = (dest / 'run.log').open('wb')
+lock = (ldir / f'{lid}.lock').open('a+b')
+state_file = ldir / f'{lid}.state'
+meta_file = ldir / f'{lid}.json'
+def wsync(p, text):
+    tmp = ldir / f'{p.name}.tmp.{os.getpid()}'
+    tmp.write_text(text)
+    with tmp.open('r+b') as fh:
+        os.fsync(fh.fileno())
+    tmp.replace(p)
+    dfd = os.open(ldir, os.O_RDONLY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
+fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+try:
+    if state_file.exists() and state_file.read_text().strip() == 'REVOKED':
+        log.write(b'REMOTE_LEASE_REVOKED\\n')
+        log.flush()
+        log.close()
+        (dest / 'exit_code.txt').write_text('130\\n')
+        print('REMOTE_LEASE_REVOKED:', lid, flush=True)
+        sys.exit(130)
+    wsync(state_file, 'ACTIVE\\n')
+    env = dict(os.environ, LITE_CI_JOB_ID=marker, LITE_CI_LEASE_ID=lid)
+    proc = subprocess.Popen(
+        ['bash', '-lc', inner],
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        env=env,
+        start_new_session=True,
+    )
+    (dest / 'job.pgid').write_text(str(proc.pid) + '\\n')
+    st = ''
+    try:
+        st = pathlib.Path(f'/proc/{proc.pid}/stat').read_text().rsplit(') ', 1)[1].split()[19]
+    except Exception:
+        pass
+    meta['pgid'] = proc.pid
+    meta['start_time'] = st
+    try:
+        cg = pathlib.Path('/sys/fs/cgroup/lite-actions-leases') / lid
+        cg.mkdir(parents=True, exist_ok=True)
+        (cg / 'cgroup.procs').write_text(str(proc.pid))
+        meta['cgroup_dir'] = str(cg)
+    except OSError:
+        pass
+    wsync(meta_file, json.dumps(meta, separators=(',', ':')) + '\\n')
+finally:
+    fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    lock.close()
+rc = proc.wait()
+log.close()
+(dest / 'exit_code.txt').write_text(str(rc) + '\\n')
+print('NODE_EXIT:', rc, flush=True)
+sys.exit(rc)
+"""
+        return (
+            f"cd {q(dest)} || exit 125; "
+            f"exec env LITE_CI_JOB_ID={q(stamp)} LITE_CI_LEASE_ID={q(lease_id)} "
+            f"python3 -c {q(supervisor)} {q(dest)} {q(stamp)} {q(inner)} "
+            f"{q(resolved_lease_dir)} {q(lease_id)} {q(meta_json)}"
+        )
     supervisor = (
         "import os,pathlib,subprocess,sys; "
         "dest=pathlib.Path(sys.argv[1]); marker=sys.argv[2]; inner=sys.argv[3]; "
@@ -458,6 +574,207 @@ for entry in Path('/proc').glob('[0-9]*'):
     ssh(node["ssh"], f"python3 -c {q(code)} {q(dest)} {q(stamp)}", timeout=30)
 
 
+def revoke_remote_lease(
+    lease: dict,
+    *,
+    execute=None,
+    lease_dir: str | None = None,
+    check_npu: bool = True,
+    strict: bool = False,
+) -> set[str]:
+    """Atomically fence future launches and terminate ONLY this lease's processes on all nodes."""
+    lease_id = lease.get("lease_id")
+    if not isinstance(lease_id, str) or not LEASE_ID.fullmatch(lease_id):
+        raise ValueError("unsafe or missing lease identifier")
+    nodes = list(lease.get("remote_nodes") or lease.get("nodes") or ())
+    if not nodes:
+        return set()
+    resolved_dir = remote_lease_dir(lease.get("remote_lease_dir") or lease_dir)
+    runner = execute if execute is not None else ssh
+    grouped: dict[str, dict] = {}
+    for node in nodes:
+        host_ssh = node.get("ssh")
+        if not host_ssh:
+            continue
+        entry = grouped.setdefault(
+            host_ssh,
+            {
+                "ssh": host_ssh,
+                "devices": set(),
+                "indexing": node.get("indexing", "card-die"),
+            },
+        )
+        entry["devices"].update(int(d) for d in (node.get("devices") or ()))
+
+    code = """\
+import fcntl, json, os, re, shutil, signal, subprocess, sys, time
+from pathlib import Path
+
+ldir = Path(sys.argv[1])
+lid = sys.argv[2]
+devices = set(json.loads(sys.argv[3]))
+indexing = sys.argv[4]
+do_npu = sys.argv[5] == '1'
+
+ldir.mkdir(parents=True, exist_ok=True)
+lock_file = (ldir / f'{lid}.lock').open('a+b')
+state_file = ldir / f'{lid}.state'
+meta_file = ldir / f'{lid}.json'
+
+def wsync(path, text):
+    tmp = ldir / f'{path.name}.tmp.{os.getpid()}'
+    tmp.write_text(text)
+    with tmp.open('r+b') as fh:
+        os.fsync(fh.fileno())
+    tmp.replace(path)
+    dfd = os.open(ldir, os.O_RDONLY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
+
+def stat_start(pid):
+    try:
+        return Path(f'/proc/{pid}/stat').read_text().rsplit(') ', 1)[1].split()[19]
+    except (FileNotFoundError, ProcessLookupError, PermissionError, IndexError):
+        return None
+
+tag = b'LITE_CI_LEASE_ID=' + lid.encode()
+
+def owned_start(pid, *, recorded_pgid=None, recorded_start=''):
+    try:
+        env = Path(f'/proc/{pid}/environ').read_bytes().split(b'\\x00')
+    except (FileNotFoundError, ProcessLookupError, PermissionError):
+        env = []
+    start = stat_start(pid)
+    if start is None:
+        return None
+    if tag in env:
+        return start
+    if recorded_pgid is not None and pid == recorded_pgid and recorded_start and start == recorded_start:
+        return start
+    return None
+
+fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+try:
+    wsync(state_file, 'REVOKED\\n')
+    meta = {}
+    if meta_file.exists():
+        try:
+            meta = json.loads(meta_file.read_text())
+        except Exception:
+            meta = {}
+    rec_pgid = meta.get('pgid')
+    rec_start = str(meta.get('start_time') or '')
+    cg_dir = meta.get('cgroup_dir')
+    owned = {}
+    if isinstance(rec_pgid, int) and rec_pgid > 1:
+        st = owned_start(rec_pgid, recorded_pgid=rec_pgid, recorded_start=rec_start)
+        if st is not None:
+            owned[rec_pgid] = st
+    if isinstance(cg_dir, str) and cg_dir:
+        cfile = Path(cg_dir) / 'cgroup.procs'
+        if cfile.exists():
+            for line in cfile.read_text().splitlines():
+                if line.strip().isdecimal():
+                    pid = int(line.strip())
+                    if pid > 1 and owned_start(pid, recorded_pgid=rec_pgid, recorded_start=rec_start) is not None:
+                        owned[pid] = stat_start(pid)
+    for entry in os.scandir('/proc'):
+        if entry.name.isdecimal():
+            pid = int(entry.name)
+            if pid > 1:
+                st = owned_start(pid, recorded_pgid=rec_pgid, recorded_start=rec_start)
+                if st is not None:
+                    owned[pid] = st
+    for pid, st in list(owned.items()):
+        if owned_start(pid, recorded_pgid=rec_pgid, recorded_start=rec_start) == st:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+    for _ in range(12):
+        if not any(owned_start(pid, recorded_pgid=rec_pgid, recorded_start=rec_start) == st for pid, st in owned.items()):
+            break
+        time.sleep(1)
+    for pid, st in list(owned.items()):
+        if owned_start(pid, recorded_pgid=rec_pgid, recorded_start=rec_start) == st:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    time.sleep(0.2)
+    left = [pid for pid, st in owned.items() if owned_start(pid, recorded_pgid=rec_pgid, recorded_start=rec_start) == st]
+    if left:
+        raise SystemExit('owned lease processes remain: ' + str(left))
+    dest_dir = meta.get('dest')
+    marker = meta.get('marker')
+    if isinstance(dest_dir, str) and isinstance(marker, str) and dest_dir:
+        dp = Path(dest_dir)
+        if (dp / 'job.intent').exists() and (dp / 'job.intent').read_text() == marker:
+            (dp / 'cleanup_verified.txt').write_text(marker)
+    if do_npu and devices and shutil.which('npu-smi'):
+        pat = re.compile(r'^\\|\\s*(\\d+)(?:\\s+([01]))?\\s*\\|\\s*(\\d+)\\s*\\|')
+        for attempt in range(3):
+            proc = subprocess.run(['npu-smi', 'info'], capture_output=True, text=True, check=False)
+            if proc.returncode != 0:
+                raise SystemExit('npu-smi info failed')
+            busy = []
+            for raw in proc.stdout.splitlines():
+                m = pat.match(raw)
+                if not m:
+                    continue
+                card = int(m.group(1))
+                die = int(m.group(2) or 0)
+                pid = int(m.group(3))
+                chip = card * 2 + die if (indexing == 'card-die' and m.group(2) is not None) else card
+                if chip in devices and pid > 1:
+                    busy.append((chip, pid))
+            if not busy:
+                break
+            if attempt < 2:
+                time.sleep(2)
+            else:
+                raise SystemExit('leased npu remains occupied: ' + str(busy))
+    print('REVOKED:' + lid, flush=True)
+finally:
+    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    lock_file.close()
+"""
+
+    def revoke_one(target: dict) -> tuple[str, bool, str]:
+        host_ssh = target["ssh"]
+        cmd = (
+            f"python3 -c {q(code)} {q(resolved_dir)} {q(lease_id)} "
+            f"{q(json.dumps(sorted(target['devices'])))} {q(target['indexing'])} "
+            f"{'1' if check_npu else '0'}"
+        )
+        try:
+            res = runner(host_ssh, cmd, timeout=45, check=False)
+            out = (
+                (getattr(res, "stdout", "") or "")
+                + "\n"
+                + (getattr(res, "stderr", "") or "")
+            )
+            ok = getattr(res, "returncode", 1) == 0 and f"REVOKED:{lease_id}" in out
+            return host_ssh, ok, out.strip()
+        except Exception as exc:
+            return host_ssh, False, str(exc)
+
+    revoked: set[str] = set()
+    failed: dict[str, str] = {}
+    targets = list(grouped.values())
+    with ThreadPoolExecutor(max_workers=max(1, len(targets))) as pool:
+        for host_ssh, ok, err in pool.map(revoke_one, targets):
+            if ok:
+                revoked.add(host_ssh)
+            else:
+                failed[host_ssh] = err
+    if strict and failed:
+        raise RuntimeError("remote lease revoke failed on " + ",".join(sorted(failed)))
+    return revoked
+
+
 def verify(
     nodes: list[dict], runner: dict, base: str, timeout: int, test_case: str
 ) -> int:
@@ -505,20 +822,30 @@ def run(
     nodes = allocations(case, pools)
     base = f"{DEST_ROOT}/{remote_dir}"
     with tempfile.TemporaryDirectory(prefix="lite-ci-stage-") as tmp:
-        provider = os.environ.get("LITE_ACTIONS_SOURCE_PROVIDER", "github")
-        source_repo = os.environ.get("LITE_ACTIONS_SOURCE_REPO", MODEL_REPO)
-        archive = model_archive(
-            sha,
-            Path(tmp),
-            source_repo=source_repo,
-            provider=provider,
-            fallback_repo=os.environ.get("LITE_ACTIONS_SOURCE_FALLBACK_REPO") or None,
-            source_pr=(
-                case["native_source"]["pr_number"]
-                if case.get("native_source", {}).get("mode") == "merge_result"
-                else None
-            ),
+        stage_archive = (
+            case.get("_ci_stage_archive")
+            or os.environ.get("LITE_ACTIONS_STAGE_ARCHIVE_PATH", "").strip()
         )
+        if stage_archive:
+            archive = Path(stage_archive)
+            if not archive.is_file():
+                raise ValueError("missing staged source archive")
+        else:
+            provider = os.environ.get("LITE_ACTIONS_SOURCE_PROVIDER", "github")
+            source_repo = os.environ.get("LITE_ACTIONS_SOURCE_REPO", MODEL_REPO)
+            archive = model_archive(
+                sha,
+                Path(tmp),
+                source_repo=source_repo,
+                provider=provider,
+                fallback_repo=os.environ.get("LITE_ACTIONS_SOURCE_FALLBACK_REPO")
+                or None,
+                source_pr=(
+                    case["native_source"]["pr_number"]
+                    if case.get("native_source", {}).get("mode") == "merge_result"
+                    else None
+                ),
+            )
         runner = {
             "kind": case.get("kind"),
             "mode": "single" if len(nodes) == 1 else "distributed",
@@ -583,6 +910,8 @@ def run(
                     stamp,
                     case["timeout_seconds"] - 120,
                     test_case,
+                    lease_id=case.get("lease_id"),
+                    lease_dir=case.get("remote_lease_dir"),
                 )
                 futures[
                     executor.submit(
@@ -663,8 +992,14 @@ def main() -> int:
     parser.add_argument("--sha", required=True)
     parser.add_argument("--stamp", required=True)
     parser.add_argument("--remote-dir", required=True)
+    parser.add_argument("--lease-id", default=None)
+    parser.add_argument("--lease-dir", default=None)
     args = parser.parse_args()
     case = json.loads(Path(args.case_file).read_text())
+    if args.lease_id:
+        case["lease_id"] = args.lease_id
+    if args.lease_dir:
+        case["remote_lease_dir"] = args.lease_dir
     if not case.get("enabled") or not SELECTOR.fullmatch(args.test_id):
         raise ValueError("disabled or invalid test")
     from ci_core.resources import port_profile

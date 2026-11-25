@@ -30,10 +30,10 @@ function workflowKey(row: WorkflowIdentity) {
 
 async function syncMissingActiveWorkflowRuns(db: SqlStore, now: number) {
   const missing = await db.prepare(`
-    SELECT DISTINCT a.provider,a.repo,a.run_id,a.attempt FROM tasks_active a
+    SELECT DISTINCT a.provider,a.repo,a.run_id,a.attempt,a.is_test FROM tasks_active a
     WHERE NOT EXISTS (
       SELECT 1 FROM workflow_runs w
-      WHERE w.provider=a.provider AND w.repo=a.repo AND w.run_id=a.run_id AND w.attempt=a.attempt
+      WHERE w.provider=a.provider AND w.repo=a.repo AND w.run_id=a.run_id AND w.attempt=a.attempt AND w.is_test=a.is_test
     )
   `).all<IngestWorkflowIdentity>();
   if (missing.results.length) {
@@ -55,7 +55,7 @@ async function waitingWorkflows(context: Context): Promise<WaitingWorkflow[]> {
   const {results} = await context.env.DB.prepare(`
     SELECT provider,repo,run_id,attempt,queue_order_rank,submitted_at
     FROM workflow_runs
-    WHERE is_active=1 AND has_in_flight=0 AND has_waiting_resource_case=1
+    WHERE is_active=1 AND is_test=0 AND has_in_flight=0 AND has_waiting_resource_case=1
     ORDER BY CASE WHEN queue_order_rank IS NULL THEN 1 ELSE 0 END,
       queue_order_rank ASC,
       COALESCE(submitted_at, 9223372036854775807) ASC,
@@ -78,7 +78,7 @@ async function activeQueuedRows(db: SqlStore, workflows: WorkflowIdentity[]): Pr
     LEFT JOIN queue_orders q
       ON q.task_uid=a.task_uid AND q.worker_id=a.worker_id
       AND q.pool_name=a.target_pool AND q.kind=a.kind
-    WHERE a.phase='QUEUED' AND a.kind IN ('train','npu_smoke')
+    WHERE a.phase='QUEUED' AND a.is_test=0 AND a.kind IN ('train','npu_smoke')
     ORDER BY COALESCE(q.queue_pos, 9223372036854775807) ASC, a.queued_at ASC, a.task_uid ASC
   `).bind(JSON.stringify(workflows)).all<ActiveQueuedRow>();
   return results;
@@ -120,6 +120,14 @@ export async function moveWorkflowUp(context: Context, input: Record<string, unk
   }
   const before = await syncQueueVersion(context);
   if (parsed.queue_version !== before) throw new HttpError(409, "QUEUE_VERSION_CONFLICT");
+  const isTestOnly = await context.env.DB.prepare(`
+    SELECT EXISTS(SELECT 1 FROM workflow_runs WHERE provider=? AND repo=? AND run_id=? AND attempt=? AND is_test=1) AS has_test,
+      EXISTS(SELECT 1 FROM workflow_runs WHERE provider=? AND repo=? AND run_id=? AND attempt=? AND is_test=0) AS has_prod
+  `).bind(parsed.provider, parsed.repo, parsed.run_id, parsed.attempt,
+    parsed.provider, parsed.repo, parsed.run_id, parsed.attempt).first<{has_test: number; has_prod: number}>();
+  if (input.is_test === true || (isTestOnly?.has_test === 1 && isTestOnly.has_prod === 0)) {
+    throw new HttpError(409, "TEST_WORKFLOW_PRIORITY_LOCKED");
+  }
   const queue = await waitingWorkflows(context);
   const targetKey = workflowKey(parsed);
   const targetIndex = queue.findIndex(item => workflowKey(item) === targetKey);
@@ -157,7 +165,7 @@ export async function moveWorkflowUp(context: Context, input: Record<string, unk
   reordered[targetIndex] = predecessor;
   const rankUpdates = reordered.map((wf, index) =>
     db.prepare(`UPDATE workflow_runs SET queue_order_rank=?,updated_at=?
-      WHERE provider=? AND repo=? AND run_id=? AND attempt=?`)
+      WHERE provider=? AND repo=? AND run_id=? AND attempt=? AND is_test=0`)
       .bind(index + 1, context.now, wf.provider, wf.repo, wf.run_id, wf.attempt),
   );
 
@@ -175,7 +183,7 @@ export async function moveWorkflowUp(context: Context, input: Record<string, unk
     const {results: queueRows} = await db.prepare(`
       SELECT a.provider,a.repo,a.run_id,a.attempt,q.task_uid,q.queue_pos
       FROM queue_orders q JOIN tasks_active a ON a.task_uid=q.task_uid
-      WHERE q.worker_id=? AND q.pool_name=? AND q.kind=? AND a.phase='QUEUED'
+      WHERE q.worker_id=? AND q.pool_name=? AND q.kind=? AND a.phase='QUEUED' AND a.is_test=0
       ORDER BY q.queue_pos ASC, q.task_uid ASC
     `).bind(workerId, poolName, kind).all<WorkflowIdentity & {task_uid: string; queue_pos: number}>();
     const targetItems = queueRows.filter(row => workflowKey(row) === targetKey);

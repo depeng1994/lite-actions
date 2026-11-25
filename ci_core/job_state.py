@@ -74,6 +74,23 @@ def _prune_workflow_order(current, order, *, keep=()):
     return pruned[-128:]
 
 
+def _skip_workflow_priority(record):
+    item = record.get("item", {})
+    kind = item.get("kind")
+    if kind in {"worker_probe", "test_worker_deploy", "test_worker_cleanup"}:
+        return True
+    worker = item.get("worker")
+    if isinstance(worker, str):
+        from ci_core.contract import parse_worker_identity
+
+        try:
+            if parse_worker_identity(worker)["is_test"]:
+                return True
+        except ValueError:
+            pass
+    return False
+
+
 def apply_workflow_order(current, meta):
     raw_order = meta.get("workflow_order", [])
     if not raw_order:
@@ -86,7 +103,7 @@ def apply_workflow_order(current, meta):
     schedule = ordered_queued(current)
     queues = {}
     for key, record in schedule:
-        if record.get("item", {}).get("kind") == "worker_probe":
+        if _skip_workflow_priority(record):
             continue
         queues.setdefault(queue_identity(record), []).append((key, record))
     for members in queues.values():
@@ -224,6 +241,7 @@ class JobState:
                     "id",
                     "run_attempt",
                     "_ci_dispatch_id",
+                    "_ci_plan_stage",
                 )
                 run_fields = identity_fields + (
                     "head_sha",
@@ -322,7 +340,7 @@ class JobState:
                 for key, record in current.items():
                     if (
                         key == _META
-                        or record.get("item", {}).get("kind") == "worker_probe"
+                        or _skip_workflow_priority(record)
                         or workflow_identity(record) != target
                     ):
                         continue
@@ -348,7 +366,7 @@ class JobState:
                 schedule = ordered_queued(current)
                 queues = {}
                 for key, record in schedule:
-                    if record.get("item", {}).get("kind") == "worker_probe":
+                    if _skip_workflow_priority(record):
                         continue
                     queues.setdefault(queue_identity(record), []).append((key, record))
 

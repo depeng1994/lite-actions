@@ -2,7 +2,7 @@ import { ArrowDown, ArrowSquareOut, ArrowUp, CaretUpDown, FunnelSimple, Minus, P
 import { Fragment, useEffect, useState } from "react";
 import { clock, dateFormatter, displayNodeHost, plannedTime, poolId, repositories, workflowKey } from "./formal-data.js";
 import { actionsUrl, groupActiveRuns, initialWorkflowHistorySize, queuedChildren, summarizeRun, terminalStatuses, workflowHistoryPageSize } from "./workflows.js";
-import { Status } from "./Views.jsx";
+import { Status, Tag } from "./Views.jsx";
 
 const cardHours = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 });
 
@@ -41,6 +41,7 @@ function CasesTable({ run, config, nodes, open }) {
         <td><button className="text-button case-detail" onClick={() => open(item.historyId
           ? { type: "history", runKey: workflowKey(run), historyId: item.historyId }
           : { type: "case", caseId: item.id })}>{item.name}</button>
+          {item.isTest && <small>TEST · {item.reporterId}</small>}
           {item.archived && <small>归档</small>}</td>
         <td><CasePhase item={item} config={config} nodes={nodes} /></td>
         <td>{item.worker} / {item.pool} · {item.nodes} 节点 · {item.cards} 卡</td>
@@ -55,9 +56,9 @@ function CasesTable({ run, config, nodes, open }) {
 function WorkflowActions({ run, summary, sequence, canManage, open, cancellation, priority }) {
   const prompt = (type) => open(canManage ? { type, runKey: workflowKey(run) } : { type: "login" });
   const queued = queuedChildren(run.cases, run);
-  const canMoveUp = run.canMoveUp ?? (sequence >= 2 && queued.length > 0);
+  const canMoveUp = !run.isTest && (run.canMoveUp ?? (sequence >= 2 && queued.length > 0));
   return <div className="workflow-actions">
-    {sequence > 0 && queued.length > 0 && !cancellation && <button className="button small" disabled={!canMoveUp || sequence === 1} onClick={() => prompt("expedite")} title={sequence === 1 ? "已在队首" : "与前一位 Workflow 交换顺序"}>{sequence === 1 ? "已在队首" : canManage ? "插队" : "登录后插队"}</button>}
+    {!run.isTest && sequence > 0 && queued.length > 0 && !cancellation && <button className="button small" disabled={!canMoveUp || sequence === 1} onClick={() => prompt("expedite")} title={sequence === 1 ? "已在队首" : "与前一位 Workflow 交换顺序"}>{sequence === 1 ? "已在队首" : canManage ? "插队" : "登录后插队"}</button>}
     {priority && <button className="text-button small-text" onClick={() => open({ type: "priority-receipt", runKey: workflowKey(run) })}>插队回执</button>}
     {cancellation
       ? <button className="button small" onClick={() => open({ type: "cancel-receipt", runKey: workflowKey(run) })}>取消进度</button>
@@ -264,7 +265,7 @@ export function ModelsView({
               <td><strong>{run.repo}</strong><small>{run.platform} · {run.owner}</small></td>
               <td className="workflow-pools">{summary.pools.map((pool) => <span key={pool}>{pool.replace("/", " / ")}</span>)}</td>
               <td>{summary.maxCards}</td>
-              <td><a className="text-button run-id" href={actionsUrl(run)} target="_blank" rel="noreferrer" title={`平台 Actions 链接 · ${run.id}`}>
+              <td>{run.isTest && <><Tag tone="amber">TEST</Tag> </>}<a className="text-button run-id" href={actionsUrl(run)} target="_blank" rel="noreferrer" title={`平台 Actions 链接 · ${run.id}`}>
                 {run.title || run.action} <ArrowSquareOut size={13} />
               </a><small>{run.action}{run.number == null ? ` · 尝试 ${run.attempt}` : ` #${run.number} · 尝试 ${run.attempt}`}</small></td>
               <td title={summary.active ? "尚未产生最终结果，执行阶段见子用例" : undefined}><Status value={summary.result} /></td>

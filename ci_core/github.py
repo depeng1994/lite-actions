@@ -73,7 +73,9 @@ class GitHubClient:
         if payload is not None:
             ceiling = (
                 65536
-                if self.policy and getattr(self.policy, "worker", None) == "yellow"
+                if self.policy
+                and getattr(self.policy, "zone", getattr(self.policy, "worker", None))
+                == "yellow"
                 else budget
             )
             if len(payload) > ceiling:
@@ -226,7 +228,9 @@ class GitHubClient:
             raise ValueError("invalid GitHub workflow run identity")
         return self.request("GET", f"/actions/runs/{run_id}")
 
-    def ci_request(self, run: dict) -> dict | None:
+    def ci_request(
+        self, run: dict, *, artifact_prefix: str = "lite-ci-request"
+    ) -> dict | None:
         """Retrieve a short structured artifact uploaded by this Actions run.
 
         Missing artifact means the GitHub preparation job hasn't finished yet;
@@ -240,7 +244,7 @@ class GitHubClient:
             or attempt < 1
         ):
             raise ValueError("invalid run/attempt")
-        name = f"lite-ci-request-{attempt}"
+        name = f"{artifact_prefix}-{attempt}"
         query = urllib.parse.urlencode({"name": name, "per_page": 10})
         listing = self.request("GET", f"/actions/runs/{run_id}/artifacts?{query}")
         matching = [
@@ -271,6 +275,9 @@ class GitHubClient:
             request_data, run, run.get("path", "").rsplit("/", 1)[-1], repo=self.repo
         )
         return request_data
+
+    def ci_cleanup_request(self, run: dict) -> dict | None:
+        return self.ci_request(run, artifact_prefix="lite-ci-cleanup")
 
     def commit_comments(self, sha: str, *, category="metadata_get") -> list[dict]:
         comments = []

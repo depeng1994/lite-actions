@@ -36,8 +36,22 @@ export const RUN_ID = /^[A-Za-z0-9_-]{1,128}$/;
 export const POOL = /^[A-Za-z0-9_.-]{0,64}$/;
 export const CASE_ID = /^case_[0-9]{3}_[a-z][a-z0-9_]{0,79}$/;
 export const TID = /^[a-f0-9]{12}$/;
+export const TEST_WORKER_ID = /^(blue|yellow)-test-id[0-9]{1,20}a[0-9]{1,4}$/;
+export const SHA40 = /^[0-9a-f]{40}$/;
 export const PHASES = ["QUEUED", "RESERVED", "STAGING", "RUNNING", "CLEANING"] as const;
+export const CASE_KINDS = ["npu_smoke", "train", "worker_probe", "test_worker_deploy", "test_worker_cleanup"] as const;
 export const STATUSES = ["PASS", "FAIL", "TIMED_OUT", "CANCELLED", "INFRA_ERROR", "RESOURCE_TIMEOUT", "NOT_RUN"] as const;
+
+export function isTestWorkerId(value: unknown): value is string {
+  return typeof value === "string" && TEST_WORKER_ID.test(value);
+}
+
+export function workerZoneOf(value: string): "blue" | "yellow" {
+  if (value === "blue" || value === "yellow") return value;
+  const match = TEST_WORKER_ID.exec(value);
+  if (match) return match[1] as "blue" | "yellow";
+  invalid("worker_id");
+}
 
 export function hostId(value: unknown, field = "host_id") {
   const host = string(value, field, 21, /^\d{1,3}(?:\.\d{1,3}){3}:\d{1,5}$/);

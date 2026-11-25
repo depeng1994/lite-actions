@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-from ci_core.contract import normalize
+from ci_core.contract import normalize, parse_worker_identity
 from ci_core.registry import inspect_archive
 
 
@@ -20,6 +20,12 @@ def verify_definition(archive, item, defaults, *, repo=None):
         ci_overrides=r["ci_overrides"],
         timeout=r["timeout"],
     )
-    if normalize(test, defaults, item["order"]) != item:
+    expected = normalize(test, defaults, item["order"])
+    ident = parse_worker_identity(item["worker"])
+    if ident["is_test"]:
+        if expected["worker"] != ident["zone"]:
+            raise ValueError("pinned definition/plan zone mismatch")
+        expected = {**expected, "worker": item["worker"]}
+    if expected != item:
         raise ValueError("pinned definition/plan mismatch")
     return r

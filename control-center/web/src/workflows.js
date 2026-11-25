@@ -79,7 +79,11 @@ export function summarizeRun(run) {
 }
 
 function isQueued(item) {
-  return item.status === "排队中" && item.kind !== "worker_probe";
+  return item.status === "排队中"
+    && !item.isTest
+    && item.kind !== "worker_probe"
+    && item.kind !== "test_worker_deploy"
+    && item.kind !== "test_worker_cleanup";
 }
 
 export function queuedChildren(cases, run) {

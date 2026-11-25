@@ -76,17 +76,35 @@ class GitHubDiscoveryTests(unittest.TestCase):
         self.assertFalse(router.eligible({**run, "name": "unrelated"}))
         self.assertFalse(router.eligible({**run, "status": "completed"}))
 
-    def test_self_smoke_still_binds_the_deployed_checkout(self):
+    def test_self_smoke_requires_main_branch_and_trusted_commit(self):
         router = Router.__new__(Router)
-        router.root, router.self_sha = Path("/fixture"), "a" * 40
+        router.root = Path("/fixture")
+
+        class Client:
+            repo = SELF_REPO
+
+            def request(self, method, path):
+                if path == "/branches/main":
+                    return {"commit": {"sha": "a" * 40}}
+                if path.startswith("/compare/"):
+                    return {"merge_base_commit": {"sha": "0" * 40}}
+                raise AssertionError(path)
+
+        router.client = Client()
         run = {
             "_ci_repo": SELF_REPO,
+            "id": 42,
+            "run_attempt": 1,
             "name": "lite-ci-self-smoke",
             "path": ".github/workflows/" + SELF_WORKFLOW,
             "status": "in_progress",
+            "head_branch": "main",
             "head_sha": "a" * 40,
-            "event": "schedule",
+            "event": "workflow_dispatch",
         }
-        with patch("ci_core.self_identity.checkout_sha", return_value="a" * 40):
-            self.assertTrue(router.eligible(run))
-            self.assertFalse(router.eligible({**run, "head_sha": "b" * 40}))
+        self.assertTrue(router.eligible(run))
+        self.assertTrue(router.eligible({**run, "event": "push"}))
+        self.assertFalse(router.eligible({**run, "event": "schedule"}))
+        self.assertFalse(router.eligible({**run, "head_branch": "feature/pr"}))
+        with self.assertRaisesRegex(ValueError, "not on main"):
+            router.eligible({**run, "head_sha": "b" * 40})

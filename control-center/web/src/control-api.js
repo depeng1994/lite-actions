@@ -200,6 +200,8 @@ function taskToCase(task, nodesByRef, projectionIndex, runKey, isHistory = false
     historyId: finished ? (task.task_uid || `${runKey}-${task.case_id}`) : undefined,
     run: runKey, name: task.label || task.test_id || task.case_id, status: phaseLabel(task),
     kind: task.kind,
+    reporterId: task.reporter_id || task.worker_id,
+    isTest: Boolean(task.is_test),
     worker: workerLabel(task.worker_id), pool: task.target_pool, nodes: task.req_nodes,
     cards: task.allocated_cards || task.req_nodes * task.req_devices || task.req_devices,
     allocatedCards: task.allocated_cards ?? 0,
@@ -227,6 +229,7 @@ function taskToCase(task, nodesByRef, projectionIndex, runKey, isHistory = false
 function workflowMetadata(row) {
   return {
     id: row.run_id, number: row.run_number, title: row.display_title, attempt: row.attempt, model: row.logical_model,
+    isTest: Boolean(row.is_test), reporterIds: row.reporter_ids || [],
     platform: platformLabel(row.provider), repo: row.repo,
     owner: row.repo_scope || (row.repo?.startsWith("depeng1994/") ? "个人仓" : "组织仓"),
     author: row.pr_author, actor: row.trigger_actor || "—", pr: row.pr_number,
@@ -257,7 +260,7 @@ function groupTimelineTasks(tasks, nodesByRef) {
   const groups = new Map();
   for (const task of tasks) {
     const platform = platformLabel(task.provider);
-    const key = workflowKey({platform, repo: task.repo, id: task.run_id, attempt: task.attempt});
+    const key = workflowKey({platform, repo: task.repo, id: task.run_id, attempt: task.attempt, isTest: Boolean(task.is_test)});
     let run = groups.get(key);
     if (!run) {
       run = {

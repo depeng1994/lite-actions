@@ -20,7 +20,7 @@ export function Details({ entries }) {
 }
 
 export function RunIdentity({ run }) {
-  return <span>{run.pr ? `@${run.author} #${run.pr}` : `${run.trigger}触发`} <span className="middot">·</span> {run.action} #{run.id}</span>;
+  return <span>{run.isTest && <><Tag tone="amber">TEST</Tag> </>}{run.pr ? `@${run.author} #${run.pr}` : `${run.trigger}触发`} <span className="middot">·</span> {run.action} #{run.id}</span>;
 }
 
 const rowHeight = { worker: 39, pool: 39, group: 54 };

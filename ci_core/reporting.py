@@ -3,7 +3,7 @@
 import json
 from itertools import islice
 
-from ci_core.contract import REPO
+from ci_core.contract import REPO, worker_zone
 from ci_core.logs import clean, sanitized_lines, yellow_lines
 
 
@@ -49,7 +49,7 @@ def body_for(run, item, result, *, local_worker=None):
     result = {**result, "last_20_lines": list(result["last_20_lines"])}
     if local_worker is not None and result["worker"] != local_worker:
         raise ValueError("STATE_OWNER_MISMATCH")
-    if local_worker == "yellow":
+    if local_worker is not None and worker_zone(local_worker) == "yellow":
         result["last_20_lines"] = yellow_lines(result["last_20_lines"])
         if "native_source" in result:
             from ci_core.contract import digest
@@ -62,7 +62,7 @@ def body_for(run, item, result, *, local_worker=None):
             + json.dumps(result, ensure_ascii=False, separators=(",", ":"))
         )
         request = json.dumps({"body": body}, separators=(",", ":"))
-        if local_worker == "yellow":
+        if local_worker is not None and worker_zone(local_worker) == "yellow":
             # Yellow's final request-size policy must see the intact metadata first;
             # it removes optional diagnostics atomically or refuses the whole request.
             return body

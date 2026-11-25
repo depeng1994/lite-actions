@@ -65,8 +65,8 @@ export const statusTone = {
   "成功": "teal", "失败": "red", "已取消": "gray",
 };
 
-export function workflowKey({platform, repo, id, attempt}) {
-  return JSON.stringify([platform, repo, id, attempt]);
+export function workflowKey({platform, repo, id, attempt, isTest}) {
+  return isTest ? JSON.stringify([platform, repo, id, attempt, 1]) : JSON.stringify([platform, repo, id, attempt]);
 }
 
 export function clock(minute) {

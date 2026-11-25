@@ -892,6 +892,13 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
     environment = case["verified_env"]
     setup = environment["ASCEND_SET_ENV_PATH"]
     case = {**case, "ascend_set_env_path": setup}
+    lease_obj = run.get("_ci_lease")
+    if lease_obj is not None and not case.get("lease_id"):
+        case["lease_id"] = lease_obj.lease_id
+    if run.get("_ci_remote_lease_dir") and not case.get("remote_lease_dir"):
+        case["remote_lease_dir"] = run["_ci_remote_lease_dir"]
+    if run.get("_ci_stage_archive") and not case.get("_ci_stage_archive"):
+        case["_ci_stage_archive"] = run["_ci_stage_archive"]
     pools = execution_pools(root, case)
     from ci_core.scheduler import validate_allocation
 
@@ -915,6 +922,11 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
         "--remote-dir",
         remote_task_name(run),
     ]
+    if case.get("lease_id"):
+        command.extend(["--lease-id", str(case["lease_id"])])
+    if case.get("remote_lease_dir"):
+        command.extend(["--lease-dir", str(case["remote_lease_dir"])])
+    remote_nodes_meta = []
     callback = run.get("_ci_phase_callback", lambda phase: None)
     release_verified = False
     announced = False
@@ -938,6 +950,22 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
             announced = True
             if cancel is not None and cancel.is_set():
                 raise InterruptedError("cancelled before launch")
+            if lease_obj is not None:
+                from ci_core.ssh_runner import allocations as allocated_nodes
+
+                indexing = case.get(
+                    "indexing", pools[case["pool"]].get("indexing", "card-die")
+                )
+                remote_nodes_meta = [
+                    {
+                        "host_id": n["host_id"],
+                        "ssh": n["ssh"],
+                        "devices": list(n.get("devices") or ()),
+                        "indexing": indexing,
+                    }
+                    for n in allocated_nodes(case, pools)
+                ]
+                lease_obj.mark_launching(remote_nodes=remote_nodes_meta)
             callback("LAUNCHING")
             proc = subprocess.Popen(
                 command,
@@ -970,6 +998,8 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
                             "STAGED: "
                         ) >= len(case["allocation"])
                         if staged:
+                            if lease_obj is not None:
+                                lease_obj.mark_active()
                             callback("RUNNING")
                             deadline = (
                                 time.monotonic() + case["execution_timeout_seconds"]
@@ -1026,16 +1056,54 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
             rc = 125
         finally:
             callback("CLEANING")
-            if announced or reclaim_started:
+            defer_revoke = bool(run.get("_ci_defer_lease_revoke"))
+            launched_lease = (
+                not defer_revoke
+                and bool(case.get("lease_id"))
+                and (
+                    child_started
+                    or (
+                        lease_obj is not None
+                        and lease_obj.state in {"LAUNCHING", "ACTIVE"}
+                    )
+                )
+            )
+            if announced or reclaim_started or launched_lease:
                 from ci_core.ssh_runner import (
                     DEST_ROOT,
                     allocations,
                     owned_processes_gone,
+                    revoke_remote_lease,
                 )
                 from ci_core.ssh_runner import cancel as cancel_owned
 
                 for attempt in range(3):
                     try:
+                        revoked_hosts = set()
+                        revoke_ok = True
+                        if launched_lease:
+                            nodes_for_revoke = remote_nodes_meta or [
+                                {
+                                    "host_id": n["host_id"],
+                                    "ssh": n["ssh"],
+                                    "devices": list(n.get("devices") or ()),
+                                    "indexing": case.get(
+                                        "indexing",
+                                        pools[case["pool"]].get("indexing", "card-die"),
+                                    ),
+                                }
+                                for n in allocations(case, pools)
+                            ]
+                            expected_hosts = {n["ssh"] for n in nodes_for_revoke}
+                            revoked_hosts = revoke_remote_lease(
+                                {
+                                    "lease_id": case["lease_id"],
+                                    "remote_nodes": nodes_for_revoke,
+                                    "remote_lease_dir": case.get("remote_lease_dir"),
+                                },
+                                check_npu=True,
+                            )
+                            revoke_ok = expected_hosts.issubset(revoked_hosts)
                         if child_started:
                             for node in allocations(case, pools):
                                 destination = (
@@ -1055,6 +1123,12 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
                             for node in allocations(case, pools):
                                 destination = f"{DEST_ROOT}/{remote_task_name(run)}/node{node['position']}"
                                 owned_processes_gone(node, destination, log_dir.name)
+                        if launched_lease and not revoke_ok:
+                            if lease_obj is not None:
+                                lease_obj.set_remote_revoked_hosts(revoked_hosts)
+                            raise RuntimeError("UNVERIFIED_REMOTE_LEASE_REVOKE")
+                        if lease_obj is not None and launched_lease:
+                            lease_obj.set_remote_revoked_hosts(revoked_hosts)
                         release_verified = True
                         break
                     except (RuntimeError, subprocess.SubprocessError, ValueError):

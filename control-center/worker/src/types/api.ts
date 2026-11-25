@@ -2,7 +2,7 @@ export type WorkerId = "blue" | "yellow";
 export type Provider = "github" | "gitcode";
 export type Role = "admin" | "super";
 export type Phase = "QUEUED" | "RESERVED" | "STAGING" | "RUNNING" | "CLEANING";
-export type CaseKind = "train" | "npu_smoke" | "worker_probe";
+export type CaseKind = "train" | "npu_smoke" | "worker_probe" | "test_worker_deploy" | "test_worker_cleanup";
 export type Occupancy = "LEASED" | "UNKNOWN_BUSY" | "CONFIRMED_IDLE";
 export type CommandStatus = "PENDING" | "ACKED" | "APPLIED" | "PARTIAL_APPLIED" | "NOOP" | "CONFLICT" | "FAILED" | "EXPIRED";
 
@@ -129,6 +129,8 @@ export interface ModelTab {
 export interface TaskSummary extends RunIdentity {
   task_uid: string;
   worker_id: WorkerId;
+  reporter_id?: string | null;
+  is_test?: boolean;
   logical_model: string;
   dispatch_id: string | null;
   run_number: number | null;
@@ -213,6 +215,8 @@ export interface DeviceHealth {
 
 export type WorkflowResult = "QUEUED" | "PASS" | "FAIL";
 export interface WorkflowRow extends RunIdentity {
+  is_test?: boolean;
+  reporter_ids?: string[];
   sequence: number;
   submitted_at: number | null;
   run_number: number | null;

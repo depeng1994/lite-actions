@@ -20,7 +20,7 @@ env:
   SELF_SMOKE_PROFILE: ${{ inputs.profile || 'full' }}
 jobs:
   prepare:
-    if: github.repository == 'depeng1994/lite-actions'
+    if: github.repository == 'depeng1994/lite-actions' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:

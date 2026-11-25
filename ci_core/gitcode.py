@@ -154,7 +154,9 @@ class GitCodeClient:
         if payload is not None:
             ceiling = (
                 65536
-                if self.policy and getattr(self.policy, "worker", None) == "yellow"
+                if self.policy
+                and getattr(self.policy, "zone", getattr(self.policy, "worker", None))
+                == "yellow"
                 else 7000
             )
             if len(payload) > ceiling:

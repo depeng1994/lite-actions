@@ -4,29 +4,36 @@ import copy
 import io
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
 import unittest
+import urllib.request
 from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from ci_core.contract import (
+    PR_SMOKE_WORKFLOW,
     SELF_REPO,
     SELF_WORKFLOW,
     TORCHTITAN_REPO,
     VLLM_REPO,
     configured_repos,
+    normalize,
     parse_plan,
 )
+from ci_core.egress_policy import Egress, Rejected
 from ci_core.github import MultiRepoGitHubClient
+from ci_core.plan import verify_definition
 from ci_core.reporting import body_for, report
+from ci_core.resources import PhysicalResourceCoordinator
 from ci_core.router import Router
-from ci_core.self_identity import checkout_sha
-from ci_core.self_smoke import prepare, results, wait
+from ci_core.self_smoke import prepare, prepare_pr, prepare_pr_cleanup, results, wait
+from ci_core.test_broker import TestBrokerServer
+from ci_core.test_supervisor import build_systemd_command
 from tests.integration_tests.tools.lite_actions.runner import run_dispatch_smoke
 from tests.integration_tests.training_cases.dispatch_smoke import build_smoke_list
 from tests.scenarios import Service, completed_execution, write_workspace
@@ -409,7 +416,7 @@ class SelfSmokeTests(unittest.TestCase):
                 "created_at": "2026-01-01T00:00:00Z",
                 "status": "in_progress",
                 "event": "workflow_dispatch",
-                "head_branch": "ci/test",
+                "head_branch": "main",
                 "actor": {"login": "maintainer"},
                 "name": "Lite Actions self smoke: full",
                 "workflow_id": 50,
@@ -439,7 +446,6 @@ class SelfSmokeTests(unittest.TestCase):
 
         with (
             patch.dict(os.environ, env),
-            patch("ci_core.self_identity.checkout_sha", return_value="a" * 40),
             service.connected(),
             patch("ci_core.router.execute", side_effect=execute),
         ):
@@ -500,79 +506,85 @@ class SelfSmokeTests(unittest.TestCase):
                 yellow.close()
                 router.close()
 
-    def test_worker_checkout_and_manual_admission_are_sha_bound(self):
-        root = Path(self.temp.name) / "checkout"
+    def test_self_smoke_requires_main_branch_at_admission_and_prestart(self):
+        root = Path(self.temp.name) / "worker"
+        write_workspace(root)
+        service = Service([fixture_definition("dummy")], root)
+        service.repo = SELF_REPO
+        main_sha = "a" * 40
+        older_sha = "b" * 40
 
-        def git(*args):
-            return subprocess.check_output(["git", "-C", str(root), *args])
+        def request(method, path, payload=None, **kwargs):
+            if path == "/branches/main":
+                return {"commit": {"sha": main_sha}}
+            if path == f"/compare/{older_sha}...{main_sha}?per_page=1":
+                return {"merge_base_commit": {"sha": older_sha}}
+            if path.startswith("/compare/"):
+                return {"merge_base_commit": {"sha": "0" * 40}}
+            return service.request(method, path, payload, **kwargs)
 
-        (root / "ci_core").mkdir(parents=True)
-        (root / "ci_core/core.py").write_text("VALUE = 1\n")
-        (root / "unified_router.py").write_text("pass\n")
-        for name in (
-            "tests/__init__.py",
-            "tests/integration_tests/__init__.py",
-            "tests/integration_tests/tools/lite_actions/entrypoint.py",
-        ):
-            path = root / name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("fixture\n")
-        for args in (
-            ["init", "-q"],
-            ["add", "."],
-            [
-                "-c",
-                "user.name=Test",
-                "-c",
-                "user.email=test@example.com",
-                "commit",
-                "-qm",
-                "fixture",
-            ],
-        ):
-            git(*args)
-        sha = checkout_sha(root)
-        # Plain `git status` does not report ignored Python modules, even
-        # though they can take precedence over namespace packages at runtime.
-        ignored = root / "tests/integration_tests/tools/__init__.py"
-        (root / ".git/info/exclude").write_text(
-            "tests/integration_tests/tools/__init__.py\n"
-        )
-        ignored.write_text("raise RuntimeError('ignored source')\n")
-        with self.assertRaises(ValueError):
-            checkout_sha(root)
-        ignored.unlink()
-        external = Path(self.temp.name) / "external"
-        shutil.copytree(root / "ci_core", external)
-        saved = root / "core_saved"
-        (root / "ci_core").rename(saved)
-        (root / "ci_core").symlink_to(external, target_is_directory=True)
-        with self.assertRaisesRegex(ValueError, "linked Worker source"):
-            checkout_sha(root)
-        (root / "ci_core").unlink()
-        saved.rename(root / "ci_core")
-        router = Router.__new__(Router)
-        router.root, router.self_sha = root, sha
         run = {
             "_ci_repo": SELF_REPO,
+            "id": 42,
+            "run_attempt": 1,
             "name": "lite-ci-self-smoke",
-            "event": "workflow_dispatch",
             "path": ".github/workflows/" + SELF_WORKFLOW,
             "status": "in_progress",
             "actor": {"login": "maintainer"},
-            "head_branch": "ci/test",
-            "head_sha": sha,
+            "event": "workflow_dispatch",
+            "head_branch": "main",
+            "head_sha": main_sha,
+            "created_at": "2026-01-01T00:00:00Z",
         }
-        self.assertTrue(router.eligible(run))
-        for field, value in (
-            ("name", "unrelated"),
-            ("head_sha", "b" * 40),
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "LITE_ACTIONS_MODEL_REPOS": SELF_REPO,
+                    "LITE_ACTIONS_RESOURCE_LOCK_ROOT": str(root / "leases"),
+                    "LITE_ACTIONS_STATE_DIR": "",
+                    "LITE_ACTIONS_RELEASE_SHA": main_sha,
+                },
+            ),
+            patch.object(service, "request", side_effect=request),
+            patch("ci_core.router.probe_worker") as probe,
         ):
-            self.assertFalse(router.eligible({**run, field: value}))
-        git("update-index", "--assume-unchanged", "ci_core/core.py")
-        (root / "ci_core/core.py").write_text("VALUE = 2\n")
-        with self.assertRaises(ValueError):
-            router.eligible(run)
+            router = Router(root, "blue", service, "reporter")
+            try:
+                self.assertEqual(router.control_view()["sha"], main_sha)
+                self.assertTrue(router.eligible(run))
+                self.assertTrue(router.eligible({**run, "head_sha": older_sha}))
+                self.assertFalse(router.eligible({**run, "head_branch": "pr-branch"}))
+                self.assertFalse(router.eligible({**run, "event": "pull_request"}))
+                with self.assertRaisesRegex(ValueError, "not on main"):
+                    router.eligible({**run, "head_sha": "c" * 40})
+
+                # Pre-queued self-smoke on non-main ref must be rejected at work() pre-start.
+                bad_run = {**run, "head_branch": "pr-branch"}
+                item = self.plan["cases"][0]
+                key = "bad-prequeued-self-smoke"
+                router.state.admit(
+                    [
+                        (
+                            key,
+                            {
+                                "phase": "QUEUED",
+                                "repo": SELF_REPO,
+                                "run": bad_run,
+                                "item": item,
+                                "digest": self.plan["plan_digest"],
+                                "defaults": self.plan["defaults"],
+                                "queued_at": 1.0,
+                            },
+                        )
+                    ]
+                )
+                with patch.object(router, "finish") as finish:
+                    router.work(key, {}, None, Mock(is_set=lambda: False), Mock())
+                probe.assert_not_called()
+                self.assertEqual(finish.call_args.args[1], "INFRA_ERROR")
+            finally:
+                router.close()
 
     def test_yellow_throttles_only_shared_discovery(self):
         # A waiting job must still notice cancellation and pending receipts between discoveries.
@@ -597,27 +609,347 @@ class SelfSmokeTests(unittest.TestCase):
                 self.assertEqual(r.pump.call_count, 4)
                 self.assertEqual(r.flush.call_count, 8)
 
-    def test_unsubscribed_workers_skip_self_checkout(self):
+    def test_control_view_reports_release_sha_for_unsubscribed_workers(self):
         root = Path(self.temp.name) / "worker"
         write_workspace(root)
         service = Service([fixture_definition("dummy")], root)
+        release_sha = "d" * 40
         env = {
             "LITE_ACTIONS_MODEL_REPOS": TORCHTITAN_REPO,
             "LITE_ACTIONS_RESOURCE_LOCK_ROOT": str(root / "leases"),
             "LITE_ACTIONS_STATE_DIR": "",
+            "LITE_ACTIONS_RELEASE_SHA": release_sha,
         }
-        with (
-            patch.dict(os.environ, env, clear=True),
-            patch("ci_core.self_identity.checkout_sha") as checkout,
-        ):
+        with patch.dict(os.environ, env, clear=True):
             for worker in ("yellow", "blue"):
                 with self.subTest(worker=worker):
                     router = Router(root, worker, service, "reporter")
                     try:
-                        self.assertIsNone(router.self_sha)
+                        self.assertEqual(router.control_view()["sha"], release_sha)
                     finally:
                         router.close()
-            checkout.assert_not_called()
+
+    def test_prepare_pr_and_cleanup_plans_and_wait_selectors(self):
+        pr_head = "b" * 40
+        run_sha = "c" * 40
+        for profile, expected_smoke in (("full", 6), ("cpu-only", 1)):
+            with self.subTest(profile=profile):
+                out = Path(self.temp.name) / f"{profile}.out"
+                plan_path = Path(self.temp.name) / f"{profile}.plan.json"
+                cleanup_path = Path(self.temp.name) / f"{profile}.cleanup.json"
+                env = {
+                    "GITHUB_REPOSITORY": SELF_REPO,
+                    "GITHUB_RUN_ID": "900",
+                    "GITHUB_RUN_ATTEMPT": "2",
+                    "GITHUB_SHA": "d" * 40,
+                    "SELF_SMOKE_SHA": run_sha,
+                    "PR_NUMBER": "52",
+                    "PR_HEAD_SHA": pr_head,
+                    "PR_GATE_GENERATION": "4",
+                    "SELF_SMOKE_PROFILE": profile,
+                    "SELF_SMOKE_PLAN": str(plan_path),
+                    "GITHUB_OUTPUT": str(out),
+                }
+                plan = prepare_pr(env)
+                self.assertEqual(plan["workflow"], PR_SMOKE_WORKFLOW)
+                self.assertEqual(plan["sha"], run_sha)
+                self.assertEqual(plan["cases"][0]["worker"], "blue")
+                self.assertEqual(plan["cases"][0]["kind"], "test_worker_deploy")
+                self.assertEqual(plan["cases"][0]["lifecycle"]["generation"], 4)
+                self.assertEqual(plan["cases"][1]["worker"], "yellow")
+                self.assertEqual(plan["cases"][1]["kind"], "test_worker_deploy")
+                smoke_cases = plan["cases"][2:]
+                self.assertEqual(len(smoke_cases), expected_smoke)
+                self.assertTrue(
+                    all(c["worker"].endswith("-test-id900a2") for c in smoke_cases)
+                )
+                outputs = dict(
+                    line.split("=", 1)
+                    for line in out.read_text().splitlines()
+                    if "=" in line
+                )
+                self.assertEqual(outputs["target_test_id"], "id900a2")
+                self.assertEqual(
+                    len(json.loads(outputs["deploy_matrix"])["include"]), 2
+                )
+                self.assertEqual(
+                    len(json.loads(outputs["smoke_matrix"])["include"]), expected_smoke
+                )
+
+                cleanup_plan = prepare_pr_cleanup(
+                    {**env, "SELF_SMOKE_PLAN": str(cleanup_path)}
+                )
+                self.assertEqual(
+                    [c["kind"] for c in cleanup_plan["cases"]],
+                    ["test_worker_cleanup", "test_worker_cleanup"],
+                )
+                self.assertEqual(
+                    [c["lifecycle"]["target_worker"] for c in cleanup_plan["cases"]],
+                    ["blue-test-id900a2", "yellow-test-id900a2"],
+                )
+
+                run_meta = {
+                    "id": 900,
+                    "run_attempt": 2,
+                    "head_sha": run_sha,
+                    "path": f".github/workflows/{PR_SMOKE_WORKFLOW}",
+                    "_ci_repo": SELF_REPO,
+                }
+                comments = [
+                    {
+                        "user": {"login": "reporter"},
+                        "body": body_for(
+                            run_meta,
+                            item,
+                            report(
+                                run_meta,
+                                item,
+                                cleanup_plan["plan_digest"],
+                                "PASS",
+                                0,
+                                [f"Cleaned up {item['lifecycle']['target_worker']}"],
+                                True,
+                            ),
+                        ),
+                    }
+                    for item in cleanup_plan["cases"]
+                ]
+                client = Mock()
+                client.commit_comments.return_value = comments
+                with patch("ci_core.self_smoke.GitHubClient", return_value=client):
+                    wait(
+                        {
+                            **env,
+                            "SELF_SMOKE_PLAN": str(cleanup_path),
+                            "CI_RESULT_AUTHOR": "reporter",
+                            "GH_TOKEN": "fixture",
+                        },
+                        once=True,
+                    )
+
+    def test_verify_definition_allows_same_zone_test_worker_and_blocks_cross_zone(self):
+        archive = Path(self.temp.name) / "catalog.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            tar.add(ROOT / ".ci/lite-actions.json", arcname=".ci/lite-actions.json")
+        defaults = {"worker": "", "target_pool": "", "docker": ""}
+        blue_item = normalize(
+            SimpleNamespace(
+                test_name="dispatch_smoke_8p",
+                test_descr="Lite Actions dispatch smoke: 1 node(s), 8P HCCL/DP handshake",
+                ci_kind="npu_smoke",
+                ci_overrides={
+                    "docker": "cann_master_torchtitan_master_xyj",
+                    "target_pool": "a3_shared_blue",
+                    "worker": "blue-test-id42a1",
+                },
+                nnodes=1,
+                ngpu=8,
+                timeout=75,
+            ),
+            defaults,
+            0,
+        )
+        verified = verify_definition(archive, blue_item, defaults, repo=SELF_REPO)
+        self.assertEqual(verified["test_id"], "dispatch_smoke_8p")
+
+        cross_zone = {**blue_item, "worker": "yellow-test-id42a1"}
+        with self.assertRaisesRegex(ValueError, "zone mismatch"):
+            verify_definition(archive, cross_zone, defaults, repo=SELF_REPO)
+
+    def test_pr_smoke_router_eligibility_cleanup_and_broker_isolation(self):
+        root = Path(self.temp.name) / "worker"
+        write_workspace(root)
+        pools = json.loads((root / "config/pools.json").read_text())
+        pool = pools.pop("pool_blue")
+        for node in pool["nodes"]:
+            node["environments"]["cann_master_torchtitan_master_xyj"] = node[
+                "environments"
+            ].pop("training")
+        pools["a3_shared_blue"] = pool
+        (root / "config/pools.json").write_text(json.dumps(pools))
+
+        env = {
+            "GITHUB_REPOSITORY": SELF_REPO,
+            "GITHUB_RUN_ID": "77",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_SHA": "e" * 40,
+            "SELF_SMOKE_SHA": "a" * 40,
+            "PR_NUMBER": "52",
+            "PR_HEAD_SHA": "a" * 40,
+            "SELF_SMOKE_PROFILE": "cpu-only",
+            "SELF_SMOKE_PLAN": str(Path(self.temp.name) / "pr_plan.json"),
+        }
+        pr_plan = prepare_pr(env)
+        cleanup_plan = prepare_pr_cleanup(
+            {**env, "SELF_SMOKE_PLAN": str(Path(self.temp.name) / "pr_cleanup.json")}
+        )
+        run = {
+            "_ci_provider": "github",
+            "_ci_repo": SELF_REPO,
+            "id": 77,
+            "run_attempt": 1,
+            "name": "lite-ci-pr-smoke",
+            "path": f".github/workflows/{PR_SMOKE_WORKFLOW}",
+            "status": "in_progress",
+            "event": "pull_request",
+            "head_branch": "feat/per-pr-hardware-test",
+            "head_sha": "a" * 40,
+            "head_repository": {"full_name": SELF_REPO},
+            "actor": {"login": "depeng1994"},
+            "created_at": "2026-01-01T00:00:00Z",
+        }
+        client = SimpleNamespace(
+            repo=SELF_REPO,
+            ci_request=lambda _run: pr_plan,
+            ci_cleanup_request=lambda _run: cleanup_plan,
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "LITE_ACTIONS_MODEL_REPOS": SELF_REPO,
+                "LITE_ACTIONS_RESOURCE_LOCK_ROOT": str(root / "leases"),
+                "LITE_ACTIONS_STATE_DIR": "",
+                "LITE_ACTIONS_RELEASE_SHA": "f" * 40,
+            },
+        ):
+            router = Router(root, "blue", client, "reporter")
+            try:
+                self.assertTrue(router.eligible(run))
+                self.assertFalse(
+                    router.eligible(
+                        {
+                            **run,
+                            "head_repository": {"full_name": "external/lite-actions"},
+                        }
+                    )
+                )
+                self.assertTrue(
+                    router.eligible(
+                        {**run, "event": "workflow_dispatch", "head_branch": "main"}
+                    )
+                )
+                self.assertFalse(
+                    router.eligible(
+                        {**run, "event": "workflow_dispatch", "head_branch": "other"}
+                    )
+                )
+                with patch.object(router, "transition"):
+                    router.receive([run])
+                keys = sorted(router.state.read().keys())
+                self.assertEqual(
+                    keys,
+                    [
+                        f"{SELF_REPO}:77:1:case_000_cleanup_blue",
+                        f"{SELF_REPO}:77:1:case_000_deploy_blue",
+                    ],
+                )
+            finally:
+                router.close()
+
+        coord = PhysicalResourceCoordinator(Path(self.temp.name) / "broker-locks")
+        broker = TestBrokerServer(
+            socket_path=Path(self.temp.name) / "broker.sock",
+            worker_id="blue-test-id77a1",
+            main_root=root,
+            state_dir=Path(self.temp.name) / "tw-state",
+            pools_path=root / "config/pools.json",
+            pools=pools,
+            pools_revision=1,
+            workers=json.loads((root / "config/workers.json").read_text()),
+            author="reporter",
+            address="192.0.2.10",
+            release_sha="a" * 40,
+            baseline_sha="f" * 40,
+            client=client,
+            coordinator=coord,
+            scope={
+                "repo": SELF_REPO,
+                "source_run_id": 77,
+                "pr_number": 52,
+                "pr_head_sha": "a" * 40,
+            },
+            enforce_peercred=False,
+        )
+        fetched = broker._handle_fetch_plan({"run": run})
+        self.assertTrue(fetched["found"])
+        self.assertEqual(fetched["plan"]["plan_digest"], pr_plan["plan_digest"])
+        self.assertEqual(fetched["run"]["head_repository"], {"full_name": SELF_REPO})
+
+    def test_yellow_egress_allows_cleanup_artifact_and_proxied_test_worker(self):
+        cfg = {
+            "state_dir": self.temp.name,
+            "daily_upload_bytes": 1_000_000,
+            "artifact_hosts": ["productionresultssa16.blob.core.windows.net"],
+        }
+        policy = Egress("yellow", cfg, clock=lambda: 1_800_000_000.0)
+        req_cleanup = urllib.request.Request(
+            f"https://api.github.com/repos/{SELF_REPO}/actions/runs/77/artifacts?name=lite-ci-cleanup-1&per_page=10",
+            method="GET",
+        )
+        policy.before(req_cleanup, repo=SELF_REPO, provider="github")
+
+        run = {
+            "id": 77,
+            "run_attempt": 1,
+            "head_sha": "a" * 40,
+            "path": PR_SMOKE_WORKFLOW,
+            "_ci_repo": SELF_REPO,
+        }
+        item = {
+            "case_id": "case_000_worker_os_yellow",
+            "test_id": "worker_os_yellow",
+            "worker": "yellow-test-id77a1",
+            "target_pool": None,
+            "docker": None,
+            "resources": {"nodes": 0, "devices_per_node": 0},
+        }
+        res = report(run, item, "b" * 64, "PASS", 0, ["OK"], True)
+        body = body_for(run, item, res, local_worker="yellow-test-id77a1")
+        req_ok = urllib.request.Request(
+            f"https://api.github.com/repos/{SELF_REPO}/commits/{'a' * 40}/comments",
+            data=json.dumps({"body": body}, separators=(",", ":")).encode(),
+            method="POST",
+        )
+        policy.before(req_ok, repo=SELF_REPO, provider="github")
+
+        req_blue = urllib.request.Request(
+            f"https://api.github.com/repos/{SELF_REPO}/commits/{'a' * 40}/comments",
+            data=json.dumps(
+                {
+                    "body": body.replace(
+                        '"worker":"yellow-test-id77a1"', '"worker":"blue-test-id77a1"'
+                    )
+                },
+                separators=(",", ":"),
+            ).encode(),
+            method="POST",
+        )
+        with self.assertRaisesRegex(Rejected, "YELLOW_IDENTITY_MISMATCH"):
+            policy.before(req_blue, repo=SELF_REPO, provider="github")
+
+    def test_build_systemd_command_short_user_and_separate_binds(self):
+        cmd = build_systemd_command(
+            unit_name="lite-actions-test-yellow-test-id45448326169a1",
+            zone="yellow",
+            worker_id="yellow-test-id45448326169a1",
+            user_name="latw-0123456789ab",
+            state_dir=Path("/var/lib/lite-actions/yellow-test-workers/0123/state"),
+            broker_sock=Path("/run/lite-actions-broker/b-0123/b.sock"),
+            ready_file=Path(
+                "/var/lib/lite-actions/yellow-test-workers/0123/state/worker-ready.json"
+            ),
+            pools_file=Path(
+                "/var/lib/lite-actions/yellow-test-workers/0123/state/pools-active.json"
+            ),
+            code_dir=Path("/var/lib/lite-actions/yellow-test-workers/0123/code"),
+            python_bin="/opt/python312/bin/python3",
+        )
+        self.assertIn("User=latw-0123456789ab", cmd)
+        self.assertIn("Group=latw-0123456789ab", cmd)
+        self.assertIn("ReadWritePaths=/run/lite-actions-broker/b-0123", cmd)
+        ro_binds = [arg for arg in cmd if arg.startswith("BindReadOnlyPaths=")]
+        self.assertEqual(len(ro_binds), 2)
+        self.assertFalse(any(":" in b.split("=", 1)[1] for b in ro_binds))
 
 
 if __name__ == "__main__":

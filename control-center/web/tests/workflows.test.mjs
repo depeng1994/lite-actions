@@ -209,3 +209,15 @@ test("command status helpers map PARTIAL_APPLIED and all protocol statuses consi
   assert.equal(commandStatusLabel("NOOP"), "无变化");
   assert.equal(commandStatusTone("NOOP"), "gray");
 });
+
+test("test workflow keys and queue helpers isolate test runs from production expedite controls", () => {
+  const prodKey = workflowKey({platform: "GitHub", repo: "depeng1994/lite-actions", id: "500", attempt: 1});
+  const testKey = workflowKey({platform: "GitHub", repo: "depeng1994/lite-actions", id: "500", attempt: 1, isTest: true});
+  assert.notEqual(prodKey, testKey);
+  const queue = currentWorkflowQueue([
+    {id: "prod-1", run: prodKey, status: "排队中", kind: "npu_smoke", isTest: false},
+    {id: "test-1", run: testKey, status: "排队中", kind: "npu_smoke", isTest: true},
+    {id: "deploy-1", run: testKey, status: "排队中", kind: "test_worker_deploy", isTest: false},
+  ], [prodKey, testKey]);
+  assert.deepEqual(queue, [prodKey]);
+});

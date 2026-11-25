@@ -308,10 +308,10 @@ async function plan(context: Context, input: Record<string, unknown>, rollback =
       blocking_reasons.push("NODE_QUARANTINED");
     }
     const info = await db.prepare(`
-      SELECT a.task_uid,a.task_key,a.phase,a.worker_id,a.target_pool,a.allocation_json,q.candidate_group_idxs_json
+      SELECT a.task_uid,a.task_key,a.phase,a.worker_id,a.reporter_id,a.is_test,a.target_pool,a.allocation_json,q.candidate_group_idxs_json
       FROM tasks_active a LEFT JOIN queue_orders q ON q.task_uid=a.task_uid AND q.worker_id=a.worker_id
         AND q.pool_name=a.target_pool AND q.kind=a.kind ORDER BY a.task_uid
-    `).all<{task_uid: string; task_key: string; phase: string; worker_id: WorkerId; target_pool: string;
+    `).all<{task_uid: string; task_key: string; phase: string; worker_id: WorkerId; reporter_id: string | null; is_test: number; target_pool: string;
       allocation_json: string; candidate_group_idxs_json: string | null}>();
     for (const row of info.results) {
       const relevant = affected.filter(group => group.worker_id === row.worker_id && group.pool_name === row.target_pool);
@@ -336,9 +336,11 @@ async function plan(context: Context, input: Record<string, unknown>, rollback =
       const drainedWholePool = isDrain && target?.scope === "pool" && target.pool_name === row.target_pool;
       if (!Object.hasOwn(next, row.target_pool) || drainedWholePool || lostAll) {
         drain_cancel_tasks.push(row.task_uid);
-        const keys = drain.get(row.worker_id) ?? [];
-        keys.push(row.task_key);
-        drain.set(row.worker_id, keys);
+        if ((row.reporter_id ?? row.worker_id) === row.worker_id && row.is_test !== 1) {
+          const keys = drain.get(row.worker_id) ?? [];
+          keys.push(row.task_key);
+          drain.set(row.worker_id, keys);
+        }
       }
     }
   }

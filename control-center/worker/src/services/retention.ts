@@ -1,6 +1,8 @@
 import {type Context} from "../router";
 import type {SqlStore} from "../storage/sqlStore";
+import type {WorkerId} from "../types/api";
 import {auditStatement} from "./audit";
+import {reconcileExpiredTestWorker} from "./ingest";
 import {sha256} from "../utils/crypto";
 import {blobBuffer, gunzip, gzip} from "../utils/gzip";
 
@@ -67,25 +69,29 @@ function deleteEmptyChunks(db: SqlStore, now: number) {
 function deleteOrphanWorkflowRuns(db: SqlStore) {
   return db.prepare(`DELETE FROM workflow_runs
     WHERE NOT EXISTS (SELECT 1 FROM task_index i WHERE i.provider=workflow_runs.provider
-      AND i.repo=workflow_runs.repo AND i.run_id=workflow_runs.run_id AND i.attempt=workflow_runs.attempt)
+      AND i.repo=workflow_runs.repo AND i.run_id=workflow_runs.run_id
+      AND i.attempt=workflow_runs.attempt AND i.is_test=workflow_runs.is_test)
       AND NOT EXISTS (SELECT 1 FROM tasks_active a WHERE a.provider=workflow_runs.provider
-      AND a.repo=workflow_runs.repo AND a.run_id=workflow_runs.run_id AND a.attempt=workflow_runs.attempt)`);
+      AND a.repo=workflow_runs.repo AND a.run_id=workflow_runs.run_id
+      AND a.attempt=workflow_runs.attempt AND a.is_test=workflow_runs.is_test)`);
 }
 
 function deleteExpiredWorkflows(db: SqlStore, cutoff: number) {
-  // Retention is keyed by the complete Workflow. A mixed or partially finished
+  // Retention is keyed by the complete (Workflow, is_test). A mixed or partially finished
   // Workflow remains available until every child case has passed the cutoff.
   return db.prepare(`DELETE FROM task_index
     WHERE NOT EXISTS (SELECT 1 FROM tasks_active a WHERE a.provider=task_index.provider
-      AND a.repo=task_index.repo AND a.run_id=task_index.run_id AND a.attempt=task_index.attempt)
+      AND a.repo=task_index.repo AND a.run_id=task_index.run_id
+      AND a.attempt=task_index.attempt AND a.is_test=task_index.is_test)
       AND EXISTS (
         SELECT 1 FROM (
-          SELECT provider,repo,run_id,attempt FROM task_index
-          WHERE finished_at<? GROUP BY provider,repo,run_id,attempt
+          SELECT provider,repo,run_id,attempt,is_test FROM task_index
+          WHERE finished_at<? GROUP BY provider,repo,run_id,attempt,is_test
           HAVING MAX(finished_at)<?
         ) expired
         WHERE expired.provider=task_index.provider AND expired.repo=task_index.repo
           AND expired.run_id=task_index.run_id AND expired.attempt=task_index.attempt
+          AND expired.is_test=task_index.is_test
       )`).bind(cutoff, cutoff);
 }
 
@@ -95,17 +101,20 @@ function deleteOldestWorkflow(db: SqlStore) {
   // maintenance step when most runs contain one or two cases.
   return db.prepare(`DELETE FROM task_index
     WHERE NOT EXISTS (SELECT 1 FROM tasks_active a WHERE a.provider=task_index.provider
-      AND a.repo=task_index.repo AND a.run_id=task_index.run_id AND a.attempt=task_index.attempt)
+      AND a.repo=task_index.repo AND a.run_id=task_index.run_id
+      AND a.attempt=task_index.attempt AND a.is_test=task_index.is_test)
       AND EXISTS (
         SELECT 1 FROM (
-          SELECT provider,repo,run_id,attempt FROM task_index
+          SELECT provider,repo,run_id,attempt,is_test FROM task_index
           WHERE NOT EXISTS (SELECT 1 FROM tasks_active a2 WHERE a2.provider=task_index.provider
-            AND a2.repo=task_index.repo AND a2.run_id=task_index.run_id AND a2.attempt=task_index.attempt)
-          GROUP BY provider,repo,run_id,attempt
-          ORDER BY MAX(finished_at),provider,repo,run_id,attempt LIMIT 200
+            AND a2.repo=task_index.repo AND a2.run_id=task_index.run_id
+            AND a2.attempt=task_index.attempt AND a2.is_test=task_index.is_test)
+          GROUP BY provider,repo,run_id,attempt,is_test
+          ORDER BY MAX(finished_at),provider,repo,run_id,attempt,is_test LIMIT 200
         ) oldest
         WHERE oldest.provider=task_index.provider AND oldest.repo=task_index.repo
           AND oldest.run_id=task_index.run_id AND oldest.attempt=task_index.attempt
+          AND oldest.is_test=task_index.is_test
       ) RETURNING finished_at`);
 }
 
@@ -122,6 +131,7 @@ export async function archive(context: Context) {
       AND COALESCE(ended_at,last_busy_at)<?`).bind(now - 30 * DAY),
     db.prepare("DELETE FROM sessions WHERE expires_at<=? OR revoked_at<?").bind(now, now - 7*DAY),
     db.prepare("DELETE FROM snapshot_staging WHERE created_at<?").bind(now - DAY),
+    db.prepare("DELETE FROM test_workers WHERE status='STOPPED' AND updated_at<?").bind(now - 7 * DAY),
     db.prepare("DELETE FROM login_attempts WHERE window_start_at<? AND COALESCE(locked_until,0)<=?").bind(now - DAY, now),
   ]);
   const {results} = await db.prepare(`
@@ -194,7 +204,19 @@ export async function capacity(context: Context, probe: SizeProbe = databaseSize
   }
 }
 
+export async function reapExpiredTestWorkers(context: Context): Promise<number> {
+  const {results} = await context.env.DB.prepare(`
+    SELECT worker_id,zone FROM test_workers
+    WHERE status IN ('DEPLOYING','ACTIVE') AND expires_at<?
+  `).bind(context.now).all<{worker_id: string; zone: WorkerId}>();
+  for (const row of results) {
+    await reconcileExpiredTestWorker(context, row.worker_id, row.zone);
+  }
+  return results.length;
+}
+
 export async function retention(context: Context) {
+  await reapExpiredTestWorkers(context);
   await capacity(context);
   await archive(context);
 }
