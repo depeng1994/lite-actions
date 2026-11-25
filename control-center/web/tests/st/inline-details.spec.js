@@ -111,6 +111,13 @@ test("Pools opens all task and occupancy entry points in the same detail slot", 
 test("cluster reuses the detail slot checks for Pool, node and device groups", async ({ page }) => {
   await setup(page);
   await page.goto("/#/cluster");
+  const workerTabs = page.getByRole("navigation", { name: "Worker 页签" });
+  const blueTab = workerTabs.getByRole("button", { name: "Blue" });
+  const yellowTab = workerTabs.getByRole("button", { name: "Yellow" });
+  await expect(blueTab.locator(".worker-commit")).toHaveText("5905edf");
+  await expect(blueTab.locator(".worker-commit")).toHaveAttribute("title", "当前运行 Commit: 5905edfdb103a75b4d02e9543e02a0f46ccf2c1b");
+  await expect(yellowTab.locator(".worker-commit")).toHaveText("a1b2c3d");
+  await expect(yellowTab.locator(".worker-commit")).toHaveAttribute("title", "当前运行 Commit: a1b2c3d4e5f60718293a4b5c6d7e8f9012345678");
   const table = page.locator(".cluster-table");
   const poolPanel = await expectInline(page, table.getByRole("button", { name: "Pool blue_pool" }), cluster, "Blue / blue_pool");
   await expectOccupancy(poolPanel, "2026-11-24 15:52:00", "—");

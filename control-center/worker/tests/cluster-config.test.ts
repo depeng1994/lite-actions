@@ -204,3 +204,30 @@ test("SET_OCCUPANCY_POLICY updates node policy without dropping multinode bundle
   expect(stored.preempt_pool.nodes.find((n: {host_id: string}) => n.host_id === host2).occupancy_policy).toBe("wait");
   expect(stored.preempt_pool.verified_multinode_allocations).toHaveLength(1);
 });
+
+test("worker heartbeat code_sha is exposed in overview and cluster endpoints", async () => {
+  const blueToken = "worker-blue-sha-token";
+  const yellowToken = "worker-yellow-sha-token";
+  const workerEnv = {
+    ...bindings,
+    WORKER_BLUE_KEY_HASH: await hmac("test-pepper", blueToken),
+    WORKER_YELLOW_KEY_HASH: await hmac("test-pepper", yellowToken),
+  };
+  const blueSha = "5905edfdb103a75b4d02e9543e02a0f46ccf2c1b";
+  expect((await request("/worker/heartbeat", {
+    headers: {Authorization: `Bearer ${blueToken}`},
+    data: {w: "blue", i: "aabbccdd", rev: 1, sha: blueSha, ok: 1, act: 0, q: 0},
+  }, workerEnv)).status).toBe(200);
+  expect((await request("/worker/heartbeat", {
+    headers: {Authorization: `Bearer ${yellowToken}`},
+    data: {w: "yellow", i: "11223344", rev: 1, sha: "", ok: 1, act: 0, q: 0},
+  }, workerEnv)).status).toBe(200);
+
+  const overview = await (await request("/public/overview?sha_check=1")).json<{workers: Array<{worker_id: string; code_sha: string | null}>}>();
+  expect(overview.workers.find(w => w.worker_id === "blue")?.code_sha).toBe(blueSha);
+  expect(overview.workers.find(w => w.worker_id === "yellow")?.code_sha).toBeNull();
+
+  const publicCluster = await (await request("/public/cluster?sha_check=1")).json<{workers: Array<{worker_id: string; code_sha: string | null}>}>();
+  expect(publicCluster.workers.find(w => w.worker_id === "blue")?.code_sha).toBe(blueSha);
+  expect(publicCluster.workers.find(w => w.worker_id === "yellow")?.code_sha).toBeNull();
+});

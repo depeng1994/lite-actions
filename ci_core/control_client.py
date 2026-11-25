@@ -688,7 +688,7 @@ class ControlClient:
                     **base,
                     "ts": int(time.time()),
                     "rev": view.get("revision", 0),
-                    "sha": (view.get("sha") or "")[:8],
+                    "sha": (view.get("sha") or "").strip().lower()[:40],
                     "ok": int(view.get("healthy", True)),
                     "act": sum(
                         record.get("phase") in ACTIVE - {"QUEUED"}

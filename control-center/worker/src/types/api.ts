@@ -82,6 +82,7 @@ export interface WorkerStatus {
   latest_revision: number;
   active_count: number;
   queued_count: number;
+  code_sha: string | null;
 }
 export interface Overview {
   workers: WorkerStatus[];

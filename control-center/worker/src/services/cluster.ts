@@ -590,6 +590,7 @@ export async function cluster(context: Context) {
       const command = commands.find(row => row.worker_id === worker_id);
       return {worker_id, applied_rev: worker?.applied_rev ?? 0,
         desired_rev: command ? JSON.parse(command.payload_json).revision : revision?.revision ?? 0,
+        code_sha: worker?.code_sha || null,
         last_heartbeat_at: worker?.last_heartbeat_at ?? null,
         offline: !worker || context.now - worker.last_heartbeat_at > 90, status: command?.status ?? null,
         ...(context.principal ? {error_msg: command?.error_msg ?? null} : {}),
