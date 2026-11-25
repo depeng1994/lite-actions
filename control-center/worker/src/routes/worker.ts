@@ -1,5 +1,5 @@
 import {body, type Router, HttpError} from "../router";
-import {ingestEvents, ingestSnapshot} from "../services/ingest";
+import {deregisterTestWorker, ingestEvents, ingestSnapshot} from "../services/ingest";
 import {
   array, integer, isTestWorkerId, member, nullableInt, nullableString, object, POOL, REPO, RUN_ID,
   SHA40, string, TEST_WORKER_ID, workerZoneOf,
@@ -130,16 +130,8 @@ export function workerRoutes(router: Router) {
     ).run();
     return Response.json({ok: true, worker_id: workerId, zone});
   });
-  router.add("POST", prefix + "/test-workers/deregister", async context => {
-    const data = await body(context);
-    const workerId = string(data.w, "worker_id", 64, TEST_WORKER_ID);
-    if (workerZoneOf(workerId) !== context.workerId) throw new HttpError(403, "WORKER_MISMATCH");
-    await context.env.DB.prepare(`
-      UPDATE test_workers SET status='STOPPED',deregistered_at=?,updated_at=?
-      WHERE worker_id=? AND zone=?
-    `).bind(context.now, context.now, workerId, context.workerId).run();
-    return Response.json({ok: true, worker_id: workerId});
-  });
+  router.add("POST", prefix + "/test-workers/deregister", async context =>
+    Response.json(await deregisterTestWorker(context, await body(context))));
   router.add("GET", prefix + "/configs/:revision", async context => {
     const rev = integer(Number(context.params.revision), "revision", 1);
     const row = await context.env.DB.prepare("SELECT revision,sha256,config_json FROM pools_configs WHERE revision=?")

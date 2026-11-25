@@ -91,7 +91,12 @@ test("Pools opens all task and occupancy entry points in the same detail slot", 
     await expectOccupancy(openPanel, "2026-11-24 15:52:00", "—");
   });
   await test.step("当前状态标记和资源名称", async () => {
-    const panel = await expectInline(page, page.locator(".occupancy-marker.occupancy-unknown"), pools, group);
+    const panel = await expectInline(
+      page,
+      page.locator(".occupancy-marker.occupancy-unknown").and(page.getByRole("button", { name: /192\.0\.2\.1:22/ })),
+      pools,
+      group,
+    );
     await expectOccupancy(panel, "2026-11-24 12:00:00", "2026-11-24 12:02:00");
     await expectOccupancy(panel, "2026-11-24 15:52:00", "—");
     const idlePanel = await expectInline(page, page.locator(".occupancy-marker.occupancy-idle").and(page.getByRole("button", { name: /192\.0\.2\.2:22/ })),
@@ -199,4 +204,40 @@ test("all elapsed durations across Pools, Models, and detail dialogs round to at
   await expectInline(page, intHistBar, pools, "历史用例");
   await expect(inlinePanel.getByText("耗时", { exact: true }).locator("..").locator("dd")).toHaveText("30 分钟");
   await expectPageDurationsRounded(page);
+});
+
+test("completed TEST tasks stay on Pools timeline and multi-node allocations render every host in Models and details", async ({ page }) => {
+  await setup(page);
+  await page.goto("/#/pools");
+
+  // Completed TEST single-node and multi-node cases keep their historical bars on #/pools.
+  const singleTestBar = page.locator(".lease").and(page.getByRole("button", { name: /已完成测试单卡用例/ }));
+  await expect(singleTestBar).toHaveCount(1);
+  const multiTestBars = page.locator(".lease").and(page.getByRole("button", { name: /已完成测试双机用例/ }));
+  await expect(multiTestBars).toHaveCount(2);
+  await expect(multiTestBars.first()).toHaveAccessibleName(/192\.0\.2\.1:22 设备组 14–15、192\.0\.2\.4:22 设备组 0–1/);
+
+  const inlinePanel = await expectInline(page, multiTestBars.first(), pools, "已完成测试双机用例");
+  await expect(inlinePanel.getByText("实际分配", { exact: true }).locator("..").locator("dd"))
+    .toHaveText("Blue / blue_pool · 192.0.2.1:22、192.0.2.4:22");
+  await expect(inlinePanel.getByText("设备 ID", { exact: true }).locator("..").locator("dd"))
+    .toHaveText("192.0.2.1:22: 14,15 / 192.0.2.4:22: 0,1");
+
+  // #/models shows completed TEST workflow with both hosts paired with their own devices.
+  await page.goto("/#/models");
+  await page.getByRole("button", { name: "展开 Workflow #104 的子用例" }).click();
+  const singleRow = page.locator(".cases-table tbody tr", { hasText: "已完成测试单卡用例" });
+  await expect(singleRow.locator("td").nth(3)).toContainText("192.0.2.1:22");
+  await expect(singleRow.locator("td").nth(3)).toContainText("8–9");
+
+  const multiRow = page.locator(".cases-table tbody tr", { hasText: "已完成测试双机用例" });
+  await expect(multiRow.locator("td").nth(3)).toHaveText("192.0.2.1:22 14–15、192.0.2.4:22 0–1");
+
+  await page.getByRole("button", { name: "已完成测试双机用例" }).click();
+  const modal = page.locator("dialog[open]");
+  await expect(modal.getByText("实际分配", { exact: true }).locator("..").locator("dd"))
+    .toHaveText("Blue / blue_pool · 192.0.2.1:22、192.0.2.4:22");
+  await expect(modal.getByText("设备 ID", { exact: true }).locator("..").locator("dd"))
+    .toHaveText("192.0.2.1:22: 14,15 / 192.0.2.4:22: 0,1");
+  await modal.getByRole("button", { name: "关闭" }).click();
 });

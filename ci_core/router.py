@@ -1130,11 +1130,13 @@ class Router:
         *,
         locator=None,
         diagnostic=None,
+        allocation=None,
         published_by_broker=False,
     ):
         if getattr(self, "_coordinator_active", False) is True:
             self.coordinator.clear_production_waiter(key)
         r = self.state.read()[key]
+        final_allocation = allocation if allocation is not None else r.get("allocation")
         if published_by_broker:
             result = report(r["run"], r["item"], r["digest"], status, rc, lines, clean)
             if locator is not None:
@@ -1143,7 +1145,8 @@ class Router:
                 key,
                 phase="REPORTED",
                 published_at=time.time(),
-                quarantined=bool(r.get("allocation"))
+                allocation=final_allocation,
+                quarantined=bool(final_allocation)
                 and not clean
                 and (self.quarantine_enabled or r["item"].get("worker") != self.worker),
                 report=result,
@@ -1227,13 +1230,17 @@ class Router:
                                 "Blue log delivery unavailable (%s)", type(exc).__name__
                             )
 
+        extra_fields = (
+            {"allocation": final_allocation} if allocation is not None else {}
+        )
         self.state.update(
             key,
             phase="PENDING_REPORT",
-            quarantined=bool(r.get("allocation"))
+            quarantined=bool(final_allocation)
             and not clean
             and (self.quarantine_enabled or r["item"].get("worker") != self.worker),
             report=result,
+            **extra_fields,
         )
 
     def work(self, key, case, lease, cancel, preflight):
@@ -1274,7 +1281,11 @@ class Router:
                         "until": time.time() + float(outcome.get("retry_after", 15)),
                     }
                 if outcome.get("run_changed"):
+                    if outcome.get("allocation") is not None:
+                        self.state.update(key, allocation=outcome["allocation"])
                     raise RunChanged()
+                if outcome.get("allocation") is not None:
+                    self.state.update(key, allocation=outcome["allocation"])
                 self.transition(key, "CLEANING")
                 self.finish(
                     key,
@@ -1283,6 +1294,7 @@ class Router:
                     outcome.get("tail") or [],
                     outcome.get("release_verified", False),
                     locator=outcome.get("locator"),
+                    allocation=outcome.get("allocation"),
                     published_by_broker=bool(outcome.get("published_by_broker")),
                 )
                 return

@@ -1,6 +1,6 @@
 import { ArrowDown, ArrowSquareOut, ArrowUp, CaretUpDown, FunnelSimple, Minus, Plus } from "@phosphor-icons/react";
-import { Fragment, useEffect, useState } from "react";
-import { clock, dateFormatter, displayNodeHost, plannedTime, poolId, repositories, workflowKey } from "./formal-data.js";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { allocationEntries, clock, dateFormatter, plannedTime, poolId, repositories, workflowKey } from "./formal-data.js";
 import { actionsUrl, computeElapsedMinutes, groupActiveRuns, initialWorkflowHistorySize, queuedChildren, summarizeRun, terminalStatuses, workflowHistoryPageSize } from "./workflows.js";
 import { Status, Tag } from "./Views.jsx";
 
@@ -37,7 +37,7 @@ function CasesTable({ run, config, nodes, open }) {
   return <table className="data-table cases-table" aria-label={`Workflow #${run.id} 的子用例`}>
     <thead><tr><th scope="col">用例</th><th scope="col">阶段</th><th scope="col">申请资源</th><th scope="col">实际分配／设备 ID</th><th scope="col">开始／结束</th><th scope="col">耗时</th></tr></thead>
     <tbody>{run.cases.map((item) => {
-      const allocation = item.allocation || (item.historyId ? item.node : null);
+      const allocations = allocationEntries(item, null, nodes);
       return <tr key={item.historyId ?? item.id}>
         <td><button className="text-button case-detail" onClick={() => open(item.historyId
           ? { type: "history", runKey: workflowKey(run), historyId: item.historyId }
@@ -46,7 +46,15 @@ function CasesTable({ run, config, nodes, open }) {
           {item.archived && <small>归档</small>}</td>
         <td><CasePhase item={item} config={config} nodes={nodes} /></td>
         <td>{item.worker} / {item.pool} · {item.nodes} 节点 · {item.cards} 卡</td>
-        <td>{allocation ? <><code>{displayNodeHost(allocation)}</code><small>{item.groups.join("、")}</small></> : <span className="subtle">—</span>}</td>
+        <td>{allocations.length
+          ? <div className="case-allocations">
+              {allocations.map((entry, idx) => <div className="case-allocation" key={`${entry.host}-${entry.group ?? idx}`}>
+                <code>{entry.host}</code>
+                {entry.group && <> <small>{entry.group}</small></>}
+                {idx < allocations.length - 1 && <span className="sr-only">、</span>}
+              </div>)}
+            </div>
+          : <span className="subtle">—</span>}</td>
         <td className="case-times"><WorkflowTime value={item.start} /><span className="subtle"> / </span><WorkflowTime value={item.end} /></td>
         <td><CaseDuration item={item} /></td>
       </tr>;
@@ -138,6 +146,41 @@ function SortHeader({ column, sort, change }) {
   </th>;
 }
 
+function computeVerticalScrollDelta(blockTop, blockBottom, viewTop, viewBottom, margin = 20) {
+  const pad = Math.min(margin, Math.max(0, (viewBottom - viewTop) / 4));
+  const safeTop = viewTop + pad;
+  const safeBottom = viewBottom - pad;
+  if (blockTop < safeTop) return blockTop - safeTop;
+  if (blockBottom > safeBottom) return Math.min(blockBottom - safeBottom, blockTop - safeTop);
+  return 0;
+}
+
+function revealExpandedWorkflow(parentRow, expandedRow, scrollContainer) {
+  if (scrollContainer && scrollContainer.scrollHeight > scrollContainer.clientHeight + 1) {
+    const containerRect = scrollContainer.getBoundingClientRect();
+    const theadHeight = scrollContainer.querySelector("thead")?.getBoundingClientRect().height ?? 0;
+    const parentRect = parentRow.getBoundingClientRect();
+    const expandedRect = expandedRow.getBoundingClientRect();
+    const innerDelta = computeVerticalScrollDelta(
+      parentRect.top,
+      expandedRect.bottom,
+      containerRect.top + theadHeight,
+      containerRect.bottom,
+      12,
+    );
+    if (innerDelta !== 0) {
+      scrollContainer.scrollTop += innerDelta;
+    }
+  }
+  const viewportHeight = Math.min(window.innerHeight, document.documentElement.clientHeight || window.innerHeight);
+  const parentRect = parentRow.getBoundingClientRect();
+  const expandedRect = expandedRow.getBoundingClientRect();
+  const windowDelta = computeVerticalScrollDelta(parentRect.top, expandedRect.bottom, 0, viewportHeight, 20);
+  if (windowDelta !== 0) {
+    window.scrollBy(0, windowDelta);
+  }
+}
+
 export function ModelsView({
   model, cases, nodes, config, cancellations, priorities, queue,
   history, historyHasMore, historyLoaded, historyLoading, historyTotal, truncatedByCapacity, purgedNotice, loadMoreHistory, canManage, open,
@@ -149,8 +192,21 @@ export function ModelsView({
   const [limit, setLimit] = useState(initialWorkflowHistorySize);
   const [historyCollapsed, setHistoryCollapsed] = useState(false);
   const [expanded, setExpanded] = useState({});
+  const tableScrollRef = useRef(null);
+  const tableRef = useRef(null);
+  const pendingRevealKey = useRef(null);
   // A queue move returns the table to live queue order so the swap is visible.
   useEffect(() => setSort(null), [priorities]);
+  useLayoutEffect(() => {
+    const key = pendingRevealKey.current;
+    if (!key) return;
+    pendingRevealKey.current = null;
+    const rows = tableRef.current?.tBodies?.[0]?.rows;
+    const parentRow = rows ? Array.from(rows).find((row) => row.dataset.workflowKey === key) : null;
+    const expandedRow = parentRow?.nextElementSibling;
+    if (!parentRow || !expandedRow?.classList.contains("expanded-cases")) return;
+    revealExpandedWorkflow(parentRow, expandedRow, tableScrollRef.current);
+  }, [expanded]);
   const updateFilter = (filter, value) => {
     setFilters((previous) => ({ ...previous, [filter]: value, ...(filter === "model" ? { repo: "" } : {}) }));
     if (filter === "status" && value === "history") {
@@ -242,8 +298,8 @@ export function ModelsView({
       </div>
       <div className="workflow-count-main">{sort && <button className="text-button" onClick={() => setSort(null)}>恢复队列顺序</button>}<span>北京时间 (UTC+8)</span></div>
     </div>
-    <div className="table-scroll workflow-table-scroll">
-      <table className="data-table workflow-grid" aria-label="Workflow 活动与历史">
+    <div className="table-scroll workflow-table-scroll" ref={tableScrollRef}>
+      <table className="data-table workflow-grid" aria-label="Workflow 活动与历史" ref={tableRef}>
         <thead>
           <tr>{columns.map((column) => <SortHeader key={column.key} column={column} sort={sort} change={changeSort} />)}<th scope="col">操作</th></tr>
           {showColumns && <tr className="workflow-column-filters">{columns.map(({ key, label, numeric }) => <th key={key}>
@@ -257,9 +313,12 @@ export function ModelsView({
           const isOpen = Boolean(expanded[key]);
           const Expand = isOpen ? Minus : Plus;
           return <Fragment key={key}>
-            <tr aria-label={`Workflow #${run.id} · 尝试 ${run.attempt}`} className={isOpen ? "run-expanded" : undefined}>
+            <tr aria-label={`Workflow #${run.id} · 尝试 ${run.attempt}`} data-workflow-key={key} className={isOpen ? "run-expanded" : undefined}>
               <td><div className="workflow-sequence"><button className="expand-workflow" aria-label={`${isOpen ? "收起" : "展开"} Workflow #${run.id} 的子用例`} aria-expanded={isOpen}
-                onClick={() => setExpanded((previous) => ({ ...previous, [key]: !isOpen }))}><Expand size={15} weight="bold" /></button>
+                onClick={() => {
+                  pendingRevealKey.current = isOpen ? null : key;
+                  setExpanded((previous) => ({ ...previous, [key]: !isOpen }));
+                }}><Expand size={15} weight="bold" /></button>
                 <span className={`mono ${sequence < 0 ? "subtle" : ""}`}>{sequence}</span>
               </div></td>
               <td><WorkflowTime value={run.submitted} /></td>

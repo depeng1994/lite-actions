@@ -1,5 +1,7 @@
 import {type Context, type Env, HttpError} from "../router";
+import type {WorkerId} from "../types/api";
 import {appJwt} from "./cancelPlatform";
+import {reconcileStoppedTestWorker} from "./ingest";
 import {array, integer, member, nullableInt, nullableString, object, REPO, RUN_ID, SHA40, string} from "../utils/validate";
 
 export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -182,6 +184,50 @@ async function publishGateStatus(
   return {published: true, checkRunId: null};
 }
 
+async function reconcileTerminalPrTestWorkers(
+  context: Context,
+  params: {
+    repo: string;
+    prNumber: number;
+    sha: string;
+    runId: string | null;
+    attempt: number | null;
+    reason: string;
+    superseding?: boolean;
+  },
+) {
+  const db = context.env.DB;
+  const {results} = params.superseding
+    ? await db.prepare(`
+        SELECT worker_id,zone FROM test_workers
+        WHERE repo=? AND pr_number=? AND status IN ('DEPLOYING','ACTIVE')
+          AND (
+            pr_head_sha<>?
+            OR (? IS NOT NULL AND run_id<>?)
+            OR (? IS NOT NULL AND ? IS NOT NULL AND run_id=? AND attempt<?)
+          )
+      `).bind(
+        params.repo, params.prNumber, params.sha,
+        params.runId, params.runId,
+        params.runId, params.attempt, params.runId, params.attempt,
+      ).all<{worker_id: string; zone: WorkerId}>()
+    : await db.prepare(`
+        SELECT worker_id,zone FROM test_workers
+        WHERE repo=? AND status IN ('DEPLOYING','ACTIVE')
+          AND (
+            (? IS NOT NULL AND run_id=? AND (? IS NULL OR attempt<=?))
+            OR (pr_number=? AND pr_head_sha=? AND (? IS NULL OR run_id=?) AND (? IS NULL OR attempt<=?))
+          )
+      `).bind(
+        params.repo,
+        params.runId, params.runId, params.attempt, params.attempt,
+        params.prNumber, params.sha, params.runId, params.runId, params.attempt, params.attempt,
+      ).all<{worker_id: string; zone: WorkerId}>();
+  for (const row of results) {
+    await reconcileStoppedTestWorker(context, row.worker_id, row.zone, params.reason, true);
+  }
+}
+
 export async function registerPrGate(
   context: Context,
   input: Record<string, unknown>,
@@ -230,6 +276,10 @@ export async function registerPrGate(
       JSON.stringify(requiredSuites), targetUrl, summary, author, trigger, now, now,
     ),
   ]);
+
+  await reconcileTerminalPrTestWorkers(context, {
+    repo, prNumber, sha, runId, attempt, reason: "pr_gate_superseded", superseding: true,
+  });
 
   const pub = await publishGateStatus(context.env, fetchFn, now, {
     repo,
@@ -313,6 +363,17 @@ export async function reportPrGate(
         AND status IN ('INTENT_CREATED','DISPATCHED','RUNNING','NEEDS_RECONCILIATION')
     `).bind(now, repo, prNumber, sha, current.generation)] : []),
   ]);
+
+  if (terminal) {
+    await reconcileTerminalPrTestWorkers(context, {
+      repo,
+      prNumber,
+      sha,
+      runId: runId ?? current.github_run_id,
+      attempt: attempt ?? current.github_run_attempt,
+      reason: `pr_gate_${nextStatus.toLowerCase()}`,
+    });
+  }
 
   const ghState: "pending" | "success" | "failure" =
     nextStatus === "PASS" ? "success" : (nextStatus === "FAIL" || nextStatus === "CANCELLED") ? "failure" : "pending";
@@ -508,6 +569,14 @@ export async function reconcilePrGateIntents(context: Context, fetchFn: FetchLik
             UPDATE pr_gate_generations SET status=?,updated_at=?,finished_at=COALESCE(finished_at,?)
             WHERE repo=? AND pr_number=? AND pr_head_sha=? AND generation=?
           `).bind(nextGateState, now, now, intent.repo, intent.pr_number, intent.pr_head_sha, intent.generation).run();
+          await reconcileTerminalPrTestWorkers(context, {
+            repo: intent.repo,
+            prNumber: intent.pr_number,
+            sha: intent.pr_head_sha,
+            runId: intent.github_run_id,
+            attempt: intent.github_run_attempt,
+            reason: `pr_gate_${nextGateState.toLowerCase()}`,
+          });
           if (nextGateState === "CANCELLED") {
             await publishGateStatus(context.env, fetchFn, now, {
               repo: intent.repo,

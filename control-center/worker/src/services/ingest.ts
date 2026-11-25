@@ -5,7 +5,7 @@ import type {WorkerId} from "../types/api";
 import {taskIdentity} from "../utils/taskIdentity";
 import {
   array, CASE_ID, CASE_KINDS, devices, hostId, integer, invalid, isTestWorkerId, member, nullableInt, nullableString,
-  object, PHASES, POOL, REPO, RUN_ID, STATUSES, string, TID, workerZoneOf,
+  object, PHASES, POOL, REPO, RUN_ID, STATUSES, string, TEST_WORKER_ID, TID, workerZoneOf,
 } from "../utils/validate";
 
 type Input = Record<string, unknown>;
@@ -230,7 +230,13 @@ function taskUpsert(db: SqlStore, tasks: Awaited<ReturnType<typeof task>>[], sna
     INSERT INTO tasks_active(${columns}) SELECT ${values} FROM json_each(?)
     WHERE NOT EXISTS (SELECT 1 FROM task_index WHERE task_uid=json_extract(value,'$.task_uid'))
     ON CONFLICT(task_uid) DO ${snapshot ? `UPDATE SET
-      phase=excluded.phase,allocation_json=excluded.allocation_json,updated_at=excluded.updated_at,
+      phase=excluded.phase,
+      allocation_json=CASE
+        WHEN excluded.phase='QUEUED' THEN '[]'
+        WHEN json_array_length(excluded.allocation_json)>0 THEN excluded.allocation_json
+        ELSE tasks_active.allocation_json
+      END,
+      updated_at=excluded.updated_at,
       ${TIMES.map(column => `${column}=COALESCE(excluded.${column},tasks_active.${column})`).join(",")},
       timing_reliable=MAX(excluded.timing_reliable,tasks_active.timing_reliable),
       submitted_at=COALESCE(excluded.submitted_at,tasks_active.submitted_at),
@@ -243,6 +249,7 @@ function taskUpsert(db: SqlStore, tasks: Awaited<ReturnType<typeof task>>[], sna
 function finish(context: Context, reporter: Reporter, selection: string, parameters: unknown[], fields: {
   finished: number; status: string; exit: number | null; clean: number | null;
   alloc: ReturnType<typeof allocation> | null; timestamps?: ReturnType<typeof timings>; reconciled?: boolean;
+  terminationReason?: string | null;
 }): Statement[] {
   const db = context.env.DB;
   const times = fields.timestamps ?? TIMES.map(() => null);
@@ -254,6 +261,16 @@ function finish(context: Context, reporter: Reporter, selection: string, paramet
   const duration = !fields.reconciled
     ? "CASE WHEN timing_reliable=1 AND ?>=COALESCE(?,running_at,?,reserved_at) THEN ?-COALESCE(?,running_at,?,reserved_at) END"
     : "NULL";
+  const detailFields = [
+    ...TIMES.map((column, idx) => `'${column}',${stamps[idx]}`),
+    "'reconciled',?",
+    ...(fields.terminationReason ? ["'termination_reason',?"] : []),
+  ];
+  const detailParams = [
+    ...stampValues,
+    fields.reconciled ? 1 : 0,
+    ...(fields.terminationReason ? [fields.terminationReason] : []),
+  ];
   return [
     db.prepare(`
       INSERT INTO task_index(${TASK_META.join(",")},started_at,finished_at,actual_allocation_json,status,exit_code,
@@ -261,13 +278,13 @@ function finish(context: Context, reporter: Reporter, selection: string, paramet
       SELECT ${TASK_META.join(",")},COALESCE(?,running_at,reserved_at),?,COALESCE(?,allocation_json),?,?,?,${duration},
         ${fields.reconciled ? "0" : "timing_reliable"} ${where}
       ON CONFLICT(task_uid) DO NOTHING
-    `).bind(times[3], finished, fields.alloc ? JSON.stringify(fields.alloc) : null, fields.status, fields.exit, fields.clean,
+    `).bind(times[3], finished, fields.alloc && fields.alloc.length > 0 ? JSON.stringify(fields.alloc) : null, fields.status, fields.exit, fields.clean,
       ...(fields.reconciled ? [] : [finished, times[3], times[1], finished, times[3], times[1]]), ...filter),
     db.prepare(`
       INSERT INTO task_details_hot(task_uid,finished_at,detail_json)
-      SELECT task_uid,?,json_object(${TIMES.map((column, idx) => `'${column}',${stamps[idx]}`).join(",")},'reconciled',?)
+      SELECT task_uid,?,json_object(${detailFields.join(",")})
       ${where} ON CONFLICT(task_uid) DO NOTHING
-    `).bind(finished, ...stampValues, fields.reconciled ? 1 : 0, ...filter),
+    `).bind(finished, ...detailParams, ...filter),
     ...(fields.status === "PASS" ? [db.prepare(`
       INSERT INTO duration_samples(logical_model,test_id,target_pool,req_nodes,req_devices,duration_sec,finished_at,task_uid)
       SELECT logical_model,test_id,target_pool,req_nodes,req_devices,duration_sec,finished_at,task_uid
@@ -444,12 +461,15 @@ async function eventWrites(context: Context, reporter: Reporter, event: Input): 
       const alloc = JSON.stringify(allocation(event.a));
       const part = integer(event.ap ?? 1, "allocation part", 1, 1024);
       return [db.prepare(`
-        UPDATE tasks_active SET allocation_json=CASE WHEN ?=1 THEN ? ELSE (
-          SELECT json_group_array(json(value)) FROM (
-            SELECT value FROM json_each(allocation_json) UNION ALL SELECT value FROM json_each(?)
-          )
-        ) END,updated_at=? WHERE worker_id=? AND COALESCE(reporter_id,worker_id)=? AND short_tid=?
-      `).bind(part, alloc, alloc, context.now, worker, reporter.reporterId, tid)];
+        UPDATE tasks_active SET allocation_json=CASE
+          WHEN ?=1 AND (?<>'[]' OR phase='QUEUED') THEN ?
+          WHEN ?=1 THEN allocation_json
+          ELSE (
+            SELECT json_group_array(json(value)) FROM (
+              SELECT value FROM json_each(allocation_json) UNION ALL SELECT value FROM json_each(?)
+            )
+          ) END,updated_at=? WHERE worker_id=? AND COALESCE(reporter_id,worker_id)=? AND short_tid=?
+      `).bind(part, alloc, alloc, part, alloc, context.now, worker, reporter.reporterId, tid)];
     }
     case "TF": {
       const tid = string(event.tid, "tid", 12, TID);
@@ -465,7 +485,7 @@ async function eventWrites(context: Context, reporter: Reporter, event: Input): 
           WHERE a.worker_id=? AND COALESCE(a.reporter_id,a.worker_id)=? AND a.short_tid=?
           ON CONFLICT(worker_id,pool_name,host_id,devices_json) DO UPDATE SET
             quarantined=1,quarantine_task_uid=excluded.quarantine_task_uid,updated_at=excluded.updated_at
-        `).bind(context.now, alloc ? JSON.stringify(alloc) : null, worker, reporter.reporterId, tid)] : []),
+        `).bind(context.now, alloc && alloc.length > 0 ? JSON.stringify(alloc) : null, worker, reporter.reporterId, tid)] : []),
         ...finish(context, reporter, "short_tid=?", [tid], {finished: ts, status, exit: nullableInt(event.ec, "exit code", -255),
           clean, alloc, timestamps: timings(event)}),
       ];
@@ -575,20 +595,35 @@ export async function ingestEvents(context: Context, input: Input) {
     const db = context.env.DB;
     const affected: WorkflowIdentity[] = [];
     const touchedTids = new Set<string>();
+    const finishedTids = new Set<string>();
+    const cleanupCandidates: Array<{repo: string; run_id: string; attempt: number; short_tid: string}> = [];
     for (const event of fresh) {
       if (event.t === "TU") {
         const parsed = await task(context, event, reporter);
         affected.push({provider: parsed.provider, repo: parsed.repo, run_id: parsed.run_id, attempt: parsed.attempt, is_test: parsed.is_test});
+        if (!reporter.isTest && parsed.kind === "test_worker_cleanup") {
+          cleanupCandidates.push({repo: parsed.repo, run_id: parsed.run_id, attempt: parsed.attempt, short_tid: parsed.short_tid});
+        }
       } else if (event.t === "TP" || event.t === "TL" || event.t === "TF") {
-        touchedTids.add(string(event.tid, "tid", 12, TID));
+        const tid = string(event.tid, "tid", 12, TID);
+        touchedTids.add(tid);
+        if (event.t === "TF") finishedTids.add(tid);
       }
     }
     if (touchedTids.size) {
       const existing = await db.prepare(`
-        SELECT DISTINCT provider,repo,run_id,attempt,is_test FROM tasks_active
+        SELECT DISTINCT provider,repo,run_id,attempt,is_test,kind,short_tid FROM tasks_active
         WHERE worker_id=? AND COALESCE(reporter_id,worker_id)=? AND short_tid IN (SELECT value FROM json_each(?))
-      `).bind(reporter.zone, reporter.reporterId, JSON.stringify([...touchedTids])).all<WorkflowIdentity>();
+      `).bind(reporter.zone, reporter.reporterId, JSON.stringify([...touchedTids]))
+        .all<WorkflowIdentity & {kind: string; short_tid: string}>();
       affected.push(...existing.results);
+      if (!reporter.isTest && finishedTids.size) {
+        for (const row of existing.results) {
+          if (row.kind === "test_worker_cleanup" && finishedTids.has(row.short_tid)) {
+            cleanupCandidates.push({repo: row.repo, run_id: row.run_id, attempt: row.attempt, short_tid: row.short_tid});
+          }
+        }
+      }
     }
     const writes = (await Promise.all(fresh.map(event => eventWrites(context, reporter, event)))).flat();
     if (writes.length > 46) invalid("too many event mutations in packet");
@@ -601,6 +636,22 @@ export async function ingestEvents(context: Context, input: Input) {
         JSON.stringify(fresh.slice(1).map(event => event.s))),
       advance(context, instance, seq, null, reporter),
     ]);
+    if (!reporter.isTest && finishedTids.size) {
+      const seenCleanups = new Set<string>();
+      for (const cleanup of cleanupCandidates) {
+        if (!finishedTids.has(cleanup.short_tid)) continue;
+        const key = `${cleanup.repo}\0${cleanup.run_id}\0${cleanup.attempt}`;
+        if (seenCleanups.has(key)) continue;
+        seenCleanups.add(key);
+        const {results: zoneWorkers} = await db.prepare(`
+          SELECT worker_id,zone FROM test_workers
+          WHERE zone=? AND repo=? AND run_id=? AND attempt=? AND status IN ('DEPLOYING','ACTIVE')
+        `).bind(reporter.zone, cleanup.repo, cleanup.run_id, cleanup.attempt).all<{worker_id: string; zone: WorkerId}>();
+        for (const tw of zoneWorkers) {
+          await reconcileStoppedTestWorker(context, tw.worker_id, tw.zone, "test_worker_cleanup_finished", true);
+        }
+      }
+    }
   }
   return {ok: true, need_snapshot: false};
 }
@@ -691,22 +742,126 @@ export async function ingestSnapshot(context: Context, input: Input) {
   return {ok: true, complete: true};
 }
 
-export async function reconcileExpiredTestWorker(context: Context, workerId: string, zone: WorkerId): Promise<number> {
+interface TestWorkerCloseOptions {
+  status: "CANCELLED" | "INFRA_ERROR";
+  exitCode: number | null;
+  terminationReason: string;
+  bumpUpdatedAt: boolean;
+}
+
+/**
+ * Mark a test worker STOPPED and finalize any remaining active tasks strictly
+ * scoped to `is_test = 1 AND reporter_id = workerId`.
+ */
+async function finalizeTestWorker(
+  context: Context,
+  workerId: string,
+  zone: WorkerId,
+  options: TestWorkerCloseOptions,
+): Promise<number> {
+  if (!isTestWorkerId(workerId) || workerZoneOf(workerId) !== zone) {
+    throw new HttpError(403, "WORKER_MISMATCH");
+  }
   const db = context.env.DB;
+  const now = context.now;
   const reporter: Reporter = {zone, reporterId: workerId, isTest: true};
-  const active = await db.prepare(`
-    SELECT DISTINCT provider,repo,run_id,attempt,is_test FROM tasks_active
-    WHERE worker_id=? AND COALESCE(reporter_id,worker_id)=?
-  `).bind(zone, workerId).all<WorkflowIdentity>();
-  await db.batch([
-    ...finish(context, reporter, "1=1", [], {
-      finished: context.now, status: "INFRA_ERROR", exit: null, clean: null, alloc: null, reconciled: true,
-    }),
+
+  // Mark the test worker STOPPED before querying tasks_active so concurrent
+  // event or snapshot ingests fail the cursor guard and cannot insert new rows.
+  await db.prepare(`
+    UPDATE test_workers
+    SET status='STOPPED',
+        deregistered_at=COALESCE(deregistered_at,?),
+        updated_at=CASE WHEN ?=1 OR status<>'STOPPED' OR deregistered_at IS NULL THEN ? ELSE updated_at END
+    WHERE worker_id=? AND zone=?
+  `).bind(now, options.bumpUpdatedAt ? 1 : 0, now, workerId, zone).run();
+
+  const [active, staleRuns] = await Promise.all([
     db.prepare(`
-      UPDATE test_workers SET status='STOPPED',deregistered_at=COALESCE(deregistered_at,?),updated_at=?
-      WHERE worker_id=? AND zone=?
-    `).bind(context.now, context.now, workerId, zone),
-    ...refreshWorkflowRuns(db, active.results, context.now),
+      SELECT DISTINCT provider,repo,run_id,attempt,is_test
+      FROM tasks_active
+      WHERE worker_id=? AND is_test=1 AND reporter_id=?
+    `).bind(zone, workerId).all<WorkflowIdentity>(),
+    db.prepare(`
+      SELECT provider,repo,run_id,attempt,is_test
+      FROM workflow_runs
+      WHERE is_test=1 AND is_active=1
+        AND EXISTS (SELECT 1 FROM json_each(reporter_ids_json) WHERE value=?)
+        AND NOT EXISTS (
+          SELECT 1 FROM tasks_active a
+          WHERE a.provider=workflow_runs.provider AND a.repo=workflow_runs.repo
+            AND a.run_id=workflow_runs.run_id AND a.attempt=workflow_runs.attempt AND a.is_test=1
+        )
+    `).bind(workerId).all<WorkflowIdentity>(),
   ]);
-  return active.results.length;
+
+  const affected = uniqueWorkflows([...active.results, ...staleRuns.results]);
+  const cleanupStatements: Statement[] = [
+    db.prepare("DELETE FROM snapshot_staging WHERE worker_id=?").bind(workerId),
+    db.prepare("DELETE FROM device_occupancy_intervals WHERE worker_id=?").bind(workerId),
+    db.prepare("DELETE FROM queue_orders WHERE worker_id=? AND NOT EXISTS (SELECT 1 FROM tasks_active a WHERE a.task_uid=queue_orders.task_uid)").bind(zone),
+  ];
+
+  if (!active.results.length && !affected.length) {
+    await db.batch(cleanupStatements);
+    return 0;
+  }
+
+  const finishStatements = finish(context, reporter, "is_test=1 AND reporter_id=?", [workerId], {
+    finished: now,
+    status: options.status,
+    exit: options.exitCode,
+    clean: null,
+    alloc: null,
+    reconciled: true,
+    terminationReason: options.terminationReason,
+  });
+  const results = await db.batch([
+    ...finishStatements,
+    ...cleanupStatements,
+    ...refreshWorkflowRuns(db, affected, now),
+  ]);
+  return Number(results[finishStatements.length - 1]?.meta.changes ?? 0);
+}
+
+/** Deregister a zone test worker and immediately finalize its orphaned active tasks. */
+export async function deregisterTestWorker(context: Context, input: Input) {
+  const workerId = string(input.w, "worker_id", 64, TEST_WORKER_ID);
+  const zone = context.workerId!;
+  if (workerZoneOf(workerId) !== zone) throw new HttpError(403, "WORKER_MISMATCH");
+  const reason = nullableString(input.reason ?? null, "reason", 128);
+  const terminationReason = reason ? `test_worker_deregistered:${reason}` : "test_worker_deregistered";
+  const finalized = await finalizeTestWorker(context, workerId, zone, {
+    status: "CANCELLED",
+    exitCode: 130,
+    terminationReason,
+    bumpUpdatedAt: true,
+  });
+  return {ok: true, worker_id: workerId, finalized_tasks: finalized};
+}
+
+/** Finalize an expired test worker as INFRA_ERROR and refresh its workflow rollups. */
+export async function reconcileExpiredTestWorker(context: Context, workerId: string, zone: WorkerId): Promise<number> {
+  return finalizeTestWorker(context, workerId, zone, {
+    status: "INFRA_ERROR",
+    exitCode: null,
+    terminationReason: "test_worker_expired",
+    bumpUpdatedAt: true,
+  });
+}
+
+/** Reconcile leftover tasks for an already stopped/terminated test worker as CANCELLED. */
+export async function reconcileStoppedTestWorker(
+  context: Context,
+  workerId: string,
+  zone: WorkerId,
+  terminationReason = "test_worker_stopped_reconcile",
+  bumpUpdatedAt = false,
+): Promise<number> {
+  return finalizeTestWorker(context, workerId, zone, {
+    status: "CANCELLED",
+    exitCode: 130,
+    terminationReason,
+    bumpUpdatedAt,
+  });
 }

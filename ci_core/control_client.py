@@ -417,7 +417,12 @@ class ControlClient:
                 continue
             task = task_descriptor(key, record, reporter_id=reporter_id)
             tid, now = task["tid"], int(time.time())
-            alloc = _allocation(record)
+            raw_alloc = _allocation(record)
+            alloc = (
+                raw_alloc
+                if (raw_alloc or phase == "QUEUED")
+                else (current or {}).get("allocation", [])
+            )
             events = []
             if current is None:
                 events.append({"t": "TU", **task})

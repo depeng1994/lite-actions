@@ -11,7 +11,7 @@ import {userRoutes} from "./routes/users";
 import {workerRoutes} from "./routes/worker";
 import {trackCancellations} from "./services/cancellations";
 import {reconcilePrGateIntents} from "./services/prGate";
-import {capacity, retention} from "./services/retention";
+import {capacity, reapExpiredTestWorkers, retention} from "./services/retention";
 import type {SqlStore} from "./storage/sqlStore";
 import {sanitizePublic} from "./utils/mask";
 import {PublicCache} from "./utils/microCache";
@@ -64,6 +64,7 @@ export async function runMaintenance(kind: "cancellations" | "retention", env: E
     if (kind === "cancellations") {
       await trackCancellations(context);
       await reconcilePrGateIntents(context).catch(() => undefined);
+      await reapExpiredTestWorkers(context).catch(() => undefined);
     } else {
       await requireWriteQuota(context);
       await retention(context);

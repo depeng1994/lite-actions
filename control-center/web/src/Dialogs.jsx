@@ -1,6 +1,6 @@
 import { ArrowRight, ArrowSquareOut, ArrowUp, Check, Copy, Pause, ShieldCheck, StopCircle, Warning } from "@phosphor-icons/react";
 import { useEffect, useRef, useState } from "react";
-import { clock, dateFormatter, dateTimeSecondFormatter, displayNodeHost, flagFor, impactOf, plannedTime, runs, workflowKey } from "./formal-data.js";
+import { allocationEntries, clock, dateFormatter, dateTimeSecondFormatter, displayNodeHost, flagFor, impactOf, plannedTime, runs, workflowKey } from "./formal-data.js";
 import { Details, DialogActions, DialogClose, ResourceStatus, Status, Tag } from "./Views.jsx";
 import { lastSeenDateTime, resourceHealth } from "./resource-health.js";
 import { clusterPreview, getTaskDetail } from "./control-api.js";
@@ -159,9 +159,11 @@ export function CaseDialog({ item, run: suppliedRun, nodes, config, access = "pu
       ? { ...item, elapsed: null, start: detail.started_at * 1000, end: detail.finished_at != null ? detail.finished_at * 1000 : item.end }
       : item);
   const planned = plannedTime(item, config, nodes);
-  const allocHost = detail?.allocation?.[0]
-    ? (detail.allocation[0].host_id || detail.allocation[0].display_host_id)
-    : (node ? displayNodeHost(node) : null);
+  const allocEntries = allocationEntries(item, detail, nodes);
+  const allocSummary = allocEntries.length ? `${item.worker} / ${item.pool} · ${allocEntries.map((entry) => entry.host).join("、")}` : "等待分配";
+  const deviceSummary = allocEntries.length > 1
+    ? allocEntries.map((entry) => `${entry.host}: ${entry.devicesText || entry.group || "—"}`).join(" / ")
+    : allocEntries[0]?.devicesText || allocEntries[0]?.group || "—";
   const action = <button className="button" onClick={() => { close(); go("models", run.model); }}>查看代码仓任务 <ArrowRight size={16} /></button>;
   return <TaskDetailFrame title={item.name} subtitle={`${run.action} #${run.id} · ${run.repo}`} status={item.status}
     close={close} inline={inline} action={action}>
@@ -169,8 +171,8 @@ export function CaseDialog({ item, run: suppliedRun, nodes, config, access = "pu
     <TaskDetailColumn title="资源与排期">
       <Details entries={[
         ["申请资源", `${item.worker} / ${item.pool} · ${item.nodes} 节点 · ${item.cards} 卡`],
-        ["实际分配", allocHost ? `${item.worker} / ${item.pool} · ${allocHost}` : "等待分配"],
-        ["设备 ID", detail?.allocation?.length ? detail.allocation.map((a) => a.devices.join(",")).join(" / ") : (node && item.groups.join("、")) || "—"],
+        ["实际分配", allocSummary],
+        ["设备 ID", deviceSummary],
         [isQueued ? "预计开始" : "开始时间", isQueued ? (item.projectionStatus === "WAITING_EXTERNAL" ? "等待外部释放" : clock(planned)) : (detail?.started_at ? formatUnixTime(detail.started_at) : clock(item.started))],
         ...taskOccupancy(item, detail),
         ["已用时长", elapsed == null ? "—" : `${elapsed} 分钟`],
@@ -192,7 +194,7 @@ export function CaseDialog({ item, run: suppliedRun, nodes, config, access = "pu
   </TaskDetailFrame>;
 }
 
-export function HistoryDialog({ run, item, access = "public", live = false, inline = false, close }) {
+export function HistoryDialog({ run, item, nodes = [], access = "public", live = false, inline = false, close }) {
   const detail = useTaskDetail(access, item.taskUid || item.historyId, live);
   const elapsedMinutes = detail?.duration_sec != null
     ? computeElapsedMinutes({ elapsed: detail.duration_sec / 60 })
@@ -200,9 +202,11 @@ export function HistoryDialog({ run, item, access = "public", live = false, inli
   const elapsed = elapsedMinutes == null ? "—" : `${elapsedMinutes} 分钟`;
   const start = detail?.started_at ? detail.started_at * 1000 : item.start;
   const end = detail?.finished_at ? detail.finished_at * 1000 : item.end;
-  const allocHost = detail?.allocation?.[0]
-    ? (detail.allocation[0].host_id || detail.allocation[0].display_host_id)
-    : (item.allocation ? displayNodeHost(item.allocation) : null);
+  const allocEntries = allocationEntries(item, detail, nodes);
+  const allocSummary = allocEntries.length ? `${item.worker} / ${item.pool} · ${allocEntries.map((entry) => entry.host).join("、")}` : "—";
+  const deviceSummary = allocEntries.length > 1
+    ? allocEntries.map((entry) => `${entry.host}: ${entry.devicesText || entry.group || "—"}`).join(" / ")
+    : allocEntries[0]?.devicesText || allocEntries[0]?.group || "—";
   const storageTier = detail?.storage_tier ?? item.storageTier;
   return <TaskDetailFrame title={item.name} subtitle={`历史用例 · Workflow #${run.id}`} status={item.status} close={close} inline={inline}>
     <TaskDetailColumn title="Workflow"><RunDetails run={run} runUrl={detail?.run_url || item.runUrl} /></TaskDetailColumn>
@@ -214,8 +218,8 @@ export function HistoryDialog({ run, item, access = "public", live = false, inli
         ["退出码", detail?.exit_code != null ? String(detail.exit_code) : "—"],
         ["清理校验", detail?.cleanup_verified == null ? "—" : (detail.cleanup_verified ? "已确认释放" : "未确认（隔离）")],
         ["数据层级", storageTier === "cold" ? "控制面冷归档" : "控制面热库"],
-        ["实际分配", allocHost ? `${item.worker} / ${item.pool} · ${allocHost}` : "—"],
-        ["设备 ID", detail?.allocation?.length ? detail.allocation.map((a) => a.devices.join(",")).join(" / ") : (item.groups.join("、") || "—")],
+        ["实际分配", allocSummary],
+        ["设备 ID", deviceSummary],
       ]} />
     </TaskDetailColumn>
     {detail && <TaskDetailColumn title="各阶段时间（北京时间）">

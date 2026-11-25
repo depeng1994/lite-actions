@@ -892,6 +892,263 @@ class TestBrokerAndWorkerSandboxTests(unittest.TestCase):
             finally:
                 broker.stop()
 
+    def test_request_run_respects_quarantine_enabled_false(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            broker, sock, main_root = self._make_broker(root)
+            broker.quarantine_enabled = False
+            broker.coordinator.quarantine_lease(
+                allocation=[
+                    {"host_id": "192.0.2.10:22", "devices": list(range(8))},
+                    {"host_id": "192.0.2.11:22", "devices": list(range(8))},
+                ],
+                owner_worker="yellow-test-id77a1",
+                task_key="prior-failed",
+                reason="test_quarantine",
+            )
+
+            def fake_execute(case, subrun, *, root=None):
+                log = root / "run.log"
+                log.write_text("CASE_RESULT smoke_8p PASS 0\n", encoding="utf-8")
+                return Execution(0, ["OK"], log, True)
+
+            broker.start()
+            try:
+                client = BrokerClient(sock, worker_id="yellow-test-id77a1")
+                run = {
+                    "id": 82,
+                    "run_attempt": 1,
+                    "head_sha": "b" * 40,
+                    "path": ".github/workflows/lite_actions_pr_smoke.yml",
+                    "_ci_repo": SELF_REPO,
+                    "pull_requests": [{"number": 77}],
+                }
+                item = {
+                    "case_id": "q_case",
+                    "test_id": "smoke_8p",
+                    "worker": "yellow-test-id77a1",
+                    "kind": "npu_smoke",
+                    "target_pool": "a3_shared_pool",
+                    "docker": "torchtitan_ci_a3_r2",
+                    "resources": {"nodes": 1, "devices_per_node": 8},
+                    "execution_timeout_seconds": 90,
+                    "env_vars": {"ASCEND_SET_ENV_PATH": "/usr/local/Ascend/set_env.sh"},
+                }
+                with (
+                    patch("ci_core.test_broker.execute", side_effect=fake_execute),
+                    patch("ci_core.test_broker.check_current", create=True),
+                ):
+                    res = client.request_run(
+                        key="quarantine-disabled-key",
+                        run=run,
+                        item=item,
+                        digest="2" * 64,
+                        defaults={},
+                    )
+                self.assertEqual(res["status"], "PASS")
+            finally:
+                broker.stop()
+
+    def test_request_run_preserves_allocation_through_broker_and_router_completion(
+        self,
+    ):
+        import threading
+
+        from ci_core.control_client import ControlClient
+        from ci_core.egress_policy import Egress
+        from ci_core.router import Router
+        from ci_core.test_broker import BrokerControlAdapter
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            broker_snapshots = []
+            cfg = {
+                "state_dir": str(root / "main_state"),
+                "daily_upload_bytes": 1_000_000,
+                "control_center": {"url": "https://control.example.test"},
+            }
+            ctrl = ControlClient(
+                "yellow",
+                cfg,
+                "t" * 64,
+                Egress("yellow", cfg),
+                threading.Event(),
+                lambda: {"records": {}, "devices": [], "queues": {}, "revision": 1},
+            )
+            sent_events = []
+
+            def fake_send(route, payload=None):
+                if route == "events":
+                    sent_events.extend(payload.get("ev") or [])
+                    return {"ok": True, "need_snapshot": False}
+                if route == "snapshots":
+                    return {"ok": True, "complete": True}
+                return {"ok": True, "worker_id": (payload or {}).get("w")}
+
+            def sink(wid, *, events, snapshot):
+                broker_snapshots.append(snapshot)
+                ctrl.forward_test_telemetry(wid, events=events, snapshot=snapshot)
+
+            broker, sock, main_root = self._make_broker(root, control_sink=sink)
+            run = {
+                "id": 81,
+                "run_attempt": 1,
+                "name": "lite-ci-pr-smoke",
+                "status": "in_progress",
+                "event": "pull_request",
+                "head_repository": {"full_name": SELF_REPO},
+                "head_sha": "b" * 40,
+                "path": ".github/workflows/lite_actions_pr_smoke.yml",
+                "_ci_repo": SELF_REPO,
+                "pull_requests": [{"number": 77}],
+            }
+            from types import SimpleNamespace
+
+            from ci_core.contract import PR_SMOKE_WORKFLOW, create_plan, normalize
+
+            defaults = {"worker": "", "target_pool": "", "docker": ""}
+            item = normalize(
+                SimpleNamespace(
+                    test_name="smoke_8p",
+                    test_descr="Yellow A3 8P smoke",
+                    ci_kind="npu_smoke",
+                    ci_overrides={
+                        "worker": "yellow-test-id77a1",
+                        "target_pool": "a3_shared_pool",
+                        "docker": "torchtitan_ci_a3_r2",
+                    },
+                    nnodes=1,
+                    ngpu=8,
+                    timeout=90,
+                    env_vars={"ASCEND_SET_ENV_PATH": "/usr/local/Ascend/set_env.sh"},
+                ),
+                defaults,
+                0,
+            )
+            plan = create_plan(
+                [item],
+                run_id=81,
+                attempt=1,
+                sha="b" * 40,
+                workflow=PR_SMOKE_WORKFLOW,
+                defaults=defaults,
+                repo=SELF_REPO,
+            )
+            broker.runs_provider = lambda: [run]
+            test_state = root / "test_state"
+            test_state.mkdir(parents=True, exist_ok=True)
+            pools_file = root / "test_pools.json"
+            import hashlib
+
+            pools_json = json.dumps(
+                broker.pools, ensure_ascii=False, separators=(",", ":")
+            )
+            pools_file.write_text(
+                json.dumps(
+                    {
+                        "pools": broker.pools,
+                        "config_json": pools_json,
+                        "sha256": hashlib.sha256(pools_json.encode()).hexdigest(),
+                        "workers": broker.workers,
+                        "revision": 1,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            broker_client = BrokerClient(sock, worker_id="yellow-test-id77a1")
+            adapter = None
+
+            def fake_execute(case, subrun, *, root=None):
+                if adapter is not None:
+                    adapter.flush_snapshot(force=True)
+                log = root / "run.log"
+                log.write_text("CASE_RESULT smoke_8p PASS 0\n", encoding="utf-8")
+                return Execution(0, ["PASS_OK"], log, True)
+
+            broker.start()
+            try:
+                with (
+                    patch.dict(
+                        os.environ,
+                        {
+                            "LITE_ACTIONS_STATE_DIR": str(test_state),
+                            "LITE_ACTIONS_ACTIVE_POOLS_PATH": str(pools_file),
+                        },
+                    ),
+                    patch.object(ctrl, "_send", side_effect=fake_send),
+                    patch("ci_core.test_broker.execute", side_effect=fake_execute),
+                    patch("ci_core.test_broker.check_current", create=True),
+                    patch.object(
+                        broker.client,
+                        "ci_request",
+                        return_value=plan,
+                        create=True,
+                    ),
+                ):
+                    router = Router(
+                        main_root,
+                        "yellow-test-id77a1",
+                        broker_client,
+                        "depeng1994",
+                        deployment_config={
+                            "state_dir": str(test_state),
+                            "address": "local",
+                            "case_environments": broker.workers["yellow"][
+                                "case_environments"
+                            ],
+                        },
+                        broker_client=broker_client,
+                    )
+                    adapter = BrokerControlAdapter(
+                        router.broker, threading.Event(), router.control_view
+                    )
+                    router.control = adapter
+                    ctrl.register_test_worker(
+                        {
+                            "worker_id": "yellow-test-id77a1",
+                            "repo": SELF_REPO,
+                            "run_id": 81,
+                            "attempt": 1,
+                        }
+                    )
+                    router.tick()
+                    router.training.shutdown(wait=True)
+                    router.pump()
+                    adapter.flush_snapshot(force=True)
+            finally:
+                broker.stop()
+
+            records = router.state.read()
+            task_key = f"{SELF_REPO}:81:1:{item['case_id']}"
+            rec = records[task_key]
+            expected_alloc = [
+                {"host_id": "192.0.2.10:22", "devices": [0, 1, 2, 3, 4, 5, 6, 7]}
+            ]
+            self.assertEqual(rec["phase"], "REPORTED")
+            self.assertEqual(rec["allocation"], expected_alloc)
+            self.assertIn("FINISHED", rec["phase_timestamps"])
+            # Broker never pushed a RUNNING snapshot with empty allocation on finish.
+            for snap in broker_snapshots:
+                snap_rec = (snap or {}).get("records", {}).get(task_key)
+                if snap_rec and snap_rec.get("phase") in {
+                    "RUNNING",
+                    "CLEANING",
+                    "REPORTED",
+                }:
+                    self.assertEqual(snap_rec.get("allocation"), expected_alloc)
+            # Even if a snapshot omits allocation after completion, broker merges terminal allocation.
+            merged = broker._merge_active_allocations(
+                {"records": {task_key: {"phase": "REPORTED", "allocation": []}}}
+            )
+            self.assertEqual(merged["records"][task_key]["allocation"], expected_alloc)
+            # Telemetry sent TL with real devices and TF, and never emitted TL with a=[].
+            tl_events = [ev for ev in sent_events if ev.get("t") == "TL"]
+            tf_events = [ev for ev in sent_events if ev.get("t") == "TF"]
+            self.assertTrue(tl_events)
+            self.assertTrue(all(ev.get("a") for ev in tl_events))
+            self.assertEqual(len(tf_events), 1)
+            self.assertEqual(tf_events[0]["st"], "PASS")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,4 +1,4 @@
-import { repositories as liveRepositories, runs as liveRuns, timelineRuns as liveTimelineRuns, workflowKey } from "./formal-data.js";
+import { deviceRangeLabel, repositories as liveRepositories, runs as liveRuns, timelineRuns as liveTimelineRuns, workflowKey } from "./formal-data.js";
 import { computeElapsedMinutes } from "./workflows.js";
 
 const configuredBase = import.meta.env?.VITE_CONTROL_CENTER_API;
@@ -41,13 +41,12 @@ const timestampMs = (timestamp) => timestamp == null ? null : timestamp * 1000;
 const workerLabel = (value) => value ? value[0].toUpperCase() + value.slice(1) : "—";
 const phaseLabel = (task) => ({
   QUEUED: "排队中", RESERVED: "准备中", STAGING: "准备中", RUNNING: "运行中", CLEANING: "清理中",
-}[task.phase] || ({ PASS: "成功", FAIL: "失败", CANCELLED: "已取消", INFRA_ERROR: "失败" }[task.status] || task.status || "排队中"));
+}[task.phase] || ({
+  PASS: "成功", FAIL: "失败", TIMED_OUT: "失败", RESOURCE_TIMEOUT: "失败",
+  CANCELLED: "已取消", NOT_RUN: "已取消", INFRA_ERROR: "失败",
+}[task.status] || task.status || "排队中"));
 const resultLabel = (value) => ({ QUEUED: "排队中", PASS: "成功", FAIL: "失败" }[value] || value || "排队中");
-const rangeLabel = (devices) => {
-  if (!devices?.length) return null;
-  const sorted = [...devices].sort((a, b) => a - b);
-  return `${sorted[0]}–${sorted.at(-1)}`;
-};
+const rangeLabel = deviceRangeLabel;
 const platformLabel = (provider) => provider === "gitcode" ? "GitCode" : "GitHub";
 
 function nodeFromIdentity(identity, worker, pool, deviceGroups = []) {

@@ -60,6 +60,13 @@ class LeaseConfinementViolation(ValueError):
     """Raised when a Test Worker attempts an unauthorized or out-of-scope action."""
 
 
+def _copy_allocation(allocation: list[dict] | None) -> list[dict]:
+    return [
+        {"host_id": h["host_id"], "devices": list(h["devices"])}
+        for h in (allocation or [])
+    ]
+
+
 def _sanitize_pools(pools: dict) -> dict:
     cleaned = copy.deepcopy(pools)
     for pool in cleaned.values():
@@ -241,6 +248,7 @@ class TestBrokerServer:
         self._uid_lock = threading.Lock()
         self._pinned_uid: int | None = None
         self._active_allocations: dict[str, list[dict]] = {}
+        self._terminal_allocations: dict[str, list[dict]] = {}
         self._last_snapshot: dict | None = None
         self._alloc_lock = threading.RLock()
         self._plan_cache: dict[str, dict] = {}
@@ -562,14 +570,18 @@ class TestBrokerServer:
                 snapshot if snapshot is not None else self._last_snapshot
             )
             active = copy.deepcopy(self._active_allocations)
-        if not isinstance(base, dict) or not active:
+            terminal = copy.deepcopy(self._terminal_allocations)
+        if not isinstance(base, dict) or (not active and not terminal):
             return base
         records = base.get("records")
         if isinstance(records, dict):
-            for k, alloc in active.items():
-                rec = records.get(k)
-                if isinstance(rec, dict) and not rec.get("allocation"):
-                    rec["allocation"] = alloc
+            for k, rec in records.items():
+                if not isinstance(rec, dict) or rec.get("allocation"):
+                    continue
+                if k in active:
+                    rec["allocation"] = active[k]
+                elif k in terminal and rec.get("phase") != "QUEUED":
+                    rec["allocation"] = terminal[k]
         return base
 
     def _set_active_allocation(self, key: str, allocation: list[dict] | None) -> None:
@@ -577,10 +589,7 @@ class TestBrokerServer:
             if allocation is None:
                 self._active_allocations.pop(key, None)
             else:
-                self._active_allocations[key] = [
-                    {"host_id": h["host_id"], "devices": list(h["devices"])}
-                    for h in allocation
-                ]
+                self._active_allocations[key] = _copy_allocation(allocation)
             has_last = self._last_snapshot is not None
         snap = self._merge_active_allocations(None) if has_last else None
         if snap is not None and self.control_sink is not None:
@@ -588,6 +597,12 @@ class TestBrokerServer:
                 self.control_sink(self.worker_id, events=[], snapshot=snap)
             except Exception:
                 pass
+
+    def _mark_terminal_allocation(self, key: str, allocation: list[dict]) -> None:
+        """Retain completed task allocation for terminal snapshots without emitting []."""
+        with self._alloc_lock:
+            self._active_allocations.pop(key, None)
+            self._terminal_allocations[key] = _copy_allocation(allocation)
 
     def _handle_fetch_plan(self, payload: dict) -> dict:
         run = payload.get("run")
@@ -789,6 +804,8 @@ class TestBrokerServer:
         tail: list[str],
         release_verified: bool,
         locator: dict | None,
+        *,
+        allocation: list[dict] | None = None,
     ):
         res = report(run, item, digest, status, rc, tail, release_verified)
         if locator is not None:
@@ -825,6 +842,7 @@ class TestBrokerServer:
             "tail": tail,
             "release_verified": release_verified,
             "locator": locator,
+            "allocation": _copy_allocation(allocation),
             "published_by_broker": True,
         }
 
@@ -851,6 +869,8 @@ class TestBrokerServer:
         cancel = threading.Event()
         with self._cancel_lock:
             self._cancel_events[key] = cancel
+        with self._alloc_lock:
+            self._terminal_allocations.pop(key, None)
         try:
             if item["kind"] == "worker_probe":
                 if (
@@ -923,7 +943,7 @@ class TestBrokerServer:
                             "max_jobs_per_host", 1
                         ),
                         docker=case.get("docker"),
-                        enforce_quarantine=True,
+                        enforce_quarantine=self.quarantine_enabled,
                     )
                 except ResourceBusy as exc:
                     last_busy = str(exc) or "RESOURCE_BUSY"
@@ -939,7 +959,9 @@ class TestBrokerServer:
                     **lease.ports,
                 }
                 launched = False
-                self._set_active_allocation(key, leased_case["allocation"])
+                clean_alloc = _copy_allocation(leased_case["allocation"])
+                terminal_allocation: list[dict] | None = None
+                self._set_active_allocation(key, clean_alloc)
                 try:
                     is_self_repo = run.get("_ci_repo", REPO) == SELF_REPO
                     incremental_ids = [
@@ -1049,7 +1071,7 @@ class TestBrokerServer:
                         if execution.exit_code == 0 and valid
                         else "FAIL"
                     )
-                    return self._publish_result(
+                    res = self._publish_result(
                         key,
                         run,
                         item,
@@ -1059,10 +1081,13 @@ class TestBrokerServer:
                         execution.tail,
                         execution.release_verified,
                         execution.locator,
+                        allocation=clean_alloc,
                     )
+                    terminal_allocation = clean_alloc
+                    return res
                 except ExternalNpuOccupancy:
                     if launched:
-                        return self._publish_result(
+                        res = self._publish_result(
                             key,
                             run,
                             item,
@@ -1072,13 +1097,27 @@ class TestBrokerServer:
                             ["Occupancy after launch"],
                             False,
                             None,
+                            allocation=clean_alloc,
                         )
+                        terminal_allocation = clean_alloc
+                        return res
                     last_busy = "EXTERNAL_OCCUPANCY"
                     continue
                 except RunChanged:
+                    if launched:
+                        terminal_allocation = clean_alloc
+                        return {"run_changed": True, "allocation": clean_alloc}
                     return {"run_changed": True}
                 finally:
-                    self._set_active_allocation(key, None)
+                    if terminal_allocation is not None or launched:
+                        self._mark_terminal_allocation(
+                            key,
+                            terminal_allocation
+                            if terminal_allocation is not None
+                            else clean_alloc,
+                        )
+                    else:
+                        self._set_active_allocation(key, None)
                     lease.close()
             return {
                 "retry_busy": True,

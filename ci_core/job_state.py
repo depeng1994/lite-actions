@@ -13,9 +13,14 @@ _META = "__lite_actions_metadata__"
 
 def _apply_fields(record, fields):
     phase = fields.get("phase")
-    if phase and phase != record.get("phase") and phase != "REPORTED":
-        stamp = "FINISHED" if phase == "PENDING_REPORT" else phase
-        record.setdefault("phase_timestamps", {})[stamp] = int(time.time())
+    if phase and phase != record.get("phase"):
+        if phase == "REPORTED":
+            record.setdefault("phase_timestamps", {}).setdefault(
+                "FINISHED", int(time.time())
+            )
+        else:
+            stamp = "FINISHED" if phase == "PENDING_REPORT" else phase
+            record.setdefault("phase_timestamps", {})[stamp] = int(time.time())
     record.update(fields)
 
 

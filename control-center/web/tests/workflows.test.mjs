@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {test} from "node:test";
-import {beijingClock, displayNodeHost, now, plannedTime, timelineLabel, workflowKey} from "../src/formal-data.js";
+import {allocationEntries, beijingClock, displayNodeHost, formatAllocation, impactOf, now, plannedTime, timelineLabel, workflowKey} from "../src/formal-data.js";
 import {commandStatusLabel, commandStatusTone} from "../src/command-status.js";
 import {resourceInventories} from "../src/control-api.js";
 import {computeElapsedMinutes, currentWorkflowQueue, groupActiveRuns, moveWorkflow, summarizeRun, workflowResultLabel} from "../src/workflows.js";
@@ -249,4 +249,41 @@ test("computeElapsedMinutes and groupActiveRuns compute rounded non-negative ela
   assert.equal(computeElapsedMinutes({elapsed: -75.33333333333337}, lateNowMs), 0);
   assert.equal(computeElapsedMinutes({elapsed: 0.6666666666666288}, lateNowMs), 0.67);
   assert.equal(computeElapsedMinutes({start: null, started: null, elapsed: null}, lateNowMs), null);
+});
+
+test("formatAllocation, allocationEntries, and impactOf handle multi-node 16P allocations without dropping hosts", () => {
+  const twoNodeAllocations = [
+    {node_ref: "n_153", display_host_id: "113.xxx.xxx.205:153", devices: [8, 9, 10, 11, 12, 13, 14, 15]},
+    {node_ref: "n_154", display_host_id: "113.xxx.xxx.205:154", devices: [0, 1, 2, 3, 4, 5, 6, 7]},
+  ];
+  const item = {
+    worker: "Blue",
+    pool: "a3_shared_blue",
+    status: "运行中",
+    node: "n_153",
+    allocation: {id: "n_153", displayHost: "113.xxx.xxx.205:153"},
+    allocations: twoNodeAllocations,
+    groups: ["8–15", "0–7"],
+  };
+  assert.equal(formatAllocation(item), "113.xxx.xxx.205:153 8–15、113.xxx.xxx.205:154 0–7");
+  assert.deepEqual(allocationEntries(item), [
+    {host: "113.xxx.xxx.205:153", group: "8–15", devicesText: "8,9,10,11,12,13,14,15"},
+    {host: "113.xxx.xxx.205:154", group: "0–7", devicesText: "0,1,2,3,4,5,6,7"},
+  ]);
+
+  const adminDetail = {
+    allocation: [
+      {node_ref: "n_153", host_id: "113.46.17.205:153", display_host_id: "113.46.17.205:153", devices: [8, 9, 10, 11, 12, 13, 14, 15]},
+      {node_ref: "n_154", host_id: "113.46.17.205:154", display_host_id: "113.46.17.205:154", devices: [0, 1, 2, 3, 4, 5, 6, 7]},
+    ],
+  };
+  assert.equal(formatAllocation(item, adminDetail), "113.46.17.205:153 8–15、113.46.17.205:154 0–7");
+  assert.equal(formatAllocation({groups: []}), null);
+
+  const nodes = [
+    {id: "n_153", hostId: "113.46.17.205:153", displayHost: "113.xxx.xxx.205:153", worker: "Blue", pool: "a3_shared_blue"},
+    {id: "n_154", hostId: "113.46.17.205:154", displayHost: "113.xxx.xxx.205:154", worker: "Blue", pool: "a3_shared_blue"},
+  ];
+  const impact = impactOf({worker: "Blue", pool: "a3_shared_blue", node: "n_154", nodeId: "n_154", group: "0–7"}, [item], nodes);
+  assert.equal(impact.leases.length, 1);
 });
