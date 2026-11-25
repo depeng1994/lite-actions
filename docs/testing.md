@@ -53,3 +53,7 @@ E3/E4：选定真实 Worker 的首次一键安装、自动切换、CPU-only Work
 4. Blue 公开脱敏日志默认关闭。启用须登记 `public_release` 下 `public_diagnostics_approved`（true）、`repository`、已存在且非 draft 的 `release_id`、`tag` 和 `publisher_login`；写身份从既有受控 `LITE_ACTIONS_BLUE_RELEASE_TOKEN` 注入。不要创建临时放宽权限的 Release/Token 来测试。模型配置 `LITE_CI_PUBLIC_LOG_REPO` 与实际目的地一致；普通读者无须登录。每个 case 先占用持久额度再发送，一份文件、字节数和 SHA-256；不明回执先查重，只清理有自己回执且身份/摘要一致的过期文件。日志是否成功投递和用例是否通过分别报告。
 5. 在固定分支 SHA 跑 `python3 scripts/lint.py`、`python3 -m unittest discover -s tests -v`。`tests.test_rfc24_boundaries` 覆盖真实 loopback 正对照/无模型执行、安全边界及原生 Release 协议的假后端；`tests.test_workflow.Rfc24RecoveryTests` 用真路由与状态文件、虚拟时钟和假平台验证丢回执/断线/重启，并检查模型代码未在到达执行边界前运行。记录跳过项，不以 mock 代真机。
 6. E1/E2/E5 核心必跑；E5 只做一次三仓回归：TT-GC 组织仓 Dispatcher Smoke、vLLM-GH 完整 Dispatcher Smoke、Lite Actions 同部署 SHA 的 `profile=full`。不跑 Nightly 权重训练；核对每个必需实例、真实资源、exit=0、cleanup_verified=true 和日志位置。TT-GC 合入及其现有 Actions 同步证据另记，不对 TT-GH 写入。E3 真机验收必须匿名读回 4 MiB 合成文件核对哈希；E4 实际出口计量和 ACK 时效需独立线上样本，虚拟时钟不得当作生产网络证据。
+
+## test
+
+test
