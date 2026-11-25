@@ -700,9 +700,14 @@ def remote_preflight(
         request, probe_host, _, reclaim, host_pids, legacy_a5 = target
         check_cancel()
         probe_command = "npu-smi info" if host_pids else command
-        proc = transport_run(probe_host, probe_command, timeout=40, check=False)
+        try:
+            proc = transport_run(probe_host, probe_command, timeout=60, check=False)
+        except subprocess.TimeoutExpired:
+            check_cancel()
+            proc = transport_run(probe_host, probe_command, timeout=60, check=False)
         if proc.returncode == 255:
-            proc = transport_run(probe_host, probe_command, timeout=40, check=False)
+            check_cancel()
+            proc = transport_run(probe_host, probe_command, timeout=60, check=False)
         if proc.returncode != 0:
             raise RuntimeError(f"NPU occupancy query failed on {request['host_id']}")
         found = _process_rows(
@@ -1233,13 +1238,22 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
             if rank is None or location["path"] != path:
                 raise ValueError("LOG_LOCATOR_MISMATCH")
             locator = {"host": managed, "path": path}
-        excerpt = select_remote(
-            location["host"],
-            location["path"],
-            rc,
-            approved_hosts=approved,
-            require_loss=case["kind"] == "train",
-        )
+        try:
+            excerpt = select_remote(
+                location["host"],
+                location["path"],
+                rc,
+                approved_hosts=approved,
+                require_loss=case["kind"] == "train",
+            )
+        except (RuntimeError, OSError, subprocess.SubprocessError):
+            excerpt = select_remote(
+                location["host"],
+                location["path"],
+                rc,
+                approved_hosts=approved,
+                require_loss=case["kind"] == "train",
+            )
     except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:
         locator = None
         excerpt = summarize(logfile, rc)[-18:]

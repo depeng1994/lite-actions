@@ -24,7 +24,7 @@ def command(host, script):
         "-o",
         "StrictHostKeyChecking=yes",
         "-o",
-        "ConnectTimeout=15",
+        "ConnectTimeout=30",
         "-o",
         "ServerAliveInterval=25",
         alias,

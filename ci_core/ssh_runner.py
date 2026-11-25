@@ -251,10 +251,22 @@ def stage(
     ssh(host, f"mkdir -p {q(base)} && mkdir {q(dest)} && mkdir {q(dest + '/repo')}")
     from ci_core.transport import run as transport_run
 
-    with archive.open("rb") as source:
-        transport_run(
-            host, "cat > " + q(dest + "/source.tar.gz"), stdin=source, timeout=180
-        )
+    for attempt in range(2):
+        try:
+            with archive.open("rb") as source:
+                transport_run(
+                    host,
+                    "cat > " + q(dest + "/source.tar.gz"),
+                    stdin=source,
+                    timeout=240,
+                )
+            break
+        except subprocess.TimeoutExpired:
+            if attempt:
+                raise
+        except RuntimeError as exc:
+            if attempt or "exit=255" not in str(exc):
+                raise
     import hashlib
 
     checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
