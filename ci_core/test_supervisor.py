@@ -389,6 +389,7 @@ class TestSupervisor:
             raise ValueError(
                 f"GitHub run {run_id} attempt mismatch: {run_info.get('run_attempt')} != {attempt}"
             )
+        return pr
 
     def detect_partial_rerun(
         self, client, run: dict, lifecycle: dict, *, is_cleanup: bool = False
@@ -459,7 +460,10 @@ class TestSupervisor:
                 fallback_repo=fallback,
                 source_pr=(
                     lifecycle["pr_number"]
-                    if run.get("_ci_source", {}).get("mode") == "merge_result"
+                    if (
+                        run.get("_ci_use_pr_merge_ref")
+                        or run.get("_ci_source", {}).get("mode") == "merge_result"
+                    )
                     else None
                 ),
             )
@@ -691,13 +695,28 @@ class TestSupervisor:
             }
 
         try:
-            self.verify_deploy_authority(client, run, lifecycle)
+            pr_info = self.verify_deploy_authority(client, run, lifecycle)
         except Exception as exc:
             return {
                 "status": "FAIL",
                 "exit_code": 1,
                 "tail": [f"Deploy authority check failed: {exc}"],
                 "release_verified": True,
+            }
+        merge_sha = (
+            pr_info.get("merge_commit_sha")
+            if isinstance(pr_info, dict) and pr_info.get("mergeable") is not False
+            else None
+        )
+        if (
+            isinstance(merge_sha, str)
+            and len(merge_sha) == 40
+            and all(ch in "0123456789abcdef" for ch in merge_sha.lower())
+        ):
+            run = {
+                **run,
+                "_ci_execution_sha": merge_sha.lower(),
+                "_ci_use_pr_merge_ref": True,
             }
 
         ttl = max(60, min(MAX_TTL_SECONDS, int(lifecycle["ttl_seconds"])))
