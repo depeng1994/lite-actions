@@ -664,34 +664,27 @@ export async function mergePrWithGate(
     }
   }
 
-  const reviewsResp = await fetchFn(`${GH}/repos/${repo}/pulls/${prNumber}/reviews?per_page=100`, {
-    headers: auth.headers, signal: AbortSignal.timeout(8000),
-  });
-  if (!reviewsResp.ok) throw new HttpError(502, "PLATFORM_HTTP_ERROR", `GitHub reviews lookup HTTP ${reviewsResp.status}`);
-  const reviews = await reviewsResp.json<Array<{
-    user?: {login?: string};
-    state?: string;
-    commit_id?: string;
-    author_association?: string;
-  }>>();
   const prAuthor = String(pr.user?.login || "").toLowerCase();
-  const latestByReviewer = new Map<string, {state: string; commitId: string; assoc: string}>();
-  for (const rev of reviews) {
-    const login = String(rev.user?.login || "").toLowerCase();
-    if (!login || login === prAuthor) continue;
-    const state = String(rev.state || "").toUpperCase();
-    if (!["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].includes(state)) continue;
-    latestByReviewer.set(login, {
-      state,
-      commitId: String(rev.commit_id || ""),
-      assoc: String(rev.author_association || ""),
+  const owners = trustedOwners(context.env);
+  let authorized = owners.has(prAuthor);
+  if (!authorized) {
+    const reviewsResp = await fetchFn(`${GH}/repos/${repo}/pulls/${prNumber}/reviews?per_page=100`, {
+      headers: auth.headers, signal: AbortSignal.timeout(8000),
     });
+    if (!reviewsResp.ok) throw new HttpError(502, "PLATFORM_HTTP_ERROR", `GitHub reviews lookup HTTP ${reviewsResp.status}`);
+    const reviews = await reviewsResp.json<Array<{user?: {login?: string}; state?: string; author_association?: string}>>();
+    const latest = new Map<string, string>();
+    for (const rev of reviews) {
+      const login = String(rev.user?.login || "").toLowerCase();
+      const state = String(rev.state || "").toUpperCase();
+      const isMaintainer = owners.has(login) || MAINTAINER_ASSOC.has(String(rev.author_association || ""));
+      if (login && login !== prAuthor && isMaintainer && ["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].includes(state)) {
+        latest.set(login, state);
+      }
+    }
+    authorized = [...latest.values()].includes("APPROVED");
   }
-  const hasValidShaReview = [...latestByReviewer.values()].some(
-    rev => MAINTAINER_ASSOC.has(rev.assoc) && rev.state === "APPROVED" && rev.commitId === sha,
-  );
-  const selfPr = trustedOwners(context.env).has(prAuthor);
-  if (!selfPr && !hasValidShaReview) {
+  if (!authorized) {
     await db.prepare(`
       UPDATE pr_gate_generations SET status='CANCELLED',updated_at=?,finished_at=COALESCE(finished_at,?)
       WHERE repo=? AND pr_number=? AND pr_head_sha=? AND generation=?

@@ -233,9 +233,11 @@ class TestBrokerServer:
         self.runs_provider = runs_provider
         self._cancel_events: dict[str, threading.Event] = {}
         self._cancel_lock = threading.Lock()
+        self._uid_lock = threading.Lock()
+        self._pinned_uid: int | None = None
         self._active_allocations: dict[str, list[dict]] = {}
         self._last_snapshot: dict | None = None
-        self._alloc_lock = threading.Lock()
+        self._alloc_lock = threading.RLock()
         self._plan_cache: dict[str, dict] = {}
         self._server: _ThreadedUnixServer | None = None
         self._thread: threading.Thread | None = None
@@ -253,6 +255,19 @@ class TestBrokerServer:
         if run.get("_ci_provider") == "gitcode":
             return os.environ.get("LITE_ACTIONS_GITCODE_RESULT_AUTHOR", self.author)
         return self.author
+
+    def pin_allowed_uid(self, uid: int) -> None:
+        if type(uid) is not int or uid <= 0:
+            raise ValueError(f"invalid dynamic uid: {uid!r}")
+        with self._uid_lock:
+            if self._pinned_uid is not None and self._pinned_uid != uid:
+                raise LeaseConfinementViolation("LEASE_CONFINEMENT_VIOLATION")
+            self._pinned_uid = uid
+
+    def cancel_all(self) -> None:
+        with self._cancel_lock:
+            for ev in self._cancel_events.values():
+                ev.set()
 
     def _expected_uid(self) -> int:
         if self.allowed_uid is not None:
@@ -287,6 +302,44 @@ class TestBrokerServer:
         if cred is None:
             raise LeaseConfinementViolation("LEASE_CONFINEMENT_VIOLATION")
         pid, uid, _gid = cred
+        if self.allowed_unit and self.allowed_uid is None and self.allowed_user is None:
+            unit_name = (
+                self.allowed_unit
+                if self.allowed_unit.endswith(".service")
+                else f"{self.allowed_unit}.service"
+            )
+            cg_path = Path(f"/proc/{pid}/cgroup")
+            try:
+                proc_uid = os.stat(f"/proc/{pid}").st_uid
+                cg = cg_path.read_text(errors="replace") if cg_path.exists() else ""
+            except OSError:
+                proc_uid = -1
+                cg = ""
+            if pid <= 1 or uid <= 0 or proc_uid != uid or unit_name not in cg:
+                self.audit_log.append(
+                    {
+                        "event": "cgroup_or_uid_rejected",
+                        "pid": pid,
+                        "uid": uid,
+                        "proc_uid": proc_uid,
+                        "expected_unit": unit_name,
+                    }
+                )
+                raise LeaseConfinementViolation("LEASE_CONFINEMENT_VIOLATION")
+            with self._uid_lock:
+                if self._pinned_uid is None:
+                    self._pinned_uid = uid
+                elif uid != self._pinned_uid:
+                    self.audit_log.append(
+                        {
+                            "event": "peercred_rejected",
+                            "pid": pid,
+                            "uid": uid,
+                            "expected_uid": self._pinned_uid,
+                        }
+                    )
+                    raise LeaseConfinementViolation("LEASE_CONFINEMENT_VIOLATION")
+            return
         expected = self._expected_uid()
         if uid != expected:
             self.audit_log.append(
@@ -394,7 +447,14 @@ class TestBrokerServer:
                     pass
 
         self._server = _ThreadedUnixServer(str(self.socket_path), Handler)
-        os.chmod(self.socket_path, 0o600)
+        sock_mode = (
+            0o666
+            if self.allowed_unit
+            and self.allowed_uid is None
+            and self.allowed_user is None
+            else 0o600
+        )
+        os.chmod(self.socket_path, sock_mode)
         self._thread = threading.Thread(
             target=self._server.serve_forever, daemon=True, name="test-broker"
         )
@@ -466,9 +526,20 @@ class TestBrokerServer:
         if op == "REPORT_CONTROL_EVENTS":
             events = payload.get("events") or []
             snapshot = self._merge_active_allocations(payload.get("snapshot"))
+            deferred = False
             if self.control_sink is not None:
-                self.control_sink(self.worker_id, events=events, snapshot=snapshot)
-            return {"ok": True, "result": {"accepted": len(events)}}
+                try:
+                    self.control_sink(self.worker_id, events=events, snapshot=snapshot)
+                except Exception as exc:
+                    deferred = True
+                    logging.warning(
+                        "test worker control telemetry deferred (%s)",
+                        type(exc).__name__,
+                    )
+            return {
+                "ok": True,
+                "result": {"accepted": len(events), "deferred": deferred},
+            }
         raise LeaseConfinementViolation("LEASE_CONFINEMENT_VIOLATION")
 
     def _merge_active_allocations(self, snapshot):
@@ -498,11 +569,8 @@ class TestBrokerServer:
                     {"host_id": h["host_id"], "devices": list(h["devices"])}
                     for h in allocation
                 ]
-            snap = (
-                self._merge_active_allocations(self._last_snapshot)
-                if self._last_snapshot is not None
-                else None
-            )
+            has_last = self._last_snapshot is not None
+        snap = self._merge_active_allocations(None) if has_last else None
         if snap is not None and self.control_sink is not None:
             try:
                 self.control_sink(self.worker_id, events=[], snapshot=snap)

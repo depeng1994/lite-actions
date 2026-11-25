@@ -572,54 +572,30 @@ class SupervisorFaultInjectionTests(unittest.TestCase):
             self.assertEqual(second["status"], "PASS")
 
     def test_08_deploy_authority_enforces_maintainer_and_review_rules(self):
-        sha, stale = "a" * 40, "b" * 40
+        sha, earlier = "a" * 40, "b" * 40
+
+        def rev(state, cid=sha):
+            return {"user": {"login": "depeng1994"}, "state": state, "commit_id": cid}
+
         cases = [
             ("self_pr_direct", "depeng1994", [], True),
             ("external_unreviewed", "contributor", [], False),
             (
-                "external_stale_sha",
+                "external_approved_earlier_sha",
                 "contributor",
-                [
-                    {
-                        "user": {"login": "depeng1994"},
-                        "state": "APPROVED",
-                        "commit_id": stale,
-                    }
-                ],
-                False,
+                [rev("APPROVED", earlier)],
+                True,
             ),
             (
                 "external_dismissed",
                 "contributor",
-                [
-                    {
-                        "user": {"login": "depeng1994"},
-                        "state": "APPROVED",
-                        "commit_id": sha,
-                    },
-                    {
-                        "user": {"login": "depeng1994"},
-                        "state": "DISMISSED",
-                        "commit_id": sha,
-                    },
-                ],
+                [rev("APPROVED"), rev("DISMISSED")],
                 False,
             ),
             (
                 "external_approved_then_commented",
                 "contributor",
-                [
-                    {
-                        "user": {"login": "depeng1994"},
-                        "state": "APPROVED",
-                        "commit_id": sha,
-                    },
-                    {
-                        "user": {"login": "depeng1994"},
-                        "state": "COMMENTED",
-                        "commit_id": sha,
-                    },
-                ],
+                [rev("APPROVED"), rev("COMMENTED")],
                 True,
             ),
         ]

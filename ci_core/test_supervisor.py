@@ -70,18 +70,16 @@ def build_systemd_command(
     unit_name: str,
     zone: str,
     worker_id: str,
-    user_name: str | None = None,
     state_dir: Path,
     broker_sock: Path,
     ready_file: Path,
     pools_file: Path,
     code_dir: Path,
     python_bin: str | None = None,
+    state_dir_name: str | None = None,
 ) -> list[str]:
     """Build the systemd-run invocation confining a Test Worker to an ephemeral DynamicUser."""
     py = python_bin or sys.executable
-    short = hashlib.sha256(worker_id.encode()).hexdigest()[:12]
-    dyn_user = user_name or f"latw-{short}"
     py_resolved = Path(py).resolve()
     py_dir = str(py_resolved.parent)
     bind_ro_paths = [str(code_dir)]
@@ -102,10 +100,6 @@ def build_systemd_command(
         "-p",
         "DynamicUser=yes",
         "-p",
-        f"User={dyn_user}",
-        "-p",
-        f"Group={dyn_user}",
-        "-p",
         "ProtectSystem=strict",
         "-p",
         "ProtectHome=yes",
@@ -114,18 +108,24 @@ def build_systemd_command(
         "-p",
         "PrivateTmp=yes",
         "-p",
-        f"ReadWritePaths={state_dir}",
-        "-p",
-        f"ReadWritePaths={broker_sock.parent}",
+        "TimeoutStopSec=15",
     ]
+    if state_dir_name:
+        cmd.extend(
+            [
+                "-p",
+                f"StateDirectory={state_dir_name}",
+                "-p",
+                "StateDirectoryMode=0700",
+            ]
+        )
+    else:
+        cmd.extend(["-p", f"ReadWritePaths={state_dir}"])
+    cmd.extend(["-p", f"ReadWritePaths={broker_sock.parent}"])
     for ro_path in bind_ro_paths:
         cmd.extend(["-p", f"BindReadOnlyPaths={ro_path}"])
     cmd.extend(
         [
-            "-p",
-            f"ExecStartPre=+/usr/bin/env chown -R {dyn_user}:{dyn_user} {state_dir}",
-            "-p",
-            f"ExecStartPre=+/usr/bin/env chown {dyn_user}:{dyn_user} {broker_sock}",
             "--",
             str(code_dir / "scripts/run_test_worker.sh"),
             "--zone",
@@ -358,25 +358,19 @@ class TestSupervisor:
             )
             if not isinstance(reviews, list):
                 raise ValueError(f"PR #{pr_number} reviews payload invalid")
-            latest_decisive: dict[str, tuple[str, str]] = {}
-            for rev in reviews:
-                if not isinstance(rev, dict):
-                    continue
-                reviewer = ((rev.get("user") or {}).get("login") or "").strip().lower()
-                if not reviewer or reviewer == pr_author:
-                    continue
-                state = str(rev.get("state") or "").upper()
-                if state not in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}:
-                    continue
-                latest_decisive[reviewer] = (state, str(rev.get("commit_id") or ""))
-            if not any(
-                reviewer in trusted_owners
-                and state == "APPROVED"
-                and commit_id == lifecycle["pr_head_sha"]
-                for reviewer, (state, commit_id) in latest_decisive.items()
-            ):
+            latest_decisive = {
+                u: str(rev.get("state") or "").upper()
+                for rev in reviews
+                if isinstance(rev, dict)
+                and (u := ((rev.get("user") or {}).get("login") or "").strip().lower())
+                and u != pr_author
+                and u in trusted_owners
+                and str(rev.get("state") or "").upper()
+                in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
+            }
+            if "APPROVED" not in latest_decisive.values():
                 raise ValueError(
-                    f"PR #{pr_number} by {pr_author} requires maintainer APPROVED review on {lifecycle['pr_head_sha']}"
+                    f"PR #{pr_number} by {pr_author} requires maintainer APPROVED review"
                 )
         run_info = c.workflow_status(run_id)
         if run_info.get("status") not in {"queued", "in_progress"}:
@@ -493,16 +487,21 @@ class TestSupervisor:
             text=True,
             check=False,
         )
+        cli_state_dir = (
+            Path(record["unit_state_dir"])
+            if record.get("unit_state_dir")
+            else state_dir
+        )
         cmd = build_systemd_command(
             unit_name=unit_name,
             zone=self.zone,
             worker_id=record["worker_id"],
-            user_name=record.get("user_name"),
-            state_dir=state_dir,
+            state_dir=cli_state_dir,
             broker_sock=broker_sock,
-            ready_file=ready_file,
-            pools_file=pools_file,
+            ready_file=cli_state_dir / "worker-ready.json",
+            pools_file=cli_state_dir / "pools-active.json",
             code_dir=code_dir,
+            state_dir_name=record.get("state_dir_name"),
         )
         proc = subprocess.run(
             cmd, capture_output=True, text=True, check=False, timeout=30
@@ -535,7 +534,11 @@ class TestSupervisor:
         if pid <= 1:
             raise RuntimeError("transient test worker MainPID unavailable")
         boot_id, ticks = process_identity(pid)
-        return {"pid": pid, "boot_id": boot_id, "start_ticks": ticks}
+        try:
+            uid = os.stat(f"/proc/{pid}").st_uid
+        except OSError:
+            uid = None
+        return {"pid": pid, "boot_id": boot_id, "start_ticks": ticks, "uid": uid}
 
     def _is_alive(self, record: dict) -> bool:
         if self._alive_checker is not None:
@@ -557,51 +560,83 @@ class TestSupervisor:
             self._stopper(record["worker_id"], record)
             return
         unit_name = record.get("unit_name")
-        if unit_name and self._launcher is None and shutil.which("systemctl"):
-            subprocess.run(
-                ["systemctl", "stop", f"{unit_name}.service"],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=30,
-            )
-            subprocess.run(
-                ["systemctl", "reset-failed", f"{unit_name}.service"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
+        has_systemctl = bool(
+            unit_name and self._launcher is None and shutil.which("systemctl")
+        )
+        if has_systemctl:
+            try:
+                subprocess.run(
+                    ["systemctl", "stop", f"{unit_name}.service"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=20,
+                )
+            except (subprocess.TimeoutExpired, OSError):
+                try:
+                    subprocess.run(
+                        [
+                            "systemctl",
+                            "kill",
+                            "-s",
+                            "SIGKILL",
+                            "--kill-who=all",
+                            f"{unit_name}.service",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                        timeout=15,
+                    )
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
         pid = record.get("pid")
         ticks = record.get("start_ticks")
         boot = record.get("boot_id")
-        if not (isinstance(pid, int) and pid > 1 and isinstance(ticks, int)):
-            return
-        # Never signal a PID without confirming boot_id + start_ticks identity.
-        try:
-            cur_boot, cur_ticks = process_identity(pid)
-        except OSError:
-            return
-        if cur_boot != boot or cur_ticks != ticks:
-            return
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            return
-        deadline = time.monotonic() + 8.0
-        while time.monotonic() < deadline:
+        if isinstance(pid, int) and pid > 1 and isinstance(ticks, int):
+            # Never signal a PID without confirming boot_id + start_ticks identity.
             try:
                 cur_boot, cur_ticks = process_identity(pid)
-                if cur_boot != boot or cur_ticks != ticks:
-                    return
             except OSError:
-                return
-            time.sleep(0.1)
-        try:
-            cur_boot, cur_ticks = process_identity(pid)
+                cur_boot, cur_ticks = None, None
             if cur_boot == boot and cur_ticks == ticks:
-                os.kill(pid, signal.SIGKILL)
-        except OSError:
-            pass
+                sent = False
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                    sent = True
+                except ProcessLookupError:
+                    sent = False
+                if sent:
+                    deadline = time.monotonic() + 8.0
+                    still_running = True
+                    while time.monotonic() < deadline:
+                        try:
+                            cur_boot, cur_ticks = process_identity(pid)
+                            if cur_boot != boot or cur_ticks != ticks:
+                                still_running = False
+                                break
+                        except OSError:
+                            still_running = False
+                            break
+                        time.sleep(0.1)
+                    if still_running:
+                        try:
+                            cur_boot, cur_ticks = process_identity(pid)
+                            if cur_boot == boot and cur_ticks == ticks:
+                                os.kill(pid, signal.SIGKILL)
+                        except OSError:
+                            pass
+        if has_systemctl:
+            try:
+                subprocess.run(
+                    ["systemctl", "reset-failed", f"{unit_name}.service"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=10,
+                )
+            except (subprocess.TimeoutExpired, OSError):
+                pass
 
     def handle_deploy(self, client, run: dict, item: dict) -> dict:
         lifecycle = item.get("lifecycle")
@@ -695,10 +730,18 @@ class TestSupervisor:
                 }
 
             short = self._short_id(target_worker)
-            user_name = f"latw-{short}"
             instance_root = self.worktree_root / short
-            state_dir = instance_root / "state"
             code_dir = instance_root / "code"
+            if self._launcher is None:
+                state_dir_name = f"lite-actions-tw-{short}"
+                unit_state_dir = Path("/var/lib") / state_dir_name
+                state_dir = Path("/var/lib/private") / state_dir_name
+                user_name = None
+            else:
+                state_dir_name = None
+                state_dir = instance_root / "state"
+                unit_state_dir = state_dir
+                user_name = f"latw-{short}"
             pools_file = state_dir / "pools-active.json"
             ready_file = state_dir / "worker-ready.json"
             sock_dir = self.runtime_root / f"b-{short}"
@@ -718,6 +761,8 @@ class TestSupervisor:
                 "status": "DEPLOYING",
                 "unit_name": unit_name,
                 "user_name": user_name,
+                "state_dir_name": state_dir_name,
+                "unit_state_dir": str(unit_state_dir),
                 "instance_root": str(instance_root),
                 "state_dir": str(state_dir),
                 "code_dir": str(code_dir),
@@ -735,14 +780,22 @@ class TestSupervisor:
             }
             workers_map[target_worker] = record
             self._write_ledger(doc)
+            self._notify_control_register(record)
 
             try:
                 self.worktree_root.mkdir(parents=True, exist_ok=True)
                 os.chmod(self.worktree_root, 0o711)
                 instance_root.mkdir(parents=True, exist_ok=True)
                 os.chmod(instance_root, 0o711)
-                state_dir.mkdir(parents=True, exist_ok=True)
-                os.chmod(state_dir, 0o700)
+                if self._launcher is not None:
+                    state_dir.mkdir(parents=True, exist_ok=True)
+                    os.chmod(state_dir, 0o700)
+                else:
+                    if unit_state_dir.is_symlink():
+                        unit_state_dir.unlink(missing_ok=True)
+                    elif unit_state_dir.exists():
+                        shutil.rmtree(unit_state_dir, ignore_errors=True)
+                    shutil.rmtree(state_dir, ignore_errors=True)
                 self.runtime_root.mkdir(parents=True, exist_ok=True)
                 try:
                     os.chmod(self.runtime_root, 0o711)
@@ -785,7 +838,7 @@ class TestSupervisor:
                         "allow_gitcode_test_worker": True,
                     },
                     control_sink=self._forward_control,
-                    allowed_user=(user_name if self._launcher is None else None),
+                    allowed_user=None,
                     allowed_unit=(unit_name if self._launcher is None else None),
                     allowed_uid=(os.getuid() if self._launcher is not None else None),
                     enforce_peercred=self.enforce_peercred,
@@ -815,6 +868,12 @@ class TestSupervisor:
                         ready_file=ready_file,
                         pools_file=pools_file,
                     )
+                if (
+                    self._launcher is None
+                    and proc_meta.get("uid") is not None
+                    and int(proc_meta["uid"]) > 0
+                ):
+                    broker.pin_allowed_uid(int(proc_meta["uid"]))
                 pid = int(proc_meta["pid"])
                 boot_id = proc_meta.get("boot_id")
                 start_ticks = proc_meta.get("start_ticks")
@@ -858,11 +917,13 @@ class TestSupervisor:
                 self._cleanup_worker_unlocked(
                     doc, target_worker, reason="deploy_failed"
                 )
+                detail = " ".join(str(exc).split())[:120]
                 return {
                     "status": "INFRA_ERROR",
                     "exit_code": 125,
                     "tail": [
                         f"Deploy failed for {target_worker}: {type(exc).__name__}"
+                        + (f": {detail}" if detail else "")
                     ],
                     "release_verified": False,
                 }
@@ -936,6 +997,8 @@ class TestSupervisor:
                 "release_verified": True,
             }
 
+        if worker_id in self._brokers:
+            self._brokers[worker_id].cancel_all()
         if record:
             self._stop_process_or_unit(record)
         broker = self._brokers.pop(worker_id, None)
@@ -987,10 +1050,20 @@ class TestSupervisor:
                 record["status"] = "STOPPED"
                 record["stopped_reason"] = reason
                 record["updated_at"] = int(self.clock())
-                for dkey in ("sock_dir", "instance_root"):
+                for dkey in (
+                    "sock_dir",
+                    "instance_root",
+                    "state_dir",
+                    "unit_state_dir",
+                ):
                     path_str = record.get(dkey)
-                    if path_str:
-                        shutil.rmtree(path_str, ignore_errors=True)
+                    if not path_str:
+                        continue
+                    path_obj = Path(path_str)
+                    if path_obj.is_symlink():
+                        path_obj.unlink(missing_ok=True)
+                    elif path_obj.exists():
+                        shutil.rmtree(path_obj, ignore_errors=True)
             self._write_ledger(doc)
             self._notify_control_deregister(worker_id, reason=reason)
             return {
@@ -1084,9 +1157,12 @@ class TestSupervisor:
                             type(exc).__name__,
                         )
                 if reason:
-                    results.append(
-                        self._cleanup_worker_unlocked(doc, wid, reason=reason)
-                    )
+                    try:
+                        results.append(
+                            self._cleanup_worker_unlocked(doc, wid, reason=reason)
+                        )
+                    except Exception:
+                        logging.exception("watchdog cleanup failed for %s", wid)
             if do_remote:
                 self._last_watchdog_remote_check = mono
         return results

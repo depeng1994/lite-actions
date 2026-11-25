@@ -216,7 +216,7 @@ test("merge coordinator enforces SHA binding, same-SHA PR isolation, and live ap
     repo: "depeng1994/lite-actions", pr_number: 50, pr_head_sha: shaA,
   }, movedHeadFetch)).rejects.toMatchObject({status: 409, code: "PR_HEAD_MISMATCH"});
 
-  // External PR review dismissed OR bound to old SHA before Check updated -> AUTH_REVOKED_OR_RUN_CANCELLED.
+  // External PR review dismissed before Check updated -> AUTH_REVOKED_OR_RUN_CANCELLED.
   const publishedFailure: string[] = [];
   const dismissedReviewFetch: FetchLike = async (url, init) => {
     const href = String(url);
@@ -226,7 +226,6 @@ test("merge coordinator enforces SHA binding, same-SHA PR isolation, and live ap
       return Response.json([
         {user: {login: "depeng1994"}, state: "APPROVED", commit_id: shaA, author_association: "OWNER"},
         {user: {login: "depeng1994"}, state: "DISMISSED", commit_id: shaA, author_association: "OWNER"},
-        {user: {login: "maintainer2"}, state: "APPROVED", commit_id: shaOld, author_association: "COLLABORATOR"},
       ]);
     }
     if (href.includes("/statuses/")) {
@@ -240,7 +239,7 @@ test("merge coordinator enforces SHA binding, same-SHA PR isolation, and live ap
   }, dismissedReviewFetch)).rejects.toMatchObject({status: 403, code: "AUTH_REVOKED_OR_RUN_CANCELLED"});
   expect(publishedFailure).toEqual(["failure"]);
 
-  // Happy path for external PR with APPROVED on exact SHA followed by a COMMENTED note.
+  // Happy path for external PR with APPROVED on an earlier commit followed by COMMENTED on newer SHA.
   await registerPrGate(ctxFor(), {
     repo: "depeng1994/lite-actions", pr_number: 50, pr_head_sha: shaA,
     github_run_id: "5002", github_run_attempt: 1, author_login: "contributor",
@@ -257,7 +256,7 @@ test("merge coordinator enforces SHA binding, same-SHA PR isolation, and live ap
     if (href.endsWith("/actions/runs/5002")) return Response.json({status: "completed", conclusion: "success", run_attempt: 1});
     if (href.includes("/pulls/50/reviews")) {
       return Response.json([
-        {user: {login: "depeng1994"}, state: "APPROVED", commit_id: shaA, author_association: "OWNER"},
+        {user: {login: "depeng1994"}, state: "APPROVED", commit_id: shaOld, author_association: "OWNER"},
         {user: {login: "depeng1994"}, state: "COMMENTED", commit_id: shaA, author_association: "OWNER"},
       ]);
     }

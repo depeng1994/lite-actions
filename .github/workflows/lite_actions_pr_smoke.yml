@@ -117,27 +117,14 @@ jobs:
             exit 1
           fi
           if printf ',%s,' "$PR_MAINTAINERS" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' | grep -qF ",$(printf '%s' "$pr_author" | tr '[:upper:]' '[:lower:]'),"; then
-            if [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then
-              echo "::error::Maintainer PR head repo $head_repo does not match $GITHUB_REPOSITORY"
-              exit 1
-            fi
+            [ "$head_repo" = "$GITHUB_REPOSITORY" ] || { echo "::error::Maintainer PR head repo $head_repo does not match $GITHUB_REPOSITORY"; exit 1; }
           else
-            gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/pulls/$pr_number/reviews?per_page=100" | \
-              PR_AUTHOR="$pr_author" PR_HEAD_SHA="$pr_head_sha" python3 - <<'PY'
-          import json, os, sys
-          maintainers = {x.strip().lower() for x in os.environ["PR_MAINTAINERS"].split(",") if x.strip()} or {"depeng1994"}
-          author = os.environ["PR_AUTHOR"].strip().lower()
-          latest = {}
-          for page in json.load(sys.stdin) or []:
-              for r in (page if isinstance(page, list) else [page]):
-                  u = ((r.get("user") or {}).get("login") or "").strip().lower()
-                  st = str(r.get("state") or "").upper()
-                  if u and u != author and st in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}:
-                      latest[u] = (st, str(r.get("commit_id") or ""))
-          if not any(u in maintainers and st == "APPROVED" and sha == os.environ["PR_HEAD_SHA"] for u, (st, sha) in latest.items()):
-              print(f"::error::PR by @{os.environ['PR_AUTHOR']} requires maintainer APPROVED review bound to {os.environ['PR_HEAD_SHA']}", file=sys.stderr)
-              raise SystemExit(1)
-          PY
+            gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/pulls/$pr_number/reviews?per_page=100" | jq -e --arg m "$PR_MAINTAINERS" --arg a "$pr_author" '
+              ($m | ascii_downcase | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))) as $ok |
+              [.[][] | select(.user.login != null) | {u: (.user.login | ascii_downcase), s: (.state | ascii_upcase)}
+               | select(.u != ($a | ascii_downcase) and (.u | IN($ok[])) and (.s | IN("APPROVED","CHANGES_REQUESTED","DISMISSED")))]
+              | group_by(.u) | any(last.s == "APPROVED")
+            ' >/dev/null || { echo "::error::PR by @$pr_author requires maintainer APPROVED review"; exit 1; }
           fi
           {
             echo "run_head_sha=$run_head_sha"

@@ -262,7 +262,25 @@ def results(comments, plan, author, *, only=None):
             continue
         marker, separator, payload = body.partition("\n")
         case_id = marker[len(prefix) :]
-        if not separator or case_id not in cases:
+        if not separator:
+            raise ValueError("unknown self-smoke result")
+        if case_id not in cases:
+            if plan.get("workflow") == PR_SMOKE_WORKFLOW:
+                try:
+                    other = json.loads(payload, object_pairs_hook=_unique_object)
+                except ValueError:
+                    other = None
+                if (
+                    isinstance(other, dict)
+                    and other.get("workflow") == PR_SMOKE_WORKFLOW
+                    and other.get("repo") == plan["repo"]
+                    and other.get("run_id") == plan["run_id"]
+                    and other.get("attempt") == plan["attempt"]
+                    and other.get("sha") == plan["sha"]
+                    and isinstance(other.get("plan_digest"), str)
+                    and other["plan_digest"] != plan["plan_digest"]
+                ):
+                    continue
             raise ValueError("unknown self-smoke result")
         if only is not None and only != case_id:
             continue  # Other matrix jobs check their own receipts; the gate checks all.

@@ -32,8 +32,8 @@ from ci_core.reporting import body_for, report
 from ci_core.resources import PhysicalResourceCoordinator
 from ci_core.router import Router
 from ci_core.self_smoke import prepare, prepare_pr, prepare_pr_cleanup, results, wait
-from ci_core.test_broker import TestBrokerServer
-from ci_core.test_supervisor import build_systemd_command
+from ci_core.test_broker import LeaseConfinementViolation, TestBrokerServer
+from ci_core.test_supervisor import TestSupervisor, build_systemd_command
 from tests.integration_tests.tools.lite_actions.runner import run_dispatch_smoke
 from tests.integration_tests.training_cases.dispatch_smoke import build_smoke_list
 from tests.scenarios import Service, completed_execution, write_workspace
@@ -937,29 +937,277 @@ class SelfSmokeTests(unittest.TestCase):
         with self.assertRaisesRegex(Rejected, "YELLOW_IDENTITY_MISMATCH"):
             policy.before(req_blue, repo=SELF_REPO, provider="github")
 
-    def test_build_systemd_command_short_user_and_separate_binds(self):
+    def test_build_systemd_command_dynamic_state_directory_and_separate_binds(self):
         cmd = build_systemd_command(
             unit_name="lite-actions-test-yellow-test-id45448326169a1",
             zone="yellow",
             worker_id="yellow-test-id45448326169a1",
-            user_name="latw-0123456789ab",
-            state_dir=Path("/var/lib/lite-actions/yellow-test-workers/0123/state"),
+            state_dir=Path("/var/lib/lite-actions-tw-0123456789ab"),
             broker_sock=Path("/run/lite-actions-broker/b-0123/b.sock"),
-            ready_file=Path(
-                "/var/lib/lite-actions/yellow-test-workers/0123/state/worker-ready.json"
-            ),
-            pools_file=Path(
-                "/var/lib/lite-actions/yellow-test-workers/0123/state/pools-active.json"
-            ),
+            ready_file=Path("/var/lib/lite-actions-tw-0123456789ab/worker-ready.json"),
+            pools_file=Path("/var/lib/lite-actions-tw-0123456789ab/pools-active.json"),
             code_dir=Path("/var/lib/lite-actions/yellow-test-workers/0123/code"),
             python_bin="/opt/python312/bin/python3",
+            state_dir_name="lite-actions-tw-0123456789ab",
         )
-        self.assertIn("User=latw-0123456789ab", cmd)
-        self.assertIn("Group=latw-0123456789ab", cmd)
+        self.assertIn("DynamicUser=yes", cmd)
+        self.assertIn("StateDirectory=lite-actions-tw-0123456789ab", cmd)
+        self.assertIn("StateDirectoryMode=0700", cmd)
+        self.assertIn("TimeoutStopSec=15", cmd)
         self.assertIn("ReadWritePaths=/run/lite-actions-broker/b-0123", cmd)
+        self.assertFalse(any(arg.startswith("User=") for arg in cmd))
+        self.assertFalse(any(arg.startswith("Group=") for arg in cmd))
+        self.assertFalse(any(arg.startswith("ExecStartPre=") for arg in cmd))
         ro_binds = [arg for arg in cmd if arg.startswith("BindReadOnlyPaths=")]
         self.assertEqual(len(ro_binds), 2)
         self.assertFalse(any(":" in b.split("=", 1)[1] for b in ro_binds))
+
+    def test_pr_cleanup_results_skips_prior_request_stage_comments(self):
+        env = {
+            "GITHUB_REPOSITORY": SELF_REPO,
+            "GITHUB_RUN_ID": "77",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "SELF_SMOKE_SHA": "a" * 40,
+            "PR_NUMBER": "56",
+            "PR_HEAD_SHA": "a" * 40,
+            "SELF_SMOKE_PROFILE": "full",
+        }
+        req_file = Path(self.temp.name) / "req.json"
+        cln_file = Path(self.temp.name) / "cln.json"
+        req_plan = prepare_pr({**env, "SELF_SMOKE_PLAN": str(req_file)})
+        cln_plan = prepare_pr_cleanup({**env, "SELF_SMOKE_PLAN": str(cln_file)})
+        deploy_item = req_plan["cases"][0]
+        deploy_res = report(
+            {
+                "id": 77,
+                "run_attempt": 1,
+                "head_sha": "a" * 40,
+                "path": PR_SMOKE_WORKFLOW,
+                "_ci_repo": SELF_REPO,
+            },
+            deploy_item,
+            req_plan["plan_digest"],
+            "INFRA_ERROR",
+            125,
+            ["Deploy failed"],
+            False,
+        )
+        deploy_body = f"Lite-CI-V3 77:1:{deploy_item['case_id']}\n" + json.dumps(
+            deploy_res, separators=(",", ":")
+        )
+        cln_comments = [
+            {"user": {"login": "depeng1994"}, "body": deploy_body},
+        ]
+        for item in cln_plan["cases"]:
+            res = report(
+                {
+                    "id": 77,
+                    "run_attempt": 1,
+                    "head_sha": "a" * 40,
+                    "path": PR_SMOKE_WORKFLOW,
+                    "_ci_repo": SELF_REPO,
+                },
+                item,
+                cln_plan["plan_digest"],
+                "PASS",
+                0,
+                ["Cleaned"],
+                True,
+            )
+            cln_comments.append(
+                {
+                    "user": {"login": "depeng1994"},
+                    "body": f"Lite-CI-V3 77:1:{item['case_id']}\n{json.dumps(res, separators=(',', ':'))}",
+                }
+            )
+        parsed = results(cln_comments, cln_plan, "depeng1994")
+        self.assertEqual(set(parsed), {c["case_id"] for c in cln_plan["cases"]})
+
+        same_digest_unknown = copy.deepcopy(cln_plan["cases"][0])
+        same_digest_unknown["case_id"] = "case_099_bogus"
+        bad_res = report(
+            {
+                "id": 77,
+                "run_attempt": 1,
+                "head_sha": "a" * 40,
+                "path": PR_SMOKE_WORKFLOW,
+                "_ci_repo": SELF_REPO,
+            },
+            same_digest_unknown,
+            cln_plan["plan_digest"],
+            "PASS",
+            0,
+            ["Bogus"],
+            True,
+        )
+        with self.assertRaisesRegex(ValueError, "unknown self-smoke result"):
+            results(
+                [
+                    {
+                        "user": {"login": "depeng1994"},
+                        "body": f"Lite-CI-V3 77:1:case_099_bogus\n{json.dumps(bad_res, separators=(',', ':'))}",
+                    }
+                ],
+                cln_plan,
+                "depeng1994",
+            )
+
+        with patch("ci_core.self_smoke.PLAN", Path(self.temp.name) / "self.json"):
+            self_plan = prepare(
+                {
+                    "GITHUB_REPOSITORY": SELF_REPO,
+                    "GITHUB_RUN_ID": "77",
+                    "GITHUB_RUN_ATTEMPT": "1",
+                    "GITHUB_SHA": "a" * 40,
+                    "SELF_SMOKE_PROFILE": "cpu-only",
+                }
+            )
+        with self.assertRaisesRegex(ValueError, "unknown self-smoke result"):
+            results(
+                [{"user": {"login": "depeng1994"}, "body": deploy_body}],
+                self_plan,
+                "depeng1994",
+            )
+
+    def test_broker_telemetry_nonfatal_and_no_alloc_lock_deadlock(self):
+        sink_calls = []
+
+        def failing_sink(wid, *, events=(), snapshot=None):
+            sink_calls.append((wid, len(events), copy.deepcopy(snapshot)))
+            raise RuntimeError("control HTTP 403")
+
+        root = Path(self.temp.name)
+        coord = PhysicalResourceCoordinator(root / "locks")
+        broker = TestBrokerServer(
+            socket_path=root / "b.sock",
+            worker_id="blue-test-id77a1",
+            main_root=ROOT,
+            state_dir=root / "state",
+            pools_path=root / "pools.json",
+            pools={"a3_shared_blue": {"owner": "blue", "nodes": []}},
+            pools_revision=1,
+            workers={"blue": {"case_environments": {}}},
+            author="depeng1994",
+            address="local",
+            release_sha="a" * 40,
+            client=SimpleNamespace(repo=SELF_REPO),
+            coordinator=coord,
+            control_sink=failing_sink,
+            enforce_peercred=False,
+        )
+        snap = {"records": {"k1": {"phase": "RUNNING"}}, "queues": []}
+        res = broker.dispatch(
+            {
+                "op": "REPORT_CONTROL_EVENTS",
+                "payload": {"events": [{"t": "TP"}], "snapshot": snap},
+            }
+        )
+        self.assertTrue(res["ok"])
+        self.assertTrue(res["result"]["deferred"])
+        broker._set_active_allocation("k1", [{"host_id": "h1", "devices": [0, 1]}])
+        self.assertEqual(len(sink_calls), 2)
+        self.assertEqual(
+            sink_calls[1][2]["records"]["k1"]["allocation"],
+            [{"host_id": "h1", "devices": [0, 1]}],
+        )
+
+    def test_broker_verify_peer_cgroup_without_nss_and_uid_pinning(self):
+        root = Path(self.temp.name)
+        coord = PhysicalResourceCoordinator(root / "locks")
+        unit = "lite-actions-test-yellow-test-id77a1"
+        pid = 12345
+        broker = TestBrokerServer(
+            socket_path=root / "b.sock",
+            worker_id="yellow-test-id77a1",
+            main_root=ROOT,
+            state_dir=root / "state",
+            pools_path=root / "pools.json",
+            pools={},
+            pools_revision=1,
+            workers={"yellow": {"case_environments": {}}},
+            author="depeng1994",
+            address="local",
+            release_sha="a" * 40,
+            client=SimpleNamespace(repo=SELF_REPO),
+            coordinator=coord,
+            allowed_unit=unit,
+            enforce_peercred=True,
+        )
+        stat_ok = SimpleNamespace(st_uid=62656)
+        with (
+            patch("pwd.getpwnam", side_effect=AssertionError("NSS lookup forbidden")),
+            patch.object(os, "stat", return_value=stat_ok),
+            patch.object(Path, "exists", return_value=True),
+            patch.object(
+                Path, "read_text", return_value=f"0::/system.slice/{unit}.service\n"
+            ),
+        ):
+            broker.peercred_reader = lambda _s: (pid, 0, 0)
+            with self.assertRaises(LeaseConfinementViolation):
+                broker._verify_peer(None)
+
+            broker.peercred_reader = lambda _s: (pid, 62656, 62656)
+            broker._verify_peer(None)
+
+        with (
+            patch("pwd.getpwnam", side_effect=AssertionError("NSS lookup forbidden")),
+            patch.object(os, "stat", return_value=SimpleNamespace(st_uid=62657)),
+            patch.object(Path, "exists", return_value=True),
+            patch.object(
+                Path, "read_text", return_value=f"0::/system.slice/{unit}.service\n"
+            ),
+        ):
+            broker.peercred_reader = lambda _s: (pid, 62657, 62657)
+            with self.assertRaises(LeaseConfinementViolation):
+                broker._verify_peer(None)
+
+        with (
+            patch("pwd.getpwnam", side_effect=AssertionError("NSS lookup forbidden")),
+            patch.object(os, "stat", return_value=stat_ok),
+            patch.object(Path, "exists", return_value=True),
+            patch.object(
+                Path, "read_text", return_value="0::/system.slice/other.service\n"
+            ),
+        ):
+            broker.peercred_reader = lambda _s: (pid, 62656, 62656)
+            with self.assertRaises(LeaseConfinementViolation):
+                broker._verify_peer(None)
+
+    def test_supervisor_stop_unit_escalates_on_systemctl_stop_timeout(self):
+        root = Path(self.temp.name)
+        sup = TestSupervisor(
+            zone="blue",
+            main_root=ROOT,
+            state_dir=root / "state",
+            pools={},
+            pools_revision=1,
+            workers={"blue": {"case_environments": {}}},
+            author="depeng1994",
+            address="local",
+            release_sha="a" * 40,
+            enforce_peercred=False,
+        )
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[:2] == ["systemctl", "stop"]:
+                raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 20))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/systemctl"),
+            patch("subprocess.run", side_effect=fake_run),
+        ):
+            sup._stop_process_or_unit(
+                {
+                    "worker_id": "blue-test-id77a1",
+                    "unit_name": "lite-actions-test-blue-test-id77a1",
+                }
+            )
+        self.assertEqual(calls[0][:2], ["systemctl", "stop"])
+        self.assertEqual(calls[1][:4], ["systemctl", "kill", "-s", "SIGKILL"])
+        self.assertEqual(calls[2][:2], ["systemctl", "reset-failed"])
 
 
 if __name__ == "__main__":
