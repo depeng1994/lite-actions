@@ -1292,6 +1292,35 @@ class SelfSmokeTests(unittest.TestCase):
         self.assertIn("GLOO_SOCKET_IFNAME=enp23s0f3", cmd)
         self.assertIn("HCCL_IF_IP=192.168.0.30", cmd)
 
+    def test_blue_only_profile_for_self_and_pr_smoke(self):
+        from ci_core.self_smoke import prepare_pr, prepare_pr_cleanup
+
+        plan_path = Path(self.temp.name) / "blue-self.json"
+        with patch("ci_core.self_smoke.PLAN", plan_path):
+            self_plan = prepare({**self.env, "SELF_SMOKE_PROFILE": "blue-only"})
+        self.assertEqual([c["worker"] for c in self_plan["cases"]], ["blue"] * 4)
+
+        pr_plan_path = Path(self.temp.name) / "blue-pr.json"
+        pr_out = Path(self.temp.name) / "blue-pr.out"
+        pr_env = {
+            **self.env,
+            "PR_NUMBER": "56",
+            "PR_HEAD_SHA": self.env["GITHUB_SHA"],
+            "SELF_SMOKE_PROFILE": "blue-only",
+            "SELF_SMOKE_PLAN": str(pr_plan_path),
+            "GITHUB_OUTPUT": str(pr_out),
+        }
+        pr_plan = prepare_pr(pr_env)
+        self.assertEqual(
+            [c["worker"] for c in pr_plan["cases"]],
+            ["blue"] + ["blue-test-id42a1"] * 4,
+        )
+        cleanup_path = Path(self.temp.name) / "blue-cleanup.json"
+        cleanup_plan = prepare_pr_cleanup(
+            {**pr_env, "SELF_SMOKE_PLAN": str(cleanup_path)}
+        )
+        self.assertEqual([c["worker"] for c in cleanup_plan["cases"]], ["blue"])
+
 
 if __name__ == "__main__":
     unittest.main()

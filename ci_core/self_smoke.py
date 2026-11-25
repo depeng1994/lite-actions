@@ -22,6 +22,7 @@ from tests.integration_tests.tools.lite_actions.entrypoint import inspect_profil
 PLAN = Path(".ci-request/ci-request.json")
 CLEANUP_PLAN = Path(".ci-cleanup/ci-request.json")
 CPU_TITLE = "Lite Actions self smoke: cpu-only"
+BLUE_ONLY_TITLE = "Lite Actions self smoke: blue-only"
 YELLOW_A3_TITLE = "Lite Actions self smoke: yellow-a3"
 
 
@@ -39,6 +40,8 @@ def expected_plan(run):
     title = run.get("display_title")
     if title == CPU_TITLE:
         profile = "cpu-only"
+    elif title == BLUE_ONLY_TITLE:
+        profile = "blue-only"
     elif title == YELLOW_A3_TITLE:
         profile = "yellow-a3"
     else:
@@ -53,7 +56,7 @@ def prepare(environ=os.environ):
     if environ["GITHUB_REPOSITORY"] != SELF_REPO:
         raise ValueError("unexpected self-smoke repository")
     profile = environ.get("SELF_SMOKE_PROFILE", "full")
-    if profile not in {"full", "cpu-only", "yellow-a3"}:
+    if profile not in {"full", "blue-only", "cpu-only", "yellow-a3"}:
         raise ValueError("unknown self-smoke profile")
     run = {
         "id": int(environ["GITHUB_RUN_ID"]),
@@ -63,6 +66,8 @@ def prepare(environ=os.environ):
         "display_title": (
             CPU_TITLE
             if profile == "cpu-only"
+            else BLUE_ONLY_TITLE
+            if profile == "blue-only"
             else YELLOW_A3_TITLE
             if profile == "yellow-a3"
             else ""
@@ -96,15 +101,16 @@ def prepare_pr(environ=os.environ):
     pr_number = int(environ["PR_NUMBER"])
     pr_head_sha = environ["PR_HEAD_SHA"]
     profile = environ.get("SELF_SMOKE_PROFILE", "full")
-    if profile not in {"full", "cpu-only"}:
+    if profile not in {"full", "blue-only", "cpu-only"}:
         raise ValueError("unknown PR self-smoke profile")
     raw_gen = (environ.get("PR_GATE_GENERATION") or "").strip()
     generation = int(raw_gen) if raw_gen else None
     ttl_seconds = int(environ.get("TEST_WORKER_TTL_SECONDS") or 14400)
     defaults = {"worker": "", "target_pool": "", "docker": ""}
+    zones = ("blue",) if profile == "blue-only" else ("blue", "yellow")
     cases = []
     deploy_cases = []
-    for zone in ("blue", "yellow"):
+    for zone in zones:
         lifecycle = {
             "pr_number": pr_number,
             "pr_head_sha": pr_head_sha,
@@ -134,7 +140,11 @@ def prepare_pr(environ=os.environ):
         deploy_cases.append({"case_id": case["case_id"], "worker": zone})
 
     smoke_rows = inspect_profile(
-        "cpu-only" if profile == "cpu-only" else "dispatch_smoke"
+        "cpu-only"
+        if profile == "cpu-only"
+        else "blue-only"
+        if profile == "blue-only"
+        else "dispatch_smoke"
     )
     smoke_cases = []
     for row in smoke_rows:
@@ -199,9 +209,13 @@ def prepare_pr(environ=os.environ):
 
 def prepare_pr_cleanup(environ=os.environ):
     run_id, attempt, run_sha, target_test_id = _pr_identity(environ)
+    profile = environ.get("SELF_SMOKE_PROFILE", "full")
+    if profile not in {"full", "blue-only", "cpu-only"}:
+        raise ValueError("unknown PR self-smoke profile")
+    zones = ("blue",) if profile == "blue-only" else ("blue", "yellow")
     defaults = {"worker": "", "target_pool": "", "docker": ""}
     cases = []
-    for zone in ("blue", "yellow"):
+    for zone in zones:
         lifecycle = {
             "target_test_id": target_test_id,
             "target_worker": f"{zone}-test-{target_test_id}",
