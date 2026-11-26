@@ -393,3 +393,12 @@ sudo bash scripts/install_auto_update.sh "${args[@]}"
 ```
 
 业务验证通过后，执行 `sudo systemctl enable --now lite-actions-auto-update.timer`。日志与停用命令见[自动更新运维指南](docs/auto-update.md)。
+
+## 触发 Per-PR 硬件测试
+
+在 PR 页面右侧栏 **Labels** 中添加标签即可触发对应的隔离沙箱实机冒烟（`lite-ci-pr-smoke`）：
+
+- `run-pr-smoke`：触发完整双区（Blue + Yellow + GitCode TorchTitan）Per-PR 硬件门禁；
+- `run-pr-smoke-blue`：仅触发 Blue 区（OS + 8P + 16P + 8P）Per-PR 硬件冒烟。
+
+如需手动选择 `profile`（`full` / `blue-only` / `cpu-only`）或验证外部 Fork PR，也可在 **Actions → `lite-ci-pr-smoke` → Run workflow** 中填写 `pr_number` 与 `pr_head_sha` 触发。
