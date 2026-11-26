@@ -460,9 +460,11 @@ export async function timeline(context: Context): Promise<Timeline> {
       ORDER BY finished_at DESC, task_uid DESC
       LIMIT 5000`).bind(since, context.now));
     statements.push(db.prepare(`SELECT worker_id,pool_name,host_id,devices_json,started_at,last_busy_at,ended_at,close_reason
-      FROM device_occupancy_intervals
-      WHERE COALESCE(ended_at,last_busy_at)>=? AND started_at<=?
-      ORDER BY started_at`).bind(since, context.now));
+      FROM (
+      SELECT * FROM device_occupancy_intervals WHERE COALESCE(ended_at,last_busy_at)>=?
+      UNION ALL
+      SELECT * FROM device_occupancy_intervals WHERE close_reason IS NULL AND ended_at IS NULL AND last_busy_at<?
+      ) AS visible_intervals WHERE started_at<=? ORDER BY started_at`).bind(since, since, context.now));
   }
   const results = await db.batch(statements);
   const [health, versions, tasks, observations, queueRows, drains] = results.slice(0, 6).map(result => result.results ?? []) as unknown as

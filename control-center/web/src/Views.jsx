@@ -31,8 +31,21 @@ const plotInset = 64;
 const timelineShortcuts = [
   ["w", "放大"], ["s", "缩小"], ["a", "左移"], ["d", "右移"],
 ];
-const occupancyLabels = {unknown: "当前未知占用", leased: "当前实际租约", idle: "当前已确认空闲"};
+const occupancyLabels = {
+  unknown: "当前占用状态未知", external: "外部占用尚未确认结束", leased: "当前实际租约", idle: "当前已确认空闲",
+};
 const externalOccupancyLabel = "探测到外部占用";
+
+const isOpenOccupancy = (block) => block.ended_at == null && block.close_reason == null;
+
+function groupOccupancy(node, group) {
+  if (node.leased?.includes(group)) return "leased";
+  if (node.confirmedIdle?.includes(group)) return "idle";
+  if (node.unknown?.includes(group)) {
+    return node.occupancyBlocks?.[group]?.some(isOpenOccupancy) ? "external" : "unknown";
+  }
+  return null;
+}
 
 function groupCardCount(node, group) {
   if (node.groupCards?.[group] != null) return node.groupCards[group];
@@ -54,9 +67,7 @@ function resourceRows(nodes, folded) {
       for (const node of onWorker.filter((item) => item.pool === pool)) {
         const hostLabel = displayNodeHost(node);
         for (const group of node.groups) {
-          const occupancy = node.leased?.includes(group) ? "leased"
-            : node.unknown.includes(group) ? "unknown"
-            : node.confirmedIdle?.includes(group) ? "idle" : null;
+          const occupancy = groupOccupancy(node, group);
           rows.push({ key: targetFor(node, group).id, worker, pool, node, group, occupancy, level: "group", label: `${hostLabel} 设备组 ${group}` });
         }
       }
@@ -98,18 +109,19 @@ function ResourceLabel({ row, folded, changeFold, config, selectScope, showResou
 }
 
 function OccupancyHistory({ row, clockState, showResource }) {
-  const { timelineStart, timelineEnd } = clockState;
+  const { now, timelineStart, timelineEnd } = clockState;
   const width = timelineEnd - timelineStart;
   return (row.node?.occupancyBlocks?.[row.group] || []).map((block) => {
+    const open = isOpenOccupancy(block);
     const start = Math.max(timelineStart, block.started_at / 60);
-    const end = Math.min(timelineEnd, (block.ended_at ?? block.last_busy_at) / 60);
-    if (start > end) return null;
+    const end = Math.min(timelineEnd, open ? now : (block.ended_at ?? block.last_busy_at) / 60);
+    if (start > end || (open && start === end)) return null;
     const lastBusy = timelineLabel(block.last_busy_at / 60, true);
     const ending = block.ended_at == null
       ? `最后确认占用 ${lastBusy}，释放时间未知`
       : `最后确认占用 ${lastBusy}，首次确认空闲 ${timelineLabel(block.ended_at / 60, true)}`;
     const title = `${row.label} · ${externalOccupancyLabel} · 首次发现 ${timelineLabel(block.started_at / 60, true)} · ${ending}`;
-    return <button key={block.started_at} type="button" className="occupancy-history occupancy-unknown"
+    return <button key={block.started_at} type="button" className={`occupancy-history occupancy-external${open ? " occupancy-history-open" : ""}`}
       style={{ left: `${(start - timelineStart) / width * 100}%`, width: `${(end - start) / width * 100}%`,
         top: row.top + row.height / 2 - 4 }}
       title={title} aria-label={title}
@@ -378,7 +390,7 @@ export function PoolsView({ nodes, cases, timelineCases, config, go, live, rende
           <ul className="legend" aria-label="时间轴图例">
             <li><i className="legend-actual" />实际租约</li>
             <li><i className="legend-planned" />预计使用</li>
-            <li><i className="legend-occupancy legend-occupancy-history occupancy-unknown" />{externalOccupancyLabel}</li>
+            <li><i className="legend-occupancy legend-occupancy-history occupancy-external" />{externalOccupancyLabel}</li>
             <li><i className="legend-occupancy occupancy-unknown" />{occupancyLabels.unknown}</li>
             <li><i className="legend-occupancy occupancy-idle" />{occupancyLabels.idle}</li>
           </ul>
@@ -504,12 +516,14 @@ function ClusterControls({ target, state, config, open }) {
   </div>;
 }
 
-export function ResourceStatus({ health, configStatus, unknown, quarantined = false }) {
+export function ResourceStatus({ health, configStatus, node, group, quarantined = false }) {
+  const occupancy = node && group ? groupOccupancy(node, group) : null;
   return <div className="resource-status">
     <Tag tone={health.tone}>{health.status}</Tag>
     {configStatus && <Tag tone="amber">{configStatus === "暂停" ? "暂停调度" : configStatus}</Tag>}
     {quarantined && <Tag tone="red">已隔离</Tag>}
-    {unknown && <Tag tone="red">未知占用</Tag>}
+    {occupancy === "external" && <Tag tone="amber">{occupancyLabels.external}</Tag>}
+    {occupancy === "unknown" && <Tag tone="gray">{occupancyLabels.unknown}</Tag>}
   </div>;
 }
 
@@ -522,7 +536,7 @@ function ClusterRow({ target, status, nodes, config, canManage, open, showResour
     </button></td>
     <td>{node ? <span className="mono">{displayNodeHost(node)}</span> : <span className="subtle">—</span>}</td>
     <td>{group ? `${groupCardCount(node, group)} 卡` : node ? `${node.cards} 卡 · ${node.groups.length} 组` : `${nodes.length} 节点 · ${nodes.reduce((sum, member) => sum + member.cards, 0)} 卡`}</td>
-    <td><ResourceStatus health={health} configStatus={status} quarantined={quarantined} unknown={Boolean(group && node.unknown.includes(group))} /></td>
+    <td><ResourceStatus health={health} configStatus={status} quarantined={quarantined} node={node} group={group} /></td>
     <td className="subtle mono" title={group ? "该设备组上一次查到全部配置卡的时间" : "成员中最近一次查到配置卡的时间"}>{lastSeenDateTime(health.lastSeen)}</td>
     {canManage && <td><ClusterControls target={target} state={status} config={config} open={open} /></td>}
   </tr>;

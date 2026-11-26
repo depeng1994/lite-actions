@@ -26,7 +26,7 @@ const pool = "blue_pool";
 const repo = "depeng1994/lite-actions";
 const node = (host_id, devices) => ({ host_id, allocation_groups: devices.map((ids) => ({ devices: ids, verified: true })) });
 const pools = {
-  [pool]: { owner: "blue", enabled: true, type: "ascend-a3", nodes: [node(host, groups), node(blueHost2, [[0, 1]]), node("192.0.2.3:22", [])] },
+  [pool]: { owner: "blue", enabled: true, type: "ascend-a3", nodes: [node(host, groups), node(blueHost2, [[0, 1], [10, 11]]), node("192.0.2.3:22", [])] },
   yellow_pool: { owner: "yellow", enabled: true, type: "ascend-a5", nodes: [node(yellowHost, [[0, 1]])] },
 };
 raw.prepare("INSERT INTO pools_configs VALUES(1,'fixture',?,'{}','test',?,NULL)").run(JSON.stringify(pools), ago(300));
@@ -91,7 +91,10 @@ const blue = [
   { t: "QP", ts: now, pool, k: "npu_smoke", v: 1, rev: 1, last: 1,
     items: [{ tid: queued.tid, pos: 0, ix: [[4]] }, { tid: waiting.tid, pos: 1, ix: [[0]] }] },
   occupied(ago(240), "busy"), occupied(ago(238), "idle"),
-  occupied(ago(8), "busy"), occupied(ago(4), "busy"), occupied(now, "busy"),
+  occupied(ago(180), "busy"), occupied(ago(178), "busy"), occupied(ago(176), "probe_error"),
+  occupied(ago(8), "busy"), occupied(ago(4), "busy"),
+  { ...occupied(ago(73 * 60), "busy"), h: blueHost2 },
+  { ...occupied(ago(181), "idle", [10, 11]), h: blueHost2 },
   occupied(now, "idle", groups[4]),
 ];
 await post("blue", "heartbeat", { rev: 1, sha: "5905edfdb103a75b4d02e9543e02a0f46ccf2c1b", ok: 1, act: 5, q: 2 });

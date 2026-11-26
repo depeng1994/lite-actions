@@ -401,8 +401,7 @@ export function ResourceDetail({ id, target, blockStart, cases, nodes, config, c
         .filter((block) => blockStart == null || block.started_at === blockStart)
         .map((block) => ({ member, group, block }))))
     .sort((left, right) => right.block.started_at - left.block.started_at);
-  const status = <ResourceStatus health={health} configStatus={state} quarantined={quarantined}
-    unknown={Boolean(target.group && node?.unknown.includes(target.group))} />;
+  const status = <ResourceStatus health={health} configStatus={state} quarantined={quarantined} node={node} group={target.group} />;
   const action = id === "timeline-detail"
     ? <button className="button" onClick={() => go("cluster")}>查看集群管理 <ArrowRight size={16} /></button>
     : null;
