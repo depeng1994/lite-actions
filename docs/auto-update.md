@@ -8,7 +8,7 @@
 - Service 调用固定的 /opt/lite-actions/bootstrap/update.sh；Bootstrap 固定本轮源码目录，执行 Python 模块 auto_update.update。
 - check_source.py 按完整 SHA 检测和检出，version_switch.py 通过 systemd 正常停止旧 Worker、原子替换 current、立即启动新进程并检查 Ready。
 - 事务保存在 /var/lib/lite-actions/auto-update，管理日志在 /var/log/lite-actions/management/updates.jsonl；Actions 日志及 NPU 状态独立保留。
-- 不做忙时跳过，不做调度暂停、排空和恢复；升级可能导致正在运行的 Actions 被取消。
+- 主 Worker 在执行任务或为 Test Worker 提供 Broker 服务期间持有活动锁。自动更新器遇到活动锁时记录 `DEFERRED_BUSY`，下一轮定时检查再尝试升级。首次从不支持活动锁的版本升级时，应选择 Worker 空闲窗口。
 
 ## 首次部署前提
 

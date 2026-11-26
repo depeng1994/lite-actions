@@ -5,6 +5,11 @@ on:
   # landed SHA both in GITHUB_SHA and in the REST run consumed by Blue.
   push:
     branches: [main]
+  schedule:
+    # Daily at 06:00 Beijing time (UTC+8)
+    - cron: '0 22 * * *'
+    # Daily at 18:00 Beijing time (UTC+8)
+    - cron: '0 10 * * *'
   workflow_dispatch:
     inputs:
       profile:

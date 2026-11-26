@@ -314,7 +314,7 @@ class ReclaimTests(unittest.TestCase):
             "ci_core.transport.run",
             return_value=SimpleNamespace(returncode=0, stdout=shared),
         ) as transport:
-            with self.assertRaisesRegex(ValueError, "spans allocated"):
+            with self.assertRaisesRegex(ExternalNpuOccupancy, "spans allocated"):
                 remote_preflight({**self.case, "docker": None}, {"a5": self.pool})
         self.assertFalse(
             any(call.args[1].startswith("kill") for call in transport.call_args_list)
