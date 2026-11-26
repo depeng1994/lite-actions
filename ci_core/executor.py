@@ -353,6 +353,7 @@ def _process_rows(
     coverage_devices=None,
     require_end=False,
     require_coverage=True,
+    retry_shared_occupancy=False,
 ) -> list[tuple[int, int, str]]:
     """Return (chip, PID visible in the kill namespace, container PID evidence).
 
@@ -464,7 +465,8 @@ def _process_rows(
     if require_exclusive and any(
         chip not in selected and pid in targets for chip, pid, _ in rows
     ):
-        raise ValueError("PID spans allocated and unallocated NPU devices")
+        error = ExternalNpuOccupancy if retry_shared_occupancy else ValueError
+        raise error("PID spans allocated and unallocated NPU devices")
     if any(pid <= 1 for chip, pid, _ in rows if chip in selected):
         raise ValueError("unsafe NPU process PID")
     return [
@@ -754,6 +756,7 @@ def remote_preflight(
             else None,
             require_end=not legacy_a5,
             require_coverage=not legacy_a5,
+            retry_shared_occupancy=True,
         )
         if evidence is not None:
             details = (

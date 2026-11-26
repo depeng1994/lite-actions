@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from auto_update.update import _run, exclusive
 from auto_update.update_log import record
+from ci_core.worker_activity import activity_lock, try_lock
 from tests.test_auto_update_version_switch import checkout, settings
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,7 +38,7 @@ class IntegrationTests(unittest.TestCase):
                 self.assertEqual(_run(settings(root)), 0)
                 stopped.assert_not_called()
 
-    def test_au11_running_task_does_not_skip_stop(self):
+    def test_update_defers_while_worker_is_busy_and_retries_when_idle(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old, old_sha = checkout(root, "running")
@@ -45,6 +46,7 @@ class IntegrationTests(unittest.TestCase):
             (root / "current").symlink_to(old)
             stage = root / "staging" / "candidate"
             stage.mkdir(parents=True)
+            config = settings(root)
             with (
                 patch("auto_update.update.check_source", return_value=new_sha),
                 patch("auto_update.update.stage_source", return_value=stage),
@@ -61,7 +63,15 @@ class IntegrationTests(unittest.TestCase):
                     ),
                 ),
             ):
-                self.assertEqual(_run(settings(root)), 0)
+                with activity_lock(config.ready_file, create=True) as activity:
+                    self.assertTrue(try_lock(activity))
+                    self.assertEqual(_run(config), 0)
+                    stop.assert_not_called()
+                    self.assertEqual((root / "current").resolve(), old)
+                    events = config.log_file.read_text().splitlines()
+                    self.assertEqual(json.loads(events[-1])["event"], "DEFERRED_BUSY")
+
+                self.assertEqual(_run(config), 0)
                 stop.assert_called_once_with("test-worker.service")
                 self.assertEqual((root / "current").resolve(), new)
             # Jobs and leases live outside releases. The updater did not delete them.

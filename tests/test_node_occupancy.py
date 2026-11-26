@@ -283,20 +283,25 @@ class NodeOccupancyTests(unittest.TestCase):
                 ),
             )
 
-    def test_unrecognized_host_pid_table_fails_closed(self):
+    def test_preflight_rejects_malformed_tables_and_defers_shared_occupancy(self):
         for bad in (
             BUSY.replace("Process id |", "Container id |", 1),
             BUSY.replace("| No running processes found in NPU 1 |\n", ""),
             BUSY.replace("| 1 3 |", "| 1 9 |"),
-            BUSY.replace(
-                "| No running processes found in NPU 1 |",
-                "| 1 0 | 123456 | python3.12 | 100 | NA |",
-            ),
         ):
             self.calls.clear()
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 self.preflight([EMPTY], [bad])
             self.assertFalse(self.signals())
+
+        shared = BUSY.replace(
+            "| No running processes found in NPU 1 |",
+            "| 1 0 | 123456 | python3.12 | 100 | NA |",
+        )
+        self.calls.clear()
+        with self.assertRaisesRegex(ExternalNpuOccupancy, "spans allocated"):
+            self.preflight([EMPTY], [shared])
+        self.assertFalse(self.signals())
 
     def test_pidfd_signal_is_bound_and_reused_pid_is_not_signalled(self):
         cases = (
