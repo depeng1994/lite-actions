@@ -205,7 +205,7 @@ function PaneSplitter({ name, controls, value, min, max, change }) {
   const drag = useRef(null);
 
   function resize(share) {
-    change(Math.min(max, Math.max(min, Math.round(share))));
+    change(Math.min(max, Math.max(min, Math.round(share * 10) / 10)));
   }
 
   function startDrag(event) {
@@ -246,8 +246,28 @@ function PaneSplitter({ name, controls, value, min, max, change }) {
 function PoolsSplit({ selected, detail, queue, children }) {
   const [detailShare, setDetailShare] = useState(36);
   const [queueShare, setQueueShare] = useState(26);
+  const [queueMinimum, setQueueMinimum] = useState(0);
+  const workspace = useRef(null);
   const timelinePane = useRef(null);
   const open = Boolean(detail);
+  const visibleQueueShare = Math.max(queueMinimum, queueShare);
+
+  useLayoutEffect(() => {
+    const frame = workspace.current;
+    const pane = frame.querySelector("#pools-queue");
+    const heading = pane.querySelector(".queue-heading");
+    const handle = frame.querySelector('[aria-controls="pools-queue"]');
+    const measure = () => {
+      const available = frame.clientHeight - handle.offsetHeight;
+      const minimumHeight = heading.getBoundingClientRect().height + pane.offsetHeight - pane.clientHeight;
+      setQueueMinimum(Math.ceil(minimumHeight * 1000 / available) / 10);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(frame);
+    observer.observe(heading);
+    return () => observer.disconnect();
+  }, []);
 
   useLayoutEffect(() => {
     const pane = timelinePane.current;
@@ -259,7 +279,8 @@ function PoolsSplit({ selected, detail, queue, children }) {
     if (item.top < frame.top) pane.scrollTop += item.top - frame.top;
   }, [open]);
 
-  return <div className="pools-workspace" style={{"--upper-share": `${100 - queueShare}fr`, "--queue-share": `${queueShare}fr`}}>
+  return <div className="pools-workspace" ref={workspace}
+    style={{"--upper-share": `${100 - visibleQueueShare}fr`, "--queue-share": `${visibleQueueShare}fr`}}>
     <div className={open ? "pools-upper-pane pools-detail-split" : "pools-upper-pane"}
       style={open ? {"--detail-share": `${detailShare}fr`, "--timeline-share": `${100 - detailShare}fr`} : undefined}>
       <div className="pools-timeline-pane" ref={timelinePane}>{children}</div>
@@ -270,7 +291,8 @@ function PoolsSplit({ selected, detail, queue, children }) {
       </>}
     </div>
     <PaneSplitter name="调整排队用例面板高度" controls="pools-queue"
-      value={queueShare} min={22} max={55} change={setQueueShare} />
+      value={visibleQueueShare} min={queueMinimum} max={55}
+      change={(share) => setQueueShare(share === queueMinimum ? 0 : share)} />
     {queue}
   </div>;
 }

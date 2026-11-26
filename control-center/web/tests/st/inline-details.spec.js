@@ -213,6 +213,21 @@ test("Pools lets users resize queue and detail panes while keeping the timeline 
   await expect(separator).toHaveCount(0);
   expect((await heights())[1]).toBe(fullTimelineHeight);
   expect((await heights())[3]).toBe(enlargedQueue);
+
+  const headerOnlyHeight = () => page.locator("#pools-queue").evaluate((pane) =>
+    pane.querySelector(".queue-heading").getBoundingClientRect().height + pane.offsetHeight - pane.clientHeight);
+  await queueSeparator.press("Home");
+  expect(Math.abs((await heights())[3] - await headerOnlyHeight())).toBeLessThanOrEqual(2);
+  await page.setViewportSize({ width: 1280, height: 1440 });
+  await expect.poll(async () => Math.abs((await heights())[3] - await headerOnlyHeight())).toBeLessThanOrEqual(2);
+  await expect(page.getByRole("heading", { name: "排队用例" })).toBeInViewport({ ratio: 1 });
+  await expect(page.getByRole("combobox", { name: "排队资源范围" })).toBeInViewport({ ratio: 1 });
+  await queueSeparator.press("End");
+  const pixelsToCollapse = (await heights())[3] - await headerOnlyHeight() + 12;
+  await dragUp(queueSeparator, -pixelsToCollapse);
+  expect(Math.abs((await heights())[3] - await headerOnlyHeight())).toBeLessThanOrEqual(2);
+  await queueSeparator.press("ArrowUp");
+  expect((await heights())[3]).toBeGreaterThan(await headerOnlyHeight() + 20);
 });
 
 test("cluster reuses the detail slot checks for Pool, node and device groups", async ({ page }) => {

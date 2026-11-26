@@ -279,7 +279,7 @@ code, .mono { font-family: var(--mono); font-size: .94em; letter-spacing: -.25px
 }
 
 .queue-section { min-block-size: 0; overflow: auto; border-top: 1px solid var(--line-strong); }
-.queue-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 18px 10px 16px; }
+.queue-heading { position: sticky; inset-block-start: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 18px 10px 16px; background: var(--surface); }
 .queue-heading-main { display: flex; align-items: center; gap: 15px; }
 .scope-select { display: inline-flex; align-items: center; position: relative; color: var(--blue-text); }
 .scope-select select { appearance: none; padding: 2px 30px 2px 11px; background: var(--selected); border: 1px solid transparent; color: inherit; border-radius: 6px; font-size: 15px; font-weight: 660; cursor: pointer; }
