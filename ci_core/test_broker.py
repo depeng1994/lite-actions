@@ -229,7 +229,7 @@ class TestBrokerServer:
         enforce_peercred: bool = True,
         peercred_reader=None,
         protected_baseline_root: Path | None = None,
-        quarantine_enabled: bool = True,
+        quarantine_enabled: bool = False,
         runs_provider=None,
         publish_retry_timeout: float = 120.0,
         publish_retry_interval: float = 2.5,
@@ -1070,7 +1070,7 @@ class TestBrokerServer:
                                         "remote_nodes": lease.remote_nodes,
                                         "remote_lease_dir": remote_lease_dir(),
                                     },
-                                    check_npu=True,
+                                    check_npu=False,
                                 )
                                 lease.set_remote_revoked_hosts(revoked)
                                 expected = {

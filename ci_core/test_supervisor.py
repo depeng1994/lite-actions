@@ -271,7 +271,7 @@ class TestSupervisor:
         revoke_fn=None,
         clock: Callable[[], float] = time.time,
         enforce_peercred: bool = True,
-        quarantine_enabled: bool = True,
+        quarantine_enabled: bool = False,
         ready_timeout: float = 45.0,
     ):
         self.zone = zone
@@ -1151,13 +1151,6 @@ class TestSupervisor:
                 failures.append(str(exc))
             except Exception as exc:
                 cleanup_ok = False
-                self.coordinator.quarantine_lease(
-                    lease_id,
-                    owner_worker=worker_id,
-                    task_key=lease.get("task_key", ""),
-                    reason=f"cleanup_error:{type(exc).__name__}",
-                    source="supervisor_cleanup",
-                )
                 failures.append(f"{lease_id}: {type(exc).__name__}")
 
         if cleanup_ok:

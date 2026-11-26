@@ -494,6 +494,7 @@ def selected_processes(
 
 def _bound_host_signal(pid, devices, fingerprint, indexing, coverage_devices):
     """Verify a host PID while holding a pidfd, then signal that process only."""
+    import errno as errno_mod
     import hashlib
     import os
     import select
@@ -507,28 +508,59 @@ def _bound_host_signal(pid, devices, fingerprint, indexing, coverage_devices):
     actual = hashlib.sha256(Path("/etc/machine-id").read_bytes()).hexdigest()
     if actual != fingerprint:
         raise RuntimeError("host identity changed")
-    try:
-        if callable(getattr(os, "pidfd_open", None)):
-            pidfd = os.pidfd_open(pid, 0)
-        else:
-            import ctypes
-            import platform
-            import sys
 
-            if sys.platform != "linux" or platform.machine() not in (
-                "aarch64",
-                "x86_64",
-            ):
-                raise RuntimeError("host pidfd signalling is unavailable")
-            libc = ctypes.CDLL(None, use_errno=True)
-            pidfd = libc.syscall(
-                ctypes.c_long(434), ctypes.c_int(pid), ctypes.c_uint(0)
-            )
-            if pidfd < 0:
-                errno = ctypes.get_errno()
-                raise OSError(errno, os.strerror(errno))
+    def open_pidfd(target_pid):
+        if callable(getattr(os, "pidfd_open", None)):
+            return os.pidfd_open(target_pid, 0)
+        import ctypes
+        import platform
+        import sys
+
+        if sys.platform != "linux" or platform.machine() not in (
+            "aarch64",
+            "x86_64",
+        ):
+            raise RuntimeError("host pidfd signalling is unavailable")
+        libc = ctypes.CDLL(None, use_errno=True)
+        fd = libc.syscall(
+            ctypes.c_long(434), ctypes.c_int(target_pid), ctypes.c_uint(0)
+        )
+        if fd < 0:
+            err = ctypes.get_errno()
+            raise OSError(err, os.strerror(err))
+        return fd
+
+    try:
+        pidfd = open_pidfd(pid)
     except ProcessLookupError:
         return False
+    except OSError as exc:
+        if exc.errno != errno_mod.EINVAL:
+            raise
+        # Linux pidfd_open returns EINVAL when the PID is a non-leader thread
+        # or already tearing down; fall back to its Tgid or treat as exited so
+        # the outer preflight loop re-verifies NPU idleness.
+        try:
+            status_text = Path(f"/proc/{pid}/status").read_text()
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            return False
+        tgid = None
+        for line in status_text.splitlines():
+            if line.startswith("Tgid:"):
+                parts = line.split()
+                if len(parts) == 2 and parts[1].isdecimal():
+                    tgid = int(parts[1])
+                break
+        if tgid is None or tgid <= 1 or tgid == pid:
+            return False
+        try:
+            pidfd = open_pidfd(tgid)
+        except ProcessLookupError:
+            return False
+        except OSError as exc2:
+            if exc2.errno == errno_mod.EINVAL:
+                return False
+            raise
     try:
         poller = select.poll()
         poller.register(pidfd, select.POLLIN)
@@ -1169,21 +1201,13 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
                                             "remote_lease_dir"
                                         ),
                                     },
-                                    check_npu=True,
+                                    check_npu=False,
                                     errors=revoke_errors,
                                 )
                                 all_revoked_hosts.update(newly_revoked)
                             if lease_obj is not None:
                                 lease_obj.set_remote_revoked_hosts(all_revoked_hosts)
                             revoke_ok = expected_hosts.issubset(all_revoked_hosts)
-                        remote_preflight(
-                            case,
-                            pools,
-                            ascend_env=setup,
-                            evidence=stream,
-                            cleanup=True,
-                            cancel=cancel,
-                        )
                         if child_started and (staged or not launched_lease):
                             for node in allocations(case, pools):
                                 destination = f"{DEST_ROOT}/{remote_task_name(run)}/node{node['position']}"

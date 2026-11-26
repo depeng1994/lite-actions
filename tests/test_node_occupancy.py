@@ -456,6 +456,25 @@ class NodeOccupancyTests(unittest.TestCase):
             )
         send.assert_not_called()
 
+    def test_bound_host_signal_handles_pidfd_einval_during_teardown(self):
+        import errno
+
+        with (
+            patch.object(
+                os,
+                "pidfd_open",
+                side_effect=OSError(errno.EINVAL, "Invalid argument"),
+                create=True,
+            ),
+            patch.object(signal, "pidfd_send_signal", create=True) as send,
+            patch("pathlib.Path.read_bytes", return_value=HOST_ID),
+            patch("pathlib.Path.read_text", side_effect=FileNotFoundError),
+        ):
+            self.assertFalse(
+                _bound_host_signal(123456, [0], FINGERPRINT, "card-die", [0, 1, 2, 3])
+            )
+        send.assert_not_called()
+
     def test_bound_host_signal_retries_transient_probe_error_for_live_pid(self):
         poller = Mock()
         poller.poll.return_value = []

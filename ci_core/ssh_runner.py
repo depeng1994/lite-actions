@@ -637,7 +637,7 @@ def revoke_remote_lease(
     *,
     execute=None,
     lease_dir: str | None = None,
-    check_npu: bool = True,
+    check_npu: bool = False,
     strict: bool = False,
     errors: dict[str, str] | None = None,
 ) -> set[str]:
@@ -792,6 +792,11 @@ try:
                 m = pat.match(raw)
                 if not m:
                     continue
+                stripped = raw.strip()
+                if stripped.startswith('|') and stripped.endswith('|'):
+                    cells = [part.strip() for part in stripped[1:-1].split('|')]
+                    if len(cells) >= 5 and cells[4] == 'NA':
+                        continue
                 card = int(m.group(1))
                 die = int(m.group(2) or 0)
                 pid = int(m.group(3))

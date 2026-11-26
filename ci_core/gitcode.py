@@ -525,11 +525,28 @@ class MultiPlatformClient:
 
     def running_workflows(self):
         runs = []
-        for client in [self.github, *self.gitcode.values()]:
+        targets = []
+        if self.github is not None:
+            targets.append((getattr(self.github, "repo", "github"), self.github))
+        targets.extend(self.gitcode.items())
+        for repo, client in targets:
             if client is None:
                 continue
             try:
                 runs.extend(client.running_workflows())
             except Exception as exc:
-                logging.warning("provider polling failed (%s)", type(exc).__name__)
+                code = getattr(exc, "code", None)
+                if isinstance(code, int):
+                    logging.warning(
+                        "provider polling failed: %s (%s status=%d)",
+                        repo,
+                        type(exc).__name__,
+                        code,
+                    )
+                else:
+                    logging.warning(
+                        "provider polling failed: %s (%s)",
+                        repo,
+                        type(exc).__name__,
+                    )
         return runs

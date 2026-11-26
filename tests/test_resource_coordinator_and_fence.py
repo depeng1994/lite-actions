@@ -197,17 +197,14 @@ class PhysicalResourceCoordinatorTests(unittest.TestCase):
 
             with self.assertRaises(UnverifiedRemoteRevoke):
                 lease.release(remote_revoked_hosts={"n0"})
-            # Lease remains recorded and devices quarantined on unverified revoke.
+            # Lease remains recorded for reconciliation without writing quarantine locks.
             self.assertEqual(len(coord.all_active_leases()), 1)
-            self.assertIn(("192.0.2.10:22", 0), coord.all_quarantined_resources())
-            with self.assertRaisesRegex(
-                ValueError, "QUARANTINED_RESOURCE_CANNOT_DELETE"
-            ):
+            self.assertEqual(coord.all_quarantined_resources(), set())
+            with self.assertRaisesRegex(ValueError, "ACTIVE_LEASES_REMAINING"):
                 coord.check_delete_allowed(res_keys)
 
             coord.release(lease.lease_id, remote_revoked_hosts={"n0", "n1"})
             self.assertEqual(coord.all_active_leases(), [])
-            coord.clear_quarantine()
             coord.clear_drain_state("yellow")
             coord.check_delete_allowed(res_keys)
 

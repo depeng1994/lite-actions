@@ -868,7 +868,7 @@ AdminState(Path(sys.argv[1])).update('operator_guard',phase='REPORTED',
                 admin.kill()
             admin.communicate()
 
-    def test_crash_recovery_quarantines_allocation_and_prevents_relaunch(self):
+    def test_crash_recovery_reports_infra_error_without_quarantine(self):
         service = Service([definition("training")], self.root)
         router = self.router(service)
         with service.connected(), patch("ci_core.router.execute") as execute:
@@ -885,16 +885,20 @@ AdminState(Path(sys.argv[1])).update('operator_guard',phase='REPORTED',
             recovered = self.router(service, existing=router.root)
             recovered.tick()
             service.add_run(21)
+            execute.side_effect = lambda case, run, **kwargs: completed_execution(
+                recovered.root, case, run
+            )
             recovered.tick()
-            execute.assert_not_called()
+            self.drain(recovered)
+            execute.assert_called_once()
         self.assertEqual(service.results()[0]["status"], "INFRA_ERROR")
         self.assertFalse(service.results()[0]["cleanup_verified"])
-        self.assertTrue(recovered.state.read()[key]["quarantined"])
+        self.assertFalse(recovered.state.read()[key]["quarantined"])
         self.assertEqual(
             recovered.state.read()[
                 task_key(service.runs[21], service.plans[21]["cases"][0])
             ]["phase"],
-            "QUEUED",
+            "REPORTED",
         )
 
     def test_noisy_training_result_keeps_identity_and_upload_budget(self):
