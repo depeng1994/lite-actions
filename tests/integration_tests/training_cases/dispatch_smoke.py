@@ -59,7 +59,7 @@ def build_smoke_list() -> list[OverrideDefinitions]:
             ci_overrides=ci_overrides or {},
             nnodes=nodes,
             ngpu=8,
-            timeout=180 if nodes > 1 else 75,
+            timeout=300,
             env_vars={"ASCEND_SET_ENV_PATH": "/usr/local/Ascend/ascend-toolkit/set_env.sh"},
             check_loss=False,
         )

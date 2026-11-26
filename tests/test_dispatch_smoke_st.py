@@ -3,6 +3,7 @@
 import io
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -13,8 +14,9 @@ from unittest.mock import Mock, patch
 from ci_core import ssh_runner
 from ci_core.contract import SELF_REPO, SELF_WORKFLOW
 from ci_core.executor import execute
-from ci_core.reporting import body_for, report
+from ci_core.reporting import body_for, progress_body, report
 from ci_core.self_smoke import prepare, wait
+from tests.integration_tests.tools.lite_actions import entrypoint
 from tests.scenarios import write_workspace
 
 A3_DIVIDER = "+---------------------------+---------------+----------------------------------------------------------------------+\n"
@@ -71,6 +73,126 @@ A3_ALL_IDLE = (
 
 
 class DispatchSmokeEndToEndST(unittest.TestCase):
+    def test_st_smoke_execution_budget_starts_after_queue_and_preparation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "ci-request.json"
+            environ = {
+                "GITHUB_REPOSITORY": SELF_REPO,
+                "GITHUB_RUN_ID": "99002",
+                "GITHUB_RUN_ATTEMPT": "1",
+                "GITHUB_SHA": "a" * 40,
+                "CI_RESULT_AUTHOR": "reporter",
+                "GH_TOKEN": "fixture-token",
+            }
+            with patch("ci_core.self_smoke.PLAN", plan_path):
+                plan = prepare(environ)
+            run = {
+                "id": plan["run_id"],
+                "run_attempt": plan["attempt"],
+                "head_sha": plan["sha"],
+                "path": ".github/workflows/" + SELF_WORKFLOW,
+                "_ci_repo": SELF_REPO,
+            }
+            digest = plan["plan_digest"]
+
+            def comment(body):
+                return {"user": {"login": "reporter"}, "body": body}
+
+            for case in plan["cases"]:
+                if case["kind"] != "npu_smoke":
+                    continue
+                for execution_seconds in (299, 301):
+                    with self.subTest(case=case["case_id"], seconds=execution_seconds):
+                        elapsed = 0
+                        launch_at = 8 * 60
+                        nodes = case["resources"]["nodes"]
+
+                        def sleep(seconds):
+                            nonlocal elapsed
+                            elapsed += seconds
+
+                        def run_collective(command, *, env, check, timeout):
+                            if execution_seconds > timeout:
+                                raise subprocess.TimeoutExpired(command, timeout)
+                            return subprocess.CompletedProcess(command, 0)
+
+                        def commit_comments(_sha):
+                            if elapsed < launch_at:
+                                phase = "QUEUED" if elapsed < 6 * 60 else "STAGING"
+                                return [
+                                    comment(progress_body(run, case, digest, phase))
+                                ]
+                            with (
+                                patch.dict(
+                                    os.environ,
+                                    {
+                                        "NODE_IPS": ",".join(
+                                            f"192.0.2.{i + 1}" for i in range(nodes)
+                                        ),
+                                        "NODE_RANK": "0",
+                                        "NNODES": str(nodes),
+                                        "NGPU": "8",
+                                        "MASTER_PORT": "16001",
+                                    },
+                                    clear=True,
+                                ),
+                                patch(
+                                    "sys.argv",
+                                    [
+                                        "entrypoint",
+                                        "launch",
+                                        "--test-id",
+                                        case["test_id"],
+                                        "--output-dir",
+                                        tmp,
+                                    ],
+                                ),
+                                patch(
+                                    "tests.integration_tests.tools.lite_actions.runner.subprocess.run",
+                                    side_effect=run_collective,
+                                ),
+                            ):
+                                try:
+                                    entrypoint.main()
+                                except RuntimeError as exc:
+                                    receipt = report(
+                                        run, case, digest, "FAIL", 1, [str(exc)], True
+                                    )
+                                else:
+                                    receipt = report(
+                                        run, case, digest, "PASS", 0, [], True
+                                    )
+                            return [comment(body_for(run, case, receipt))]
+
+                        output = io.StringIO()
+                        with (
+                            patch("ci_core.self_smoke.PLAN", plan_path),
+                            patch("ci_core.self_smoke.GitHubClient") as client,
+                            patch(
+                                "ci_core.self_smoke.time",
+                                SimpleNamespace(monotonic=lambda: elapsed, sleep=sleep),
+                            ),
+                            redirect_stdout(output),
+                        ):
+                            client.return_value.commit_comments.side_effect = (
+                                commit_comments
+                            )
+                            if execution_seconds == 299:
+                                wait(environ, only=case["case_id"])
+                                self.assertIn(
+                                    f"{case['case_id']}: PASS", output.getvalue()
+                                )
+                            else:
+                                with self.assertRaisesRegex(
+                                    ValueError, "self-smoke cases failed"
+                                ):
+                                    wait(environ, only=case["case_id"])
+                                self.assertIn(
+                                    "exceeded 300-second execution budget",
+                                    output.getvalue(),
+                                )
+                        self.assertEqual(elapsed, launch_at)
+
     # =========================================================================
     # ST-1：拦截多机 16P 跨节点 HCCL 握手误选本地 Docker 网桥导致 EI0015 卡死的问题
     #
