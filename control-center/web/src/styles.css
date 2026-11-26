@@ -232,18 +232,20 @@ code, .mono { font-family: var(--mono); font-size: .94em; letter-spacing: -.25px
 .timeline-measure-values > span:first-child { display: inline-flex; align-items: center; gap: 7px; color: var(--accent); }
 .timeline-measure-times { color: var(--text); }
 .inline-detail-slot { margin-top: 12px; }
-.pools-workspace { margin-inline: 5px; }
-.pools-workspace .timeline-board, .pools-workspace .timeline-measure-readout { margin-inline: 0; }
-.pools-workspace-split {
-  display: grid;
-  grid-template-rows: minmax(0, var(--timeline-share)) 14px minmax(0, var(--detail-share));
-  block-size: max(340px, 76dvh);
+.pools-workspace, .pools-upper-pane { display: grid; min-inline-size: 0; }
+.pools-workspace {
+  margin-inline: 5px;
+  block-size: max(440px, 76dvh);
+  grid-template-rows: minmax(0, var(--upper-share)) 16px minmax(0, var(--queue-share));
 }
-.pools-workspace-split > :is(.pools-timeline-pane, .inline-detail-slot) {
+.pools-workspace .timeline-board, .pools-workspace .timeline-measure-readout { margin-inline: 0; }
+.pools-upper-pane { min-block-size: 0; grid-template-rows: minmax(0, 1fr); }
+.pools-detail-split { grid-template-rows: minmax(0, var(--timeline-share)) 16px minmax(0, var(--detail-share)); }
+.pools-upper-pane > :is(.pools-timeline-pane, .inline-detail-slot) {
   min-block-size: 0;
   margin: 0;
 }
-.pools-workspace-split > .pools-timeline-pane { overflow: auto; }
+.pools-timeline-pane { overflow: auto; }
 .pools-splitter {
   display: grid;
   place-items: center;
@@ -255,8 +257,8 @@ code, .mono { font-family: var(--mono); font-size: .94em; letter-spacing: -.25px
 .pools-splitter::before { content: ""; width: 44px; height: 4px; border-radius: 2px; background: var(--line-strong); }
 .pools-splitter:is(:hover, :focus-visible, :active) { background: var(--accent-tint); }
 .pools-splitter:is(:hover, :focus-visible, :active)::before { background: var(--accent); }
-.pools-workspace-split .inline-detail { block-size: 100%; overflow: auto; }
-.pools-workspace-split .inline-detail-header { position: sticky; inset-block-start: 0; z-index: 1; background: var(--surface-raised); }
+.pools-detail-split .inline-detail { block-size: 100%; overflow: auto; }
+.pools-detail-split .inline-detail-header { position: sticky; inset-block-start: 0; z-index: 1; background: var(--surface-raised); }
 .inline-detail { background: var(--surface-raised); border: 1px solid var(--line); border-radius: 4px; }
 .inline-detail-header { display: flex; align-items: center; justify-content: space-between; gap: 8px 16px; padding: 12px 16px 10px; border-bottom: 1px solid var(--line); scroll-margin-bottom: 12px; }
 .inline-detail-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; min-width: 0; }
@@ -276,8 +278,7 @@ code, .mono { font-family: var(--mono); font-size: .94em; letter-spacing: -.25px
   .inline-detail-columns:has(.inline-occupancy) { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.6fr); }
 }
 
-.queue-section { margin: 39px 12px 0; border-top: 1px solid var(--line-strong); }
-.pools-view:has(.inline-detail-slot, .timeline-measure-readout) .queue-section { margin-top: 16px; }
+.queue-section { min-block-size: 0; overflow: auto; border-top: 1px solid var(--line-strong); }
 .queue-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 18px 10px 16px; }
 .queue-heading-main { display: flex; align-items: center; gap: 15px; }
 .scope-select { display: inline-flex; align-items: center; position: relative; color: var(--blue-text); }
@@ -307,6 +308,7 @@ code, .mono { font-family: var(--mono); font-size: .94em; letter-spacing: -.25px
 .queue-table .cell-title { font-size: 17px; }
 
 .standard-view { padding: 33px 30px 50px; max-width: 1720px; margin-inline: auto; }
+.models-view { width: 100%; max-width: none; }
 .page-heading, .section-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
 .page-heading { margin-bottom: 23px; }
 .page-heading p, .section-heading p { color: var(--muted); margin-top: 7px; }
@@ -332,6 +334,7 @@ th[aria-sort] .column-sort, th[aria-sort] .column-sort svg, .column-sort:hover {
 .workflow-grid > thead th { white-space: nowrap; }
 .workflow-grid > thead th, .workflow-grid > tbody > tr > td { padding-inline: clamp(7px, 0.7vw, 12px); }
 .workflow-grid > tbody > tr > td { font-size: 14px; }
+.workflow-grid > tbody > tr:not(.expanded-cases) > td { white-space: nowrap; }
 .workflow-grid > tbody > tr > td:first-child { min-width: 82px; padding-inline: 7px; }
 .workflow-grid > thead th:nth-child(3), .workflow-grid > tbody > tr > td:nth-child(3) { min-width: 220px; }
 .workflow-grid > tbody > tr > td:nth-child(3) { white-space: nowrap; }
@@ -341,9 +344,10 @@ th[aria-sort] .column-sort, th[aria-sort] .column-sort svg, .column-sort:hover {
 .workflow-grid .workflow-time small { font-size: inherit; }
 .workflow-actions { display: flex; gap: 5px; flex-wrap: wrap; }
 .workflow-grid th:last-child { min-width: 105px; }
-.workflow-grid > thead th:nth-child(6), .workflow-grid > tbody > tr > td:nth-child(6) { min-width: 185px; width: 185px; }
-.workflow-grid > tbody > tr > td:nth-child(6) .run-id { display: inline-flex; max-width: 175px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.run-id { white-space: nowrap; }
+.workflow-grid > thead th:nth-child(6), .workflow-action-id { min-inline-size: 235px; }
+.workflow-action-line { display: flex; align-items: center; gap: 6px; }
+.workflow-action-line .run-id { flex: none; }
+.workflow-action-id > small { max-inline-size: clamp(210px, 26vw, 460px); overflow: hidden; text-overflow: ellipsis; }
 .expand-workflow { display: inline-grid; place-items: center; border: 1px solid var(--line-strong); background: var(--surface-raised); color: var(--accent); border-radius: 4px; width: 26px; height: 26px; padding: 0; }
 .expand-workflow:hover { border-color: var(--accent); }
 .workflow-grid .run-expanded { background: var(--accent-tint); }
@@ -469,7 +473,6 @@ th[aria-sort] .column-sort, th[aria-sort] .column-sort svg, .column-sort:hover {
   .legend i { width: 25px; height: 15px; }
   h1 { font-size: 29px; }
   h2 { font-size: 20px; }
-  .queue-section { margin-top: 25px; }
   .queue-heading { padding-inline: 1px; }
   .queue-heading-main { gap: 8px; }
   .queue-heading .text-button { font-size: 13px; }
