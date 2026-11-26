@@ -1103,99 +1103,113 @@ class DispatchSmokeEndToEndST(unittest.TestCase):
             self.assertEqual(coord.all_active_leases(), [])
 
     # =========================================================================
-    # ST-8：拦截旧分支 PR 部署 TestWorker 运行过期 router 代码导致 PR 烟测卡死的故障模式
+    # ST-8：拦截旧分支 PR 部署 TestWorker 运行过期 router 代码（或命中 GitHub
+    #       数小时未刷新的陈旧 merge_commit_sha）导致 PR 烟测卡死的故障模式
     #
     # 故障场景：
-    #   当 PR 基于旧版 main 创建（如文档 PR #60/#61 或外部 Fork PR）且 main 随后合入了
-    #   router/控制面修复时，若 TestSupervisor 直接拉取原始 pr_head_sha，TestWorker 会
-    #   运行旧版 router 代码并忽略新事件触发。必须优先部署 GitHub 的 merge_commit_sha
-    #   (refs/pull/<pr>/merge = main + PR)，同时保持对外门禁仍绑定 pr_head_sha。
+    #   PR 基于旧版 main 创建，随后 main 合入了新的 router 修复；此时 GitHub 的
+    #   pr.merge_commit_sha 可能仍停留在数小时前的旧 main。TestSupervisor 必须在
+    #   本地实时拉取最新 origin/main 与 refs/pull/<pr>/head 合并部署，确保
+    #   code_dir 同时包含最新 main 修复与 PR 自身改动。
     # =========================================================================
-    def test_st_deploy_uses_pr_merge_commit_so_stale_pr_inherits_main_fixes(self):
-        from ci_core.test_supervisor import TestSupervisor
+    def test_st_deploy_merges_fresh_main_with_pr_head_locally(self):
+        import subprocess
+
+        from ci_core.test_supervisor import _prepare_merged_pr_checkout
 
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp) / "worker"
-            write_workspace(root)
-            head_sha = "1" * 40
-            merge_sha = "2" * 40
-            prepared = {}
-
-            class _FakeClient:
-                repo = SELF_REPO
-
-                def request(self, method, path, **_kw):
-                    if path == "/pulls/61":
-                        return {
-                            "state": "open",
-                            "head": {"sha": head_sha},
-                            "user": {"login": "depeng1994"},
-                            "mergeable": True,
-                            "merge_commit_sha": merge_sha,
-                        }
-                    raise AssertionError(path)
-
-                def workflow_status(self, run_id):
-                    return {"status": "in_progress", "run_attempt": 1}
-
-            def fake_prepare(client, run, lifecycle, code_dir):
-                prepared["sha"] = run.get("_ci_execution_sha")
-                prepared["use_merge_ref"] = run.get("_ci_use_pr_merge_ref")
-                code_dir.mkdir(parents=True, exist_ok=True)
-
-            sup = TestSupervisor(
-                zone="blue",
-                main_root=root,
-                state_dir=Path(tmp) / "state",
-                worktree_root=Path(tmp) / "wt",
-                runtime_root=Path(tmp) / "rt",
-                pools={},
-                pools_revision=1,
-                workers={"blue": {"enabled": True}},
-                author="depeng1994",
-                address="127.0.0.1",
-                release_sha="9" * 40,
-                code_preparer=fake_prepare,
-                launcher=lambda rec, **_kw: {
-                    "pid": os.getpid(),
-                    "boot_id": "b",
-                    "start_ticks": 1,
-                    "skip_ready_check": True,
-                },
-                stopper=lambda *_a, **_kw: None,
-                alive_checker=lambda _rec: True,
-                enforce_peercred=False,
+            origin = Path(tmp) / "origin.git"
+            work = Path(tmp) / "work"
+            code_dir = Path(tmp) / "deployed"
+            git_env = {
+                **os.environ,
+                "GIT_AUTHOR_NAME": "test",
+                "GIT_AUTHOR_EMAIL": "t@test",
+                "GIT_COMMITTER_NAME": "test",
+                "GIT_COMMITTER_EMAIL": "t@test",
+            }
+            subprocess.run(
+                ["git", "init", "--bare", "-q", str(origin)], check=True, env=git_env
             )
-            run = {
-                "_ci_repo": SELF_REPO,
-                "id": 777,
-                "run_attempt": 1,
-                "head_sha": "9" * 40,
-            }
-            item = {
-                "case_id": "case_000_deploy_blue",
-                "kind": "test_worker_deploy",
-                "lifecycle": {
-                    "target_worker": "blue-test-id777a1",
-                    "target_test_id": "id777a1",
-                    "pr_number": 61,
-                    "pr_head_sha": head_sha,
-                    "github_run_id": 777,
-                    "github_attempt": 1,
-                    "ttl_seconds": 600,
-                },
-            }
-            try:
-                outcome = sup.handle_deploy(_FakeClient(), run, item)
-                self.assertEqual(outcome["status"], "PASS", outcome)
-                self.assertEqual(prepared["sha"], merge_sha)
-                self.assertTrue(prepared["use_merge_ref"])
-                self.assertEqual(
-                    sup._brokers["blue-test-id777a1"].release_sha, merge_sha
-                )
-            finally:
-                for broker in list(sup._brokers.values()):
-                    broker.stop()
+            subprocess.run(["git", "init", "-q", str(work)], check=True, env=git_env)
+            subprocess.run(
+                ["git", "-C", str(work), "checkout", "-q", "-b", "main"],
+                check=True,
+                env=git_env,
+            )
+            (work / "router.py").write_text("ALLOWLIST_OLD = True\n")
+            (work / "README.md").write_text("base readme\n")
+            subprocess.run(["git", "-C", str(work), "add", "."], check=True)
+            subprocess.run(
+                ["git", "-C", str(work), "commit", "-q", "-m", "base"],
+                check=True,
+                env=git_env,
+            )
+            subprocess.run(
+                ["git", "-C", str(work), "remote", "add", "origin", str(origin)],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(work), "push", "-q", "origin", "main"],
+                check=True,
+                env=git_env,
+            )
+
+            # 旧 PR 分支仅改文档，仍携带旧 router.py
+            subprocess.run(
+                ["git", "-C", str(work), "checkout", "-q", "-b", "doc-pr"],
+                check=True,
+                env=git_env,
+            )
+            (work / "README.md").write_text("pr updated readme\n")
+            subprocess.run(["git", "-C", str(work), "add", "README.md"], check=True)
+            subprocess.run(
+                ["git", "-C", str(work), "commit", "-q", "-m", "docs"],
+                check=True,
+                env=git_env,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(work),
+                    "push",
+                    "-q",
+                    "origin",
+                    "HEAD:refs/pull/60/head",
+                ],
+                check=True,
+                env=git_env,
+            )
+
+            # 随后 main 修复了 router.py
+            subprocess.run(
+                ["git", "-C", str(work), "checkout", "-q", "main"],
+                check=True,
+                env=git_env,
+            )
+            (work / "router.py").write_text("ALLOWLIST_OLD = False\n")
+            subprocess.run(["git", "-C", str(work), "add", "router.py"], check=True)
+            subprocess.run(
+                ["git", "-C", str(work), "commit", "-q", "-m", "fix router"],
+                check=True,
+                env=git_env,
+            )
+            subprocess.run(
+                ["git", "-C", str(work), "push", "-q", "origin", "main"],
+                check=True,
+                env=git_env,
+            )
+
+            _prepare_merged_pr_checkout(
+                str(origin), 60, code_dir, base_branch="main", git_env=git_env
+            )
+            self.assertEqual(
+                (code_dir / "router.py").read_text(), "ALLOWLIST_OLD = False\n"
+            )
+            self.assertEqual(
+                (code_dir / "README.md").read_text(), "pr updated readme\n"
+            )
 
 
 if __name__ == "__main__":

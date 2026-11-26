@@ -94,11 +94,11 @@ const blue = [
   occupied(ago(8), "busy"), occupied(ago(4), "busy"), occupied(now, "busy"),
   occupied(now, "idle", groups[4]),
 ];
-await post("blue", "heartbeat", { rev: 1, ok: 1, act: 5, q: 2 });
+await post("blue", "heartbeat", { rev: 1, sha: "5905edfdb103a75b4d02e9543e02a0f46ccf2c1b", ok: 1, act: 5, q: 2 });
 for (let i = 0; i < blue.length; i += 6) {
   await post("blue", "events", { ev: blue.slice(i, i + 6).map((event, index) => ({ ...event, s: i + index + 1 })) });
 }
-await post("yellow", "heartbeat", { rev: 1, ok: 1, act: 0, q: 3 });
+await post("yellow", "heartbeat", { rev: 1, sha: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678", ok: 1, act: 0, q: 3 });
 const allQueued1 = { ...descriptor(0, "全排队用例一", "QUEUED", ago(2), [], ago(2), "105"), pool: "yellow_pool" };
 const allQueued2 = { ...descriptor(1, "全排队用例二", "QUEUED", ago(2), [], ago(2), "105"), pool: "yellow_pool" };
 const doneAndQueuedDone = { ...descriptor(0, "部分完成已结束用例", "RUNNING", ago(20), [], ago(20), "106"), pool: "yellow_pool" };

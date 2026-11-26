@@ -39,6 +39,99 @@ MAX_TTL_SECONDS = 14400
 UNIT_PREFIX = "lite-actions-test-"
 
 
+def _prepare_merged_pr_checkout(
+    repo_url: str,
+    pr_number: int,
+    code_dir: Path,
+    *,
+    base_branch: str = "main",
+    git_env: dict[str, str] | None = None,
+) -> None:
+    """Merge fresh origin/<base_branch> + refs/pull/<pr>/head locally into code_dir."""
+    env = {
+        **(git_env if git_env is not None else os.environ),
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+    with tempfile.TemporaryDirectory(prefix="lite-tw-merge-") as tmp:
+        repo_dir = Path(tmp) / "repo"
+        archive_path = Path(tmp) / "merged.tar.gz"
+        subprocess.run(["git", "init", "-q", str(repo_dir)], check=True, timeout=25)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_dir),
+                "fetch",
+                "-q",
+                repo_url,
+                f"refs/heads/{base_branch}:refs/remotes/origin/{base_branch}",
+                f"refs/pull/{pr_number}/head:refs/remotes/origin/pr",
+            ],
+            check=True,
+            timeout=180,
+            capture_output=True,
+            env=env,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_dir),
+                "checkout",
+                "-q",
+                "-B",
+                "test-merge",
+                f"refs/remotes/origin/{base_branch}",
+            ],
+            check=True,
+            timeout=30,
+            capture_output=True,
+            env=env,
+        )
+        merge = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_dir),
+                "-c",
+                "user.name=lite-actions",
+                "-c",
+                "user.email=ci@lite-actions",
+                "merge",
+                "-q",
+                "--no-edit",
+                "refs/remotes/origin/pr",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+            env=env,
+        )
+        if merge.returncode != 0:
+            detail = (merge.stderr or merge.stdout or "").strip().replace("\n", " ")
+            raise RuntimeError(
+                f"PR #{pr_number} failed to merge cleanly with {base_branch}: {detail[:180]}"
+            )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_dir),
+                "archive",
+                "--format=tar.gz",
+                "-o",
+                str(archive_path),
+                "HEAD",
+            ],
+            check=True,
+            timeout=90,
+            capture_output=True,
+            env=env,
+        )
+        _safe_extract_tar_gz(archive_path, code_dir)
+
+
 def _safe_extract_tar_gz(archive_path: Path, dest_dir: Path) -> None:
     """Safely extract repository archives without symlinks or path traversal."""
     dest = dest_dir.resolve()
@@ -447,27 +540,35 @@ class TestSupervisor:
         if code_dir.exists():
             shutil.rmtree(code_dir, ignore_errors=True)
         repo = run.get("_ci_repo", SELF_REPO)
-        sha = run.get("_ci_execution_sha") or lifecycle["pr_head_sha"]
-        fallback = (run.get("head_repository") or {}).get("full_name") or run.get(
-            "_ci_source_repo"
-        )
-        with tempfile.TemporaryDirectory(prefix="lite-tw-src-") as tmp:
-            archive = model_archive(
-                sha,
-                Path(tmp),
-                source_repo=repo,
-                provider=run.get("_ci_provider", "github"),
-                fallback_repo=fallback,
-                source_pr=(
-                    lifecycle["pr_number"]
-                    if (
-                        run.get("_ci_use_pr_merge_ref")
-                        or run.get("_ci_source", {}).get("mode") == "merge_result"
-                    )
-                    else None
-                ),
+        provider = run.get("_ci_provider", "github")
+        pr_number = lifecycle.get("pr_number")
+        if provider == "github" and isinstance(pr_number, int) and pr_number > 0:
+            base_branch = str(run.get("_ci_pr_base_ref") or "main").strip() or "main"
+            _prepare_merged_pr_checkout(
+                f"https://github.com/{repo}.git",
+                pr_number,
+                code_dir,
+                base_branch=base_branch,
             )
-            _safe_extract_tar_gz(archive, code_dir)
+        else:
+            sha = run.get("_ci_execution_sha") or lifecycle["pr_head_sha"]
+            fallback = (run.get("head_repository") or {}).get("full_name") or run.get(
+                "_ci_source_repo"
+            )
+            with tempfile.TemporaryDirectory(prefix="lite-tw-src-") as tmp:
+                archive = model_archive(
+                    sha,
+                    Path(tmp),
+                    source_repo=repo,
+                    provider=provider,
+                    fallback_repo=fallback,
+                    source_pr=(
+                        pr_number
+                        if run.get("_ci_source", {}).get("mode") == "merge_result"
+                        else None
+                    ),
+                )
+                _safe_extract_tar_gz(archive, code_dir)
         # Ensure clean permissions readable by DynamicUser=yes under BindReadOnlyPaths.
         for path in code_dir.rglob("*"):
             try:
@@ -703,21 +804,13 @@ class TestSupervisor:
                 "tail": [f"Deploy authority check failed: {exc}"],
                 "release_verified": True,
             }
-        merge_sha = (
-            pr_info.get("merge_commit_sha")
-            if isinstance(pr_info, dict) and pr_info.get("mergeable") is not False
-            else None
+        base_ref = (
+            ((pr_info.get("base") or {}).get("ref") or "").strip()
+            if isinstance(pr_info, dict)
+            else ""
         )
-        if (
-            isinstance(merge_sha, str)
-            and len(merge_sha) == 40
-            and all(ch in "0123456789abcdef" for ch in merge_sha.lower())
-        ):
-            run = {
-                **run,
-                "_ci_execution_sha": merge_sha.lower(),
-                "_ci_use_pr_merge_ref": True,
-            }
+        if base_ref:
+            run = {**run, "_ci_pr_base_ref": base_ref}
 
         ttl = max(60, min(MAX_TTL_SECONDS, int(lifecycle["ttl_seconds"])))
         now = self.clock()

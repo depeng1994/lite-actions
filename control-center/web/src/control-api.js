@@ -164,6 +164,7 @@ function clusterViewConfig(cluster) {
   const workerStatus = Object.fromEntries((cluster?.workers || []).map((worker) => [workerLabel(worker.worker_id), {
     offline: Boolean(worker.offline), status: worker.status, error: worker.error_msg ?? null,
     desired: worker.desired_rev ?? cluster?.revision ?? 0,
+    codeSha: worker.code_sha || null,
     lastHeartbeatAt: worker.last_heartbeat_at ?? null,
   }]));
   return {desired: cluster?.revision || 0, applied, flags, workerStatus, pending: null};

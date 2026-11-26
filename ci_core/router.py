@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import subprocess
 import tempfile
 import threading
@@ -247,6 +248,10 @@ class Router:
                 self.release_sha = actual_sha(self.root)
             except (OSError, ValueError, subprocess.SubprocessError):
                 self.release_sha = ""
+        if not self.release_sha:
+            resolved_name = self.root.resolve().name.strip().lower()
+            if re.fullmatch(r"[0-9a-f]{40}", resolved_name):
+                self.release_sha = resolved_name
         self.next_discovery = 0.0
         self.state = JobState(self.root)
         disabled_quarantine = {
