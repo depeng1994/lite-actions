@@ -7,9 +7,11 @@ import json
 import os
 import shlex
 import signal
+import sys
 import tempfile
 import threading
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -263,6 +265,48 @@ class NodeOccupancyTests(unittest.TestCase):
             )
         self.assertFalse(
             any(command.startswith("kill -9") for _, command in self.calls)
+        )
+
+    def test_preflight_reclaims_on_a_host_with_legacy_python(self):
+        self.case["allocation"] = [{"host_id": self.preempt["host_id"], "devices": [0]}]
+        poller = Mock()
+        poller.poll.return_value = []
+        libc = Mock()
+        libc.syscall.side_effect = [7, 0]
+
+        def execute_on_host(_host, command):
+            if not command.startswith("python3 -c "):
+                return
+            _, _, program, *args = shlex.split(command)
+            stdout = io.StringIO()
+            with (
+                patch.object(sys, "argv", ["-c", *args]),
+                patch.object(sys, "platform", "linux"),
+                patch("platform.machine", return_value="aarch64"),
+                patch.object(os, "pidfd_open", None, create=True),
+                patch.object(os, "close"),
+                patch.object(signal, "pidfd_send_signal", None, create=True),
+                patch("ctypes.CDLL", return_value=libc),
+                patch("select.poll", return_value=poller),
+                patch("pathlib.Path.read_bytes", return_value=HOST_ID),
+                patch(
+                    "subprocess.run",
+                    return_value=SimpleNamespace(returncode=0, stdout=BUSY),
+                ),
+                redirect_stdout(stdout),
+            ):
+                # Python 3.8 lacks subscriptable builtins and the native pidfd wrappers.
+                exec(
+                    compile(program, "<reclaim helper>", "exec", dont_inherit=True),
+                    {"list": object},
+                )
+            self.assertEqual(stdout.getvalue(), "SIGNALED\n")
+
+        self.preflight([], [BUSY, BUSY, EMPTY], on_probe=execute_on_host)
+        opened, signalled = libc.syscall.call_args_list
+        self.assertEqual([arg.value for arg in opened.args], [434, 123456, 0])
+        self.assertEqual(
+            [arg.value for arg in signalled.args], [424, 7, signal.SIGKILL, None, 0]
         )
 
     def test_multi_node_recheck_blocks_if_external_work_appears(self):
