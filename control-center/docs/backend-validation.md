@@ -71,7 +71,9 @@ DB_PATH=/var/lib/lite-actions/control-center.sqlite \
 
 部署初期后端（Node.js 24 + SQLite）时，使用 `seed.mjs --sqlite <path>` 初始化本地 SQLite，通过 `scripts/start-node-server.mjs`（或 `control-center/deploy/Dockerfile`）启动并配 Caddy/Nginx HTTPS 反代。前端与 API 同源使用 `/api/v1/*`。后端通过环境变量或服务端 Secret 配置 `KEY_PEPPER`、`SUPER_SECRET`、`WORKER_BLUE_KEY_HASH`、`WORKER_YELLOW_KEY_HASH`（使用相同 pepper 做 HMAC-SHA256 保存为小写十六进制）、`GITHUB_APP_ID`、`GITHUB_APP_PRIVATE_KEY` 和 `GITCODE_CANCEL_TOKEN`。
 
-生产网页发布使用 GitHub Actions 的 **Deploy Control Center**。在 `main` 手动触发，选择 `deploy_server=true`，会把 Workflow 所在提交的前端发布到服务器。构建模式可以指定其他 ref，下载完整 Control Center 构建包。
+PR 合入 `main` 后，GitHub Actions 的 **Deploy Control Center** 会自动构建该次合入提交并发布前端。发布步骤串行执行，若构建提交在发布前已被 `main` 上的新提交取代，则跳过该次发布。
+
+需要手动补发时，在 `main` 运行同一 Workflow 并选择 `deploy_server=true`。仅构建时可以指定其他 ref，下载完整 Control Center 构建包。
 
 生产发布读取 `control-center-production` 环境中的 `SERVER_DEPLOY_COMMAND`。命令须把 `RELEASE_ARCHIVE` 通过 SSH 标准输入传给服务器的 `control-center/deploy/publish-web.py`。服务器通过专用密钥的强制命令，固定入口脚本及目标静态目录。脚本先安装内容带哈希的资源，再原子替换 `index.html`，并在静态目录旁保留上一份入口文件。发布仅处理前端文件。
 
