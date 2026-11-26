@@ -390,7 +390,7 @@ jobs:
     needs: [prepare, deploy]
     runs-on: ubuntu-latest
     name: "self-${{ matrix.case_id }}"
-    timeout-minutes: ${{ needs.prepare.outputs.profile == 'cpu-only' && 15 || 180 }}
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.smoke_matrix) }}
@@ -404,6 +404,7 @@ jobs:
           name: lite-ci-request-${{ github.run_attempt }}
           path: .ci-request
       - name: Wait for Test Worker result (${{ matrix.worker }})
+        timeout-minutes: 5
         env:
           SELF_SMOKE_CASE_ID: ${{ matrix.case_id }}
           SELF_SMOKE_SHA: ${{ needs.prepare.outputs.run_head_sha }}
