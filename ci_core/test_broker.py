@@ -277,6 +277,9 @@ class TestBrokerServer:
         self._last_snapshot: dict | None = None
         self._alloc_lock = threading.RLock()
         self._plan_cache: dict[str, dict] = {}
+        self._fallback_poll_lock = threading.Lock()
+        self._last_fallback_poll_at: float = 0.0
+        self._last_fallback_runs: list[dict] = []
         self._server: _ThreadedUnixServer | None = None
         self._thread: threading.Thread | None = None
         self.audit_log: list[dict] = []
@@ -550,7 +553,20 @@ class TestBrokerServer:
             }
         if op == "POLL_RUNS":
             cached = self.runs_provider() if self.runs_provider is not None else None
-            runs = cached if cached is not None else self.client.running_workflows()
+            if cached is not None:
+                runs = cached
+            elif self.zone == "yellow" and self.runs_provider is not None:
+                with self._fallback_poll_lock:
+                    now = time.monotonic()
+                    if (
+                        self._last_fallback_poll_at <= 0.0
+                        or (now - self._last_fallback_poll_at) >= 60.0
+                    ):
+                        self._last_fallback_runs = list(self.client.running_workflows())
+                        self._last_fallback_poll_at = now
+                    runs = list(self._last_fallback_runs)
+            else:
+                runs = self.client.running_workflows()
             scoped = [_sanitize_run(r) for r in runs if self._matches_scope(r)]
             return {"ok": True, "result": {"runs": scoped}}
         if op == "FETCH_PLAN":

@@ -324,7 +324,7 @@ class TestSupervisor:
             self._cached_runs = copy.deepcopy(list(runs))
             self._cached_runs_at = time.monotonic()
 
-    def get_cached_runs(self, max_age: float = 90.0) -> list[dict] | None:
+    def get_cached_runs(self, max_age: float = 180.0) -> list[dict] | None:
         with self._cached_runs_lock:
             if (
                 self._cached_runs_at <= 0.0
