@@ -200,6 +200,72 @@ function InlineDetailSlot({ selected, children }) {
   return <div className="inline-detail-slot" ref={panel}>{children}</div>;
 }
 
+const minDetailShare = 25;
+const maxDetailShare = 75;
+
+function PoolsSplit({ selected, detail, children }) {
+  const [detailShare, setDetailShare] = useState(36);
+  const timelinePane = useRef(null);
+  const drag = useRef(null);
+  const open = Boolean(detail);
+
+  useLayoutEffect(() => {
+    const pane = timelinePane.current;
+    const source = document.activeElement;
+    if (!open || !pane.contains(source)) return;
+    const frame = pane.getBoundingClientRect();
+    const item = source.getBoundingClientRect();
+    if (item.bottom > frame.bottom) pane.scrollTop += item.bottom - frame.bottom;
+    if (item.top < frame.top) pane.scrollTop += item.top - frame.top;
+  }, [open]);
+
+  function resize(share) {
+    setDetailShare(Math.min(maxDetailShare, Math.max(minDetailShare, Math.round(share))));
+  }
+
+  function startDrag(event) {
+    if (!event.isPrimary || event.button !== 0) return;
+    const handle = event.currentTarget;
+    const height = handle.parentElement.clientHeight - handle.offsetHeight;
+    drag.current = { id: event.pointerId, y: event.clientY, share: detailShare, height };
+    event.preventDefault();
+    handle.focus({preventScroll: true});
+    handle.setPointerCapture(event.pointerId);
+  }
+
+  function moveDrag(event) {
+    const start = drag.current;
+    if (start?.id === event.pointerId) {
+      resize(start.share + (start.y - event.clientY) * 100 / start.height);
+    }
+  }
+
+  function endDrag(event) {
+    if (drag.current?.id === event.pointerId) drag.current = null;
+  }
+
+  function resizeWithKey(event) {
+    const sizes = {ArrowUp: detailShare + 4, ArrowDown: detailShare - 4, Home: minDetailShare, End: maxDetailShare};
+    if (!Object.hasOwn(sizes, event.key)) return;
+    event.preventDefault();
+    resize(sizes[event.key]);
+  }
+
+  return <div className={open ? "pools-workspace pools-workspace-split" : "pools-workspace"}
+    style={open ? {"--detail-share": `${detailShare}fr`, "--timeline-share": `${100 - detailShare}fr`} : undefined}>
+    <div className="pools-timeline-pane" ref={timelinePane}>{children}</div>
+    {open && <>
+      <div className="pools-splitter" role="separator" tabIndex={0}
+        aria-label="调整详情面板高度" aria-orientation="horizontal" aria-controls="timeline-detail"
+        aria-valuemin={minDetailShare} aria-valuemax={maxDetailShare} aria-valuenow={detailShare}
+        aria-valuetext={`详情面板占 ${detailShare}%`}
+        onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={endDrag}
+        onPointerCancel={endDrag} onLostPointerCapture={endDrag} onKeyDown={resizeWithKey} />
+      <InlineDetailSlot selected={selected}>{detail}</InlineDetailSlot>
+    </>}
+  </div>;
+}
+
 export function PoolsView({ nodes, cases, timelineCases, config, go, live, renderTimelineDetail, renderResourceDetail }) {
   const [folded, setFolded] = useState({});
   const [queueScope, selectScope] = useState("");
@@ -249,6 +315,8 @@ export function PoolsView({ nodes, cases, timelineCases, config, go, live, rende
   const closeDetail = () => setSelected(null);
   const selectCase = useCallback((caseId) => setSelected({ caseId }), []);
   const showResource = (target, blockStart) => setSelected({ target, blockStart });
+  const detail = selectedRun ? renderTimelineDetail(selectedItem, selectedRun, closeDetail)
+    : selected?.target ? renderResourceDetail({ id: "timeline-detail", target: selected.target, blockStart: selected.blockStart, nodes, close: closeDetail }) : null;
   const measureViewport = (scroll) => {
     const {scrollLeft, clientWidth} = scroll;
     setViewport((current) => current.left === scrollLeft && current.width === clientWidth
@@ -396,6 +464,7 @@ export function PoolsView({ nodes, cases, timelineCases, config, go, live, rende
           </ul>
         </div>
       </div>
+      <PoolsSplit selected={selected} detail={detail}>
       <div className="timeline-board" aria-label="Blue 与 Yellow 资源时间轴">
         <div className="timeline-fixed">
           <div className="axis-label">资源 <span>（Worker / Pool / 节点 / 设备组）</span></div>
@@ -457,12 +526,8 @@ export function PoolsView({ nodes, cases, timelineCases, config, go, live, rende
         </div>
         <button className="button small" type="button" onClick={() => setMeasured(null)} disabled={Boolean(measuring)}>清除选区</button>
       </div>}
+      </PoolsSplit>
     </section>
-    {(selectedRun || selected?.target) && <InlineDetailSlot selected={selected}>
-      {selectedRun
-        ? renderTimelineDetail(selectedItem, selectedRun, closeDetail)
-        : renderResourceDetail({ id: "timeline-detail", target: selected.target, blockStart: selected.blockStart, nodes, close: closeDetail })}
-    </InlineDetailSlot>}
     <section className="queue-section" aria-labelledby="queue-title">
       <div className="queue-heading">
         <div className="queue-heading-main"><h2 id="queue-title">排队用例</h2>

@@ -10,7 +10,7 @@ async function setup(page, liveClock = false) {
   expect(login.ok()).toBe(true);
 }
 
-const pools = { panel: "#timeline-detail", above: ".timeline-board", below: ".queue-section" };
+const pools = { panel: "#timeline-detail", above: ".pools-timeline-pane", below: ".queue-section" };
 const cluster = { panel: "#cluster-detail", above: ".cluster-table", below: '[aria-label="历史配置版本"]' };
 
 async function expectInline(page, source, placement, title) {
@@ -154,6 +154,52 @@ test("Pools distinguishes missing occupancy evidence and trails only open interv
   expect((await box(open)).width).toBeGreaterThan(openBefore + 3);
   expect((await box(closed)).width).toBeCloseTo(closedBefore.width, 1);
   expect((await box(unobserved)).width).toBeCloseTo(unobservedBefore.width, 1);
+});
+
+test("Pools lets users resize the detail pane while keeping the timeline scrollable", async ({ page }) => {
+  await page.setViewportSize({ width: 736, height: 925 });
+  await setup(page);
+  await page.goto("/#/pools");
+  const timelinePane = page.locator(".pools-timeline-pane");
+  const separator = page.getByRole("separator", { name: "调整详情面板高度" });
+  const heights = () => page.locator(".pools-workspace").evaluate((workspace) => [
+    workspace.clientHeight,
+    workspace.querySelector(".pools-timeline-pane").clientHeight,
+    workspace.querySelector("#timeline-detail")?.clientHeight,
+  ]);
+  await expect(separator).toHaveCount(0);
+  const fullTimelineHeight = (await heights())[1];
+  const bar = page.locator(".lease").and(page.getByRole("button", { name: /历史用例/ })).first();
+  const panel = await expectInline(page, bar, pools, "历史用例");
+  await separator.scrollIntoViewIfNeeded();
+  await expect(separator).toHaveCSS("cursor", "row-resize");
+  const [workspaceHeight, beforeTimeline, beforeDetail] = await heights();
+  const grip = await separator.boundingBox();
+  const x = grip.x + grip.width / 2;
+  const y = grip.y + grip.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x, y - 90, { steps: 5 });
+  await page.mouse.up();
+  const [heightAfterDrag, afterTimeline, afterDetail] = await heights();
+  expect(heightAfterDrag).toBe(workspaceHeight);
+  expect(afterDetail).toBeGreaterThan(beforeDetail + 70);
+  expect(afterTimeline).toBeLessThan(beforeTimeline - 70);
+
+  await separator.press("ArrowDown");
+  expect((await heights())[2]).toBeLessThan(afterDetail);
+  await separator.press("Home");
+  await expect(separator).toHaveAttribute("aria-valuenow", "25");
+  await separator.press("End");
+  await expect(separator).toHaveAttribute("aria-valuenow", "75");
+  await timelinePane.evaluate((pane) => { pane.scrollTop = pane.scrollHeight; });
+  expect(await timelinePane.evaluate((pane) => pane.scrollTop)).toBeGreaterThan(0);
+  const leaf = page.getByRole("button", { name: /192\.0\.2\.2:22 设备组 0–1/ }).and(page.locator(".tree-leaf"));
+  await expectInline(page, leaf, pools, "192.0.2.2:22 · 设备组 0–1");
+  await expect(separator).toHaveAttribute("aria-valuenow", "75");
+  await panel.getByRole("button", { name: "关闭" }).click();
+  await expect(separator).toHaveCount(0);
+  expect((await heights())[1]).toBe(fullTimelineHeight);
 });
 
 test("cluster reuses the detail slot checks for Pool, node and device groups", async ({ page }) => {
