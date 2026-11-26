@@ -1,6 +1,8 @@
 name: Deploy Control Center
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       ref:
@@ -21,14 +23,14 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Verify production ref
+      - name: Verify manual production ref
         if: ${{ inputs.deploy_server && (github.ref != 'refs/heads/main' || (inputs.ref != 'main' && inputs.ref != github.sha)) }}
         run: |
           echo "::error::Run a production deployment from main with ref=main or its workflow commit."
           exit 1
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.deploy_server && github.sha || inputs.ref }}
+          ref: ${{ (github.event_name == 'push' || inputs.deploy_server) && github.sha || inputs.ref }}
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -58,34 +60,47 @@ jobs:
           path: lite-actions-control-center.tar.gz
           if-no-files-found: error
       - name: Package the production frontend
-        if: ${{ inputs.deploy_server }}
+        if: ${{ github.event_name == 'push' || inputs.deploy_server }}
         run: tar -czf lite-actions-control-center-web.tar.gz -C control-center/web/dist index.html assets
       - uses: actions/upload-artifact@v4
-        if: ${{ inputs.deploy_server }}
+        if: ${{ github.event_name == 'push' || inputs.deploy_server }}
         with:
           name: lite-actions-control-center-web
           path: lite-actions-control-center-web.tar.gz
           if-no-files-found: error
 
   publish-web:
-    if: ${{ inputs.deploy_server }}
+    if: ${{ github.event_name == 'push' || inputs.deploy_server }}
     needs: build
     runs-on: ubuntu-latest
     environment: control-center-production
     concurrency:
       group: control-center-production
-      cancel-in-progress: false
+      queue: max
     timeout-minutes: 5
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: lite-actions-control-center-web
+      - name: Check whether main has moved since the build
+        id: check-main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          main_sha=$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq .commit.sha)
+          if [ "$main_sha" = "$GITHUB_SHA" ]; then
+            echo 'publish=true' >> "$GITHUB_OUTPUT"
+          else
+            echo "Skipping publication of $GITHUB_SHA because main has advanced to $main_sha."
+          fi
       - name: Publish through the authorized server deploy hook
+        if: ${{ steps.check-main.outputs.publish == 'true' }}
         env:
           SERVER_DEPLOY_COMMAND: ${{ secrets.SERVER_DEPLOY_COMMAND }}
         run: |
           if [ -z "${SERVER_DEPLOY_COMMAND}" ]; then
-            echo "::error::deploy_server=true requires SERVER_DEPLOY_COMMAND."
+            echo "::error::Production publication requires SERVER_DEPLOY_COMMAND."
             exit 1
           fi
           export RELEASE_ARCHIVE="$PWD/lite-actions-control-center-web.tar.gz"
