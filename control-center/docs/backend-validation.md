@@ -69,6 +69,10 @@ DB_PATH=/var/lib/lite-actions/control-center.sqlite \
   node --experimental-strip-types control-center/worker/scripts/start-node-server.mjs
 ```
 
-部署初期后端（Node.js 24 + SQLite）时，应用远端迁移与种子（另提供 `.github/workflows/deploy-control-center.yml` 一键执行远端 SQLite 迁移、Worker 部署及 前端与 API 同源部署打包核验），lite-actions.ooguy.com 前端运行时注入 `Node 同进程 API` 代理同源 `/api/v1/*`；迁移至个人服务器时使用 `seed.mjs --sqlite <path>` 初始化本地 SQLite，通过 `scripts/start-node-server.mjs`（或 `control-center/deploy/Dockerfile`）启动并配 Caddy/Nginx HTTPS 反代。两种后端方式均通过环境变量 / 服务端 Secret 配置相同凭据：`KEY_PEPPER`、`SUPER_SECRET`、`WORKER_BLUE_KEY_HASH`、`WORKER_YELLOW_KEY_HASH`（使用相同 pepper 做 HMAC-SHA256 保存为小写十六进制）、`GITHUB_APP_ID`、`GITHUB_APP_PRIVATE_KEY` 和 `GITCODE_CANCEL_TOKEN`。
+部署初期后端（Node.js 24 + SQLite）时，使用 `seed.mjs --sqlite <path>` 初始化本地 SQLite，通过 `scripts/start-node-server.mjs`（或 `control-center/deploy/Dockerfile`）启动并配 Caddy/Nginx HTTPS 反代。前端与 API 同源使用 `/api/v1/*`。后端通过环境变量或服务端 Secret 配置 `KEY_PEPPER`、`SUPER_SECRET`、`WORKER_BLUE_KEY_HASH`、`WORKER_YELLOW_KEY_HASH`（使用相同 pepper 做 HMAC-SHA256 保存为小写十六进制）、`GITHUB_APP_ID`、`GITHUB_APP_PRIVATE_KEY` 和 `GITCODE_CANCEL_TOKEN`。
+
+生产网页发布使用 GitHub Actions 的 **Deploy Control Center**。在 `main` 手动触发，选择 `deploy_server=true`，会把 Workflow 所在提交的前端发布到服务器。构建模式可以指定其他 ref，下载完整 Control Center 构建包。
+
+生产发布读取 `control-center-production` 环境中的 `SERVER_DEPLOY_COMMAND`。命令须把 `RELEASE_ARCHIVE` 通过 SSH 标准输入传给服务器的 `control-center/deploy/publish-web.py`。服务器通过专用密钥的强制命令，固定入口脚本及目标静态目录。脚本先安装内容带哈希的资源，再原子替换 `index.html`，并在静态目录旁保留上一份入口文件。发布仅处理前端文件。
 
 通过 Worker 现有部署配置为选定区域添加 `control_center.url`，并通过 Worker 环境注入 `LITE_ACTIONS_CONTROL_TOKEN`（托管从 lite-actions.ooguy.com 迁至个人服务器时，Worker 仅需更新 `control_center.url`，零代码修改）。Yellow 可配置 `control_center.ci_reserve_bytes` 为 CI 回报保留每日额度。现场若必须经代理，额外在 root:root、0600 的 `deployment.json` 本地增加 `control_center.proxy`，格式使用占位符 `http://<proxy-user>:<proxy-password>@<proxy-host>:<proxy-port>`；客户端不会读取环境代理，日志和异常不输出完整 URL。机器接口注册在 `/api/v1/worker`，健康检查与公开视图可调用 `/api/v1/public/overview`。接口字段见 [API 契约](api-contract.md)。

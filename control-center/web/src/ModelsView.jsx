@@ -276,7 +276,7 @@ export function ModelsView({
   const clientOnlyFiltered = filters.status === "active" || activeColumnFilters > 0;
   const totalHistory = clientOnlyFiltered ? historicalMatches.length : historyTotal;
 
-  return <main className="standard-view">
+  return <main className="standard-view models-view">
     <div className="page-heading">
       <div><h1>代码仓任务看板</h1><p>按当前队列顺序查看 Workflow，展开可查看子用例和实际分配。</p></div>
     </div>
@@ -341,9 +341,15 @@ export function ModelsView({
                 ? summary.pools.map((pool) => <span key={pool}>{pool.replace("/", " / ")}</span>)
                 : <span className="subtle">—</span>}</td>
               <td>{summary.maxCards}</td>
-              <td>{run.isTest && <><Tag tone="amber">TEST</Tag> </>}<a className="text-button run-id" href={actionsUrl(run)} target="_blank" rel="noreferrer" title={`平台 Actions 链接 · ${run.id}`}>
-                {run.title || run.action} <ArrowSquareOut size={13} />
-              </a><small>{run.action}{run.number == null ? ` · 尝试 ${run.attempt}` : ` #${run.number} · 尝试 ${run.attempt}`}</small></td>
+              <td className="workflow-action-id">
+                <div className="workflow-action-line">
+                  {run.isTest && <Tag tone="amber">TEST</Tag>}
+                  <a className="text-button run-id" href={actionsUrl(run)} target="_blank" rel="noreferrer" title={`平台 Actions 链接 · ${run.id}`}>
+                    {run.action}{run.number == null ? "" : ` #${run.number}`} · 尝试 {run.attempt} <ArrowSquareOut size={13} />
+                  </a>
+                </div>
+                <small title={run.title || run.action}>{run.title || run.action}</small>
+              </td>
               <td title={summary.active ? "尚未产生最终结果，执行阶段见子用例" : undefined}><Status value={summary.result} /></td>
               <td>@{run.actor}</td><td>{run.trigger}{run.pr && <small>#{run.pr} · @{run.author}</small>}</td>
               <td><WorkflowTime value={summary.start} /></td>

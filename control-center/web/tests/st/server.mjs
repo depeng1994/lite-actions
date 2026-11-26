@@ -61,6 +61,7 @@ function descriptor(index, label, phase, timestamp, devices = [], reserved = tim
   return {
     t: "TU", tid, p: "github", r: repo, run, att: 1, cid, lbl: label, k: "npu_smoke", pool,
     req: [alloc.length || 1, devices.length || 2], ph: phase, ts: timestamp - 1, wn: "Smoke", reliable: 1,
+    ...(run === "100" ? { rn: 98, dt: "Lite Actions PR smoke: #7" } : {}),
     tm: phase === "QUEUED" ? {} : { [phase]: timestamp, RESERVED: reserved },
     a: alloc,
   };

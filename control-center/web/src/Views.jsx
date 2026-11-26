@@ -193,41 +193,26 @@ function InlineDetailSlot({ selected, children }) {
   const panel = useRef(null);
   useLayoutEffect(() => {
     const heading = panel.current?.querySelector("header");
-    if (heading?.getBoundingClientRect().bottom > window.innerHeight) {
+    const bounds = heading?.getBoundingClientRect();
+    if (bounds && (bounds.top < 0 || bounds.bottom > window.innerHeight)) {
       heading.scrollIntoView({block: "nearest"});
     }
   }, [selected]);
   return <div className="inline-detail-slot" ref={panel}>{children}</div>;
 }
 
-const minDetailShare = 25;
-const maxDetailShare = 75;
-
-function PoolsSplit({ selected, detail, children }) {
-  const [detailShare, setDetailShare] = useState(36);
-  const timelinePane = useRef(null);
+function PaneSplitter({ name, controls, value, min, max, change }) {
   const drag = useRef(null);
-  const open = Boolean(detail);
-
-  useLayoutEffect(() => {
-    const pane = timelinePane.current;
-    const source = document.activeElement;
-    if (!open || !pane.contains(source)) return;
-    const frame = pane.getBoundingClientRect();
-    const item = source.getBoundingClientRect();
-    if (item.bottom > frame.bottom) pane.scrollTop += item.bottom - frame.bottom;
-    if (item.top < frame.top) pane.scrollTop += item.top - frame.top;
-  }, [open]);
 
   function resize(share) {
-    setDetailShare(Math.min(maxDetailShare, Math.max(minDetailShare, Math.round(share))));
+    change(Math.min(max, Math.max(min, Math.round(share * 10) / 10)));
   }
 
   function startDrag(event) {
     if (!event.isPrimary || event.button !== 0) return;
     const handle = event.currentTarget;
     const height = handle.parentElement.clientHeight - handle.offsetHeight;
-    drag.current = { id: event.pointerId, y: event.clientY, share: detailShare, height };
+    drag.current = { id: event.pointerId, y: event.clientY, share: value, height };
     event.preventDefault();
     handle.focus({preventScroll: true});
     handle.setPointerCapture(event.pointerId);
@@ -245,24 +230,70 @@ function PoolsSplit({ selected, detail, children }) {
   }
 
   function resizeWithKey(event) {
-    const sizes = {ArrowUp: detailShare + 4, ArrowDown: detailShare - 4, Home: minDetailShare, End: maxDetailShare};
+    const sizes = {ArrowUp: value + 4, ArrowDown: value - 4, Home: min, End: max};
     if (!Object.hasOwn(sizes, event.key)) return;
     event.preventDefault();
     resize(sizes[event.key]);
   }
 
-  return <div className={open ? "pools-workspace pools-workspace-split" : "pools-workspace"}
-    style={open ? {"--detail-share": `${detailShare}fr`, "--timeline-share": `${100 - detailShare}fr`} : undefined}>
-    <div className="pools-timeline-pane" ref={timelinePane}>{children}</div>
-    {open && <>
-      <div className="pools-splitter" role="separator" tabIndex={0}
-        aria-label="调整详情面板高度" aria-orientation="horizontal" aria-controls="timeline-detail"
-        aria-valuemin={minDetailShare} aria-valuemax={maxDetailShare} aria-valuenow={detailShare}
-        aria-valuetext={`详情面板占 ${detailShare}%`}
-        onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={endDrag}
-        onPointerCancel={endDrag} onLostPointerCapture={endDrag} onKeyDown={resizeWithKey} />
-      <InlineDetailSlot selected={selected}>{detail}</InlineDetailSlot>
-    </>}
+  return <div className="pools-splitter" role="separator" tabIndex={0}
+    aria-label={name} aria-orientation="horizontal" aria-controls={controls}
+    aria-valuemin={min} aria-valuemax={max} aria-valuenow={value} aria-valuetext={`${value}%`}
+    onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={endDrag}
+    onPointerCancel={endDrag} onLostPointerCapture={endDrag} onKeyDown={resizeWithKey} />;
+}
+
+function PoolsSplit({ selected, detail, queue, children }) {
+  const [detailShare, setDetailShare] = useState(36);
+  const [queueShare, setQueueShare] = useState(26);
+  const [queueMinimum, setQueueMinimum] = useState(0);
+  const workspace = useRef(null);
+  const timelinePane = useRef(null);
+  const open = Boolean(detail);
+  const visibleQueueShare = Math.max(queueMinimum, queueShare);
+
+  useLayoutEffect(() => {
+    const frame = workspace.current;
+    const pane = frame.querySelector("#pools-queue");
+    const heading = pane.querySelector(".queue-heading");
+    const handle = frame.querySelector('[aria-controls="pools-queue"]');
+    const measure = () => {
+      const available = frame.clientHeight - handle.offsetHeight;
+      const minimumHeight = heading.getBoundingClientRect().height + pane.offsetHeight - pane.clientHeight;
+      setQueueMinimum(Math.ceil(minimumHeight * 1000 / available) / 10);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(frame);
+    observer.observe(heading);
+    return () => observer.disconnect();
+  }, []);
+
+  useLayoutEffect(() => {
+    const pane = timelinePane.current;
+    const source = document.activeElement;
+    if (!open || !pane.contains(source)) return;
+    const frame = pane.getBoundingClientRect();
+    const item = source.getBoundingClientRect();
+    if (item.bottom > frame.bottom) pane.scrollTop += item.bottom - frame.bottom;
+    if (item.top < frame.top) pane.scrollTop += item.top - frame.top;
+  }, [open]);
+
+  return <div className="pools-workspace" ref={workspace}
+    style={{"--upper-share": `${100 - visibleQueueShare}fr`, "--queue-share": `${visibleQueueShare}fr`}}>
+    <div className={open ? "pools-upper-pane pools-detail-split" : "pools-upper-pane"}
+      style={open ? {"--detail-share": `${detailShare}fr`, "--timeline-share": `${100 - detailShare}fr`} : undefined}>
+      <div className="pools-timeline-pane" ref={timelinePane}>{children}</div>
+      {open && <>
+        <PaneSplitter name="调整详情面板高度" controls="timeline-detail"
+          value={detailShare} min={25} max={75} change={setDetailShare} />
+        <InlineDetailSlot selected={selected}>{detail}</InlineDetailSlot>
+      </>}
+    </div>
+    <PaneSplitter name="调整排队用例面板高度" controls="pools-queue"
+      value={visibleQueueShare} min={queueMinimum} max={55}
+      change={(share) => setQueueShare(share === queueMinimum ? 0 : share)} />
+    {queue}
   </div>;
 }
 
@@ -436,6 +467,41 @@ export function PoolsView({ nodes, cases, timelineCases, config, go, live, rende
   }, [queueScope, scopes.join("|")]);
   const queue = cases.filter((item) => item.status === "排队中" && queueScope === poolId(item.worker, item.pool))
     .sort((a, b) => a.position - b.position);
+  const queuePanel = <section className="queue-section" id="pools-queue" aria-labelledby="queue-title">
+      <div className="queue-heading">
+        <div className="queue-heading-main"><h2 id="queue-title">排队用例</h2>
+          <label className="scope-select"><span className="sr-only">排队资源范围</span>
+            <select value={queueScope} onChange={(event) => selectScope(event.target.value)}>
+              {scopes.map((scope) => <option value={scope} key={scope}>{scope.replace("/", " / ")}</option>)}
+            </select><CaretDown size={12} weight="bold" />
+          </label>
+        </div>
+        <button className="text-button" onClick={() => go("models")}>查看代码仓任务 <CaretRight size={16} weight="bold" /></button>
+      </div>
+      <div className="table-scroll">
+        <table className="data-table queue-table">
+          <thead><tr><th>用例 / 仓库</th><th>PR / Workflow</th><th>申请资源</th><th>预计开始</th></tr></thead>
+          <tbody>
+            {queue.map((item) => {
+              const run = runs.find((candidate) => workflowKey(candidate) === item.run);
+              if (!run) return null;
+              const estimate = plannedTime(item, config, nodes) == null ? null : item.timelinePlanned;
+              return <tr className={item.id === selected?.caseId ? "is-selected" : ""} key={item.id}>
+                <td><button className="cell-title" onClick={() => selectCase(item.id)}>{item.name}</button><small>{run.repo} · {run.owner}</small></td>
+                <td><RunIdentity run={run} /></td>
+                <td>{item.worker} / {item.pool} · {item.cards}P</td>
+                <td>{item.projectionStatus === "WAITING_EXTERNAL"
+                  ? "等待外部释放"
+                  : estimate == null ? "暂无估算" : <><span>约 {timelineLabel(estimate)}</span><small>排期预估</small></>}
+                  <small>队列顺位 {item.position}</small>
+                </td>
+              </tr>;
+            })}
+            {!queue.length && <tr><td colSpan={4} className="empty">当前资源范围内没有排队用例</td></tr>}
+          </tbody>
+        </table>
+      </div>
+  </section>;
   return <main className="pools-view">
     <section aria-labelledby="pools-title">
       <div className="pools-header">
@@ -464,7 +530,7 @@ export function PoolsView({ nodes, cases, timelineCases, config, go, live, rende
           </ul>
         </div>
       </div>
-      <PoolsSplit selected={selected} detail={detail}>
+      <PoolsSplit selected={selected} detail={detail} queue={queuePanel}>
       <div className="timeline-board" aria-label="Blue 与 Yellow 资源时间轴">
         <div className="timeline-fixed">
           <div className="axis-label">资源 <span>（Worker / Pool / 节点 / 设备组）</span></div>
@@ -527,41 +593,6 @@ export function PoolsView({ nodes, cases, timelineCases, config, go, live, rende
         <button className="button small" type="button" onClick={() => setMeasured(null)} disabled={Boolean(measuring)}>清除选区</button>
       </div>}
       </PoolsSplit>
-    </section>
-    <section className="queue-section" aria-labelledby="queue-title">
-      <div className="queue-heading">
-        <div className="queue-heading-main"><h2 id="queue-title">排队用例</h2>
-          <label className="scope-select"><span className="sr-only">排队资源范围</span>
-            <select value={queueScope} onChange={(event) => selectScope(event.target.value)}>
-              {scopes.map((scope) => <option value={scope} key={scope}>{scope.replace("/", " / ")}</option>)}
-            </select><CaretDown size={12} weight="bold" />
-          </label>
-        </div>
-        <button className="text-button" onClick={() => go("models")}>查看代码仓任务 <CaretRight size={16} weight="bold" /></button>
-      </div>
-      <div className="table-scroll">
-        <table className="data-table queue-table">
-          <thead><tr><th>用例 / 仓库</th><th>PR / Workflow</th><th>申请资源</th><th>预计开始</th></tr></thead>
-          <tbody>
-            {queue.map((item) => {
-              const run = runs.find((candidate) => workflowKey(candidate) === item.run);
-              if (!run) return null;
-              const estimate = plannedTime(item, config, nodes) == null ? null : item.timelinePlanned;
-              return <tr className={item.id === selected?.caseId ? "is-selected" : ""} key={item.id}>
-                <td><button className="cell-title" onClick={() => selectCase(item.id)}>{item.name}</button><small>{run.repo} · {run.owner}</small></td>
-                <td><RunIdentity run={run} /></td>
-                <td>{item.worker} / {item.pool} · {item.cards}P</td>
-                <td>{item.projectionStatus === "WAITING_EXTERNAL"
-                  ? "等待外部释放"
-                  : estimate == null ? "暂无估算" : <><span>约 {timelineLabel(estimate)}</span><small>排期预估</small></>}
-                  <small>队列顺位 {item.position}</small>
-                </td>
-              </tr>;
-            })}
-            {!queue.length && <tr><td colSpan={4} className="empty">当前资源范围内没有排队用例</td></tr>}
-          </tbody>
-        </table>
-      </div>
     </section>
   </main>;
 }

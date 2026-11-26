@@ -21,6 +21,41 @@ async function expectRowVisibleInViewport(locator) {
   expect(bounds.bottom).toBeLessThanOrEqual(bounds.viewportHeight);
 }
 
+test("ModelsView fills a wide window and keeps the Actions link on its first line", async ({ page }) => {
+  await openModels(page, { width: 2080, height: 900 });
+  const board = page.getByRole("main");
+  const table = page.locator(".workflow-table-scroll");
+  const row = page.getByRole("row", { name: "Workflow #100 · 尝试 1", exact: true });
+  const actions = row.locator("td").nth(5);
+  const link = actions.getByRole("link", { name: "Smoke #98 · 尝试 1", exact: true });
+  await expect(link).toHaveAttribute("href", /\/actions\/runs\/100$/);
+  await expect(actions.locator("small")).toHaveText("Lite Actions PR smoke: #7");
+  expect(await board.evaluate((main) => main.clientWidth)).toBeGreaterThan(2000);
+  expect(await table.evaluate((wrapper) => wrapper.clientWidth)).toBeGreaterThan(1950);
+  for (const width of [2080, 736]) {
+    await page.setViewportSize({ width, height: 900 });
+    const geometry = await actions.evaluate((cell) => {
+      const first = cell.querySelector("a");
+      const second = cell.querySelector("small");
+      const style = getComputedStyle(first);
+      return {
+        top: first.getBoundingClientRect().bottom,
+        bottom: second.getBoundingClientRect().top,
+        weight: Number(style.fontWeight),
+        accent: style.color === getComputedStyle(document.querySelector(".text-button")).color,
+        primaryHeight: first.getBoundingClientRect().height,
+        lineHeight: parseFloat(style.lineHeight),
+      };
+    });
+    expect(geometry.top).toBeLessThanOrEqual(geometry.bottom);
+    expect(geometry.weight).toBeGreaterThanOrEqual(600);
+    expect(geometry.accent).toBe(true);
+    expect(geometry.primaryHeight).toBeLessThanOrEqual(geometry.lineHeight + 1);
+  }
+  expect(await table.evaluate((wrapper) => wrapper.scrollWidth > wrapper.clientWidth)).toBe(true);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
 for (const viewport of [
   { width: 1280, height: 800 },
   { width: 1280, height: 900 },
