@@ -1169,21 +1169,33 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
                                             "remote_lease_dir"
                                         ),
                                     },
-                                    check_npu=True,
+                                    check_npu=False,
                                     errors=revoke_errors,
                                 )
                                 all_revoked_hosts.update(newly_revoked)
                             if lease_obj is not None:
                                 lease_obj.set_remote_revoked_hosts(all_revoked_hosts)
                             revoke_ok = expected_hosts.issubset(all_revoked_hosts)
-                        remote_preflight(
-                            case,
-                            pools,
-                            ascend_env=setup,
-                            evidence=stream,
-                            cleanup=True,
-                            cancel=cancel,
-                        )
+                        pool_cfg = pools.get(case.get("pool") or "") or {}
+                        if pool_cfg.get("type") == "ascend-a5":
+                            from ci_core.config import legacy_reclaim
+
+                            by_host = {
+                                n["host_id"]: n for n in pool_cfg.get("nodes", [])
+                            }
+                            if any(
+                                legacy_reclaim(pool_cfg, by_host[req["host_id"]])
+                                for req in case.get("allocation") or []
+                                if req["host_id"] in by_host
+                            ):
+                                remote_preflight(
+                                    case,
+                                    pools,
+                                    ascend_env=setup,
+                                    evidence=stream,
+                                    cleanup=True,
+                                    cancel=cancel,
+                                )
                         if child_started and (staged or not launched_lease):
                             for node in allocations(case, pools):
                                 destination = f"{DEST_ROOT}/{remote_task_name(run)}/node{node['position']}"

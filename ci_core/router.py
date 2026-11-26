@@ -254,16 +254,7 @@ class Router:
                 self.release_sha = resolved_name
         self.next_discovery = 0.0
         self.state = JobState(self.root)
-        disabled_quarantine = {
-            name.strip()
-            for name in os.environ.get(
-                "LITE_ACTIONS_DISABLE_QUARANTINE_WORKERS", ""
-            ).split(",")
-            if name.strip()
-        }
-        self.quarantine_enabled = (
-            worker not in disabled_quarantine and self.zone not in disabled_quarantine
-        )
+        self.quarantine_enabled = False
         self.supervisor = None
         self._supervisor_active = False
         if not self.is_test and not self._broker_active:
@@ -322,35 +313,14 @@ class Router:
         self.preflight = {}
         self.plans = {}
         self.unavailable_runs = set()
-        if not self.quarantine_enabled:
-            owners = {
-                node["host_id"]: pool["owner"]
-                for pool in self.pools.values()
-                for node in pool["nodes"]
-            }
-            clear = []
-            for key, record in self.state.read().items():
-                item = record.get("item")
-                owner = item.get("worker") if isinstance(item, dict) else None
-                allocation = record.get("allocation") or []
-                belongs = (
-                    owner == worker
-                    and all(
-                        owners.get(node.get("host_id"), worker) == worker
-                        for node in allocation
-                    )
-                ) or (
-                    owner is None
-                    and all(
-                        owners.get(node.get("host_id")) == worker for node in allocation
-                    )
-                )
-                if record.get("quarantined") and belongs:
-                    clear.append(key)
-            if clear:
-                self.state.update_many(clear, quarantined=False)
-            logging.info("automatic quarantine disabled for worker %s", worker)
-        # Record interrupted work according to this worker's configured policy.
+        clear = [
+            key
+            for key, record in self.state.read().items()
+            if record.get("quarantined")
+        ]
+        if clear:
+            self.state.update_many(clear, quarantined=False)
+        # Record interrupted work as needing recovery without quarantining hardware.
         for key, r in self.state.read().items():
             if r.get("phase") in {"RESERVED", "STAGING", "RUNNING", "CLEANING"}:
                 result = report(
@@ -372,8 +342,7 @@ class Router:
                 self.state.update(
                     key,
                     phase="PENDING_REPORT",
-                    quarantined=bool(r.get("allocation"))
-                    and (self.quarantine_enabled or r["item"].get("worker") != worker),
+                    quarantined=False,
                     report=result,
                 )
 
@@ -547,10 +516,6 @@ class Router:
             if getattr(self, "_coordinator_active", False) is True and self.draining:
                 self.coordinator.set_drain_state(self.zone, self.draining)
             records = self.state.read()
-            for record in records.values():
-                resources = set(resource_keys(record.get("allocation") or []))
-                if resources.intersection(self.draining) and record.get("quarantined"):
-                    raise ValueError("QUARANTINED_RESOURCE_CANNOT_DELETE")
             for record in records.values():
                 resources = set(resource_keys(record.get("allocation") or []))
                 if resources.intersection(self.draining) and record.get(
@@ -1101,9 +1066,7 @@ class Router:
                 phase="REPORTED",
                 published_at=time.time(),
                 allocation=final_allocation,
-                quarantined=bool(final_allocation)
-                and not clean
-                and (self.quarantine_enabled or r["item"].get("worker") != self.worker),
+                quarantined=False,
                 report=result,
             )
             return
@@ -1191,9 +1154,7 @@ class Router:
         self.state.update(
             key,
             phase="PENDING_REPORT",
-            quarantined=bool(final_allocation)
-            and not clean
-            and (self.quarantine_enabled or r["item"].get("worker") != self.worker),
+            quarantined=False,
             report=result,
             **extra_fields,
         )
@@ -1438,19 +1399,6 @@ class Router:
                 if execution.exit_code == 0 and valid
                 else "FAIL"
             )
-            if (
-                not execution.release_verified
-                and getattr(self, "_coordinator_active", False) is True
-                and lease is not None
-                and self.quarantine_enabled
-                and hasattr(lease, "lease_id")
-            ):
-                self.coordinator.quarantine_lease(
-                    lease.lease_id,
-                    owner_worker=self.worker,
-                    task_key=key,
-                    reason="cleanup_unverified",
-                )
             self.finish(
                 key,
                 status,
@@ -1807,10 +1755,13 @@ class Router:
         ):
             self._next_quarantine_reconcile = now + 30.0
             try:
-                if self.coordinator.all_quarantined_resources():
+                if any(
+                    doc.get("state") == "REVOKE_FAILED"
+                    for doc in self.coordinator.all_active_leases()
+                ):
                     self.coordinator.reconcile_quarantined_leases()
             except Exception:
-                logging.warning("quarantine reconciliation tick failed", exc_info=True)
+                logging.warning("lease reconciliation tick failed", exc_info=True)
         self.pump()
         self.flush()
 

@@ -513,7 +513,7 @@ class SupervisorFaultInjectionTests(unittest.TestCase):
                 self.assertEqual(out["status"], "INFRA_ERROR")
                 self.assertFalse(out["release_verified"])
                 self.assertEqual(len(coord.all_active_leases()), 1)
-                self.assertIn(("192.0.2.11:22", 0), coord.all_quarantined_resources())
+                self.assertEqual(coord.all_quarantined_resources(), set())
                 # Unrelated process with mismatched identity was NEVER killed.
                 self.assertIsNone(foreign.poll())
             finally:

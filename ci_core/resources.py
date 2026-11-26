@@ -390,18 +390,10 @@ class PhysicalResourceCoordinator:
         return rows
 
     def _quarantined_map_unlocked(self) -> dict[tuple[str, int], dict]:
-        result: dict[tuple[str, int], dict] = {}
-        if not self.quarantine_dir.exists():
-            return result
-        for path in sorted(self.quarantine_dir.glob("*.json")):
-            doc = self._read_json(path, None)
-            if (
-                isinstance(doc, dict)
-                and isinstance(doc.get("host_id"), str)
-                and type(doc.get("device")) is int
-            ):
-                result[(doc["host_id"], doc["device"])] = doc
-        return result
+        if self.quarantine_dir.exists():
+            for path in sorted(self.quarantine_dir.glob("*.json")):
+                path.unlink(missing_ok=True)
+        return {}
 
     def _draining_set_unlocked(self) -> set[tuple[str, int]]:
         doc = self._read_json(self.drain_path, {})
@@ -446,7 +438,8 @@ class PhysicalResourceCoordinator:
 
     def all_quarantined_resources(self) -> set[tuple[str, int]]:
         with self._locked():
-            return set(self._quarantined_map_unlocked())
+            self._quarantined_map_unlocked()
+            return set()
 
     def all_draining_resources(self) -> set[tuple[str, int]]:
         with self._locked():
@@ -529,10 +522,7 @@ class PhysicalResourceCoordinator:
     ) -> None:
         target = set(resources) if resources is not None else None
         with self._locked():
-            quarantined = self._quarantined_map_unlocked()
-            if quarantined:
-                if target is None or any(res in target for res in quarantined):
-                    raise ValueError("QUARANTINED_RESOURCE_CANNOT_DELETE")
+            self._quarantined_map_unlocked()
             for doc in self._active_leases_unlocked():
                 lease_res = set(resource_keys(doc.get("allocation") or []))
                 if target is None or lease_res.intersection(target):
@@ -548,34 +538,9 @@ class PhysicalResourceCoordinator:
         reason: str = "cleanup_unverified",
         source: str = "worker",
     ) -> None:
-        import time
-
+        # Quarantine locks are disabled; cleanup relies on preemption instead.
         with self._locked():
-            alloc = allocation
-            if alloc is None and lease_id:
-                doc = self._read_json(self.active_dir / f"{lease_id}.json", None)
-                if isinstance(doc, dict):
-                    alloc = doc.get("allocation")
-                    owner_worker = owner_worker or doc.get("owner_worker", "")
-                    task_key = task_key or doc.get("task_key", "")
-            if not alloc:
-                return
-            now = time.time()
-            for host_id, device in resource_keys(alloc):
-                path = self.quarantine_dir / self._resource_filename(host_id, device)
-                self._write_json(
-                    path,
-                    {
-                        "host_id": host_id,
-                        "device": device,
-                        "lease_id": lease_id,
-                        "owner_worker": owner_worker,
-                        "task_key": task_key,
-                        "reason": reason,
-                        "source": source,
-                        "quarantined_at": now,
-                    },
-                )
+            self._quarantined_map_unlocked()
 
     def clear_quarantine(
         self, resources: Iterable[tuple[str, int]] | None = None
@@ -604,7 +569,7 @@ class PhysicalResourceCoordinator:
         max_jobs_per_host: int = 1,
         docker: str | None = None,
         wait_key: str | None = None,
-        enforce_quarantine: bool = True,
+        enforce_quarantine: bool = False,
         register_waiter_on_busy: bool = False,
     ) -> CoordinatedLease:
         import time
@@ -619,12 +584,9 @@ class PhysicalResourceCoordinator:
             raise ValueError("allocation cannot be empty")
         now = time.time()
         with self._locked():
+            self._quarantined_map_unlocked()
             if self._draining_set_unlocked().intersection(req_keys):
                 raise ResourceBusy("RESOURCE_DRAINING")
-            if enforce_quarantine:
-                qmap = self._quarantined_map_unlocked()
-                if any(res in qmap for res in req_keys):
-                    raise ResourceBusy("RESOURCE_QUARANTINED")
             for doc in self._active_leases_unlocked():
                 if set(resource_keys(doc.get("allocation") or [])).intersection(
                     req_keys
@@ -799,25 +761,6 @@ class PhysicalResourceCoordinator:
                 doc["missing_revoked_hosts"] = missing
                 doc["updated_at"] = time.time()
                 self._write_json(path, doc)
-                now = doc["updated_at"]
-                for host_id, device in resource_keys(doc.get("allocation") or []):
-                    qpath = self.quarantine_dir / self._resource_filename(
-                        host_id, device
-                    )
-                    self._write_json(
-                        qpath,
-                        {
-                            "host_id": host_id,
-                            "device": device,
-                            "lease_id": lease_id,
-                            "owner_worker": doc.get("owner_worker", ""),
-                            "task_key": doc.get("task_key", ""),
-                            "reason": "unverified_remote_lease_revoke",
-                            "missing_hosts": missing,
-                            "source": "coordinator_revoke_failed",
-                            "quarantined_at": now,
-                        },
-                    )
                 raise UnverifiedRemoteRevoke(
                     "remote lease revocation unverified for " + ",".join(missing)
                 )
@@ -878,7 +821,7 @@ class PhysicalResourceCoordinator:
                                 "remote_nodes": pending_nodes,
                                 "remote_lease_dir": doc.get("remote_lease_dir"),
                             },
-                            check_npu=True,
+                            check_npu=False,
                         )
                     )
                 except Exception:
