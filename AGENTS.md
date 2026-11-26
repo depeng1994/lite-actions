@@ -20,6 +20,13 @@
    - `Router.eligible()` 只负责按工作流名称前缀（`lite-ci-`）、运行状态（`queued` / `in_progress`）以及测试隔离（如 TestWorker 不抢占主线 `lite-ci-self-smoke`）过滤，不再维护事件类型（`workflow_dispatch` / `issue_comment` / `pull_request_review` 等）或分支/SHA 白名单。
    - 新增或修改任何控制面、触发器或状态上报逻辑时，避免引入未与维护者确认的隐式白名单或额外拦截层。
 
+4. **Actions 与调度性能优化——一切可并发的必须并发**：
+   - 独立工作流与独立 Job 必须并发执行：例如 `.github/workflows/lite_actions_pr_smoke.yml` 中 GitHub 自测（`smoke_self`）与 GitCode 烟测（`smoke_gitcode`）只要前置 `deploy` 就绪即立即并发触发，不得人为串行等待；
+   - 跨平台并发：GitHub 与 GitCode 的轮询发现、状态检查与任务执行必须并发，互不阻塞；
+   - 多仓库并发：`MultiRepoGitHubClient`、`MultiPlatformClient` 及调度循环中不同仓库的轮询与状态查询必须并发，并保持单仓错误隔离；
+   - 跨区 Worker 并发：Blue 与 Yellow Worker 的部署、烟测执行与清理必须并发推进；
+   - 仅在存在真实硬件互斥或明确前置依赖（如 `prepare -> deploy`、`all smoke -> cleanup`）时串行。
+
 ## 开发与验证规范
 
 - **统一使用 Docker 镜像运行静态检查与单元测试**：

@@ -16,6 +16,7 @@ import tarfile
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable
@@ -1132,7 +1133,8 @@ class TestSupervisor:
 
         cleanup_ok = True
         failures = []
-        for lease in leases:
+
+        def _revoke_lease(lease: dict):
             lease_id = lease["lease_id"]
             allow_unlaunched = lease.get("state") == "RESERVED" and not lease.get(
                 "remote_hosts"
@@ -1141,6 +1143,25 @@ class TestSupervisor:
                 revoked_hosts = (
                     self._revoke_fn(lease) if lease.get("remote_hosts") else set()
                 )
+                return lease_id, allow_unlaunched, revoked_hosts, None
+            except Exception as exc:
+                return lease_id, allow_unlaunched, None, exc
+
+        if len(leases) <= 1:
+            revocations = [_revoke_lease(lease) for lease in leases]
+        else:
+            with ThreadPoolExecutor(max_workers=len(leases)) as pool:
+                revocations = list(pool.map(_revoke_lease, leases))
+
+        for lease_id, allow_unlaunched, revoked_hosts, err in revocations:
+            if err is not None:
+                cleanup_ok = False
+                if isinstance(err, UnverifiedRemoteRevoke):
+                    failures.append(str(err))
+                else:
+                    failures.append(f"{lease_id}: {type(err).__name__}")
+                continue
+            try:
                 self.coordinator.release(
                     lease_id,
                     remote_revoked_hosts=revoked_hosts,

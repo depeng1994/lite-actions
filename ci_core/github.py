@@ -12,6 +12,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 
 from ci_core.contract import REPO, trusted_repositories
 
@@ -317,16 +318,29 @@ class MultiRepoGitHubClient:
         return self.clients[repo]
 
     def running_workflows(self) -> list[dict]:
-        runs = []
-        for client in self.clients.values():
+        clients = list(self.clients.values())
+        if not clients:
+            return []
+
+        def _poll_one(client: GitHubClient) -> list[dict]:
             try:
-                runs.extend(client.running_workflows())
+                return list(client.running_workflows())
             except Exception as exc:
                 logging.warning(
                     "repository poll unavailable: %s (%s)",
                     client.repo,
                     type(exc).__name__,
                 )
+                return []
+
+        if len(clients) == 1:
+            runs = _poll_one(clients[0])
+        else:
+            runs = []
+            with ThreadPoolExecutor(max_workers=len(clients)) as pool:
+                futures = [pool.submit(_poll_one, client) for client in clients]
+                for future in futures:
+                    runs.extend(future.result())
         return sorted(runs, key=lambda r: (r.get("created_at", ""), r["id"]))
 
 

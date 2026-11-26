@@ -426,12 +426,11 @@ jobs:
           fi
 
   smoke_gitcode:
-    needs: [prepare, deploy, smoke_self]
+    needs: [prepare, deploy]
     if: >-
       always() &&
       needs.prepare.result == 'success' &&
       needs.deploy.result == 'success' &&
-      needs.smoke_self.result == 'success' &&
       needs.prepare.outputs.profile == 'full'
     runs-on: ubuntu-latest
     name: gitcode-torchtitan-smoke

@@ -10,6 +10,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 from ci_core.contract import (
@@ -524,16 +525,20 @@ class MultiPlatformClient:
         )
 
     def running_workflows(self):
-        runs = []
         targets = []
         if self.github is not None:
             targets.append((getattr(self.github, "repo", "github"), self.github))
-        targets.extend(self.gitcode.items())
-        for repo, client in targets:
-            if client is None:
-                continue
+        targets.extend(
+            (repo, client)
+            for repo, client in self.gitcode.items()
+            if client is not None
+        )
+        if not targets:
+            return []
+
+        def _poll_one(repo, client):
             try:
-                runs.extend(client.running_workflows())
+                return list(client.running_workflows())
             except Exception as exc:
                 code = getattr(exc, "code", None)
                 if isinstance(code, int):
@@ -549,4 +554,15 @@ class MultiPlatformClient:
                         repo,
                         type(exc).__name__,
                     )
+                return []
+
+        if len(targets) == 1:
+            repo, client = targets[0]
+            return _poll_one(repo, client)
+
+        runs = []
+        with ThreadPoolExecutor(max_workers=len(targets)) as pool:
+            futures = [pool.submit(_poll_one, repo, client) for repo, client in targets]
+            for future in futures:
+                runs.extend(future.result())
         return runs

@@ -11,6 +11,7 @@ import logging
 import re
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from ipaddress import ip_address
 
 from ci_core.contract import REPO, trusted_gitcode_repositories
@@ -161,8 +162,10 @@ def broadcast_job(
             released=released,
         )
         deliveries.append((destinations, msg))
-    failures = []
-    for destinations, msg in deliveries:
+
+    def _deliver_node(entry: tuple[list[str], str]) -> str | None:
+        destinations, msg = entry
+        failed_primary = None
         for n, target in enumerate(destinations):
             # Host wall on A3 may intermittently reject SSH at key exchange.
             # Retry ONLY pre-start host notice; exit notice is advisory and
@@ -212,5 +215,12 @@ def broadcast_job(
                     if attempt + 1 < retries:
                         time.sleep(4)
             if not delivered and n == 0:
-                failures.append(target)
-    return failures
+                failed_primary = target
+        return failed_primary
+
+    if len(deliveries) <= 1:
+        outcomes = [_deliver_node(entry) for entry in deliveries]
+    else:
+        with ThreadPoolExecutor(max_workers=len(deliveries)) as pool:
+            outcomes = list(pool.map(_deliver_node, deliveries))
+    return [target for target in outcomes if target is not None]
