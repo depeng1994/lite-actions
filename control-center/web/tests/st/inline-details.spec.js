@@ -1,7 +1,9 @@
 import { expect, test } from "@playwright/test";
 
-async function setup(page) {
-  await page.clock.setFixedTime(new Date("2026-11-24T08:00:00Z"));
+async function setup(page, liveClock = false) {
+  const time = new Date("2026-11-24T08:00:00Z");
+  if (liveClock) await page.clock.install({ time });
+  else await page.clock.setFixedTime(time);
   const login = await page.request.post("/api/v1/auth/login", {
     data: { username: "super", secret: "browser-fixture-super-secret" },
   });
@@ -39,11 +41,12 @@ test("Pools opens all task and occupancy entry points in the same detail slot", 
   await setup(page);
   await page.goto("/#/pools");
   const group = "192.0.2.1:22 · 设备组 0–1";
-  await test.step("三种设备状态图标同行显示", async () => {
+  await test.step("设备状态图标同行显示", async () => {
     for (const width of [1600, 960]) {
       await page.setViewportSize({ width, height: 1080 });
       for (const [device, state, tooltip] of [
-        ["192.0.2.1:22 设备组 0–1", "unknown", "当前未知占用"],
+        ["192.0.2.1:22 设备组 0–1", "external", "外部占用尚未确认结束"],
+        ["192.0.2.4:22 设备组 10–11", "unknown", "当前占用状态未知"],
         ["192.0.2.1:22 设备组 2–3", "leased", "当前实际租约"],
         ["192.0.2.2:22 设备组 0–1", "idle", "当前已确认空闲"],
       ]) {
@@ -83,7 +86,8 @@ test("Pools opens all task and occupancy entry points in the same detail slot", 
     await expectTaskTimes(await expectInline(page, entry, pools, label), "—", "—");
   });
   await test.step("外部占用区间", async () => {
-    const [completed, active] = await page.locator(".occupancy-history").all();
+    const completed = page.locator(".occupancy-history").and(page.getByRole("button", { name: /192\.0\.2\.1:22.*首次发现 .*12:00:00/ }));
+    const active = page.locator(".occupancy-history").and(page.getByRole("button", { name: /192\.0\.2\.1:22.*首次发现 .*15:52:00/ }));
     const closedPanel = await expectInline(page, completed, pools, group);
     await expectOccupancy(closedPanel, "2026-11-24 12:00:00", "2026-11-24 12:02:00");
     await expect(closedPanel.getByRole("row")).toHaveCount(2);
@@ -93,7 +97,7 @@ test("Pools opens all task and occupancy entry points in the same detail slot", 
   await test.step("当前状态标记和资源名称", async () => {
     const panel = await expectInline(
       page,
-      page.locator(".occupancy-marker.occupancy-unknown").and(page.getByRole("button", { name: /192\.0\.2\.1:22/ })),
+      page.locator(".occupancy-marker.occupancy-external").and(page.getByRole("button", { name: /192\.0\.2\.1:22/ })),
       pools,
       group,
     );
@@ -106,6 +110,50 @@ test("Pools opens all task and occupancy entry points in the same detail slot", 
     await panel.getByRole("button", { name: "关闭" }).click();
     await expect(panel).toHaveCount(0);
   });
+});
+
+test("Pools distinguishes missing occupancy evidence and trails only open intervals to now", async ({ page }) => {
+  await setup(page, true);
+  await page.goto("/#/pools");
+
+  const unknown = page.getByRole("button", { name: "192.0.2.4:22 设备组 10–11 · 当前占用状态未知" });
+  await expect(unknown).toHaveCSS("background-image", "none");
+  const unknownPanel = await expectInline(page, unknown, pools, "192.0.2.4:22 · 设备组 10–11");
+  await expect(unknownPanel.getByText("暂无外部占用记录")).toBeVisible();
+
+  const history = (title) => page.locator(".occupancy-history").and(page.getByRole("button", { name: title }));
+  const closed = history(/192\.0\.2\.1:22.*首次发现 .*12:00:00/);
+  const unobserved = history(/192\.0\.2\.1:22.*首次发现 .*13:00:00/);
+  const open = history(/192\.0\.2\.1:22.*首次发现 .*15:52:00/);
+  const fromBeforeWindow = history(/192\.0\.2\.4:22.*探测到外部占用/);
+  const runningLease = page.locator(".lease").and(page.getByRole("button", { name: /运行用例/ })).locator(".lease-actual");
+  const now = page.locator(".now-line");
+  const box = async (locator) => {
+    const { x, width } = await locator.boundingBox();
+    return { right: x + width, width };
+  };
+  const lineX = async () => (await now.boundingBox()).x;
+  const aligned = async (locator) => Math.abs((await box(locator)).right - await lineX());
+
+  await expect(open).toBeVisible();
+  await expect(fromBeforeWindow).toBeVisible();
+  expect(await aligned(open)).toBeLessThan(1);
+  expect(await aligned(fromBeforeWindow)).toBeLessThan(1);
+  expect(await aligned(runningLease)).toBeLessThan(1);
+  const openBefore = (await box(open)).width;
+  const closedBefore = await box(closed);
+  const unobservedBefore = await box(unobserved);
+  expect(closedBefore.right).toBeLessThan(await lineX() - 10);
+  expect(unobservedBefore.right).toBeLessThan(await lineX() - 10);
+
+  await page.clock.fastForward(10 * 60_000);
+  await expect(page.locator(".now-label")).toContainText("16:10");
+  expect(await aligned(open)).toBeLessThan(1);
+  expect(await aligned(fromBeforeWindow)).toBeLessThan(1);
+  expect(await aligned(runningLease)).toBeLessThan(1);
+  expect((await box(open)).width).toBeGreaterThan(openBefore + 3);
+  expect((await box(closed)).width).toBeCloseTo(closedBefore.width, 1);
+  expect((await box(unobserved)).width).toBeCloseTo(unobservedBefore.width, 1);
 });
 
 test("cluster reuses the detail slot checks for Pool, node and device groups", async ({ page }) => {
