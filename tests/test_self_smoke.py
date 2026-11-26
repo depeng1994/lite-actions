@@ -506,23 +506,13 @@ class SelfSmokeTests(unittest.TestCase):
                 yellow.close()
                 router.close()
 
-    def test_self_smoke_requires_main_branch_at_admission_and_prestart(self):
+    def test_self_smoke_accepts_triggers_without_event_or_sha_allowlist(self):
         root = Path(self.temp.name) / "worker"
         write_workspace(root)
         service = Service([fixture_definition("dummy")], root)
         service.repo = SELF_REPO
         main_sha = "a" * 40
         older_sha = "b" * 40
-
-        def request(method, path, payload=None, **kwargs):
-            if path == "/branches/main":
-                return {"commit": {"sha": main_sha}}
-            if path == f"/compare/{older_sha}...{main_sha}?per_page=1":
-                return {"merge_base_commit": {"sha": older_sha}}
-            if path.startswith("/compare/"):
-                return {"merge_base_commit": {"sha": "0" * 40}}
-            return service.request(method, path, payload, **kwargs)
-
         run = {
             "_ci_repo": SELF_REPO,
             "id": 42,
@@ -536,53 +526,25 @@ class SelfSmokeTests(unittest.TestCase):
             "head_sha": main_sha,
             "created_at": "2026-01-01T00:00:00Z",
         }
-        with (
-            patch.dict(
-                os.environ,
-                {
-                    "LITE_ACTIONS_MODEL_REPOS": SELF_REPO,
-                    "LITE_ACTIONS_RESOURCE_LOCK_ROOT": str(root / "leases"),
-                    "LITE_ACTIONS_STATE_DIR": "",
-                    "LITE_ACTIONS_RELEASE_SHA": main_sha,
-                },
-            ),
-            patch.object(service, "request", side_effect=request),
-            patch("ci_core.router.probe_worker") as probe,
+        with patch.dict(
+            os.environ,
+            {
+                "LITE_ACTIONS_MODEL_REPOS": SELF_REPO,
+                "LITE_ACTIONS_RESOURCE_LOCK_ROOT": str(root / "leases"),
+                "LITE_ACTIONS_STATE_DIR": "",
+                "LITE_ACTIONS_RELEASE_SHA": main_sha,
+            },
         ):
             router = Router(root, "blue", service, "reporter")
             try:
                 self.assertEqual(router.control_view()["sha"], main_sha)
                 self.assertTrue(router.eligible(run))
                 self.assertTrue(router.eligible({**run, "head_sha": older_sha}))
-                self.assertFalse(router.eligible({**run, "head_branch": "pr-branch"}))
-                self.assertFalse(router.eligible({**run, "event": "pull_request"}))
-                with self.assertRaisesRegex(ValueError, "not on main"):
-                    router.eligible({**run, "head_sha": "c" * 40})
-
-                # Pre-queued self-smoke on non-main ref must be rejected at work() pre-start.
-                bad_run = {**run, "head_branch": "pr-branch"}
-                item = self.plan["cases"][0]
-                key = "bad-prequeued-self-smoke"
-                router.state.admit(
-                    [
-                        (
-                            key,
-                            {
-                                "phase": "QUEUED",
-                                "repo": SELF_REPO,
-                                "run": bad_run,
-                                "item": item,
-                                "digest": self.plan["plan_digest"],
-                                "defaults": self.plan["defaults"],
-                                "queued_at": 1.0,
-                            },
-                        )
-                    ]
-                )
-                with patch.object(router, "finish") as finish:
-                    router.work(key, {}, None, Mock(is_set=lambda: False), Mock())
-                probe.assert_not_called()
-                self.assertEqual(finish.call_args.args[1], "INFRA_ERROR")
+                self.assertTrue(router.eligible({**run, "head_branch": "pr-branch"}))
+                self.assertTrue(router.eligible({**run, "event": "pull_request"}))
+                self.assertTrue(router.eligible({**run, "head_sha": "c" * 40}))
+                router.is_test = True
+                self.assertFalse(router.eligible(run))
             finally:
                 router.close()
 
@@ -814,35 +776,18 @@ class SelfSmokeTests(unittest.TestCase):
         ):
             router = Router(root, "blue", client, "reporter")
             try:
-                self.assertTrue(router.eligible(run))
-                self.assertFalse(
-                    router.eligible(
-                        {
-                            **run,
-                            "head_repository": {"full_name": "external/lite-actions"},
-                        }
-                    )
-                )
-                self.assertTrue(
-                    router.eligible(
-                        {**run, "event": "workflow_dispatch", "head_branch": "main"}
-                    )
-                )
-                self.assertFalse(
-                    router.eligible(
-                        {**run, "event": "workflow_dispatch", "head_branch": "other"}
-                    )
-                )
-                self.assertTrue(
-                    router.eligible(
-                        {**run, "event": "pull_request_target", "head_branch": "main"}
-                    )
-                )
-                self.assertFalse(
-                    router.eligible(
-                        {**run, "event": "pull_request_target", "head_branch": "other"}
-                    )
-                )
+                for extra in (
+                    {},
+                    {"event": "workflow_dispatch", "head_branch": "main"},
+                    {"event": "workflow_dispatch", "head_branch": "other"},
+                    {"event": "pull_request_target", "head_branch": "main"},
+                    {"event": "issue_comment", "head_branch": "main"},
+                    {"event": "pull_request_review", "head_branch": "main"},
+                    {"event": "schedule", "head_branch": "feature/any"},
+                    {"head_repository": {"full_name": "external/lite-actions"}},
+                ):
+                    with self.subTest(extra=extra):
+                        self.assertTrue(router.eligible({**run, **extra}))
                 with patch.object(router, "transition"):
                     router.receive([run])
                 keys = sorted(router.state.read().keys())
@@ -1327,7 +1272,7 @@ class SelfSmokeTests(unittest.TestCase):
             / ".github/workflows/lite_actions_pr_smoke.yml"
         )
         text = wf_path.read_text(encoding="utf-8")
-        on_section = text.split("\nconcurrency:", 1)[0]
+        on_section = text.split("\npermissions:", 1)[0]
         self.assertIn("workflow_dispatch:", on_section)
         self.assertIn("issue_comment:", on_section)
         self.assertIn("pull_request_review:", on_section)

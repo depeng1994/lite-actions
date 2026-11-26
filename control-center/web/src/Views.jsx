@@ -350,7 +350,7 @@ export function PoolsView({ nodes, cases, timelineCases, config, go, live, rende
   }
 
   const rows = useMemo(() => resourceRows(nodes, folded), [nodes, folded]);
-  const scopes = [...new Set([...nodes, ...cases].map((item) => poolId(item.worker, item.pool)))];
+  const scopes = [...new Set([...nodes, ...cases].filter((item) => item.worker && item.pool).map((item) => poolId(item.worker, item.pool)))];
   useEffect(() => {
     if (!scopes.includes(queueScope)) selectScope(scopes[0] || "");
   }, [queueScope, scopes.join("|")]);
@@ -555,13 +555,25 @@ export function ClusterView({ config, nodes, clusterPools = [], clusterHistory =
         onClick={() => open(canManage ? { type: "add-node", worker } : { type: "login" })}>{canManage ? <><Plus size={17} weight="bold" />新增资产</> : "登录后管理"}</button>
     </div>
     <nav className="subnav" aria-label="Worker 页签">
-      {workers.map((name) => <button key={name} aria-current={name === worker ? "page" : undefined} onClick={() => {
-        if (name === worker) return;
-        setSelected(null);
-        setWorker(name);
-      }}>
-        <i className={`worker-dot ${name.toLowerCase()}`} />{name}
-      </button>)}
+      {workers.map((name) => {
+        const info = config.workerStatus?.[name];
+        const commitSha = info?.codeSha || "";
+        const shortSha = commitSha ? commitSha.slice(0, 7) : "—";
+        const commitTitle = commitSha
+          ? `当前运行 Commit: ${commitSha}${info?.offline ? "（离线）" : ""}`
+          : "暂无上报 Commit ID";
+        return <button key={name} aria-current={name === worker ? "page" : undefined} onClick={() => {
+          if (name === worker) return;
+          setSelected(null);
+          setWorker(name);
+        }}>
+          <i className={`worker-dot ${name.toLowerCase()}`} />
+          <span>{name}</span>
+          <code className={`worker-commit${!commitSha || info?.offline ? " is-muted" : ""}`} title={commitTitle}>
+            {shortSha}
+          </code>
+        </button>;
+      })}
     </nav>
     <div className="revision-bar">
       <strong>{worker}</strong><Tag tone={workerInfo?.offline ? "red" : "teal"}>{workerInfo?.offline ? "离线" : "在线"}</Tag>

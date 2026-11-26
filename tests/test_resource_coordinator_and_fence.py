@@ -197,17 +197,14 @@ class PhysicalResourceCoordinatorTests(unittest.TestCase):
 
             with self.assertRaises(UnverifiedRemoteRevoke):
                 lease.release(remote_revoked_hosts={"n0"})
-            # Lease remains recorded and devices quarantined on unverified revoke.
+            # Lease remains recorded for reconciliation without writing quarantine locks.
             self.assertEqual(len(coord.all_active_leases()), 1)
-            self.assertIn(("192.0.2.10:22", 0), coord.all_quarantined_resources())
-            with self.assertRaisesRegex(
-                ValueError, "QUARANTINED_RESOURCE_CANNOT_DELETE"
-            ):
+            self.assertEqual(coord.all_quarantined_resources(), set())
+            with self.assertRaisesRegex(ValueError, "ACTIVE_LEASES_REMAINING"):
                 coord.check_delete_allowed(res_keys)
 
             coord.release(lease.lease_id, remote_revoked_hosts={"n0", "n1"})
             self.assertEqual(coord.all_active_leases(), [])
-            coord.clear_quarantine()
             coord.clear_drain_state("yellow")
             coord.check_delete_allowed(res_keys)
 
@@ -300,6 +297,54 @@ class RemoteLeaseFenceTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 130)
             self.assertIn("REMOTE_LEASE_REVOKED", proc.stdout)
             self.assertFalse((dest / "child.started").exists())
+
+    def test_revoke_verifies_cleanup_while_the_container_has_an_unreaped_launcher(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            lease_dir = root / "leases"
+            lease_dir.mkdir()
+            dest = root / "dest"
+            dest.mkdir()
+            (dest / "job.intent").write_text("stamp-zombie")
+            cgroup = root / "cgroup"
+            cgroup.mkdir()
+            lease_id = "leasezombie01"
+            launcher = subprocess.Popen([sys.executable, "-c", "pass"])
+            try:
+                os.waitid(os.P_PID, launcher.pid, os.WEXITED | os.WNOWAIT)
+                stat_file = Path(f"/proc/{launcher.pid}/stat")
+                fields = stat_file.read_text().rsplit(") ", 1)[1].split()
+                self.assertEqual(fields[0], "Z")
+                (cgroup / "cgroup.procs").write_text(str(launcher.pid))
+                (lease_dir / f"{lease_id}.state").write_text("ACTIVE\n")
+                (lease_dir / f"{lease_id}.json").write_text(
+                    json.dumps(
+                        {
+                            "pgid": launcher.pid,
+                            "start_time": fields[19],
+                            "cgroup_dir": str(cgroup),
+                            "dest": str(dest),
+                            "marker": "stamp-zombie",
+                        }
+                    )
+                )
+                revoked = revoke_remote_lease(
+                    {"lease_id": lease_id, "remote_nodes": [{"ssh": "node0-ssh"}]},
+                    execute=self._local_ssh,
+                    lease_dir=str(lease_dir),
+                )
+                self.assertEqual(revoked, {"node0-ssh"})
+                self.assertEqual(
+                    (lease_dir / f"{lease_id}.state").read_text(), "REVOKED\n"
+                )
+                self.assertEqual(
+                    (dest / "cleanup_verified.txt").read_text(), "stamp-zombie"
+                )
+                self.assertEqual(
+                    stat_file.read_text().rsplit(") ", 1)[1].split()[0], "Z"
+                )
+            finally:
+                launcher.wait(timeout=3)
 
     def test_active_revoke_kills_only_owned_and_respects_mock_npu_smi(self):
         with tempfile.TemporaryDirectory() as tmp:

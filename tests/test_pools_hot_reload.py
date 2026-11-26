@@ -259,7 +259,7 @@ class PoolReloadTests(unittest.TestCase):
             [[{"host_id": HOST2, "devices": DEVICES}]],
         )
 
-    def test_deletion_waits_for_active_lease_and_refuses_quarantine(self):
+    def test_deletion_waits_for_active_lease_before_apply(self):
         new = copy.deepcopy(self.pools)
         new["test"]["nodes"].pop(0)
         new["test"]["verified_multinode_allocations"] = []
@@ -270,10 +270,7 @@ class PoolReloadTests(unittest.TestCase):
         self.assertFalse(self.router.sync_pools(command))
         self.assertEqual(self.router.pools_revision, 0)
         self.assertIsNone(self.router.claim(topology(2)))
-        self.router.state.update("active", phase="REPORTED", quarantined=True)
-        with self.assertRaisesRegex(ValueError, "QUARANTINED_RESOURCE_CANNOT_DELETE"):
-            self.router.sync_pools(command)
-        self.router.state.update("active", quarantined=False)
+        self.router.state.update("active", phase="REPORTED", quarantined=False)
         self.assertTrue(self.router.sync_pools(command))
         self.assertEqual(self.router.pools_revision, 1)
 

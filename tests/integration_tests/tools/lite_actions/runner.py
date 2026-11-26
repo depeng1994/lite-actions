@@ -43,6 +43,7 @@ def run_dispatch_smoke(test: OverrideDefinitions) -> None:
     timeout = test.timeout or 7200
     if type(timeout) is not int or not 1 <= timeout <= 14400:
         raise ValueError("invalid execution timeout")
+    subprocess_timeout = max(timeout, 150) if timeout < 150 else timeout
     env = {**os.environ, "OMP_NUM_THREADS": "1"}
     cmd = [
         sys.executable,
@@ -63,6 +64,6 @@ def run_dispatch_smoke(test: OverrideDefinitions) -> None:
     cmd.extend(["-m", "tests.integration_tests.training_cases.dispatch_smoke"])
     print("[DISPATCH_SMOKE_LAUNCH] " + " ".join(cmd), flush=True)
     try:
-        subprocess.run(cmd, env=env, check=True, timeout=timeout)
+        subprocess.run(cmd, env=env, check=True, timeout=subprocess_timeout)
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"dispatch smoke exceeded {timeout}-second execution budget") from exc
+        raise RuntimeError(f"dispatch smoke exceeded {subprocess_timeout}-second execution budget") from exc

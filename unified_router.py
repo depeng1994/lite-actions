@@ -2,6 +2,7 @@
 """Launch one isolated Pull worker; both regions use this same implementation."""
 
 import argparse
+import fcntl
 import hashlib
 import json
 import logging
@@ -9,6 +10,7 @@ import os
 import signal
 import threading
 import time
+from contextlib import nullcontext
 from pathlib import Path
 
 from ci_core.config import deployment, load_active_pools
@@ -18,6 +20,7 @@ from ci_core.gitcode import GitCodeClient, MultiPlatformClient
 from ci_core.github import GitHubClient, MultiRepoGitHubClient, authorization
 from ci_core.resources import single_agent
 from ci_core.router import Router
+from ci_core.worker_activity import activity_lock, try_lock
 
 ROOT = Path(__file__).resolve().parent
 
@@ -114,7 +117,13 @@ def main():
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
     )
-    with single_agent(lock_path):
+    ready_file = os.environ.get("LITE_ACTIONS_READY_FILE", "").strip()
+    work_lock = (
+        activity_lock(Path(ready_file), create=True)
+        if ready_file and not is_test
+        else nullcontext()
+    )
+    with single_agent(lock_path), work_lock as activity:
         if broker_client is not None:
             router = Router(
                 ROOT,
@@ -198,7 +207,6 @@ def main():
                     logging.warning(
                         "control center startup deferred (%s)", type(exc).__name__
                     )
-        ready_file = os.environ.get("LITE_ACTIONS_READY_FILE", "").strip()
         ready_published = False
         default_poll = "15" if broker_client is not None else "60"
         min_poll = 15 if broker_client is not None else 60
@@ -208,6 +216,10 @@ def main():
         next_poll = 0
         try:
             while True:
+                if activity is not None and not try_lock(activity):
+                    wake.wait(1)
+                    wake.clear()
+                    continue
                 tick_succeeded = False
                 try:
                     if time.monotonic() >= next_poll:
@@ -245,6 +257,8 @@ def main():
                         )
                     except Exception:
                         logging.exception("worker readiness publication failed")
+                if activity is not None and not router.has_active_work():
+                    fcntl.flock(activity.fileno(), fcntl.LOCK_UN)
                 if a.once:
                     break
                 if wake.wait(max(0, next_poll - time.monotonic())):

@@ -314,19 +314,13 @@ class ReclaimTests(unittest.TestCase):
             "ci_core.transport.run",
             return_value=SimpleNamespace(returncode=0, stdout=shared),
         ) as transport:
-            with self.assertRaisesRegex(ValueError, "spans allocated"):
+            with self.assertRaisesRegex(ExternalNpuOccupancy, "spans allocated"):
                 remote_preflight({**self.case, "docker": None}, {"a5": self.pool})
         self.assertFalse(
             any(call.args[1].startswith("kill") for call in transport.call_args_list)
         )
 
-    def test_cleanup_reclaims_host_pid_and_verifies_release(self):
-        self._execute_with_cleanup(cleanup_idle=True)
-
-    def test_cleanup_respawn_keeps_release_unverified(self):
-        self._execute_with_cleanup(cleanup_idle=False)
-
-    def _execute_with_cleanup(self, *, cleanup_idle):
+    def test_cleanup_checks_only_owned_processes_without_host_kill(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             (root / "config").mkdir()
@@ -351,18 +345,13 @@ class ReclaimTests(unittest.TestCase):
             child.poll.return_value = 0
             child.returncode = 0
             commands = []
-            first_probe = True
-            signalled = False
 
             def transport(host, script, **kwargs):
-                nonlocal first_probe, signalled
                 commands.append((host, script))
-                if script.startswith("kill -9 --"):
-                    signalled = True
-                    return SimpleNamespace(returncode=0, stdout="")
-                idle = first_probe or (cleanup_idle and signalled)
-                first_probe = False
-                return SimpleNamespace(returncode=0, stdout=EMPTY if idle else EXTERNAL)
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=EMPTY if len(commands) == 1 else EXTERNAL,
+                )
 
             with ExitStack() as stack:
                 stack.enter_context(patch("ci_core.scheduler.validate_allocation"))
@@ -394,7 +383,10 @@ class ReclaimTests(unittest.TestCase):
                         ],
                     )
                 )
-                stack.enter_context(patch("ci_core.ssh_runner.owned_processes_gone"))
+                cancel_owned = stack.enter_context(patch("ci_core.ssh_runner.cancel"))
+                owned_gone = stack.enter_context(
+                    patch("ci_core.ssh_runner.owned_processes_gone")
+                )
                 stack.enter_context(
                     patch(
                         "ci_core.executor.metadata",
@@ -406,15 +398,12 @@ class ReclaimTests(unittest.TestCase):
                 )
                 result = execute(case, run, root=root)
 
-            self.assertEqual(result.release_verified, cleanup_idle)
-            self.assertTrue(
-                any(
-                    host == "host-ssh:22" and cmd == "kill -9 -- 2341399"
-                    for host, cmd in commands
-                )
-            )
-            if not cleanup_idle:
-                self.assertNotEqual(result.exit_code, 0)
+            self.assertEqual(result.exit_code, 0)
+            self.assertTrue(result.release_verified)
+            cancel_owned.assert_called_once()
+            owned_gone.assert_called_once()
+            self.assertEqual(len(commands), 1)
+            self.assertFalse(any(cmd.startswith("kill -9") for _, cmd in commands))
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ import signal
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -352,6 +353,7 @@ def _process_rows(
     coverage_devices=None,
     require_end=False,
     require_coverage=True,
+    retry_shared_occupancy=False,
 ) -> list[tuple[int, int, str]]:
     """Return (chip, PID visible in the kill namespace, container PID evidence).
 
@@ -463,7 +465,8 @@ def _process_rows(
     if require_exclusive and any(
         chip not in selected and pid in targets for chip, pid, _ in rows
     ):
-        raise ValueError("PID spans allocated and unallocated NPU devices")
+        error = ExternalNpuOccupancy if retry_shared_occupancy else ValueError
+        raise error("PID spans allocated and unallocated NPU devices")
     if any(pid <= 1 for chip, pid, _ in rows if chip in selected):
         raise ValueError("unsafe NPU process PID")
     return [
@@ -494,6 +497,7 @@ def selected_processes(
 
 def _bound_host_signal(pid, devices, fingerprint, indexing, coverage_devices):
     """Verify a host PID while holding a pidfd, then signal that process only."""
+    import errno as errno_mod
     import hashlib
     import os
     import select
@@ -502,33 +506,79 @@ def _bound_host_signal(pid, devices, fingerprint, indexing, coverage_devices):
     import time
     from pathlib import Path
 
-    if not callable(getattr(signal, "pidfd_send_signal", None)):
-        raise RuntimeError("host pidfd signalling is unavailable")
     actual = hashlib.sha256(Path("/etc/machine-id").read_bytes()).hexdigest()
     if actual != fingerprint:
         raise RuntimeError("host identity changed")
-    try:
-        if callable(getattr(os, "pidfd_open", None)):
-            pidfd = os.pidfd_open(pid, 0)
-        else:
-            import ctypes
-            import platform
-            import sys
 
-            if sys.platform != "linux" or platform.machine() not in (
-                "aarch64",
-                "x86_64",
-            ):
-                raise RuntimeError("host pidfd signalling is unavailable")
-            libc = ctypes.CDLL(None, use_errno=True)
-            pidfd = libc.syscall(
-                ctypes.c_long(434), ctypes.c_int(pid), ctypes.c_uint(0)
+    native_open = getattr(os, "pidfd_open", None)
+    native_signal = getattr(signal, "pidfd_send_signal", None)
+    if not callable(native_open) or not callable(native_signal):
+        import ctypes
+        import platform
+        import sys
+
+        if sys.platform != "linux" or platform.machine() not in (
+            "aarch64",
+            "x86_64",
+        ):
+            raise RuntimeError("host pidfd signalling is unavailable")
+        libc = ctypes.CDLL(None, use_errno=True)
+
+        def pidfd_syscall(number, *args):
+            result = libc.syscall(ctypes.c_long(number), *args)
+            if result < 0:
+                err = ctypes.get_errno()
+                raise OSError(err, os.strerror(err))
+            return result
+
+    def open_pidfd(target_pid):
+        if callable(native_open):
+            return native_open(target_pid, 0)
+        return pidfd_syscall(434, ctypes.c_int(target_pid), ctypes.c_uint(0))
+
+    def send_pidfd(fd):
+        if callable(native_signal):
+            native_signal(fd, signal.SIGKILL)
+        else:
+            pidfd_syscall(
+                424,
+                ctypes.c_int(fd),
+                ctypes.c_int(signal.SIGKILL),
+                ctypes.c_void_p(),
+                ctypes.c_uint(0),
             )
-            if pidfd < 0:
-                errno = ctypes.get_errno()
-                raise OSError(errno, os.strerror(errno))
+
+    try:
+        pidfd = open_pidfd(pid)
     except ProcessLookupError:
         return False
+    except OSError as exc:
+        if exc.errno != errno_mod.EINVAL:
+            raise
+        # Linux pidfd_open returns EINVAL when the PID is a non-leader thread
+        # or already tearing down; fall back to its Tgid or treat as exited so
+        # the outer preflight loop re-verifies NPU idleness.
+        try:
+            status_text = Path(f"/proc/{pid}/status").read_text()
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            return False
+        tgid = None
+        for line in status_text.splitlines():
+            if line.startswith("Tgid:"):
+                parts = line.split()
+                if len(parts) == 2 and parts[1].isdecimal():
+                    tgid = int(parts[1])
+                break
+        if tgid is None or tgid <= 1 or tgid == pid:
+            return False
+        try:
+            pidfd = open_pidfd(tgid)
+        except ProcessLookupError:
+            return False
+        except OSError as exc2:
+            if exc2.errno == errno_mod.EINVAL:
+                return False
+            raise
     try:
         poller = select.poll()
         poller.register(pidfd, select.POLLIN)
@@ -570,7 +620,7 @@ def _bound_host_signal(pid, devices, fingerprint, indexing, coverage_devices):
             # numeric PID is reused after the NPU probe.
             if poller.poll(0):
                 return False
-            signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+            send_pidfd(pidfd)
         except (FileNotFoundError, ProcessLookupError):
             return False
         return True
@@ -582,6 +632,7 @@ def _bound_host_command(pid, devices, fingerprint, indexing, coverage_devices):
     from inspect import getsource
 
     program = (
+        "from __future__ import annotations\n"
         "import json,re,sys\n"
         "class ExternalNpuOccupancy(RuntimeError): pass\n"
         + "CHIP_PROCESS = re.compile("
@@ -721,6 +772,7 @@ def remote_preflight(
             else None,
             require_end=not legacy_a5,
             require_coverage=not legacy_a5,
+            retry_shared_occupancy=True,
         )
         if evidence is not None:
             details = (
@@ -874,8 +926,8 @@ def check_a5_multinode_rootinfo(case: dict, pools: dict) -> None:
         "assert type(n) in (int,str) and str(n)=='8', "
         "f'rank_count expected 8, got {n!r}'"
     )
-    failures = []
-    for allocated in case["allocation"]:
+
+    def _check_one(allocated: dict) -> str | None:
         host_id = allocated["host_id"]
         node = nodes[host_id]
         binding = node.get("environments", {}).get(case.get("docker"), {})
@@ -890,15 +942,20 @@ def check_a5_multinode_rootinfo(case: dict, pools: dict) -> None:
                 check=False,
             )
             if proc.returncode:
-                failures.append(
+                return (
                     f"{host_id} container={container_id[:16]}: "
                     f"invalid /etc/hccl_rootinfo.json ({proc.stderr.strip()[:120]})"
                 )
         except (ValueError, OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
-            failures.append(
+            return (
                 f"{host_id} container={container_id[:16]}: "
                 f"rootinfo validation failed: {type(exc).__name__}: {str(exc)[:100]}"
             )
+        return None
+
+    allocation = case["allocation"]
+    with ThreadPoolExecutor(max_workers=len(allocation)) as pool:
+        failures = [msg for msg in pool.map(_check_one, allocation) if msg is not None]
     if failures:
         raise ValueError(
             "A5_MULTI_NODE_ROOTINFO_INVALID: /etc/hccl_rootinfo.json must have "
@@ -909,6 +966,8 @@ def check_a5_multinode_rootinfo(case: dict, pools: dict) -> None:
 
 def summarize(log: Path, rc: int) -> list[str]:
     """Use selected remote diagnostics; fallback to local dispatcher tail."""
+    if not log.exists():
+        return [f"Execution returned {rc} without local log"]
     inside = False
     chosen = collections.deque(maxlen=20)
     tail = collections.deque(maxlen=20)
@@ -979,6 +1038,7 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
     announced = False
     reclaim_started = False
     child_started = False
+    staged = False
     with logfile.open("w", encoding="utf-8") as stream:
         rc = 125
         try:
@@ -1037,7 +1097,6 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
             child_started = True
             try:
                 deadline = time.monotonic() + 600
-                staged = False
                 while True:
                     if not staged:
                         stream.flush()
@@ -1048,9 +1107,10 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
                             if lease_obj is not None:
                                 lease_obj.mark_active()
                             callback("RUNNING")
-                            deadline = (
-                                time.monotonic() + case["execution_timeout_seconds"]
+                            exec_budget = max(
+                                case["execution_timeout_seconds"] + 90, 180
                             )
+                            deadline = time.monotonic() + exec_budget
                     if proc.poll() is not None:
                         rc = proc.returncode
                         break
@@ -1060,7 +1120,9 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
                     if remaining <= 0:
                         raise subprocess.TimeoutExpired(
                             command,
-                            case["execution_timeout_seconds"] if staged else 600,
+                            max(case["execution_timeout_seconds"] + 90, 180)
+                            if staged
+                            else 600,
                         )
                     try:
                         rc = proc.wait(timeout=min(5.0, remaining))
@@ -1124,11 +1186,18 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
                 )
                 from ci_core.ssh_runner import cancel as cancel_owned
 
+                all_revoked_hosts: set[str] = set()
                 for attempt in range(3):
                     try:
-                        revoked_hosts = set()
                         revoke_errors: dict[str, str] = {}
                         revoke_ok = True
+                        if child_started:
+                            for node in allocations(case, pools):
+                                destination = (
+                                    f"{DEST_ROOT}/{remote_task_name(run)}"
+                                    f"/node{node['position']}"
+                                )
+                                cancel_owned(node, destination, log_dir.name)
                         if launched_lease:
                             nodes_for_revoke = remote_nodes_meta or [
                                 {
@@ -1143,46 +1212,38 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
                                 for n in allocations(case, pools)
                             ]
                             expected_hosts = {n["ssh"] for n in nodes_for_revoke}
-                            revoked_hosts = revoke_remote_lease(
-                                {
-                                    "lease_id": case["lease_id"],
-                                    "remote_nodes": nodes_for_revoke,
-                                    "remote_lease_dir": case.get("remote_lease_dir"),
-                                },
-                                check_npu=True,
-                                errors=revoke_errors,
-                            )
-                            revoke_ok = expected_hosts.issubset(revoked_hosts)
-                        if child_started:
-                            for node in allocations(case, pools):
-                                destination = (
-                                    f"{DEST_ROOT}/{remote_task_name(run)}"
-                                    f"/node{node['position']}"
+                            pending_nodes = [
+                                n
+                                for n in nodes_for_revoke
+                                if n["ssh"] not in all_revoked_hosts
+                            ]
+                            if pending_nodes:
+                                newly_revoked = revoke_remote_lease(
+                                    {
+                                        "lease_id": case["lease_id"],
+                                        "remote_nodes": pending_nodes,
+                                        "remote_lease_dir": case.get(
+                                            "remote_lease_dir"
+                                        ),
+                                    },
+                                    check_npu=False,
+                                    errors=revoke_errors,
                                 )
-                                cancel_owned(node, destination, log_dir.name)
-                        remote_preflight(
-                            case,
-                            pools,
-                            ascend_env=setup,
-                            evidence=stream,
-                            cleanup=True,
-                            cancel=cancel,
-                        )
-                        if child_started:
+                                all_revoked_hosts.update(newly_revoked)
+                            if lease_obj is not None:
+                                lease_obj.set_remote_revoked_hosts(all_revoked_hosts)
+                            revoke_ok = expected_hosts.issubset(all_revoked_hosts)
+                        if child_started and (staged or not launched_lease):
                             for node in allocations(case, pools):
                                 destination = f"{DEST_ROOT}/{remote_task_name(run)}/node{node['position']}"
                                 owned_processes_gone(node, destination, log_dir.name)
                         if launched_lease and not revoke_ok:
-                            if lease_obj is not None:
-                                lease_obj.set_remote_revoked_hosts(revoked_hosts)
                             for host, detail in sorted(revoke_errors.items()):
                                 stream.write(
                                     f"REVOKE_ERROR host={host} detail={detail[:220]}\n"
                                 )
                             stream.flush()
                             raise RuntimeError("UNVERIFIED_REMOTE_LEASE_REVOKE")
-                        if lease_obj is not None and launched_lease:
-                            lease_obj.set_remote_revoked_hosts(revoked_hosts)
                         release_verified = True
                         break
                     except (

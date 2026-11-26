@@ -637,7 +637,7 @@ def revoke_remote_lease(
     *,
     execute=None,
     lease_dir: str | None = None,
-    check_npu: bool = True,
+    check_npu: bool = False,
     strict: bool = False,
     errors: dict[str, str] | None = None,
 ) -> set[str]:
@@ -694,7 +694,9 @@ def wsync(path, text):
 
 def stat_start(pid):
     try:
-        return Path(f'/proc/{pid}/stat').read_text().rsplit(') ', 1)[1].split()[19]
+        fields = Path(f'/proc/{pid}/stat').read_text().rsplit(') ', 1)[1].split()
+        # An exited process can stay in cgroup.procs until its parent reaps it.
+        return None if fields[0] == 'Z' else fields[19]
     except (FileNotFoundError, ProcessLookupError, PermissionError, IndexError):
         return None
 
@@ -737,8 +739,10 @@ try:
             for line in cfile.read_text().splitlines():
                 if line.strip().isdecimal():
                     pid = int(line.strip())
-                    if pid > 1 and owned_start(pid, recorded_pgid=rec_pgid, recorded_start=rec_start) is not None:
-                        owned[pid] = stat_start(pid)
+                    if pid > 1:
+                        st = owned_start(pid, recorded_pgid=rec_pgid, recorded_start=rec_start)
+                        if st is not None:
+                            owned[pid] = st
     for entry in os.scandir('/proc'):
         if entry.name.isdecimal():
             pid = int(entry.name)
@@ -762,8 +766,12 @@ try:
                 os.kill(pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-    time.sleep(0.2)
-    left = [pid for pid, st in owned.items() if owned_start(pid, recorded_pgid=rec_pgid, recorded_start=rec_start) == st]
+    left = []
+    for _ in range(20):
+        left = [pid for pid, st in owned.items() if owned_start(pid, recorded_pgid=rec_pgid, recorded_start=rec_start) == st]
+        if not left:
+            break
+        time.sleep(0.5)
     if left:
         raise SystemExit('owned lease processes remain: ' + str(left))
     dest_dir = meta.get('dest')
@@ -792,6 +800,11 @@ try:
                 m = pat.match(raw)
                 if not m:
                     continue
+                stripped = raw.strip()
+                if stripped.startswith('|') and stripped.endswith('|'):
+                    cells = [part.strip() for part in stripped[1:-1].split('|')]
+                    if len(cells) >= 5 and cells[4] == 'NA':
+                        continue
                 card = int(m.group(1))
                 die = int(m.group(2) or 0)
                 pid = int(m.group(3))

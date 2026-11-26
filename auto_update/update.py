@@ -37,9 +37,16 @@ from auto_update.version_switch import (
     validate_unit,
     wait_ready,
 )
+from ci_core.worker_activity import activity_lock, try_lock
 
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
-_TERMINAL = {"COMMITTED", "ROLLED_BACK", "RECOVERY_REQUIRED", "FAILED_PREPARE"}
+_TERMINAL = {
+    "COMMITTED",
+    "ROLLED_BACK",
+    "RECOVERY_REQUIRED",
+    "FAILED_PREPARE",
+    "DEFERRED_BUSY",
+}
 
 
 class UpdateError(RuntimeError):
@@ -330,14 +337,18 @@ def _run(settings: Settings) -> int:
         target_path = prepare_release(settings.root, stage, target_sha, old_path)
         stage = None
         _transition(settings, txn, "PREPARED")
-        # TODO(auto-update): add scheduler quiesce/drain/resume protocol.
-        # V1 deliberately does not skip an update because jobs are running.
-        # Existing Worker SIGTERM/Router.close() cleanup and quarantine apply.
-        _transition(settings, txn, "STOPPING")
-        stop_started = True
-        start_stop = time.monotonic()
-        stop_worker(settings.unit)
-        stop_completed = True
+        with activity_lock(settings.ready_file) as activity:
+            if activity is not None and not try_lock(activity):
+                _transition(settings, txn, "DEFERRED_BUSY")
+                _audit(
+                    settings, "DEFERRED_BUSY", old_sha=old_sha, target_sha=target_sha
+                )
+                return 0
+            _transition(settings, txn, "STOPPING")
+            stop_started = True
+            start_stop = time.monotonic()
+            stop_worker(settings.unit)
+            stop_completed = True
         times["stop_duration_ms"] = int((time.monotonic() - start_stop) * 1000)
         _transition(settings, txn, "SWITCHING")
         switch_current(settings.root, target_path)

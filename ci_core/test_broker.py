@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import gzip
 import hashlib
 import json
 import logging
@@ -141,12 +142,18 @@ def build_protected_baseline_archive(
         )
         if check.returncode == 0:
             proc = subprocess.run(
-                ["git", "-C", str(root), "archive", "--format=tar.gz", ref],
+                ["git", "-C", str(root), "archive", "--format=tar", ref],
                 capture_output=True,
                 check=False,
             )
             if proc.returncode == 0 and proc.stdout:
-                archive_path.write_bytes(proc.stdout)
+                with (
+                    archive_path.open("wb") as raw_out,
+                    gzip.GzipFile(
+                        fileobj=raw_out, mode="wb", compresslevel=6, mtime=0
+                    ) as gz_out,
+                ):
+                    gz_out.write(proc.stdout)
                 return archive_path
     # Fallback for non-.git synthetic test trees on trusted Main Worker checkout.
     excluded_top = {
@@ -160,12 +167,30 @@ def build_protected_baseline_archive(
         "node_modules",
         "state",
     }
-    with tarfile.open(archive_path, "w:gz") as tar:
+
+    def _normalize_tarinfo(info: tarfile.TarInfo) -> tarfile.TarInfo:
+        info.uid = 0
+        info.gid = 0
+        info.uname = ""
+        info.gname = ""
+        info.mtime = 0
+        return info
+
+    with (
+        archive_path.open("wb") as raw_out,
+        gzip.GzipFile(fileobj=raw_out, mode="wb", compresslevel=6, mtime=0) as gz_out,
+        tarfile.open(fileobj=gz_out, mode="w") as tar,
+    ):
         for path in sorted(root.rglob("*")):
             rel = path.relative_to(root)
             if any(part in excluded_top or part == "__pycache__" for part in rel.parts):
                 continue
-            tar.add(path, arcname=rel.as_posix(), recursive=False)
+            tar.add(
+                path,
+                arcname=rel.as_posix(),
+                recursive=False,
+                filter=_normalize_tarinfo,
+            )
     return archive_path
 
 
@@ -204,7 +229,7 @@ class TestBrokerServer:
         enforce_peercred: bool = True,
         peercred_reader=None,
         protected_baseline_root: Path | None = None,
-        quarantine_enabled: bool = True,
+        quarantine_enabled: bool = False,
         runs_provider=None,
         publish_retry_timeout: float = 120.0,
         publish_retry_interval: float = 2.5,
@@ -252,6 +277,9 @@ class TestBrokerServer:
         self._last_snapshot: dict | None = None
         self._alloc_lock = threading.RLock()
         self._plan_cache: dict[str, dict] = {}
+        self._fallback_poll_lock = threading.Lock()
+        self._last_fallback_poll_at: float = 0.0
+        self._last_fallback_runs: list[dict] = []
         self._server: _ThreadedUnixServer | None = None
         self._thread: threading.Thread | None = None
         self.audit_log: list[dict] = []
@@ -525,7 +553,20 @@ class TestBrokerServer:
             }
         if op == "POLL_RUNS":
             cached = self.runs_provider() if self.runs_provider is not None else None
-            runs = cached if cached is not None else self.client.running_workflows()
+            if cached is not None:
+                runs = cached
+            elif self.zone == "yellow" and self.runs_provider is not None:
+                with self._fallback_poll_lock:
+                    now = time.monotonic()
+                    if (
+                        self._last_fallback_poll_at <= 0.0
+                        or (now - self._last_fallback_poll_at) >= 60.0
+                    ):
+                        self._last_fallback_runs = list(self.client.running_workflows())
+                        self._last_fallback_poll_at = now
+                    runs = list(self._last_fallback_runs)
+            else:
+                runs = self.client.running_workflows()
             scoped = [_sanitize_run(r) for r in runs if self._matches_scope(r)]
             return {"ok": True, "result": {"runs": scoped}}
         if op == "FETCH_PLAN":
@@ -1045,7 +1086,7 @@ class TestBrokerServer:
                                         "remote_nodes": lease.remote_nodes,
                                         "remote_lease_dir": remote_lease_dir(),
                                     },
-                                    check_npu=True,
+                                    check_npu=False,
                                 )
                                 lease.set_remote_revoked_hosts(revoked)
                                 expected = {

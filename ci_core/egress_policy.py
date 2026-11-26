@@ -7,6 +7,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 import time
 import urllib.parse
 from pathlib import Path
@@ -315,6 +316,7 @@ class Egress:
         )
         self.root = Path(ledger_dir)
         self.path = self.root / "http-egress.json"
+        self._lock = threading.Lock()
 
     def before(self, request, *, repo, provider, storage=False, category=None):
         if provider == "control":
@@ -478,7 +480,7 @@ class Egress:
         self.reserve_counter(provider, category, size, rejected=True)
 
     def reserve_counter(self, provider, category, size, *, rejected=False):
-        with (self.root / "http-egress.lock").open("a+b") as lock:
+        with self._lock, (self.root / "http-egress.lock").open("a+b") as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
             now = self.clock()
             saved = (
@@ -507,7 +509,7 @@ class Egress:
 
     def record_sent_violation(self, provider, category, size):
         """Persist a post-send audit finding; normal admission never calls this."""
-        with (self.root / "http-egress.lock").open("a+b") as lock:
+        with self._lock, (self.root / "http-egress.lock").open("a+b") as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
             saved = (
                 json.loads(self.path.read_bytes())
@@ -555,7 +557,7 @@ class Egress:
         repo="unknown",
         category="other",
     ):
-        with (self.root / "http-egress.lock").open("a+b") as lock:
+        with self._lock, (self.root / "http-egress.lock").open("a+b") as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
             now = self.clock()
             day = int(now // 86400)

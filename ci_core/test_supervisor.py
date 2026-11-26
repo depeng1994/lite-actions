@@ -16,6 +16,7 @@ import tarfile
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable
@@ -37,6 +38,99 @@ from ci_core.worker_ready import process_identity, verify_ready
 
 MAX_TTL_SECONDS = 14400
 UNIT_PREFIX = "lite-actions-test-"
+
+
+def _prepare_merged_pr_checkout(
+    repo_url: str,
+    pr_number: int,
+    code_dir: Path,
+    *,
+    base_branch: str = "main",
+    git_env: dict[str, str] | None = None,
+) -> None:
+    """Merge fresh origin/<base_branch> + refs/pull/<pr>/head locally into code_dir."""
+    env = {
+        **(git_env if git_env is not None else os.environ),
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+    with tempfile.TemporaryDirectory(prefix="lite-tw-merge-") as tmp:
+        repo_dir = Path(tmp) / "repo"
+        archive_path = Path(tmp) / "merged.tar.gz"
+        subprocess.run(["git", "init", "-q", str(repo_dir)], check=True, timeout=25)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_dir),
+                "fetch",
+                "-q",
+                repo_url,
+                f"refs/heads/{base_branch}:refs/remotes/origin/{base_branch}",
+                f"refs/pull/{pr_number}/head:refs/remotes/origin/pr",
+            ],
+            check=True,
+            timeout=180,
+            capture_output=True,
+            env=env,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_dir),
+                "checkout",
+                "-q",
+                "-B",
+                "test-merge",
+                f"refs/remotes/origin/{base_branch}",
+            ],
+            check=True,
+            timeout=30,
+            capture_output=True,
+            env=env,
+        )
+        merge = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_dir),
+                "-c",
+                "user.name=lite-actions",
+                "-c",
+                "user.email=ci@lite-actions",
+                "merge",
+                "-q",
+                "--no-edit",
+                "refs/remotes/origin/pr",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+            env=env,
+        )
+        if merge.returncode != 0:
+            detail = (merge.stderr or merge.stdout or "").strip().replace("\n", " ")
+            raise RuntimeError(
+                f"PR #{pr_number} failed to merge cleanly with {base_branch}: {detail[:180]}"
+            )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_dir),
+                "archive",
+                "--format=tar.gz",
+                "-o",
+                str(archive_path),
+                "HEAD",
+            ],
+            check=True,
+            timeout=90,
+            capture_output=True,
+            env=env,
+        )
+        _safe_extract_tar_gz(archive_path, code_dir)
 
 
 def _safe_extract_tar_gz(archive_path: Path, dest_dir: Path) -> None:
@@ -178,7 +272,7 @@ class TestSupervisor:
         revoke_fn=None,
         clock: Callable[[], float] = time.time,
         enforce_peercred: bool = True,
-        quarantine_enabled: bool = True,
+        quarantine_enabled: bool = False,
         ready_timeout: float = 45.0,
     ):
         self.zone = zone
@@ -225,12 +319,16 @@ class TestSupervisor:
         self._cached_runs_at: float = 0.0
         self._cached_runs_lock = threading.Lock()
 
+    def has_test_workers(self) -> bool:
+        # A Test Worker needs its in-process broker until cleanup, even between cases.
+        return bool(self._brokers)
+
     def update_cached_runs(self, runs: list[dict]) -> None:
         with self._cached_runs_lock:
             self._cached_runs = copy.deepcopy(list(runs))
             self._cached_runs_at = time.monotonic()
 
-    def get_cached_runs(self, max_age: float = 90.0) -> list[dict] | None:
+    def get_cached_runs(self, max_age: float = 180.0) -> list[dict] | None:
         with self._cached_runs_lock:
             if (
                 self._cached_runs_at <= 0.0
@@ -389,6 +487,7 @@ class TestSupervisor:
             raise ValueError(
                 f"GitHub run {run_id} attempt mismatch: {run_info.get('run_attempt')} != {attempt}"
             )
+        return pr
 
     def detect_partial_rerun(
         self, client, run: dict, lifecycle: dict, *, is_cleanup: bool = False
@@ -446,24 +545,35 @@ class TestSupervisor:
         if code_dir.exists():
             shutil.rmtree(code_dir, ignore_errors=True)
         repo = run.get("_ci_repo", SELF_REPO)
-        sha = run.get("_ci_execution_sha") or lifecycle["pr_head_sha"]
-        fallback = (run.get("head_repository") or {}).get("full_name") or run.get(
-            "_ci_source_repo"
-        )
-        with tempfile.TemporaryDirectory(prefix="lite-tw-src-") as tmp:
-            archive = model_archive(
-                sha,
-                Path(tmp),
-                source_repo=repo,
-                provider=run.get("_ci_provider", "github"),
-                fallback_repo=fallback,
-                source_pr=(
-                    lifecycle["pr_number"]
-                    if run.get("_ci_source", {}).get("mode") == "merge_result"
-                    else None
-                ),
+        provider = run.get("_ci_provider", "github")
+        pr_number = lifecycle.get("pr_number")
+        if provider == "github" and isinstance(pr_number, int) and pr_number > 0:
+            base_branch = str(run.get("_ci_pr_base_ref") or "main").strip() or "main"
+            _prepare_merged_pr_checkout(
+                f"https://github.com/{repo}.git",
+                pr_number,
+                code_dir,
+                base_branch=base_branch,
             )
-            _safe_extract_tar_gz(archive, code_dir)
+        else:
+            sha = run.get("_ci_execution_sha") or lifecycle["pr_head_sha"]
+            fallback = (run.get("head_repository") or {}).get("full_name") or run.get(
+                "_ci_source_repo"
+            )
+            with tempfile.TemporaryDirectory(prefix="lite-tw-src-") as tmp:
+                archive = model_archive(
+                    sha,
+                    Path(tmp),
+                    source_repo=repo,
+                    provider=provider,
+                    fallback_repo=fallback,
+                    source_pr=(
+                        pr_number
+                        if run.get("_ci_source", {}).get("mode") == "merge_result"
+                        else None
+                    ),
+                )
+                _safe_extract_tar_gz(archive, code_dir)
         # Ensure clean permissions readable by DynamicUser=yes under BindReadOnlyPaths.
         for path in code_dir.rglob("*"):
             try:
@@ -691,7 +801,7 @@ class TestSupervisor:
             }
 
         try:
-            self.verify_deploy_authority(client, run, lifecycle)
+            pr_info = self.verify_deploy_authority(client, run, lifecycle)
         except Exception as exc:
             return {
                 "status": "FAIL",
@@ -699,6 +809,13 @@ class TestSupervisor:
                 "tail": [f"Deploy authority check failed: {exc}"],
                 "release_verified": True,
             }
+        base_ref = (
+            ((pr_info.get("base") or {}).get("ref") or "").strip()
+            if isinstance(pr_info, dict)
+            else ""
+        )
+        if base_ref:
+            run = {**run, "_ci_pr_base_ref": base_ref}
 
         ttl = max(60, min(MAX_TTL_SECONDS, int(lifecycle["ttl_seconds"])))
         now = self.clock()
@@ -1020,7 +1137,8 @@ class TestSupervisor:
 
         cleanup_ok = True
         failures = []
-        for lease in leases:
+
+        def _revoke_lease(lease: dict):
             lease_id = lease["lease_id"]
             allow_unlaunched = lease.get("state") == "RESERVED" and not lease.get(
                 "remote_hosts"
@@ -1029,6 +1147,25 @@ class TestSupervisor:
                 revoked_hosts = (
                     self._revoke_fn(lease) if lease.get("remote_hosts") else set()
                 )
+                return lease_id, allow_unlaunched, revoked_hosts, None
+            except Exception as exc:
+                return lease_id, allow_unlaunched, None, exc
+
+        if len(leases) <= 1:
+            revocations = [_revoke_lease(lease) for lease in leases]
+        else:
+            with ThreadPoolExecutor(max_workers=len(leases)) as pool:
+                revocations = list(pool.map(_revoke_lease, leases))
+
+        for lease_id, allow_unlaunched, revoked_hosts, err in revocations:
+            if err is not None:
+                cleanup_ok = False
+                if isinstance(err, UnverifiedRemoteRevoke):
+                    failures.append(str(err))
+                else:
+                    failures.append(f"{lease_id}: {type(err).__name__}")
+                continue
+            try:
                 self.coordinator.release(
                     lease_id,
                     remote_revoked_hosts=revoked_hosts,
@@ -1039,13 +1176,6 @@ class TestSupervisor:
                 failures.append(str(exc))
             except Exception as exc:
                 cleanup_ok = False
-                self.coordinator.quarantine_lease(
-                    lease_id,
-                    owner_worker=worker_id,
-                    task_key=lease.get("task_key", ""),
-                    reason=f"cleanup_error:{type(exc).__name__}",
-                    source="supervisor_cleanup",
-                )
                 failures.append(f"{lease_id}: {type(exc).__name__}")
 
         if cleanup_ok:

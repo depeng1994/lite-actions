@@ -164,6 +164,7 @@ function clusterViewConfig(cluster) {
   const workerStatus = Object.fromEntries((cluster?.workers || []).map((worker) => [workerLabel(worker.worker_id), {
     offline: Boolean(worker.offline), status: worker.status, error: worker.error_msg ?? null,
     desired: worker.desired_rev ?? cluster?.revision ?? 0,
+    codeSha: worker.code_sha || null,
     lastHeartbeatAt: worker.last_heartbeat_at ?? null,
   }]));
   return {desired: cluster?.revision || 0, applied, flags, workerStatus, pending: null};
@@ -227,13 +228,18 @@ function taskToCase(task, nodesByRef, projectionIndex, runKey, isHistory = false
 }
 
 function workflowMetadata(row) {
+  const eventType = String(row.event_type || "").toLowerCase();
   return {
     id: row.run_id, number: row.run_number, title: row.display_title, attempt: row.attempt, model: row.logical_model,
     isTest: Boolean(row.is_test), reporterIds: row.reporter_ids || [],
     platform: platformLabel(row.provider), repo: row.repo,
     owner: row.repo_scope || (row.repo?.startsWith("depeng1994/") ? "个人仓" : "组织仓"),
     author: row.pr_author, actor: row.trigger_actor || "—", pr: row.pr_number,
-    trigger: row.event_type === "pull_request" ? "PR" : row.event_type === "workflow_dispatch" ? "手动" : "事件",
+    trigger: eventType === "pull_request" || eventType === "merge_request"
+      ? "PR"
+      : eventType === "workflow_dispatch" || eventType === "manual"
+        ? "手动"
+        : "事件",
     action: row.workflow_name || row.workflow_file?.replace(/^.*\//, "").replace(/\.ya?ml$/, "") || "Workflow",
     commit: "—", submitted: timestampMs(row.submitted_at),
   };
@@ -333,9 +339,16 @@ export async function loadControlCenter(access = "public") {
   }
 }
 
-export async function loadMoreHistory(access, {cursor, limit, signal}) {
+export async function loadMoreHistory(access, {cursor, limit, filters, signal}) {
   const query = new URLSearchParams({status: "history", history_limit: limit});
   if (cursor) query.set("cursor", cursor);
+  if (filters?.model) query.set("model", filters.model);
+  if (filters?.repo) query.set("repo", filters.repo);
+  if (filters?.platform) query.set("platform", filters.platform === "GitCode" ? "gitcode" : "github");
+  if (filters?.pool) {
+    const poolName = filters.pool.includes("/") ? filters.pool.split("/").slice(1).join("/") : filters.pool;
+    if (poolName) query.set("pool", poolName);
+  }
   const [timeline, workflowSnapshot] = await Promise.all([
     request(`/${access}/timeline`, {signal}),
     request(`/${access}/workflows?${query}`, {signal}),

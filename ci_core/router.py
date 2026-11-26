@@ -68,35 +68,6 @@ def _is_pr_smoke(run):
     )
 
 
-def _verify_self_smoke_run(client, run, *, plan=None, expected_digest=None):
-    if not _is_self_smoke(run):
-        raise ValueError("self-smoke run identity invalid")
-    event = run.get("_ci_platform_event", run.get("event"))
-    branch = run.get("_ci_platform_head_branch", run.get("head_branch"))
-    sha = run.get("_ci_platform_run_sha", run.get("head_sha"))
-    if event not in {"push", "workflow_dispatch"} or branch != "main":
-        raise ValueError("self-smoke requires push or workflow_dispatch on main")
-    if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
-        raise ValueError("self-smoke commit SHA invalid")
-    if client is None:
-        raise ValueError("self-smoke GitHub client unavailable")
-    main_head = client.request("GET", "/branches/main").get("commit", {}).get("sha")
-    if not isinstance(main_head, str) or not re.fullmatch(r"[0-9a-f]{40}", main_head):
-        raise ValueError("main branch SHA invalid")
-    if sha != main_head:
-        comparison = client.request("GET", f"/compare/{sha}...{main_head}?per_page=1")
-        if comparison.get("merge_base_commit", {}).get("sha") != sha:
-            raise ValueError("self-smoke commit is not on main")
-    from ci_core.self_smoke import expected_plan
-
-    approved = expected_plan(run)
-    if plan is not None and plan != approved:
-        raise ValueError("self-smoke plan differs from its pinned profile")
-    if expected_digest is not None and expected_digest != approved["plan_digest"]:
-        raise ValueError("self-smoke digest differs from its pinned profile")
-    return approved
-
-
 def task_key(run, item):
     prefix = "gitcode:" if run.get("_ci_provider") == "gitcode" else ""
     dispatch = f":{run['_ci_dispatch_id']}" if run.get("_ci_dispatch_id") else ""
@@ -277,18 +248,13 @@ class Router:
                 self.release_sha = actual_sha(self.root)
             except (OSError, ValueError, subprocess.SubprocessError):
                 self.release_sha = ""
+        if not self.release_sha:
+            resolved_name = self.root.resolve().name.strip().lower()
+            if re.fullmatch(r"[0-9a-f]{40}", resolved_name):
+                self.release_sha = resolved_name
         self.next_discovery = 0.0
         self.state = JobState(self.root)
-        disabled_quarantine = {
-            name.strip()
-            for name in os.environ.get(
-                "LITE_ACTIONS_DISABLE_QUARANTINE_WORKERS", ""
-            ).split(",")
-            if name.strip()
-        }
-        self.quarantine_enabled = (
-            worker not in disabled_quarantine and self.zone not in disabled_quarantine
-        )
+        self.quarantine_enabled = False
         self.supervisor = None
         self._supervisor_active = False
         if not self.is_test and not self._broker_active:
@@ -347,35 +313,14 @@ class Router:
         self.preflight = {}
         self.plans = {}
         self.unavailable_runs = set()
-        if not self.quarantine_enabled:
-            owners = {
-                node["host_id"]: pool["owner"]
-                for pool in self.pools.values()
-                for node in pool["nodes"]
-            }
-            clear = []
-            for key, record in self.state.read().items():
-                item = record.get("item")
-                owner = item.get("worker") if isinstance(item, dict) else None
-                allocation = record.get("allocation") or []
-                belongs = (
-                    owner == worker
-                    and all(
-                        owners.get(node.get("host_id"), worker) == worker
-                        for node in allocation
-                    )
-                ) or (
-                    owner is None
-                    and all(
-                        owners.get(node.get("host_id")) == worker for node in allocation
-                    )
-                )
-                if record.get("quarantined") and belongs:
-                    clear.append(key)
-            if clear:
-                self.state.update_many(clear, quarantined=False)
-            logging.info("automatic quarantine disabled for worker %s", worker)
-        # Record interrupted work according to this worker's configured policy.
+        clear = [
+            key
+            for key, record in self.state.read().items()
+            if record.get("quarantined")
+        ]
+        if clear:
+            self.state.update_many(clear, quarantined=False)
+        # Record interrupted work as needing recovery without quarantining hardware.
         for key, r in self.state.read().items():
             if r.get("phase") in {"RESERVED", "STAGING", "RUNNING", "CLEANING"}:
                 result = report(
@@ -397,8 +342,7 @@ class Router:
                 self.state.update(
                     key,
                     phase="PENDING_REPORT",
-                    quarantined=bool(r.get("allocation"))
-                    and (self.quarantine_enabled or r["item"].get("worker") != worker),
+                    quarantined=False,
                     report=result,
                 )
 
@@ -574,10 +518,6 @@ class Router:
             records = self.state.read()
             for record in records.values():
                 resources = set(resource_keys(record.get("allocation") or []))
-                if resources.intersection(self.draining) and record.get("quarantined"):
-                    raise ValueError("QUARANTINED_RESOURCE_CANNOT_DELETE")
-            for record in records.values():
-                resources = set(resource_keys(record.get("allocation") or []))
                 if resources.intersection(self.draining) and record.get(
                     "phase"
                 ) in ACTIVE - {"QUEUED"}:
@@ -670,26 +610,8 @@ class Router:
             "status"
         ) not in {"queued", "in_progress"}:
             return False
-        if _is_pr_smoke(run):
-            event = run.get("_ci_platform_event", run.get("event"))
-            if event in {"workflow_dispatch", "pull_request_target"}:
-                return (
-                    run.get("_ci_platform_head_branch", run.get("head_branch"))
-                    == "main"
-                )
-            if event == "pull_request":
-                return (run.get("head_repository") or {}).get("full_name") == SELF_REPO
+        if _is_self_smoke(run) and getattr(self, "is_test", False) is True:
             return False
-        if _is_self_smoke(run):
-            if getattr(self, "is_test", False) is True:
-                return False
-            event = run.get("_ci_platform_event", run.get("event"))
-            branch = run.get("_ci_platform_head_branch", run.get("head_branch"))
-            if event not in {"push", "workflow_dispatch"} or branch != "main":
-                return False
-            if getattr(self, "client", None) is not None:
-                _verify_self_smoke_run(self.client_for(run), run)
-            return True
         return True
 
     def transition(self, key, phase, **fields):
@@ -950,8 +872,6 @@ class Router:
                     run["path"].rsplit("/", 1)[-1],
                     repo=run.get("_ci_repo", REPO),
                 )
-                if _is_self_smoke(run):
-                    _verify_self_smoke_run(self.client_for(run), run, plan=plan)
                 self.plans[identity] = plan
                 self._admit_plan(run, plan)
             else:
@@ -983,8 +903,6 @@ class Router:
                         run["path"].rsplit("/", 1)[-1],
                         repo=run.get("_ci_repo", REPO),
                     )
-                    if _is_self_smoke(run):
-                        _verify_self_smoke_run(self.client_for(run), run, plan=plan)
                     self.plans[identity] = plan
                 else:
                     plan = cached
@@ -1105,9 +1023,13 @@ class Router:
     def case_folder(self, key):
         import hashlib
 
+        # Broker-backed execution writes its own transcript as the Main Worker.
+        log_dir = (
+            "worker-logs" if getattr(self, "_broker_active", False) is True else "logs"
+        )
         folder = (
             Path(self.deployment["state_dir"])
-            / "logs"
+            / log_dir
             / "runs"
             / hashlib.sha256(key.encode()).hexdigest()
         )
@@ -1148,9 +1070,7 @@ class Router:
                 phase="REPORTED",
                 published_at=time.time(),
                 allocation=final_allocation,
-                quarantined=bool(final_allocation)
-                and not clean
-                and (self.quarantine_enabled or r["item"].get("worker") != self.worker),
+                quarantined=False,
                 report=result,
             )
             return
@@ -1238,9 +1158,7 @@ class Router:
         self.state.update(
             key,
             phase="PENDING_REPORT",
-            quarantined=bool(final_allocation)
-            and not clean
-            and (self.quarantine_enabled or r["item"].get("worker") != self.worker),
+            quarantined=False,
             report=result,
             **extra_fields,
         )
@@ -1300,14 +1218,6 @@ class Router:
                     published_by_broker=bool(outcome.get("published_by_broker")),
                 )
                 return
-            if _is_self_smoke(run):
-                approved = _verify_self_smoke_run(
-                    self.client_for(run),
-                    run,
-                    expected_digest=r["digest"],
-                )
-                if item not in approved["cases"]:
-                    raise ValueError("self-smoke case identity mismatch")
             if run.get("_ci_provider") == "gitcode":
                 self.client_for(run).validate_current(run)
             if run.get("_ci_source"):
@@ -1357,15 +1267,6 @@ class Router:
                         or run.get("_ci_dispatch_id") != f"os-{proof['job_id']}"
                     ):
                         raise ValueError("INFRA_STALE_PROBE")
-                elif _is_self_smoke(run):
-                    from ci_core.self_smoke import expected_plan
-
-                    approved = expected_plan(run)
-                    if (
-                        r["digest"] != approved["plan_digest"]
-                        or item not in approved["cases"]
-                    ):
-                        raise ValueError("self-smoke probe identity mismatch")
                 else:
                     if (
                         "env_vars" in item
@@ -1502,19 +1403,6 @@ class Router:
                 if execution.exit_code == 0 and valid
                 else "FAIL"
             )
-            if (
-                not execution.release_verified
-                and getattr(self, "_coordinator_active", False) is True
-                and lease is not None
-                and self.quarantine_enabled
-                and hasattr(lease, "lease_id")
-            ):
-                self.coordinator.quarantine_lease(
-                    lease.lease_id,
-                    owner_worker=self.worker,
-                    task_key=key,
-                    reason="cleanup_unverified",
-                )
             self.finish(
                 key,
                 status,
@@ -1778,49 +1666,70 @@ class Router:
                 logging.warning("Blue log retention deferred (%s)", type(exc).__name__)
         # Outbox survives completed GitHub Runs; never depend on an active-run listing.
         self.flush()
-        statuses = {}
-        self.unavailable_runs = set()
-        for key, r in self.state.read().items():
-            if r.get("phase") not in {
-                "QUEUED",
-                "RESERVED",
-                "STAGING",
-                "RUNNING",
-                "CLEANING",
-            }:
-                continue
+        active_phases = {"QUEUED", "RESERVED", "STAGING", "RUNNING", "CLEANING"}
+        active_records = [
+            (key, r)
+            for key, r in self.state.read().items()
+            if r.get("phase") in active_phases
+        ]
+        unique_runs = {}
+        for _, r in active_records:
             run = r["run"]
             ident = run_key(run)
-            if ident not in statuses:
-                try:
-                    if getattr(self, "_broker_active", False) is True:
-                        statuses[ident] = self.broker.check_run_status(run)
-                    else:
-                        client = self.client_for(run)
-                        if run.get("_ci_provider") == "gitcode" and (
-                            run.get("_ci_pr_number") or run.get("_ci_dispatch_id")
-                        ):
-                            try:
-                                client.validate_current(run)
-                            except RunChanged:
-                                statuses[ident] = {"status": "completed"}
-                            else:
-                                statuses[ident] = {"status": "in_progress"}
-                        else:
-                            statuses[ident] = client.workflow_status(run["id"])
-                            if run.get("_ci_source"):
-                                from ci_core.github_source import check_current
+            if ident not in unique_runs:
+                unique_runs[ident] = run
 
-                                try:
-                                    check_current(client, run["_ci_source"])
-                                except ValueError:
-                                    statuses[ident] = {"status": "completed"}
-                except Exception as exc:
-                    statuses[ident] = None
-                    self.unavailable_runs.add(ident)
-                    logging.warning(
-                        "run status unavailable: %s (%s)", run["id"], type(exc).__name__
-                    )
+        def _check_one(run):
+            try:
+                if getattr(self, "_broker_active", False) is True:
+                    return self.broker.check_run_status(run), True
+                client = self.client_for(run)
+                if run.get("_ci_provider") == "gitcode" and (
+                    run.get("_ci_pr_number") or run.get("_ci_dispatch_id")
+                ):
+                    try:
+                        client.validate_current(run)
+                    except RunChanged:
+                        return {"status": "completed"}, True
+                    return {"status": "in_progress"}, True
+                status = client.workflow_status(run["id"])
+                if run.get("_ci_source"):
+                    from ci_core.github_source import check_current
+
+                    try:
+                        check_current(client, run["_ci_source"])
+                    except ValueError:
+                        return {"status": "completed"}, True
+                return status, True
+            except Exception as exc:
+                logging.warning(
+                    "run status unavailable: %s (%s)", run["id"], type(exc).__name__
+                )
+                return None, False
+
+        statuses = {}
+        self.unavailable_runs = set()
+        if len(unique_runs) == 1:
+            ident, run = next(iter(unique_runs.items()))
+            current, ok = _check_one(run)
+            statuses[ident] = current
+            if not ok:
+                self.unavailable_runs.add(ident)
+        elif len(unique_runs) > 1:
+            with ThreadPoolExecutor(max_workers=min(8, len(unique_runs))) as pool:
+                futures = {
+                    ident: pool.submit(_check_one, run)
+                    for ident, run in unique_runs.items()
+                }
+                for ident, future in futures.items():
+                    current, ok = future.result()
+                    statuses[ident] = current
+                    if not ok:
+                        self.unavailable_runs.add(ident)
+
+        for key, r in active_records:
+            run = r["run"]
+            ident = run_key(run)
             current = statuses[ident]
             if current is None:
                 continue
@@ -1849,9 +1758,14 @@ class Router:
             ):
                 self.maybe_ack(key, r)
         self.consume_control()
-        # Limit only discovery. Cancellation, queue progress and outbox keep ticking.
+        # Limit only external discovery on Yellow. Broker-backed Test Workers read
+        # the Main Worker's in-memory run cache over Unix socket with zero HTTP calls.
         now = time.monotonic()
-        if Router._zone_name(self) != "yellow" or now >= self.next_discovery:
+        if (
+            Router._zone_name(self) != "yellow"
+            or getattr(self, "_broker_active", False) is True
+            or now >= self.next_discovery
+        ):
             self.next_discovery = now + 60
             discovered = self.client.running_workflows()
             if getattr(self, "_supervisor_active", False) is True:
@@ -1864,8 +1778,27 @@ class Router:
                 if Router._zone_name(self) == "yellow"
                 else 60.0,
             )
+        if (
+            getattr(self, "_coordinator_active", False) is True
+            and getattr(self, "is_test", False) is not True
+            and now >= getattr(self, "_next_quarantine_reconcile", 0.0)
+        ):
+            self._next_quarantine_reconcile = now + 30.0
+            try:
+                if any(
+                    doc.get("state") == "REVOKE_FAILED"
+                    for doc in self.coordinator.all_active_leases()
+                ):
+                    self.coordinator.reconcile_quarantined_leases()
+            except Exception:
+                logging.warning("lease reconciliation tick failed", exc_info=True)
         self.pump()
         self.flush()
+
+    def has_active_work(self):
+        return bool(
+            self.active or (self.supervisor and self.supervisor.has_test_workers())
+        )
 
     def close(self):
         if self.config_executor:

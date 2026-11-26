@@ -392,3 +392,20 @@ class ControlTests(unittest.TestCase):
         self.assertEqual(
             [ev["a"] for ev in tl2], [[{"h": "198.51.100.1:22", "d": [0, 1]}], []]
         )
+
+    def test_heartbeat_reports_full_40_char_commit_sha(self):
+        full_sha = "5905edfdb103a75b4d02e9543e02a0f46ccf2c1b"
+        client = ControlClient(
+            "blue",
+            self.cfg,
+            "x" * 64,
+            Egress("blue", self.cfg),
+            threading.Event(),
+            lambda: {"records": {}, "sha": f"  {full_sha.upper()}  "},
+            clock=lambda: self.now,
+        )
+        with patch.object(client, "_send", side_effect=self.send):
+            client.cycle()
+        heartbeats = [body for route, body in self.calls if route == "heartbeat"]
+        self.assertEqual(len(heartbeats), 1)
+        self.assertEqual(heartbeats[0]["sha"], full_sha)

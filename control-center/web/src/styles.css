@@ -350,6 +350,9 @@ th[aria-sort] .column-sort, th[aria-sort] .column-sort svg, .column-sort:hover {
 
 .worker-dot { width: 8px; height: 8px; display: inline-block; border-radius: 50%; background: var(--blue-dot); }
 .worker-dot.yellow { background: var(--yellow-dot); }
+.worker-commit { padding: 1px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--heading); color: var(--text); font-size: 12px; font-weight: 560; line-height: 1.45; }
+.subnav button[aria-current="page"] .worker-commit { border-color: color-mix(in srgb, var(--accent) 28%, transparent); background: color-mix(in srgb, var(--surface-raised) 78%, var(--accent-tint)); color: var(--accent); }
+.worker-commit.is-muted { color: var(--muted); opacity: .78; }
 .revision-bar { display: flex; gap: 10px 18px; flex-wrap: wrap; align-items: center; margin-block: 18px; padding: 12px 15px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface-raised); }
 .revision-bar code { padding: 2px 5px; background: var(--heading); border-radius: 3px; }
 .revision-updated { margin-left: auto; color: var(--muted); font-size: 13px; }

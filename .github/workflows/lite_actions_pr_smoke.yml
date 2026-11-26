@@ -27,13 +27,12 @@ on:
     types: [created]
   pull_request_review:
     types: [submitted]
-concurrency:
-  group: lite-actions-per-pr-hardware
-  cancel-in-progress: false
 permissions:
   contents: read
   actions: read
-  pull-requests: read
+  pull-requests: write
+  statuses: write
+  issues: write
 jobs:
   prepare:
     if: >-
@@ -50,7 +49,7 @@ jobs:
         )
       )
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 360
     outputs:
       deploy_matrix: ${{ steps.plan.outputs.deploy_matrix }}
       smoke_matrix: ${{ steps.plan.outputs.smoke_matrix }}
@@ -74,6 +73,7 @@ jobs:
           INPUT_GITCODE_REF: ${{ inputs.gitcode_ref }}
           INPUT_PROFILE: ${{ inputs.profile }}
           ISSUE_PR_NUMBER: ${{ github.event.issue.number }}
+          COMMENT_ID: ${{ github.event.comment.id }}
           COMMENT_BODY: ${{ github.event.comment.body }}
           COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
           REVIEW_PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -81,7 +81,37 @@ jobs:
           PR_MAINTAINERS: ${{ vars.LITE_CI_PR_MAINTAINERS || 'depeng1994' }}
         run: |
           set -euo pipefail
-          run_head_sha=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .head_sha)
+          post_comment_reaction() {
+            local content="$1"
+            if [ "$EVENT_NAME" = "issue_comment" ] && [ -n "${COMMENT_ID:-}" ]; then
+              gh api -X POST "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID/reactions" \
+                -f content="$content" >/dev/null 2>&1 || \
+                echo "::warning::Failed to post '$content' reaction on comment $COMMENT_ID"
+            fi
+          }
+          reject_request() {
+            local reason="$1"
+            echo "::error::$reason"
+            if [ "$EVENT_NAME" = "issue_comment" ]; then
+              post_comment_reaction "confused"
+              if [ -n "${pr_number:-}" ]; then
+                local body_text
+                printf -v body_text 'Unable to start `/pr-test`: %s' "$reason"
+                gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$pr_number/comments" \
+                  -f body="$body_text" >/dev/null 2>&1 || \
+                  echo "::warning::Failed to post rejection comment on PR #$pr_number"
+              fi
+            fi
+            exit 1
+          }
+          run_head_sha="${GITHUB_SHA:-}"
+          if [ -z "$run_head_sha" ]; then
+            for _attempt in 1 2 3 4 5; do
+              run_head_sha=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .head_sha 2>/dev/null || true)
+              [ -n "$run_head_sha" ] && break
+              sleep 2
+            done
+          fi
           gitcode_repo="${INPUT_GITCODE_REPO:-depeng1994/torchtitan-npu}"
           gitcode_ref="${INPUT_GITCODE_REF:-master}"
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
@@ -95,24 +125,20 @@ jobs:
               "/pr-test blue"|"/pr-test blue-only") profile="blue-only" ;;
               "/pr-test cpu-only") profile="cpu-only" ;;
               *)
-                echo "::error::Unsupported /pr-test command; expected '/pr-test', '/pr-test blue', '/pr-test full', or '/pr-test cpu-only'"
-                exit 1
+                reject_request "Unsupported /pr-test command; expected '/pr-test', '/pr-test full', '/pr-test blue', '/pr-test blue-only', or '/pr-test cpu-only'"
                 ;;
             esac
           elif [ "$EVENT_NAME" = "pull_request_review" ]; then
             pr_number="$REVIEW_PR_NUMBER"
             profile="full"
             if ! printf ',%s,' "$PR_MAINTAINERS" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' | grep -qF ",$(printf '%s' "$REVIEW_AUTHOR" | tr '[:upper:]' '[:lower:]'),"; then
-              echo "::error::Approval auto-trigger requires a maintainer review (got @$REVIEW_AUTHOR)"
-              exit 1
+              reject_request "Approval auto-trigger requires a maintainer review (got @$REVIEW_AUTHOR)"
             fi
           else
-            echo "::error::Unsupported event $EVENT_NAME"
-            exit 1
+            reject_request "Unsupported event $EVENT_NAME"
           fi
           if [ -z "$pr_number" ]; then
-            echo "::error::PR number is required"
-            exit 1
+            reject_request "PR number is required"
           fi
           pr_json=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr_number")
           pr_state=$(printf '%s' "$pr_json" | jq -r '.state')
@@ -120,12 +146,10 @@ jobs:
           pr_author=$(printf '%s' "$pr_json" | jq -r '.user.login')
           head_repo=$(printf '%s' "$pr_json" | jq -r '.head.repo.full_name // ""')
           if [ "$pr_state" != "open" ]; then
-            echo "::error::PR #$pr_number is not open ($pr_state)"
-            exit 1
+            reject_request "PR #$pr_number is not open ($pr_state)"
           fi
           if [ -z "$pr_head_sha" ]; then
-            echo "::error::PR #$pr_number head SHA is missing"
-            exit 1
+            reject_request "PR #$pr_number head SHA is missing"
           fi
           if [ "$EVENT_NAME" = "issue_comment" ]; then
             comment_lc=$(printf '%s' "$COMMENT_AUTHOR" | tr '[:upper:]' '[:lower:]')
@@ -133,21 +157,21 @@ jobs:
             if [ "$comment_lc" != "$author_lc" ] && ! printf ',%s,' "$PR_MAINTAINERS" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' | grep -qF ",$comment_lc,"; then
               perm=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$COMMENT_AUTHOR/permission" --jq '.permission // "none"' 2>/dev/null || echo "none")
               if [ "$perm" != "admin" ] && [ "$perm" != "maintain" ] && [ "$perm" != "write" ]; then
-                echo "::error::Only PR author (@$pr_author) or maintainers may trigger /pr-test on PR #$pr_number"
-                exit 1
+                reject_request "Only PR author (@$pr_author) or maintainers may trigger /pr-test on PR #$pr_number"
               fi
             fi
           fi
           if printf ',%s,' "$PR_MAINTAINERS" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' | grep -qF ",$(printf '%s' "$pr_author" | tr '[:upper:]' '[:lower:]'),"; then
-            [ "$head_repo" = "$GITHUB_REPOSITORY" ] || { echo "::error::Maintainer PR head repo $head_repo does not match $GITHUB_REPOSITORY"; exit 1; }
+            [ "$head_repo" = "$GITHUB_REPOSITORY" ] || reject_request "Maintainer PR head repo $head_repo does not match $GITHUB_REPOSITORY"
           else
             gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/pulls/$pr_number/reviews?per_page=100" | jq -e --arg m "$PR_MAINTAINERS" --arg a "$pr_author" '
               ($m | ascii_downcase | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))) as $ok |
               [.[][] | select(.user.login != null) | {u: (.user.login | ascii_downcase), s: (.state | ascii_upcase)}
                | select(.u != ($a | ascii_downcase) and (.u | IN($ok[])) and (.s | IN("APPROVED","CHANGES_REQUESTED","DISMISSED")))]
               | group_by(.u) | any(last.s == "APPROVED")
-            ' >/dev/null || { echo "::error::PR by @$pr_author requires maintainer APPROVED review"; exit 1; }
+            ' >/dev/null || reject_request "PR by @$pr_author requires maintainer APPROVED review"
           fi
+          post_comment_reaction "rocket"
           {
             echo "run_head_sha=$run_head_sha"
             echo "pr_number=$pr_number"
@@ -157,6 +181,25 @@ jobs:
             echo "gitcode_ref=$gitcode_ref"
             echo "profile=$profile"
           } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.resolve.outputs.run_head_sha }}
+          persist-credentials: false
+
+      - name: Reply to PR with Actions run link
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          PR_HEAD_SHA: ${{ steps.resolve.outputs.pr_head_sha }}
+          PROFILE: ${{ steps.resolve.outputs.profile }}
+        run: python3 -m ci_core.pr_status ack
+
+      - name: Wait for FIFO hardware queue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_QUEUE_WORKFLOW: lite_actions_pr_smoke.yml
+        run: python3 -m ci_core.pr_queue wait
 
       - name: Register running gate generation
         id: register
@@ -224,11 +267,6 @@ jobs:
           print(f"Registered gate generation {data['generation']}")
           PY
 
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.resolve.outputs.run_head_sha }}
-          persist-credentials: false
-
       - name: Prepare per-PR smoke and dynamic worker plan
         id: plan
         env:
@@ -248,6 +286,15 @@ jobs:
           path: .ci-request/ci-request.json
           if-no-files-found: error
           retention-days: 1
+
+      - name: Publish pending per-job commit statuses
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD_SHA: ${{ steps.resolve.outputs.pr_head_sha }}
+          DEPLOY_MATRIX: ${{ steps.plan.outputs.deploy_matrix }}
+          SMOKE_MATRIX: ${{ steps.plan.outputs.smoke_matrix }}
+          PROFILE: ${{ steps.resolve.outputs.profile }}
+        run: python3 -m ci_core.pr_status pending
 
       - name: Mark PR gate failed if prepare fails after registration
         if: failure() && steps.register.outputs.generation != ''
@@ -317,6 +364,27 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CI_RESULT_AUTHOR: ${{ vars.LITE_CI_RESULT_ACTOR }}
         run: python3 -m ci_core.self_smoke wait-case
+      - name: Report commit status for deploy-${{ matrix.worker }}
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD_SHA: ${{ needs.prepare.outputs.pr_head_sha }}
+          STATUS_CONTEXT: lite-ci-pr-smoke / deploy-${{ matrix.worker }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ -f ci_core/pr_status.py ]; then
+            python3 -m ci_core.pr_status job
+          else
+            state="error"
+            [ "$JOB_STATUS" = "success" ] && state="success"
+            [ "$JOB_STATUS" = "failure" ] && state="failure"
+            gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$PR_HEAD_SHA" \
+              -f state="$state" \
+              -f context="$STATUS_CONTEXT" \
+              -f description="Job ended with status: $JOB_STATUS" \
+              -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+              >/dev/null 2>&1 || echo "::warning::Failed to post fallback status for $STATUS_CONTEXT"
+          fi
 
   smoke_self:
     needs: [prepare, deploy]
@@ -343,20 +411,44 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CI_RESULT_AUTHOR: ${{ vars.LITE_CI_RESULT_ACTOR }}
         run: python3 -m ci_core.self_smoke wait-case
+      - name: Report commit status for self-${{ matrix.case_id }}
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD_SHA: ${{ needs.prepare.outputs.pr_head_sha }}
+          STATUS_CONTEXT: lite-ci-pr-smoke / self-${{ matrix.case_id }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ -f ci_core/pr_status.py ]; then
+            python3 -m ci_core.pr_status job
+          else
+            state="error"
+            [ "$JOB_STATUS" = "success" ] && state="success"
+            [ "$JOB_STATUS" = "failure" ] && state="failure"
+            gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$PR_HEAD_SHA" \
+              -f state="$state" \
+              -f context="$STATUS_CONTEXT" \
+              -f description="Job ended with status: $JOB_STATUS" \
+              -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+              >/dev/null 2>&1 || echo "::warning::Failed to post fallback status for $STATUS_CONTEXT"
+          fi
 
   smoke_gitcode:
-    needs: [prepare, deploy, smoke_self]
+    needs: [prepare, deploy]
     if: >-
       always() &&
       needs.prepare.result == 'success' &&
       needs.deploy.result == 'success' &&
-      needs.smoke_self.result == 'success' &&
       needs.prepare.outputs.profile == 'full'
     runs-on: ubuntu-latest
     name: gitcode-torchtitan-smoke
     timeout-minutes: 180
     environment: gitcode-torchtitan-smoke
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.run_head_sha }}
+          persist-credentials: false
       - name: Dispatch and wait for GitCode TorchTitan smoke against Test Worker
         env:
           GITCODE_TOKEN: ${{ secrets.GITCODE_TORCHTITAN_DISPATCH_TOKEN }}
@@ -401,28 +493,65 @@ jobs:
           def cc_post(path, payload):
               if not cc_url or not gate_token:
                   return None
-              req = urllib.request.Request(
-                  f"{cc_url}{path}",
-                  data=json.dumps(payload).encode("utf-8"),
-                  headers={
-                      "Authorization": f"Bearer {gate_token}",
-                      "Content-Type": "application/json",
-                      "Accept": "application/json",
-                      "User-Agent": "lite-actions-pr-gate",
-                  },
-                  method="POST",
-              )
-              with urllib.request.urlopen(req, timeout=20) as resp:
-                  return json.loads(resp.read().decode("utf-8"))
+              body = json.dumps(payload).encode("utf-8")
+              last_err = None
+              for attempt in range(1, 4):
+                  req = urllib.request.Request(
+                      f"{cc_url}{path}",
+                      data=body,
+                      headers={
+                          "Authorization": f"Bearer {gate_token}",
+                          "Content-Type": "application/json",
+                          "Accept": "application/json",
+                          "User-Agent": "lite-actions-pr-gate",
+                      },
+                      method="POST",
+                  )
+                  try:
+                      with urllib.request.urlopen(req, timeout=20) as resp:
+                          return json.loads(resp.read().decode("utf-8"))
+                  except urllib.error.HTTPError as exc:
+                      last_err = exc
+                      if exc.code not in {429, 500, 502, 503, 504} or attempt == 3:
+                          raise
+                  except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                      last_err = exc
+                      if attempt == 3:
+                          raise
+                  print(
+                      f"Control Center POST {path} attempt {attempt} failed ({last_err}); retrying...",
+                      flush=True,
+                  )
+                  time.sleep(3 * attempt)
+              raise last_err
 
           def gc_req(method, path, body=None):
               data = json.dumps(body).encode("utf-8") if body is not None else None
-              req = urllib.request.Request(
-                  f"{gc_base}{path}", data=data, headers=gc_headers, method=method
-              )
-              with urllib.request.urlopen(req, timeout=30) as resp:
-                  raw = resp.read().decode("utf-8")
-                  return json.loads(raw) if raw else {}
+              is_get = method.upper() == "GET"
+              max_attempts = 4 if is_get else 3
+              last_err = None
+              for attempt in range(1, max_attempts + 1):
+                  req = urllib.request.Request(
+                      f"{gc_base}{path}", data=data, headers=gc_headers, method=method
+                  )
+                  try:
+                      with urllib.request.urlopen(req, timeout=30) as resp:
+                          raw = resp.read().decode("utf-8")
+                          return json.loads(raw) if raw else {}
+                  except urllib.error.HTTPError as exc:
+                      last_err = exc
+                      if exc.code not in {429, 500, 502, 503, 504} or attempt == max_attempts:
+                          raise
+                  except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                      last_err = exc
+                      if not is_get or attempt == max_attempts:
+                          raise
+                  print(
+                      f"GitCode {method} {path} attempt {attempt} failed ({last_err}); retrying...",
+                      flush=True,
+                  )
+                  time.sleep(5 * attempt)
+              raise last_err
 
           wf_list = gc_req("GET", "/actions/workflows?per_page=50").get("workflows") or []
           matched_wf = [
@@ -513,10 +642,15 @@ jobs:
           while time.monotonic() < deadline:
               try:
                   detail = gc_req("GET", f"/actions/runs/{urllib.parse.quote(gc_run_id, safe='')}")
-              except urllib.error.HTTPError:
+              except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
+                  print(f"GitCode run {gc_run_id} detail poll warning: {exc}", flush=True)
                   detail = None
               if not detail or "status" not in detail:
-                  rows = gc_req("GET", "/actions/runs?per_page=30").get("workflow_runs") or []
+                  try:
+                      rows = gc_req("GET", "/actions/runs?per_page=30").get("workflow_runs") or []
+                  except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
+                      print(f"GitCode runs list poll warning: {exc}", flush=True)
+                      rows = []
                   detail = next(
                       (r for r in rows if str(r.get("workflow_run_id") or r.get("id")) == gc_run_id),
                       None,
@@ -585,6 +719,28 @@ jobs:
               raise SystemExit(f"GitCode run {gc_run_id} did not succeed: status={st} conclusion={conclusion}")
           PY
 
+      - name: Report commit status for gitcode-torchtitan-smoke
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD_SHA: ${{ needs.prepare.outputs.pr_head_sha }}
+          STATUS_CONTEXT: lite-ci-pr-smoke / gitcode-torchtitan-smoke
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ -f ci_core/pr_status.py ]; then
+            python3 -m ci_core.pr_status job
+          else
+            state="error"
+            [ "$JOB_STATUS" = "success" ] && state="success"
+            [ "$JOB_STATUS" = "failure" ] && state="failure"
+            gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$PR_HEAD_SHA" \
+              -f state="$state" \
+              -f context="$STATUS_CONTEXT" \
+              -f description="Job ended with status: $JOB_STATUS" \
+              -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+              >/dev/null 2>&1 || echo "::warning::Failed to post fallback status for $STATUS_CONTEXT"
+          fi
+
   cleanup:
     if: always() && needs.prepare.result == 'success'
     needs: [prepare, deploy, smoke_self, smoke_gitcode]
@@ -596,6 +752,22 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.run_head_sha }}
           persist-credentials: false
+
+      - name: Reconcile skipped per-job commit statuses
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD_SHA: ${{ needs.prepare.outputs.pr_head_sha }}
+          DEPLOY_MATRIX: ${{ needs.prepare.outputs.deploy_matrix }}
+          SMOKE_MATRIX: ${{ needs.prepare.outputs.smoke_matrix }}
+          PROFILE: ${{ needs.prepare.outputs.profile }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+          SMOKE_SELF_RESULT: ${{ needs.smoke_self.result }}
+          SMOKE_GITCODE_RESULT: ${{ needs.smoke_gitcode.result }}
+        run: |
+          if [ -f ci_core/pr_status.py ]; then
+            python3 -m ci_core.pr_status reconcile
+          fi
 
       - name: Prepare per-PR cleanup plan
         env:

@@ -7,6 +7,7 @@ export interface WorkerRow {
   last_idle_probe_at: number | null;
   last_visibility_probe_at?: number | null;
   applied_rev: number;
+  code_sha?: string | null;
   active_count: number;
   queued_count: number;
 }
@@ -63,6 +64,7 @@ export function workerStatus(now: number, workerId: WorkerId, latest: number, wo
     healthy: worker?.health_ok === 1 && !offline(now, worker),
     last_heartbeat_at: worker?.last_heartbeat_at ?? null, applied_rev: worker?.applied_rev ?? 0,
     latest_revision: latest, active_count: worker?.active_count ?? 0, queued_count: worker?.queued_count ?? 0,
+    code_sha: worker?.code_sha || null,
   };
 }
 
