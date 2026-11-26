@@ -127,7 +127,10 @@ code, .mono { font-family: var(--mono); font-size: .94em; letter-spacing: -.25px
 .icon-button:hover { background: var(--accent-tint); color: var(--accent); }
 .theme-button { margin-inline: -6px; }
 
-.pools-view { padding-bottom: 42px; }
+#root:has(> .pools-view) { display: flex; flex-direction: column; block-size: 100dvh; }
+#root:has(> .pools-view) > .app-header { flex-shrink: 0; }
+.pools-view, .pools-view > section { display: flex; flex: 1; flex-direction: column; min-block-size: 0; min-inline-size: 0; }
+.pools-view .pools-header { flex-shrink: 0; }
 .pools-header { padding: 27px 25px 18px; }
 .pools-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px 24px; flex-wrap: wrap; }
 .pools-meta { display: flex; justify-content: space-between; gap: 16px 30px; flex-wrap: wrap; margin-top: 14px; }
@@ -235,7 +238,8 @@ code, .mono { font-family: var(--mono); font-size: .94em; letter-spacing: -.25px
 .pools-workspace, .pools-upper-pane { display: grid; min-inline-size: 0; }
 .pools-workspace {
   margin-inline: 5px;
-  block-size: max(440px, 76dvh);
+  flex: 1;
+  min-block-size: 340px;
   grid-template-rows: minmax(0, var(--upper-share)) 16px minmax(0, var(--queue-share));
 }
 .pools-workspace .timeline-board, .pools-workspace .timeline-measure-readout { margin-inline: 0; }

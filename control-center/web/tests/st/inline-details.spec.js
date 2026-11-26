@@ -216,16 +216,22 @@ test("Pools lets users resize queue and detail panes while keeping the timeline 
 
   const headerOnlyHeight = () => page.locator("#pools-queue").evaluate((pane) =>
     pane.querySelector(".queue-heading").getBoundingClientRect().height + pane.offsetHeight - pane.clientHeight);
+  const bottomGap = () => page.locator("#pools-queue").evaluate((pane) =>
+    Math.abs(window.innerHeight - pane.getBoundingClientRect().bottom));
   await queueSeparator.press("Home");
   expect(Math.abs((await heights())[3] - await headerOnlyHeight())).toBeLessThanOrEqual(2);
-  await page.setViewportSize({ width: 1280, height: 1440 });
+  await expect.poll(bottomGap).toBeLessThanOrEqual(2);
+  await page.setViewportSize({ width: 1920, height: 1200 });
   await expect.poll(async () => Math.abs((await heights())[3] - await headerOnlyHeight())).toBeLessThanOrEqual(2);
   await expect(page.getByRole("heading", { name: "排队用例" })).toBeInViewport({ ratio: 1 });
   await expect(page.getByRole("combobox", { name: "排队资源范围" })).toBeInViewport({ ratio: 1 });
   await queueSeparator.press("End");
+  await expectInline(page, leaf, pools, "192.0.2.2:22 · 设备组 0–1");
   const pixelsToCollapse = (await heights())[3] - await headerOnlyHeight() + 12;
   await dragUp(queueSeparator, -pixelsToCollapse);
   expect(Math.abs((await heights())[3] - await headerOnlyHeight())).toBeLessThanOrEqual(2);
+  await expect.poll(bottomGap).toBeLessThanOrEqual(2);
+  await expect(panel.getByRole("heading", { name: "192.0.2.2:22 · 设备组 0–1" })).toBeVisible();
   await queueSeparator.press("ArrowUp");
   expect((await heights())[3]).toBeGreaterThan(await headerOnlyHeight() + 20);
 });
