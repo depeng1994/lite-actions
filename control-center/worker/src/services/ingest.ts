@@ -88,7 +88,7 @@ export function refreshWorkflowRuns(db: SqlStore, identities: readonly WorkflowI
         MIN(started_at) AS first_started_at,
         MAX(finished_at) AS finished_at,
         MAX(CASE WHEN active=0 AND status IS NOT NULL AND status!='PASS' THEN 1 ELSE 0 END) AS has_failed,
-        json_group_array(DISTINCT target_pool) AS pools_json,
+        json_group_array(DISTINCT target_pool) FILTER (WHERE target_pool<>'') AS pools_json,
         MAX(req_nodes * req_devices) AS max_cards,
         COALESCE(SUM(CASE WHEN active=0 THEN req_nodes * req_devices * COALESCE(duration_sec,0) ELSE 0 END),0) AS card_seconds_finished,
         MAX(CASE WHEN active=1 AND json_array_length(COALESCE(allocation_json,'[]'))>0

@@ -97,12 +97,13 @@ export function summarizeRun(run) {
     active,
     start: run.startedAt ?? (starts.length ? Math.min(...starts) : inferredStarts.length ? Math.min(...inferredStarts) : null),
     end: run.finishedAt ?? (!active && ends.length ? Math.max(...ends) : null),
-    pools: [...new Set(cases.map((item) => {
+    pools: [...new Set(cases.flatMap((item) => {
       // Historical cases may finish without an allocation snapshot. In that
       // case the case's own formal worker/pool identity still defines its
-      // resource column.
+      // resource column. Zero-pool cases (e.g. worker probes / deploy / cleanup)
+      // do not emit empty pool chips.
       const resource = item.allocation ?? (item.historyId && item.node ? item.node : item);
-      return poolId(resource.worker, resource.pool);
+      return resource.worker && resource.pool ? [poolId(resource.worker, resource.pool)] : [];
     }))].sort(),
     maxCards: Math.max(0, ...cases.map(({ cards, allocatedCards }) => allocatedCards || cards)),
     partialCardHours: run.cardHoursPartial ?? (measured.length > 0 && measured.length < allocated.length),

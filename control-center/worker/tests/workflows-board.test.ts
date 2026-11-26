@@ -299,3 +299,67 @@ test("Workflow summaries expose partial card-hours and three-state outcomes", as
   expect(page.history.find(row => row.run_id === "partial-run")).toMatchObject({card_hours: 0.13, card_hours_partial: true, result: "PASS"});
   expect(page.history.find(row => row.run_id === "outcome-run")).toMatchObject({result: "FAIL"});
 });
+
+test("GitCode test-worker workflow with zero-pool probe cases stays queryable by platform, model, repo, and pool without blank pool entries", async () => {
+  const runId = "57d83e103f694111be5cf35420780955";
+  const repo = "depeng1994/torchtitan-npu";
+  const allocBlue = JSON.stringify([{host_id: "198.51.100.10:22", devices: [0,1,2,3,4,5,6,7]}]);
+  const allocYellow = JSON.stringify([{host_id: "198.51.100.20:22", devices: [0,1,2,3,4,5,6,7]}]);
+  await db.batch([
+    db.prepare(`INSERT INTO task_index(task_uid,finished_at,worker_id,reporter_id,is_test,provider,repo,logical_model,run_id,attempt,
+      case_id,test_id,label,kind,target_pool,req_nodes,req_devices,actual_allocation_json,status,timing_reliable,duration_sec,
+      submitted_at,workflow_name,run_number,display_title,trigger_actor,event_type)
+      VALUES(?,?,?,?,1,'gitcode',?,'torchtitan-npu',?,1,?,?,?,?,?,?,?,'[]','PASS',1,6,?,'lite-ci-dispatcher-smoke',36,NULL,'depeng1994','Manual')`).bind(
+      "gc-test-probe", now - 260, "blue", "blue-test-id45747381962a1", repo, runId,
+      "case_000_worker_os_blue", "worker_os_blue", "Blue OS probe", "worker_probe", "", 0, 0, now - 300,
+    ),
+    db.prepare(`INSERT INTO task_index(task_uid,finished_at,worker_id,reporter_id,is_test,provider,repo,logical_model,run_id,attempt,
+      case_id,test_id,label,kind,target_pool,req_nodes,req_devices,actual_allocation_json,status,timing_reliable,duration_sec,
+      submitted_at,workflow_name,run_number,display_title,trigger_actor,event_type)
+      VALUES(?,?,?,?,1,'gitcode',?,'torchtitan-npu',?,1,?,?,?,?,?,?,?,?,?,1,180,?,'lite-ci-dispatcher-smoke',36,NULL,'depeng1994','Manual')`).bind(
+      "gc-test-blue", now - 220, "blue", "blue-test-id45747381962a1", repo, runId,
+      "case_003_dispatch_smoke_16p", "dispatch_smoke_16p", "16P smoke", "npu_smoke", "a3_shared_blue", 2, 8, allocBlue, "INFRA_ERROR", now - 300,
+    ),
+    db.prepare(`INSERT INTO task_index(task_uid,finished_at,worker_id,reporter_id,is_test,provider,repo,logical_model,run_id,attempt,
+      case_id,test_id,label,kind,target_pool,req_nodes,req_devices,actual_allocation_json,status,timing_reliable,duration_sec,
+      submitted_at,workflow_name,run_number,display_title,trigger_actor,event_type)
+      VALUES(?,?,?,?,1,'gitcode',?,'torchtitan-npu',?,1,?,?,?,?,?,?,?,?,?,1,120,?,'lite-ci-dispatcher-smoke',36,NULL,'depeng1994','Manual')`).bind(
+      "gc-test-yellow", now - 240, "yellow", "yellow-test-id45747381962a1", repo, runId,
+      "case_005_dispatch_smoke_yellow_a3_8p", "dispatch_smoke_yellow_a3_8p", "Yellow 8P smoke", "npu_smoke", "a3_shared_yellow", 1, 8, allocYellow, "PASS", now - 300,
+    ),
+  ]);
+  await syncRuns([{provider: "gitcode", repo, run_id: runId, attempt: 1, is_test: 1}]);
+
+  const storedPools = await db.prepare("SELECT pools_json FROM workflow_runs WHERE provider='gitcode' AND run_id=? AND is_test=1")
+    .bind(runId).first<string>("pools_json");
+  expect(JSON.parse(storedPools ?? "[]")).toEqual(["a3_shared_blue", "a3_shared_yellow"]);
+
+  for (const query of [
+    "platform=gitcode",
+    "model=torchtitan-npu",
+    `repo=${encodeURIComponent(repo)}`,
+    "pool=a3_shared_blue",
+  ]) {
+    const page = await (await request(`/public/workflows?status=history&history_limit=5&${query}`)).json<{
+      history: Array<{
+        provider: string; repo: string; run_id: string; run_number: number | null; is_test: boolean;
+        workflow_name: string | null; result: string; pools: string[]; cases: Array<{run_url: string}>;
+      }>;
+      history_total: number;
+    }>();
+    expect(page.history_total).toBeGreaterThanOrEqual(1);
+    const match = page.history.find(row => row.run_id === runId);
+    expect(match).toMatchObject({
+      provider: "gitcode",
+      repo,
+      run_id: runId,
+      run_number: 36,
+      is_test: true,
+      workflow_name: "lite-ci-dispatcher-smoke",
+      result: "FAIL",
+    });
+    expect(match?.pools.slice().sort()).toEqual(["a3_shared_blue", "a3_shared_yellow"]);
+    expect(match?.cases).toHaveLength(3);
+    expect(match?.cases[0].run_url).toBe(`https://gitcode.com/depeng1994/torchtitan-npu/actions/runs/${runId}`);
+  }
+});

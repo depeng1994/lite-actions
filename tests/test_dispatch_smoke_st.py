@@ -1442,6 +1442,200 @@ class DispatchSmokeEndToEndST(unittest.TestCase):
             )
             next_lease.close()
 
+    # =========================================================================
+    # ST-10：拦截跨平台/多仓库串行阻塞以及黄区 TestWorker 本地缓存发现被误限流 60s 的性能退化
+    #
+    # 故障场景：
+    #   1) 当主 Worker 同时监听多个 GitHub 仓库与 GitCode 仓库时，串行轮询或串行状态检查会
+    #      导致慢响应或异常仓库阻塞其余平台/仓库的发现与取消判定；
+    #   2) 黄区沙箱 TestWorker 的 `POLL_RUNS` 仅通过本地 Unix socket 读取主黄区内存缓存、
+    #      不产生外部 HTTP 请求，但此前复用主黄区 60s 发现节流，导致 TestWorker 在发现新
+    #      下发的 GitCode/GitHub 任务前白白空等最多 60 秒。
+    #
+    # 拦截目标：
+    #   1) 通过 `threading.Barrier` 证明 `MultiPlatformClient` + `MultiRepoGitHubClient`
+    #      真正并发轮询所有 GitHub 与 GitCode 仓库，且单仓故障不影响其他平台/仓库返回结果；
+    #   2) 驱动黄区 Broker 托管 `Router.tick()`，证明多平台活跃 Run 状态查询真正并发执行，
+    #      且连续多轮 `tick()` 均立即触发 `POLL_RUNS` 不受 60s 外部节流阻塞。
+    # =========================================================================
+    def test_st_cross_platform_multi_repo_polling_and_yellow_broker_discovery_run_concurrently(
+        self,
+    ):
+        import threading
+
+        from ci_core.contract import TORCHTITAN_REPO, VLLM_REPO
+        from ci_core.gitcode import MultiPlatformClient
+        from ci_core.github import MultiRepoGitHubClient
+        from ci_core.router import Router
+        from ci_core.test_broker import BrokerClient
+
+        # Sub-case A: MultiPlatformClient + MultiRepoGitHubClient poll all repos/platforms in parallel.
+        poll_barrier = threading.Barrier(4)
+
+        def make_poller(result=None, error=None):
+            def _poll():
+                poll_barrier.wait(timeout=5)
+                if error is not None:
+                    raise error
+                return list(result)
+
+            return _poll
+
+        gh_multi = MultiRepoGitHubClient("tok", (TORCHTITAN_REPO, VLLM_REPO))
+        gh_multi.for_repo(TORCHTITAN_REPO).running_workflows = make_poller(
+            result=[
+                {
+                    "id": 101,
+                    "created_at": "2026-11-26T00:00:01Z",
+                    "_ci_repo": TORCHTITAN_REPO,
+                }
+            ]
+        )
+        gh_multi.for_repo(VLLM_REPO).running_workflows = make_poller(
+            error=RuntimeError("simulated github repo timeout")
+        )
+        gc_ok = Mock()
+        gc_ok.running_workflows.side_effect = make_poller(
+            result=[
+                {
+                    "id": "gc-1",
+                    "_ci_provider": "gitcode",
+                    "_ci_repo": "depeng1994/torchtitan-npu",
+                }
+            ]
+        )
+        gc_fail = Mock()
+        gc_fail.running_workflows.side_effect = make_poller(
+            error=RuntimeError("simulated gitcode repo failure")
+        )
+
+        multi = MultiPlatformClient(
+            gh_multi,
+            {
+                "depeng1994/torchtitan-npu": gc_ok,
+                "cann-framework/torchtitan-npu": gc_fail,
+            },
+        )
+        with self.assertLogs("root", level="WARNING"):
+            discovered = multi.running_workflows()
+        self.assertEqual({r["id"] for r in discovered}, {101, "gc-1"})
+
+        # Sub-case B: Router.tick() checks GitHub + GitCode active runs concurrently and
+        # broker-backed Yellow TestWorker does not wait 60s between local cache polls.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_workspace(root)
+            broker = BrokerClient(root / "broker.sock", worker_id="yellow-test-id998a1")
+            status_barrier = threading.Barrier(2)
+
+            def concurrent_status(run):
+                status_barrier.wait(timeout=5)
+                return {"status": "in_progress", "run_attempt": 1}
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "LITE_ACTIONS_STATE_DIR": str(root / "state"),
+                        "LITE_ACTIONS_RESOURCE_LOCK_ROOT": str(root / "leases"),
+                    },
+                    clear=False,
+                ),
+                patch.object(broker, "check_run_status", side_effect=concurrent_status),
+                patch.object(broker, "running_workflows", return_value=[]) as poll_mock,
+            ):
+                router = Router(
+                    root,
+                    "yellow-test-id998a1",
+                    broker,
+                    "depeng1994",
+                    broker_client=broker,
+                )
+                try:
+                    router.state.admit(
+                        [
+                            (
+                                "depeng1994/lite-actions:998:1:case_001_gh",
+                                {
+                                    "phase": "RUNNING",
+                                    "progress_id": "ack-1",
+                                    "run": {
+                                        "id": 998,
+                                        "run_attempt": 1,
+                                        "head_sha": "a" * 40,
+                                        "path": ".github/workflows/lite_actions_pr_smoke.yml",
+                                        "name": "lite-ci-pr-smoke",
+                                        "_ci_repo": SELF_REPO,
+                                        "_ci_provider": "github",
+                                    },
+                                    "item": {
+                                        "case_id": "case_001_gh",
+                                        "order": 0,
+                                        "test_id": "gh",
+                                        "kind": "npu_smoke",
+                                        "worker": "yellow-test-id998a1",
+                                        "target_pool": "a3_shared_yellow",
+                                        "docker": "torchtitan_ci_a3_r2",
+                                        "resources": {
+                                            "nodes": 1,
+                                            "devices_per_node": 8,
+                                        },
+                                        "execution_timeout_seconds": 75,
+                                    },
+                                    "digest": "1" * 64,
+                                    "defaults": {},
+                                },
+                            )
+                        ]
+                    )
+                    router.state.admit(
+                        [
+                            (
+                                "gitcode:depeng1994/torchtitan-npu:gc998:1:d1:case_002_gc",
+                                {
+                                    "phase": "RUNNING",
+                                    "progress_id": "ack-2",
+                                    "run": {
+                                        "id": "gc998",
+                                        "run_attempt": 1,
+                                        "head_sha": "b" * 40,
+                                        "path": ".gitcode/workflows/dispatcher_smoke.yml",
+                                        "name": "lite-ci-dispatcher-smoke",
+                                        "_ci_repo": "depeng1994/torchtitan-npu",
+                                        "_ci_provider": "gitcode",
+                                        "_ci_dispatch_id": "d1",
+                                    },
+                                    "item": {
+                                        "case_id": "case_002_gc",
+                                        "order": 0,
+                                        "test_id": "gc",
+                                        "kind": "npu_smoke",
+                                        "worker": "yellow-test-id998a1",
+                                        "target_pool": "a3_shared_yellow",
+                                        "docker": "torchtitan_ci_a3_r2",
+                                        "resources": {
+                                            "nodes": 1,
+                                            "devices_per_node": 8,
+                                        },
+                                        "execution_timeout_seconds": 75,
+                                    },
+                                    "digest": "2" * 64,
+                                    "defaults": {},
+                                },
+                            )
+                        ]
+                    )
+                    with patch(
+                        "ci_core.router.time.monotonic",
+                        side_effect=(100.0, 105.0, 110.0),
+                    ):
+                        router.tick()
+                        router.tick()
+                        router.tick()
+                    self.assertEqual(poll_mock.call_count, 3)
+                finally:
+                    router.close()
+
 
 if __name__ == "__main__":
     unittest.main()

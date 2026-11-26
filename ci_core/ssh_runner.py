@@ -762,8 +762,12 @@ try:
                 os.kill(pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-    time.sleep(0.2)
-    left = [pid for pid, st in owned.items() if owned_start(pid, recorded_pgid=rec_pgid, recorded_start=rec_start) == st]
+    left = []
+    for _ in range(20):
+        left = [pid for pid, st in owned.items() if owned_start(pid, recorded_pgid=rec_pgid, recorded_start=rec_start) == st]
+        if not left:
+            break
+        time.sleep(0.5)
     if left:
         raise SystemExit('owned lease processes remain: ' + str(left))
     dest_dir = meta.get('dest')

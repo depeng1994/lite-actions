@@ -1662,49 +1662,70 @@ class Router:
                 logging.warning("Blue log retention deferred (%s)", type(exc).__name__)
         # Outbox survives completed GitHub Runs; never depend on an active-run listing.
         self.flush()
-        statuses = {}
-        self.unavailable_runs = set()
-        for key, r in self.state.read().items():
-            if r.get("phase") not in {
-                "QUEUED",
-                "RESERVED",
-                "STAGING",
-                "RUNNING",
-                "CLEANING",
-            }:
-                continue
+        active_phases = {"QUEUED", "RESERVED", "STAGING", "RUNNING", "CLEANING"}
+        active_records = [
+            (key, r)
+            for key, r in self.state.read().items()
+            if r.get("phase") in active_phases
+        ]
+        unique_runs = {}
+        for _, r in active_records:
             run = r["run"]
             ident = run_key(run)
-            if ident not in statuses:
-                try:
-                    if getattr(self, "_broker_active", False) is True:
-                        statuses[ident] = self.broker.check_run_status(run)
-                    else:
-                        client = self.client_for(run)
-                        if run.get("_ci_provider") == "gitcode" and (
-                            run.get("_ci_pr_number") or run.get("_ci_dispatch_id")
-                        ):
-                            try:
-                                client.validate_current(run)
-                            except RunChanged:
-                                statuses[ident] = {"status": "completed"}
-                            else:
-                                statuses[ident] = {"status": "in_progress"}
-                        else:
-                            statuses[ident] = client.workflow_status(run["id"])
-                            if run.get("_ci_source"):
-                                from ci_core.github_source import check_current
+            if ident not in unique_runs:
+                unique_runs[ident] = run
 
-                                try:
-                                    check_current(client, run["_ci_source"])
-                                except ValueError:
-                                    statuses[ident] = {"status": "completed"}
-                except Exception as exc:
-                    statuses[ident] = None
-                    self.unavailable_runs.add(ident)
-                    logging.warning(
-                        "run status unavailable: %s (%s)", run["id"], type(exc).__name__
-                    )
+        def _check_one(run):
+            try:
+                if getattr(self, "_broker_active", False) is True:
+                    return self.broker.check_run_status(run), True
+                client = self.client_for(run)
+                if run.get("_ci_provider") == "gitcode" and (
+                    run.get("_ci_pr_number") or run.get("_ci_dispatch_id")
+                ):
+                    try:
+                        client.validate_current(run)
+                    except RunChanged:
+                        return {"status": "completed"}, True
+                    return {"status": "in_progress"}, True
+                status = client.workflow_status(run["id"])
+                if run.get("_ci_source"):
+                    from ci_core.github_source import check_current
+
+                    try:
+                        check_current(client, run["_ci_source"])
+                    except ValueError:
+                        return {"status": "completed"}, True
+                return status, True
+            except Exception as exc:
+                logging.warning(
+                    "run status unavailable: %s (%s)", run["id"], type(exc).__name__
+                )
+                return None, False
+
+        statuses = {}
+        self.unavailable_runs = set()
+        if len(unique_runs) == 1:
+            ident, run = next(iter(unique_runs.items()))
+            current, ok = _check_one(run)
+            statuses[ident] = current
+            if not ok:
+                self.unavailable_runs.add(ident)
+        elif len(unique_runs) > 1:
+            with ThreadPoolExecutor(max_workers=min(8, len(unique_runs))) as pool:
+                futures = {
+                    ident: pool.submit(_check_one, run)
+                    for ident, run in unique_runs.items()
+                }
+                for ident, future in futures.items():
+                    current, ok = future.result()
+                    statuses[ident] = current
+                    if not ok:
+                        self.unavailable_runs.add(ident)
+
+        for key, r in active_records:
+            run = r["run"]
+            ident = run_key(run)
             current = statuses[ident]
             if current is None:
                 continue
@@ -1733,9 +1754,14 @@ class Router:
             ):
                 self.maybe_ack(key, r)
         self.consume_control()
-        # Limit only discovery. Cancellation, queue progress and outbox keep ticking.
+        # Limit only external discovery on Yellow. Broker-backed Test Workers read
+        # the Main Worker's in-memory run cache over Unix socket with zero HTTP calls.
         now = time.monotonic()
-        if Router._zone_name(self) != "yellow" or now >= self.next_discovery:
+        if (
+            Router._zone_name(self) != "yellow"
+            or getattr(self, "_broker_active", False) is True
+            or now >= self.next_discovery
+        ):
             self.next_discovery = now + 60
             discovered = self.client.running_workflows()
             if getattr(self, "_supervisor_active", False) is True:

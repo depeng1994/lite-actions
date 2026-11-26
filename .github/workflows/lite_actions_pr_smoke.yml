@@ -187,6 +187,14 @@ jobs:
           ref: ${{ steps.resolve.outputs.run_head_sha }}
           persist-credentials: false
 
+      - name: Reply to PR with Actions run link
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          PR_HEAD_SHA: ${{ steps.resolve.outputs.pr_head_sha }}
+          PROFILE: ${{ steps.resolve.outputs.profile }}
+        run: python3 -m ci_core.pr_status ack
+
       - name: Wait for FIFO hardware queue
         env:
           GH_TOKEN: ${{ github.token }}
@@ -426,12 +434,11 @@ jobs:
           fi
 
   smoke_gitcode:
-    needs: [prepare, deploy, smoke_self]
+    needs: [prepare, deploy]
     if: >-
       always() &&
       needs.prepare.result == 'success' &&
       needs.deploy.result == 'success' &&
-      needs.smoke_self.result == 'success' &&
       needs.prepare.outputs.profile == 'full'
     runs-on: ubuntu-latest
     name: gitcode-torchtitan-smoke
@@ -486,28 +493,65 @@ jobs:
           def cc_post(path, payload):
               if not cc_url or not gate_token:
                   return None
-              req = urllib.request.Request(
-                  f"{cc_url}{path}",
-                  data=json.dumps(payload).encode("utf-8"),
-                  headers={
-                      "Authorization": f"Bearer {gate_token}",
-                      "Content-Type": "application/json",
-                      "Accept": "application/json",
-                      "User-Agent": "lite-actions-pr-gate",
-                  },
-                  method="POST",
-              )
-              with urllib.request.urlopen(req, timeout=20) as resp:
-                  return json.loads(resp.read().decode("utf-8"))
+              body = json.dumps(payload).encode("utf-8")
+              last_err = None
+              for attempt in range(1, 4):
+                  req = urllib.request.Request(
+                      f"{cc_url}{path}",
+                      data=body,
+                      headers={
+                          "Authorization": f"Bearer {gate_token}",
+                          "Content-Type": "application/json",
+                          "Accept": "application/json",
+                          "User-Agent": "lite-actions-pr-gate",
+                      },
+                      method="POST",
+                  )
+                  try:
+                      with urllib.request.urlopen(req, timeout=20) as resp:
+                          return json.loads(resp.read().decode("utf-8"))
+                  except urllib.error.HTTPError as exc:
+                      last_err = exc
+                      if exc.code not in {429, 500, 502, 503, 504} or attempt == 3:
+                          raise
+                  except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                      last_err = exc
+                      if attempt == 3:
+                          raise
+                  print(
+                      f"Control Center POST {path} attempt {attempt} failed ({last_err}); retrying...",
+                      flush=True,
+                  )
+                  time.sleep(3 * attempt)
+              raise last_err
 
           def gc_req(method, path, body=None):
               data = json.dumps(body).encode("utf-8") if body is not None else None
-              req = urllib.request.Request(
-                  f"{gc_base}{path}", data=data, headers=gc_headers, method=method
-              )
-              with urllib.request.urlopen(req, timeout=30) as resp:
-                  raw = resp.read().decode("utf-8")
-                  return json.loads(raw) if raw else {}
+              is_get = method.upper() == "GET"
+              max_attempts = 4 if is_get else 3
+              last_err = None
+              for attempt in range(1, max_attempts + 1):
+                  req = urllib.request.Request(
+                      f"{gc_base}{path}", data=data, headers=gc_headers, method=method
+                  )
+                  try:
+                      with urllib.request.urlopen(req, timeout=30) as resp:
+                          raw = resp.read().decode("utf-8")
+                          return json.loads(raw) if raw else {}
+                  except urllib.error.HTTPError as exc:
+                      last_err = exc
+                      if exc.code not in {429, 500, 502, 503, 504} or attempt == max_attempts:
+                          raise
+                  except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                      last_err = exc
+                      if not is_get or attempt == max_attempts:
+                          raise
+                  print(
+                      f"GitCode {method} {path} attempt {attempt} failed ({last_err}); retrying...",
+                      flush=True,
+                  )
+                  time.sleep(5 * attempt)
+              raise last_err
 
           wf_list = gc_req("GET", "/actions/workflows?per_page=50").get("workflows") or []
           matched_wf = [
@@ -598,10 +642,15 @@ jobs:
           while time.monotonic() < deadline:
               try:
                   detail = gc_req("GET", f"/actions/runs/{urllib.parse.quote(gc_run_id, safe='')}")
-              except urllib.error.HTTPError:
+              except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
+                  print(f"GitCode run {gc_run_id} detail poll warning: {exc}", flush=True)
                   detail = None
               if not detail or "status" not in detail:
-                  rows = gc_req("GET", "/actions/runs?per_page=30").get("workflow_runs") or []
+                  try:
+                      rows = gc_req("GET", "/actions/runs?per_page=30").get("workflow_runs") or []
+                  except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
+                      print(f"GitCode runs list poll warning: {exc}", flush=True)
+                      rows = []
                   detail = next(
                       (r for r in rows if str(r.get("workflow_run_id") or r.get("id")) == gc_run_id),
                       None,

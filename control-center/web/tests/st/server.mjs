@@ -151,6 +151,43 @@ const testActiveBlue = descriptor(0, "测试蓝区运行用例", "RUNNING", ago(
 const testActiveYellow = { ...descriptor(1, "测试黄区排队用例", "QUEUED", ago(12), [], ago(12), "107", activeYellowTestWid), pool: "yellow_pool" };
 await postAs("blue", "events", { w: activeBlueTestWid, i: "bb107001", ev: [{ ...testActiveBlue, s: 1 }] });
 await postAs("yellow", "events", { w: activeYellowTestWid, i: "cc107001", ev: [{ ...testActiveYellow, s: 1 }] });
+
+// Seed an older GitCode test-worker workflow pushed beyond the initial 5 global history rows,
+// including a zero-pool worker_probe case and an NPU smoke failure, to cover server-side
+// filtered history loading and clean resource-chip rendering.
+const gcRepo = "depeng1994/torchtitan-npu";
+const gcRunId = "57d83e103f694111be5cf35420780955";
+const gcTestWid = "blue-test-id108a1";
+const gcInst = "cc108001";
+await postAs("blue", "test-workers/register", {
+  w: gcTestWid, z: "blue", r: repo, pr: 108, sha: "c".repeat(40),
+  rid: "108", at: 1, ttl: 3600, exp: now + 3600, i: gcInst, st: "ACTIVE",
+});
+const gcTid = (cid) => createHash("sha256")
+  .update(`gitcode:${gcRepo}:${gcRunId}:1:${cid}:reporter:${gcTestWid}`).digest("hex").slice(0, 12);
+const gcProbeCid = "case_000_worker_os_blue";
+const gcSmokeCid = "case_003_dispatch_smoke_16p";
+const gcStart = ago(80 * 60);
+await postAs("blue", "events", {
+  w: gcTestWid, i: gcInst,
+  ev: [
+    {
+      t: "TU", tid: gcTid(gcProbeCid), p: "gitcode", r: gcRepo, run: gcRunId, att: 1, rn: 36, dt: null,
+      cid: gcProbeCid, lbl: "Blue OS probe", k: "worker_probe", pool: "", req: [0, 0],
+      ph: "RUNNING", ts: gcStart - 10, sub: gcStart - 20, wn: "lite-ci-dispatcher-smoke",
+      tr: "depeng1994", et: "Manual", reliable: 1, tm: { RESERVED: gcStart, RUNNING: gcStart }, a: [], s: 1,
+    },
+    { t: "TF", tid: gcTid(gcProbeCid), ts: gcStart + 10, st: "PASS", ec: 0, cv: 1, a: [], s: 2 },
+    {
+      t: "TU", tid: gcTid(gcSmokeCid), p: "gitcode", r: gcRepo, run: gcRunId, att: 1, rn: 36, dt: null,
+      cid: gcSmokeCid, lbl: "GitCode 16P smoke", k: "npu_smoke", pool, req: [1, 2],
+      ph: "RUNNING", ts: gcStart, sub: gcStart - 20, wn: "lite-ci-dispatcher-smoke",
+      tr: "depeng1994", et: "Manual", reliable: 1, tm: { RESERVED: gcStart + 15, RUNNING: gcStart + 20 },
+      a: [{ h: host, d: groups[4] }], s: 3,
+    },
+    { t: "TF", tid: gcTid(gcSmokeCid), ts: gcStart + 180, st: "INFRA_ERROR", ec: 1, cv: 1, a: [{ h: host, d: groups[4] }], s: 4 },
+  ],
+});
 DB.close();
 
 const app = startNodeServer({

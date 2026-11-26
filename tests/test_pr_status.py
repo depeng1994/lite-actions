@@ -339,6 +339,68 @@ class PrFeedbackEndToEndST(unittest.TestCase):
             )
         )
 
+    # =========================================================================
+    # ST-3：拦截仅贴 reaction 导致用户难以找到 Actions 进度页的故障模式：
+    #       触发通过后 CLI 必须回帖带可点击 Actions 链接的评论（且不以 /pr-test 开头防自触发），
+    #       评论接口抖动时 best-effort 告警返回 0 且不泄露 token
+    # =========================================================================
+    def test_st_trigger_ack_comment_posts_run_link_and_degrades_gracefully(self):
+        # 场景 A：通过 CLI `ack` 入口端到端回帖，包含可点击 Actions run URL、profile 与短 SHA，
+        #        且绝不以 /pr-test 开头防止自触发循环。
+        opener = _RecordingOpener(responses=[{"id": 101}])
+        env = {
+            "GH_TOKEN": "tok",
+            "GITHUB_SERVER_URL": "https://github.com",
+            "GITHUB_REPOSITORY": self.REPO,
+            "GITHUB_RUN_ID": "5001",
+            "PR_NUMBER": "69",
+            "PR_HEAD_SHA": "abcdef1234567890" + "0" * 24,
+            "PROFILE": "full",
+        }
+        with (
+            unittest.mock.patch("urllib.request.build_opener", return_value=opener),
+            unittest.mock.patch.dict(os.environ, env, clear=False),
+        ):
+            rc = pr_status.main(["ack"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(opener.calls), 1)
+        call = opener.calls[0]
+        self.assertEqual(call["method"], "POST")
+        self.assertEqual(
+            call["url"],
+            f"https://api.github.com/repos/{self.REPO}/issues/69/comments",
+        )
+        body = call["body"]["body"]
+        self.assertIn(f"[Lite Actions PR smoke #5001]({self.RUN_URL})", body)
+        self.assertIn("`full`", body)
+        self.assertIn("`abcdef12`", body)
+        self.assertFalse(body.lstrip().startswith("/pr-test"))
+
+        # 场景 B：GitHub Comments API 瞬时 503 时，CLI best-effort 告警返回 0，不阻断 CI 且不泄露 token。
+        secret = "ghs_secret_ack_token_should_not_leak"
+        err_buf = io.StringIO()
+        http_err = urllib.error.HTTPError(
+            url=f"https://api.github.com/repos/{self.REPO}/issues/69/comments",
+            code=503,
+            msg="Service Unavailable",
+            hdrs=None,
+            fp=io.BytesIO(b"upstream timeout"),
+        )
+        with (
+            redirect_stderr(err_buf),
+            unittest.mock.patch(
+                "urllib.request.build_opener",
+                return_value=_RecordingOpener(responses=[http_err]),
+            ),
+            unittest.mock.patch.dict(
+                os.environ, {**env, "GH_TOKEN": secret}, clear=False
+            ),
+        ):
+            rc_err = pr_status.main(["ack"])
+        self.assertEqual(rc_err, 0)
+        self.assertIn("::warning::pr_status:", err_buf.getvalue())
+        self.assertNotIn(secret, err_buf.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

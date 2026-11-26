@@ -14,6 +14,7 @@ import signal
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -906,8 +907,8 @@ def check_a5_multinode_rootinfo(case: dict, pools: dict) -> None:
         "assert type(n) in (int,str) and str(n)=='8', "
         "f'rank_count expected 8, got {n!r}'"
     )
-    failures = []
-    for allocated in case["allocation"]:
+
+    def _check_one(allocated: dict) -> str | None:
         host_id = allocated["host_id"]
         node = nodes[host_id]
         binding = node.get("environments", {}).get(case.get("docker"), {})
@@ -922,15 +923,20 @@ def check_a5_multinode_rootinfo(case: dict, pools: dict) -> None:
                 check=False,
             )
             if proc.returncode:
-                failures.append(
+                return (
                     f"{host_id} container={container_id[:16]}: "
                     f"invalid /etc/hccl_rootinfo.json ({proc.stderr.strip()[:120]})"
                 )
         except (ValueError, OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
-            failures.append(
+            return (
                 f"{host_id} container={container_id[:16]}: "
                 f"rootinfo validation failed: {type(exc).__name__}: {str(exc)[:100]}"
             )
+        return None
+
+    allocation = case["allocation"]
+    with ThreadPoolExecutor(max_workers=len(allocation)) as pool:
+        failures = [msg for msg in pool.map(_check_one, allocation) if msg is not None]
     if failures:
         raise ValueError(
             "A5_MULTI_NODE_ROOTINFO_INVALID: /etc/hccl_rootinfo.json must have "
