@@ -183,7 +183,8 @@ function revealExpandedWorkflow(parentRow, expandedRow, scrollContainer) {
 
 export function ModelsView({
   model, cases, nodes, config, cancellations, priorities, queue,
-  history, historyHasMore, historyLoaded, historyLoading, historyTotal, truncatedByCapacity, purgedNotice, loadMoreHistory, canManage, open,
+  history, historyHasMore, historyLoaded, historyLoading, historyTotal, truncatedByCapacity, purgedNotice,
+  loadMoreHistory, onHistoryFiltersChange, canManage, open,
 }) {
   const [filters, setFilters] = useState({ model, repo: "", platform: "", pool: "", status: "" });
   const [columnFilters, setColumnFilters] = useState({});
@@ -208,7 +209,12 @@ export function ModelsView({
     revealExpandedWorkflow(parentRow, expandedRow, tableScrollRef.current);
   }, [expanded]);
   const updateFilter = (filter, value) => {
-    setFilters((previous) => ({ ...previous, [filter]: value, ...(filter === "model" ? { repo: "" } : {}) }));
+    const next = { ...filters, [filter]: value, ...(filter === "model" ? { repo: "" } : {}) };
+    setFilters(next);
+    if (filter === "model" || filter === "repo" || filter === "platform" || filter === "pool") {
+      setLimit(initialWorkflowHistorySize);
+      onHistoryFiltersChange?.({ model: next.model, repo: next.repo, platform: next.platform, pool: next.pool });
+    }
     if (filter === "status" && value === "history") {
       setHistoryCollapsed(false);
     }
@@ -222,7 +228,9 @@ export function ModelsView({
     return null;
   });
 
-  const entries = [...groupActiveRuns(cases, nodes), ...history].map((run) => ({ run, summary: summarizeRun(run) }));
+  const activeRuns = groupActiveRuns(cases, nodes);
+  const activeKeys = new Set(activeRuns.map(workflowKey));
+  const entries = [...activeRuns, ...history.filter((run) => !activeKeys.has(workflowKey(run)))].map((run) => ({ run, summary: summarizeRun(run) }));
   const active = entries.filter(({ summary }) => summary.active)
     .map((entry) => ({
       ...entry,
@@ -256,11 +264,17 @@ export function ModelsView({
       setLimit((count) => count + workflowHistoryPageSize);
     }
   };
-  const repos = [...new Set(repositories.filter(({ name }) => !filters.model || name === filters.model).flatMap(({ sources }) => sources))].sort();
-  const pools = [...new Set([...entries.flatMap(({ summary }) => summary.pools), ...nodes.map(({ worker, pool }) => poolId(worker, pool))])].sort();
+  const repos = [...new Set([
+    ...repositories.filter(({ name }) => !filters.model || name === filters.model).flatMap(({ sources }) => sources),
+    ...entries.filter(({ run }) => !filters.model || run.model === filters.model).map(({ run }) => run.repo).filter(Boolean),
+  ])].sort();
+  const pools = [...new Set([
+    ...entries.flatMap(({ summary }) => summary.pools),
+    ...nodes.filter(({ worker, pool }) => worker && pool).map(({ worker, pool }) => poolId(worker, pool)),
+  ])].sort();
   const activeColumnFilters = Object.values(columnFilters).filter((value) => value.trim()).length;
-  const filtered = filters.model || filters.repo || filters.platform || filters.pool || filters.status === "active" || activeColumnFilters;
-  const totalHistory = filtered ? historicalMatches.length : historyTotal;
+  const clientOnlyFiltered = filters.status === "active" || activeColumnFilters > 0;
+  const totalHistory = clientOnlyFiltered ? historicalMatches.length : historyTotal;
 
   return <main className="standard-view">
     <div className="page-heading">
@@ -323,7 +337,9 @@ export function ModelsView({
               </div></td>
               <td><WorkflowTime value={run.submitted} /></td>
               <td><strong>{run.repo}</strong><small>{run.platform} · {run.owner}</small></td>
-              <td className="workflow-pools">{summary.pools.map((pool) => <span key={pool}>{pool.replace("/", " / ")}</span>)}</td>
+              <td className="workflow-pools">{summary.pools.length
+                ? summary.pools.map((pool) => <span key={pool}>{pool.replace("/", " / ")}</span>)
+                : <span className="subtle">—</span>}</td>
               <td>{summary.maxCards}</td>
               <td>{run.isTest && <><Tag tone="amber">TEST</Tag> </>}<a className="text-button run-id" href={actionsUrl(run)} target="_blank" rel="noreferrer" title={`平台 Actions 链接 · ${run.id}`}>
                 {run.title || run.action} <ArrowSquareOut size={13} />

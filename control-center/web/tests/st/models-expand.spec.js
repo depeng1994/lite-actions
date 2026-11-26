@@ -136,3 +136,135 @@ test("ModelsView displays 运行中 for in-flight or partially completed active 
   await expect(page.getByRole("row", { name: "Workflow #107 · 尝试 1", exact: true })).toBeVisible();
   await expect(page.getByRole("row", { name: "Workflow #105 · 尝试 1", exact: true })).toHaveCount(0);
 });
+
+test("ModelsView loads filtered GitCode test workflows beyond the global 5-row page and refreshes newly finished runs into history", async ({ page }) => {
+  await openModels(page, { width: 1280, height: 900 });
+
+  // Initially the 5 newest global history runs are GitHub runs, pushing the older GitCode test run off page 1.
+  const gcRunId = "57d83e103f694111be5cf35420780955";
+  await expect(page.getByRole("row", { name: `Workflow #${gcRunId} · 尝试 1`, exact: true })).toHaveCount(0);
+
+  // Filtering by platform=GitCode queries the backend instead of returning 0/0 from the 5-row global slice.
+  await page.locator(".workflow-filters").getByLabel("平台").selectOption("GitCode");
+  const gcRow = page.getByRole("row", { name: `Workflow #${gcRunId} · 尝试 1`, exact: true });
+  await expect(gcRow).toBeVisible();
+  await expect(page.getByText("已显示 1 / 1 个历史 Workflow")).toBeVisible();
+  await expect(gcRow.locator("td").nth(3)).toHaveText("Blue / blue_pool");
+  await expect(gcRow.locator("td").nth(5)).toContainText("TEST");
+  await expect(gcRow.locator("td").nth(5).getByRole("link")).toHaveAttribute(
+    "href",
+    `https://gitcode.com/depeng1994/torchtitan-npu/actions/runs/${gcRunId}`,
+  );
+  await expect(gcRow.locator("td").nth(6).locator(".tag")).toHaveText("失败");
+  await expect(gcRow.locator("td").nth(8)).toHaveText("手动");
+
+  // Expanding shows child cases cleanly.
+  await page.getByRole("button", { name: `展开 Workflow #${gcRunId} 的子用例` }).click();
+  await expect(page.getByRole("table", { name: `Workflow #${gcRunId} 的子用例` })).toContainText("GitCode 16P smoke");
+
+  // Simulate an active GitCode test workflow finishing while #/models remains open:
+  // on the next 30-second auto-refresh it must move into history instead of vanishing.
+  let transitioned = false;
+  const liveGcId = "794904a3d9dc497d9597c432fb6eed2c";
+  const makeGcRun = (active) => ({
+    provider: "gitcode",
+    repo: "depeng1994/torchtitan-npu",
+    run_id: liveGcId,
+    attempt: 1,
+    is_test: true,
+    reporter_ids: ["blue-test-id109a1"],
+    sequence: active ? 0 : -1,
+    submitted_at: Math.floor(Date.parse("2026-11-24T07:50:00Z") / 1000),
+    run_number: 37,
+    display_title: null,
+    repo_scope: "个人仓",
+    logical_model: "torchtitan-npu",
+    workflow_name: "lite-ci-dispatcher-smoke",
+    workflow_file: ".gitcode/workflows/dispatcher_smoke.yml",
+    pools: ["blue_pool"],
+    max_cards: 8,
+    result: active ? "RUNNING" : "FAIL",
+    trigger_actor: "depeng1994",
+    event_type: "Manual",
+    pr_number: null,
+    pr_author: null,
+    started_at: Math.floor(Date.parse("2026-11-24T07:51:00Z") / 1000),
+    finished_at: active ? null : Math.floor(Date.parse("2026-11-24T08:00:10Z") / 1000),
+    card_hours: 0.4,
+    card_hours_as_of_now: active,
+    card_hours_partial: false,
+    cancel_supported: false,
+    can_move_up: false,
+    cases: [{
+      task_uid: "t_live_gc_case",
+      worker_id: "blue",
+      reporter_id: "blue-test-id109a1",
+      is_test: true,
+      provider: "gitcode",
+      repo: "depeng1994/torchtitan-npu",
+      run_id: liveGcId,
+      attempt: 1,
+      dispatch_id: null,
+      run_number: 37,
+      display_title: null,
+      case_id: "case_002_dispatch_smoke_8p",
+      label: "Live GitCode 8P smoke",
+      kind: "npu_smoke",
+      pr_number: null,
+      pr_author: null,
+      trigger_actor: "depeng1994",
+      event_type: "Manual",
+      workflow_file: ".gitcode/workflows/dispatcher_smoke.yml",
+      logical_model: "torchtitan-npu",
+      test_id: "dispatch_smoke_8p",
+      target_pool: "blue_pool",
+      req_nodes: 1,
+      req_devices: 8,
+      phase: active ? "RUNNING" : null,
+      status: active ? null : "FAIL",
+      queued_at: Math.floor(Date.parse("2026-11-24T07:50:00Z") / 1000),
+      finished_at: active ? null : Math.floor(Date.parse("2026-11-24T08:00:10Z") / 1000),
+      queue_pos: null,
+      duration_sec: active ? null : 180,
+      submitted_at: Math.floor(Date.parse("2026-11-24T07:50:00Z") / 1000),
+      workflow_name: "lite-ci-dispatcher-smoke",
+      started_at: Math.floor(Date.parse("2026-11-24T07:51:00Z") / 1000),
+      allocated_cards: 8,
+      storage_tier: "hot",
+      allocation: [],
+      estimated_sec: null,
+      sample_count: 0,
+      estimate_status: "NO_ESTIMATE",
+      can_move_up: false,
+      cancel_supported: false,
+      run_url: `https://gitcode.com/depeng1994/torchtitan-npu/actions/runs/${liveGcId}`,
+    }],
+  });
+
+  await page.route("**/api/v1/public/workflows*", async (route) => {
+    const response = await route.fetch();
+    const payload = await response.json();
+    const url = new URL(route.request().url());
+    const isHistory = url.searchParams.get("status") === "history";
+    if (!transitioned) {
+      if (!isHistory) payload.active = [...payload.active, makeGcRun(true)];
+    } else if (isHistory && (!url.searchParams.get("platform") || url.searchParams.get("platform") === "gitcode")) {
+      payload.history = [makeGcRun(false), ...payload.history];
+      payload.history_total += 1;
+    }
+    await route.fulfill({ response, json: payload });
+  });
+
+  // Trigger a refresh tick so the live GitCode workflow enters as active.
+  await page.clock.runFor(30_000);
+  const liveRow = page.getByRole("row", { name: `Workflow #${liveGcId} · 尝试 1`, exact: true });
+  await expect(liveRow).toBeVisible();
+  await expect(liveRow.locator("td").nth(6).locator(".tag")).toHaveText("运行中");
+
+  // Transition it from active -> finished and advance 30s; it must remain visible in history.
+  transitioned = true;
+  await page.clock.runFor(30_000);
+  await expect(liveRow).toBeVisible();
+  await expect(liveRow.locator("td").nth(6).locator(".tag")).toHaveText("失败");
+  await expect(page.getByText("已显示 2 / 2 个历史 Workflow")).toBeVisible();
+});

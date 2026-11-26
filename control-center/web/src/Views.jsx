@@ -350,7 +350,7 @@ export function PoolsView({ nodes, cases, timelineCases, config, go, live, rende
   }
 
   const rows = useMemo(() => resourceRows(nodes, folded), [nodes, folded]);
-  const scopes = [...new Set([...nodes, ...cases].map((item) => poolId(item.worker, item.pool)))];
+  const scopes = [...new Set([...nodes, ...cases].filter((item) => item.worker && item.pool).map((item) => poolId(item.worker, item.pool)))];
   useEffect(() => {
     if (!scopes.includes(queueScope)) selectScope(scopes[0] || "");
   }, [queueScope, scopes.join("|")]);

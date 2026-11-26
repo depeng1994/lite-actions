@@ -103,6 +103,7 @@ export function App() {
   const [workflowOrder, setWorkflowOrder] = useState(initialQueueOrder);
   const [queueVersion, setQueueVersion] = useState(0);
   const [workflowHistory, setWorkflowHistory] = useState(null);
+  const [customHistoryFilters, setCustomHistoryFilters] = useState(null);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [truncatedByCapacity, setTruncatedByCapacity] = useState(false);
   const [purgedNotice, setPurgedNotice] = useState(null);
@@ -118,12 +119,18 @@ export function App() {
   const toastTimer = useRef(0);
   const operationTimers = useRef(new Set());
   const historyRequest = useRef(null);
+  const historyRefreshRequest = useRef(null);
 
   const session = signedIn && accounts.find(({ name }) => name === signedIn);
   const isSuper = session?.role === "Super";
   const canManage = Boolean(session);
   const access = signedIn ? "admin" : "public";
-  const historyPage = workflowHistory?.access === access ? workflowHistory : null;
+  const historyFilters = customHistoryFilters?.page === route.page && customHistoryFilters?.routeModel === route.model
+    ? customHistoryFilters.filters
+    : { model: route.model, repo: "", platform: "", pool: "" };
+  const historyFilterKey = JSON.stringify([historyFilters.model, historyFilters.repo, historyFilters.platform, historyFilters.pool]);
+  const historyScope = `${access}:${historyFilterKey}`;
+  const historyPage = workflowHistory?.scope === historyScope ? workflowHistory : null;
   const history = historyPage?.runs ?? [];
 
   const applySnapshot = (snapshot) => {
@@ -149,6 +156,47 @@ export function App() {
       .catch(() => undefined);
   };
 
+  const refreshHistoryHead = useEffectEvent(async () => {
+    if (route.page !== "models" || dataMode !== "live" || historyRequest.current || !historyPage) return;
+    historyRefreshRequest.current?.abort();
+    const controller = new AbortController();
+    historyRefreshRequest.current = controller;
+    const scope = historyScope;
+    const headLimit = Math.min(workflowHistoryPageSize, Math.max(initialWorkflowHistorySize, historyPage.runs.length));
+    try {
+      const page = await apiLoadMoreHistory(access, {
+        cursor: null,
+        limit: headLimit,
+        filters: historyFilters,
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
+      setWorkflowHistory((previous) => {
+        if (!previous || previous.scope !== scope) return previous;
+        if (previous.runs.length <= headLimit) {
+          return {...page, scope};
+        }
+        const freshKeys = new Set(page.runs.map(workflowKey));
+        const tail = previous.runs.filter((run) => !freshKeys.has(workflowKey(run)));
+        return {
+          ...previous,
+          runs: [...page.runs, ...tail],
+          historyTotal: page.historyTotal,
+          truncatedByCapacity: page.truncatedByCapacity,
+          purgedNotice: page.purgedNotice,
+        };
+      });
+      setTruncatedByCapacity(Boolean(page.truncatedByCapacity));
+      setPurgedNotice(page.purgedNotice || null);
+    } catch {
+      // Background refresh keeps the last rendered history page until the next tick.
+    } finally {
+      if (historyRefreshRequest.current === controller) {
+        historyRefreshRequest.current = null;
+      }
+    }
+  });
+
   useEffect(() => {
     let cancelled = false;
     const refresh = async () => {
@@ -156,6 +204,7 @@ export function App() {
       if (cancelled) return;
       if (!snapshot) { setDataMode("offline"); return; }
       applySnapshot(snapshot);
+      void refreshHistoryHead();
     };
     const refreshWhenVisible = () => { if (!document.hidden) refresh(); };
     refreshWhenVisible();
@@ -174,15 +223,17 @@ export function App() {
     return () => {
       historyRequest.current?.abort();
       historyRequest.current = null;
+      historyRefreshRequest.current?.abort();
+      historyRefreshRequest.current = null;
     };
-  }, [access, route.page]);
+  }, [historyScope, route.page]);
 
   const loadInitialHistory = useEffectEvent(() => {
     if (!historyPage) void loadMoreHistory();
   });
   useEffect(() => {
     if (route.page === "models" && dataMode === "live") loadInitialHistory();
-  }, [access, dataMode, route.page]);
+  }, [historyScope, dataMode, route.page]);
 
   useEffect(() => {
     if (!canManage || dataMode !== "live") {
@@ -281,18 +332,22 @@ export function App() {
 
   const loadMoreHistory = async () => {
     if (dataMode !== "live" || historyRequest.current || (historyPage && !historyPage.cursor)) return false;
+    historyRefreshRequest.current?.abort();
+    historyRefreshRequest.current = null;
     const controller = new AbortController();
     historyRequest.current = controller;
+    const scope = historyScope;
     setHistoryLoading(true);
     try {
       const page = await apiLoadMoreHistory(access, {
         cursor: historyPage?.cursor,
         limit: historyPage ? workflowHistoryPageSize : initialWorkflowHistorySize,
+        filters: historyFilters,
         signal: controller.signal,
       });
       if (controller.signal.aborted) return false;
       const existing = new Set(history.map(workflowKey));
-      setWorkflowHistory({...page, access, runs: [...history, ...page.runs.filter((run) => !existing.has(workflowKey(run)))]});
+      setWorkflowHistory({...page, scope, runs: [...history, ...page.runs.filter((run) => !existing.has(workflowKey(run)))]});
       setTruncatedByCapacity(Boolean(page.truncatedByCapacity));
       setPurgedNotice(page.purgedNotice || null);
       return true;
@@ -510,7 +565,9 @@ export function App() {
         ? <HistoryDialog key={selected.id} {...panelProps} nodes={nodes} />
         : <CaseDialog key={selected.id} {...panelProps} nodes={nodes} config={config} go={go} />;
     }} />}
-    {route.page === "models" && <ModelsView key={route.model} {...viewProps} model={route.model} cancellations={cancellations} priorities={priorities} queue={queue} />}
+    {route.page === "models" && <ModelsView key={route.model} {...viewProps} model={route.model}
+      onHistoryFiltersChange={(next) => setCustomHistoryFilters({ page: route.page, routeModel: route.model, filters: next })}
+      cancellations={cancellations} priorities={priorities} queue={queue} />}
     {route.page === "cluster" && <ClusterView {...viewProps} nodes={clusterNodes} renderResourceDetail={renderResourceDetail} />}
     {route.page === "users" && (isSuper
       ? <UsersView accounts={accounts} open={open} audit={audit} />
