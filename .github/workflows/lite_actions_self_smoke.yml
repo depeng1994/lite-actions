@@ -62,7 +62,7 @@ jobs:
     needs: prepare
     runs-on: ubuntu-latest
     name: ${{ matrix.case_id }}
-    timeout-minutes: ${{ inputs.profile == 'cpu-only' && 10 || 180 }}
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
@@ -76,6 +76,7 @@ jobs:
           name: lite-ci-request-${{ github.run_attempt }}
           path: .ci-request
       - name: Wait for assigned Lite Actions worker
+        timeout-minutes: 5
         env:
           SELF_SMOKE_CASE_ID: ${{ matrix.case_id }}
           GH_TOKEN: ${{ github.token }}
