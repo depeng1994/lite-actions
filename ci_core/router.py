@@ -1023,9 +1023,13 @@ class Router:
     def case_folder(self, key):
         import hashlib
 
+        # Broker-backed execution writes its own transcript as the Main Worker.
+        log_dir = (
+            "worker-logs" if getattr(self, "_broker_active", False) is True else "logs"
+        )
         folder = (
             Path(self.deployment["state_dir"])
-            / "logs"
+            / log_dir
             / "runs"
             / hashlib.sha256(key.encode()).hexdigest()
         )
@@ -1790,6 +1794,11 @@ class Router:
                 logging.warning("lease reconciliation tick failed", exc_info=True)
         self.pump()
         self.flush()
+
+    def has_active_work(self):
+        return bool(
+            self.active or (self.supervisor and self.supervisor.has_test_workers())
+        )
 
     def close(self):
         if self.config_executor:

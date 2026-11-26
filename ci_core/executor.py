@@ -353,6 +353,7 @@ def _process_rows(
     coverage_devices=None,
     require_end=False,
     require_coverage=True,
+    retry_shared_occupancy=False,
 ) -> list[tuple[int, int, str]]:
     """Return (chip, PID visible in the kill namespace, container PID evidence).
 
@@ -464,7 +465,8 @@ def _process_rows(
     if require_exclusive and any(
         chip not in selected and pid in targets for chip, pid, _ in rows
     ):
-        raise ValueError("PID spans allocated and unallocated NPU devices")
+        error = ExternalNpuOccupancy if retry_shared_occupancy else ValueError
+        raise error("PID spans allocated and unallocated NPU devices")
     if any(pid <= 1 for chip, pid, _ in rows if chip in selected):
         raise ValueError("unsafe NPU process PID")
     return [
@@ -504,15 +506,13 @@ def _bound_host_signal(pid, devices, fingerprint, indexing, coverage_devices):
     import time
     from pathlib import Path
 
-    if not callable(getattr(signal, "pidfd_send_signal", None)):
-        raise RuntimeError("host pidfd signalling is unavailable")
     actual = hashlib.sha256(Path("/etc/machine-id").read_bytes()).hexdigest()
     if actual != fingerprint:
         raise RuntimeError("host identity changed")
 
-    def open_pidfd(target_pid):
-        if callable(getattr(os, "pidfd_open", None)):
-            return os.pidfd_open(target_pid, 0)
+    native_open = getattr(os, "pidfd_open", None)
+    native_signal = getattr(signal, "pidfd_send_signal", None)
+    if not callable(native_open) or not callable(native_signal):
         import ctypes
         import platform
         import sys
@@ -523,13 +523,30 @@ def _bound_host_signal(pid, devices, fingerprint, indexing, coverage_devices):
         ):
             raise RuntimeError("host pidfd signalling is unavailable")
         libc = ctypes.CDLL(None, use_errno=True)
-        fd = libc.syscall(
-            ctypes.c_long(434), ctypes.c_int(target_pid), ctypes.c_uint(0)
-        )
-        if fd < 0:
-            err = ctypes.get_errno()
-            raise OSError(err, os.strerror(err))
-        return fd
+
+        def pidfd_syscall(number, *args):
+            result = libc.syscall(ctypes.c_long(number), *args)
+            if result < 0:
+                err = ctypes.get_errno()
+                raise OSError(err, os.strerror(err))
+            return result
+
+    def open_pidfd(target_pid):
+        if callable(native_open):
+            return native_open(target_pid, 0)
+        return pidfd_syscall(434, ctypes.c_int(target_pid), ctypes.c_uint(0))
+
+    def send_pidfd(fd):
+        if callable(native_signal):
+            native_signal(fd, signal.SIGKILL)
+        else:
+            pidfd_syscall(
+                424,
+                ctypes.c_int(fd),
+                ctypes.c_int(signal.SIGKILL),
+                ctypes.c_void_p(),
+                ctypes.c_uint(0),
+            )
 
     try:
         pidfd = open_pidfd(pid)
@@ -603,7 +620,7 @@ def _bound_host_signal(pid, devices, fingerprint, indexing, coverage_devices):
             # numeric PID is reused after the NPU probe.
             if poller.poll(0):
                 return False
-            signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+            send_pidfd(pidfd)
         except (FileNotFoundError, ProcessLookupError):
             return False
         return True
@@ -615,6 +632,7 @@ def _bound_host_command(pid, devices, fingerprint, indexing, coverage_devices):
     from inspect import getsource
 
     program = (
+        "from __future__ import annotations\n"
         "import json,re,sys\n"
         "class ExternalNpuOccupancy(RuntimeError): pass\n"
         + "CHIP_PROCESS = re.compile("
@@ -754,6 +772,7 @@ def remote_preflight(
             else None,
             require_end=not legacy_a5,
             require_coverage=not legacy_a5,
+            retry_shared_occupancy=True,
         )
         if evidence is not None:
             details = (

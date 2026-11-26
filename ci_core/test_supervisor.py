@@ -319,6 +319,10 @@ class TestSupervisor:
         self._cached_runs_at: float = 0.0
         self._cached_runs_lock = threading.Lock()
 
+    def has_test_workers(self) -> bool:
+        # A Test Worker needs its in-process broker until cleanup, even between cases.
+        return bool(self._brokers)
+
     def update_cached_runs(self, runs: list[dict]) -> None:
         with self._cached_runs_lock:
             self._cached_runs = copy.deepcopy(list(runs))

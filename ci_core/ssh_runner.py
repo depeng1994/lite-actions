@@ -694,7 +694,9 @@ def wsync(path, text):
 
 def stat_start(pid):
     try:
-        return Path(f'/proc/{pid}/stat').read_text().rsplit(') ', 1)[1].split()[19]
+        fields = Path(f'/proc/{pid}/stat').read_text().rsplit(') ', 1)[1].split()
+        # An exited process can stay in cgroup.procs until its parent reaps it.
+        return None if fields[0] == 'Z' else fields[19]
     except (FileNotFoundError, ProcessLookupError, PermissionError, IndexError):
         return None
 
@@ -737,8 +739,10 @@ try:
             for line in cfile.read_text().splitlines():
                 if line.strip().isdecimal():
                     pid = int(line.strip())
-                    if pid > 1 and owned_start(pid, recorded_pgid=rec_pgid, recorded_start=rec_start) is not None:
-                        owned[pid] = stat_start(pid)
+                    if pid > 1:
+                        st = owned_start(pid, recorded_pgid=rec_pgid, recorded_start=rec_start)
+                        if st is not None:
+                            owned[pid] = st
     for entry in os.scandir('/proc'):
         if entry.name.isdecimal():
             pid = int(entry.name)
