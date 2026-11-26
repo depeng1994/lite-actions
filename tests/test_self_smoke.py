@@ -22,7 +22,6 @@ from ci_core.contract import (
     TORCHTITAN_REPO,
     VLLM_REPO,
     configured_repos,
-    normalize,
     parse_plan,
 )
 from ci_core.egress_policy import Egress, Rejected
@@ -693,24 +692,13 @@ class SelfSmokeTests(unittest.TestCase):
         archive = Path(self.temp.name) / "catalog.tar.gz"
         with tarfile.open(archive, "w:gz") as tar:
             tar.add(ROOT / ".ci/lite-actions.json", arcname=".ci/lite-actions.json")
-        defaults = {"worker": "", "target_pool": "", "docker": ""}
-        blue_item = normalize(
-            SimpleNamespace(
-                test_name="dispatch_smoke_8p",
-                test_descr="Lite Actions dispatch smoke: 1 node(s), 8P HCCL/DP handshake",
-                ci_kind="npu_smoke",
-                ci_overrides={
-                    "docker": "cann_master_torchtitan_master_xyj",
-                    "target_pool": "a3_shared_blue",
-                    "worker": "blue-test-id42a1",
-                },
-                nnodes=1,
-                ngpu=8,
-                timeout=75,
-            ),
-            defaults,
-            0,
+        defaults = self.plan["defaults"]
+        case = next(
+            item
+            for item in self.plan["cases"]
+            if item["test_id"] == "dispatch_smoke_8p"
         )
+        blue_item = {**case, "worker": "blue-test-id42a1"}
         verified = verify_definition(archive, blue_item, defaults, repo=SELF_REPO)
         self.assertEqual(verified["test_id"], "dispatch_smoke_8p")
 
