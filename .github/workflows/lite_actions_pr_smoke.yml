@@ -187,6 +187,14 @@ jobs:
           ref: ${{ steps.resolve.outputs.run_head_sha }}
           persist-credentials: false
 
+      - name: Reply to PR with Actions run link
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          PR_HEAD_SHA: ${{ steps.resolve.outputs.pr_head_sha }}
+          PROFILE: ${{ steps.resolve.outputs.profile }}
+        run: python3 -m ci_core.pr_status ack
+
       - name: Wait for FIFO hardware queue
         env:
           GH_TOKEN: ${{ github.token }}

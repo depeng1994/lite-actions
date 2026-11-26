@@ -1,4 +1,4 @@
-"""Best-effort GitHub PR Commit Status and comment reaction helper."""
+"""Best-effort GitHub PR Commit Status, comment, and reaction helper."""
 
 from __future__ import annotations
 
@@ -370,6 +370,62 @@ def post_pr_comment(
     return resp is not None
 
 
+def format_trigger_ack_comment(
+    *,
+    sha: str = "",
+    profile: str = "full",
+    run_id: str = "",
+    run_url: str = "",
+) -> str:
+    prof = str(profile or "").strip() or "full"
+    short_sha = str(sha or "").strip()[:8]
+    details = f"profile: `{prof}`"
+    if short_sha:
+        details += f"，head: `{short_sha}`"
+    url = str(run_url or "").strip()
+    rid = str(run_id or "").strip()
+    if url:
+        label = f"Lite Actions PR smoke #{rid}" if rid else "Lite Actions PR smoke"
+        return (
+            f"🚀 已收到测试触发请求（{details}），正在排队/执行中，"
+            f"请点击查看进度：[{label}]({url})"
+        )
+    return f"🚀 已收到测试触发请求（{details}），正在排队/执行中。"
+
+
+def post_trigger_ack(
+    *,
+    repo: str,
+    pr_number: int | str,
+    sha: str = "",
+    profile: str = "full",
+    run_id: str = "",
+    target_url: str = "",
+    token: str | None = None,
+    api_base: str | None = None,
+    timeout: int = 15,
+    opener: Any = None,
+    environ: dict[str, str] | os._Environ[str] = os.environ,
+) -> bool:
+    run_url = _default_target_url(target_url, repo, run_id, environ)
+    body = format_trigger_ack_comment(
+        sha=sha,
+        profile=profile,
+        run_id=run_id,
+        run_url=run_url,
+    )
+    return post_pr_comment(
+        repo=repo,
+        pr_number=pr_number,
+        body=body,
+        token=token,
+        api_base=api_base,
+        timeout=timeout,
+        opener=opener,
+        environ=environ,
+    )
+
+
 def get_combined_status(
     *,
     repo: str,
@@ -623,6 +679,16 @@ def _build_parser(
     p_comment.add_argument("--pr-number", default=environ.get("PR_NUMBER", ""))
     p_comment.add_argument("--body", required=True)
 
+    p_ack = sub.add_parser(
+        "ack", help="Post an immediate PR comment with the Actions run link"
+    )
+    p_ack.add_argument("--repo", default=environ.get("GITHUB_REPOSITORY", ""))
+    p_ack.add_argument("--pr-number", default=environ.get("PR_NUMBER", ""))
+    p_ack.add_argument("--sha", default=environ.get("PR_HEAD_SHA", ""))
+    p_ack.add_argument("--profile", default=environ.get("PROFILE", "full"))
+    p_ack.add_argument("--run-id", default=environ.get("GITHUB_RUN_ID", ""))
+    p_ack.add_argument("--target-url", default="")
+
     return parser
 
 
@@ -689,6 +755,16 @@ def main(
                 repo=args.repo,
                 pr_number=args.pr_number,
                 body=args.body,
+                environ=environ,
+            )
+        elif args.command == "ack":
+            post_trigger_ack(
+                repo=args.repo,
+                pr_number=args.pr_number,
+                sha=args.sha,
+                profile=args.profile,
+                run_id=args.run_id,
+                target_url=args.target_url,
                 environ=environ,
             )
     except SystemExit:
