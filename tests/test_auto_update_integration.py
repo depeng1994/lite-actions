@@ -260,7 +260,7 @@ class IntegrationTests(unittest.TestCase):
             rows = p.read_text().splitlines()
             self.assertEqual(len(rows), 1)
             self.assertEqual(json.loads(rows[0])["switch_to_start_ms"], 12)
-            self.assertEqual(p.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(p.stat().st_mode & 0o777, 0o644)
         for shell in ("auto_update/bootstrap.sh", "scripts/install_auto_update.sh"):
             subprocess.run(["bash", "-n", str(ROOT / shell)], check=True)
         result = subprocess.run(

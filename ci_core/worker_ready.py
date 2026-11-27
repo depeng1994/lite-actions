@@ -53,17 +53,18 @@ def publish_ready(
         "ready_at": time.time(),
     }
     destination = Path(destination)
-    destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    destination.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
     if destination.is_symlink():
         raise ValueError("Ready path must not be a symlink")
     fd, name = tempfile.mkstemp(prefix=".ready-", dir=destination.parent)
     try:
         with os.fdopen(fd, "w") as f:
-            os.fchmod(f.fileno(), 0o600)
+            os.fchmod(f.fileno(), 0o644)
             json.dump(value, f, sort_keys=True)
             f.flush()
             os.fsync(f.fileno())
         os.replace(name, destination)
+        os.chmod(destination, 0o644)
         parent = os.open(destination.parent, os.O_DIRECTORY)
         try:
             os.fsync(parent)

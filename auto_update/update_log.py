@@ -17,14 +17,14 @@ def record(path: Path, event: str, **fields: object) -> None:
         **fields,
     }
     text = json.dumps(entry, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
     descriptor = os.open(
-        path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600
+        path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o644
     )
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise ValueError("management log must be regular")
-        os.fchmod(descriptor, 0o600)
+        os.fchmod(descriptor, 0o644)
         os.write(descriptor, (text + "\n").encode("utf-8"))
         os.fsync(descriptor)
     finally:

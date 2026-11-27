@@ -253,7 +253,7 @@ class IdleProbe:
         if self.report:
             self.report()
         if self.state_path:
-            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            self.state_path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
             fd, name = tempfile.mkstemp(dir=self.state_path.parent)
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as file:
@@ -265,6 +265,7 @@ class IdleProbe:
                     file.flush()
                     os.fsync(file.fileno())
                 os.replace(name, self.state_path)
+                os.chmod(self.state_path, 0o644)
             finally:
                 Path(name).unlink(missing_ok=True)
 

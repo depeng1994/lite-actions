@@ -369,6 +369,7 @@ class TestSupervisor:
                 tmp.flush()
                 os.fsync(tmp.fileno())
                 temp.replace(self.ledger_path)
+                os.chmod(self.ledger_path, 0o644)
                 dfd = os.open(self.state_dir, os.O_RDONLY)
                 try:
                     os.fsync(dfd)

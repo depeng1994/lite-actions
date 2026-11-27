@@ -1033,7 +1033,8 @@ class Router:
             / "runs"
             / hashlib.sha256(key.encode()).hexdigest()
         )
-        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        folder.mkdir(mode=0o755, parents=True, exist_ok=True)
+        os.chmod(folder, 0o755)
         return folder
 
     def finalize_report(self, result, locator):
@@ -1281,6 +1282,7 @@ class Router:
                 if self.deployment is not None:
                     path = self.case_folder(key) / "probe.log"
                     path.write_text(p.stdout + p.stderr, encoding="utf-8")
+                    os.chmod(path, 0o644)
                     locator = {"host": self.deployment["address"], "path": str(path)}
                 if cancel.is_set():
                     self.finish(

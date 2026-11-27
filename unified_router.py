@@ -48,7 +48,7 @@ def _write_sanitized_pools(pools_path: Path, hello: dict) -> None:
 
 
 def main():
-    os.umask(0o077)
+    os.umask(0o022)
     p = argparse.ArgumentParser()
     p.add_argument("--worker-id", type=_worker_id_arg)
     p.add_argument("--broker-sock", default="")

@@ -539,6 +539,7 @@ class Egress:
                 temp.flush()
                 os.fsync(temp.fileno())
                 os.replace(name, self.path)
+                os.chmod(self.path, 0o644)
                 fd = os.open(self.root, os.O_RDONLY)
                 try:
                     os.fsync(fd)
