@@ -13,8 +13,6 @@ ExecStart=/usr/bin/env python3 /usr/local/bin/lite-actions-timesync-guard --appl
 Restart=always
 RestartSec=30
 TimeoutStopSec=15
-# Bootstrap policy: ci_core.permissions.PRIVATE_UMASK.
-# Worker main() selects WORKER_UMASK for non-secret diagnostics.
 UMask=0077
 StandardOutput=journal
 StandardError=journal
