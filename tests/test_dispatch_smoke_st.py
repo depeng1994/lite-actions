@@ -461,7 +461,7 @@ class DispatchSmokeEndToEndST(unittest.TestCase):
                 ),
                 patch(
                     "ci_core.config.execution_node",
-                    side_effect=lambda node, _env: {**node, "ssh": container_ssh},
+                    side_effect=lambda node, _env, **_: {**node, "ssh": container_ssh},
                 ),
                 patch("ci_core.transport.run", side_effect=fake_transport),
                 patch("ci_core.executor.subprocess.Popen", side_effect=fake_popen),
@@ -1028,7 +1028,7 @@ class DispatchSmokeEndToEndST(unittest.TestCase):
                 ),
                 patch(
                     "ci_core.config.execution_node",
-                    side_effect=lambda node, _env: {**node, "ssh": container_ssh},
+                    side_effect=lambda node, _env, **_: {**node, "ssh": container_ssh},
                 ),
                 patch("ci_core.transport.run", side_effect=fake_transport),
                 patch("ci_core.executor.subprocess.Popen", side_effect=fake_popen),
@@ -1164,7 +1164,7 @@ class DispatchSmokeEndToEndST(unittest.TestCase):
                 ),
                 patch(
                     "ci_core.config.execution_node",
-                    side_effect=lambda node, _env: {**node, "ssh": container_ssh},
+                    side_effect=lambda node, _env, **_: {**node, "ssh": container_ssh},
                 ),
                 patch(
                     "ci_core.transport.run",
@@ -1521,7 +1521,7 @@ class DispatchSmokeEndToEndST(unittest.TestCase):
                 ),
                 patch(
                     "ci_core.config.execution_node",
-                    side_effect=lambda node, _env: {
+                    side_effect=lambda node, _env, **_: {
                         **node,
                         "ssh": cssh0 if node["host_id"] == host0 else cssh1,
                     },

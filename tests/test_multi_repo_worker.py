@@ -283,7 +283,7 @@ class RootinfoTests(unittest.TestCase):
         with (
             patch(
                 "ci_core.config.execution_node",
-                side_effect=lambda node, environment: {
+                side_effect=lambda node, environment, **_: {
                     "ssh": node["host_id"] + "/pinned-container"
                 },
             ),
@@ -307,7 +307,7 @@ class RootinfoTests(unittest.TestCase):
         with (
             patch(
                 "ci_core.config.execution_node",
-                side_effect=lambda node, environment: {
+                side_effect=lambda node, environment, **_: {
                     "ssh": node["host_id"] + "/pinned-container"
                 },
             ),

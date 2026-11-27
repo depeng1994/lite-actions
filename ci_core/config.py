@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 import os
 import re
 import subprocess
@@ -200,34 +201,97 @@ def _run_node_probe(host, script, *, timeout=45):
             time.sleep(delay)
 
 
-def execution_node(node, environment):
+def execution_node(node, environment, *, start_if_stopped=False, on_event=None):
+    """Resolve a pinned container; only execution preparation may start it."""
+    host = node["ssh"]
+    target = f"host={node.get('host_id', host)} environment={environment}"
     env = node.get("environments", {}).get(environment)
     if not env or not all(
         env.get(k) for k in ("container_id", "image_id", "image_ref")
     ):
-        raise ValueError("CONTAINER_BINDING_MISSING")
+        raise ValueError(f"CONTAINER_BINDING_MISSING {target}")
     container = env["container_id"]
     if not re.fullmatch(r"[a-f0-9]{64}", container):
-        raise ValueError("container must be pinned by ID")
+        raise ValueError(f"container must be pinned by ID: {target}")
+    target = f"{target} id={container[:12]}"
     script = (
-        'docker inspect --format \'{"Name":{{json .Name}},"Id":{{json .Id}},"Image":{{json .Image}},"State":{"Running":{{json .State.Running}}}}\' '
+        'docker inspect --format \'{"Name":{{json .Name}},"Id":{{json .Id}},"Image":{{json .Image}},"State":{"Running":{{json .State.Running}},"Status":{{json .State.Status}}}}\' '
         + container
     )
-    data = json.loads(_run_node_probe(node["ssh"], script, timeout=45).stdout)
-    if not data.get("State", {}).get("Running") or data.get("Image") != env["image_id"]:
-        raise ValueError("CONTAINER_IDENTITY_MISMATCH")
+
+    def inspect():
+        try:
+            data = json.loads(_run_node_probe(host, script, timeout=45).stdout)
+        except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError(
+                f"CONTAINER_INSPECT_FAILED {target} error={type(exc).__name__}: {str(exc)[:80]}"
+            ) from exc
+        state = data.get("State", {})
+        label = (
+            f"host={node.get('host_id', host)} id={container[:12]} "
+            f"name={str(data.get('Name', '?'))[:60]!r} "
+            f"status={state.get('Status', 'unknown')} running={state.get('Running')}"
+        )
+        if data.get("Id") != container:
+            raise ValueError(
+                f"CONTAINER_IDENTITY_MISMATCH {label} actual_id={data.get('Id')}"
+            )
+        if data.get("Image") != env["image_id"]:
+            raise ValueError(
+                f"CONTAINER_IMAGE_MISMATCH {label} "
+                f"expected={env['image_id'][:19]} actual={str(data.get('Image'))[:19]}"
+            )
+        return state, label
+
+    def emit(event, label):
+        message = f"{event} {label}"
+        logging.info("%s", message)
+        if on_event is not None:
+            on_event(message)
+
+    state, label = inspect()
     import shlex
 
-    actual = _run_node_probe(
-        node["ssh"],
-        "docker image inspect --format '{{.Id}}' " + shlex.quote(env["image_ref"]),
-        timeout=45,
-    ).stdout.strip()
+    try:
+        actual = _run_node_probe(
+            host,
+            "docker image inspect --format '{{.Id}}' " + shlex.quote(env["image_ref"]),
+            timeout=45,
+        ).stdout.strip()
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(
+            f"IMAGE_TAG_INSPECT_FAILED {label} error={type(exc).__name__}: {str(exc)[:80]}"
+        ) from exc
     if actual != env["image_id"]:
-        raise ValueError("IMAGE_TAG_CHANGED")
-    execution_ssh = node["ssh"] + "/" + container
-    if _run_node_probe(execution_ssh, "id -u", timeout=45).stdout.strip() != "0":
-        raise ValueError("EXECUTION_PID_VISIBILITY_REQUIRED")
+        raise ValueError(
+            f"IMAGE_TAG_CHANGED {label} "
+            f"expected={env['image_id'][:19]} actual={actual[:19]}"
+        )
+    if state.get("Running") is not True:
+        if not start_if_stopped or state.get("Running") is not False:
+            raise ValueError(f"CONTAINER_NOT_RUNNING {label}")
+        emit("CONTAINER_START", label)
+        try:
+            run(host, "docker start " + container, timeout=90)
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError(
+                f"CONTAINER_START_FAILED {label} error={type(exc).__name__}: {str(exc)[:80]}"
+            ) from exc
+        state, label = inspect()
+        if state.get("Running") is not True:
+            raise ValueError(f"CONTAINER_NOT_RUNNING_AFTER_START {label}")
+        emit("CONTAINER_START_OK", label)
+    execution_ssh = host + "/" + container
+    try:
+        uid = _run_node_probe(execution_ssh, "id -u", timeout=45).stdout.strip()
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(
+            f"CONTAINER_EXEC_CHECK_FAILED {label} error={type(exc).__name__}: {str(exc)[:80]}"
+        ) from exc
+    if uid != "0":
+        raise ValueError(f"EXECUTION_PID_VISIBILITY_REQUIRED {label}")
+    if start_if_stopped:
+        emit("CONTAINER_READY", f"{label} image={env['image_id'][:19]}")
     return {**node, "ssh": execution_ssh}
 
 
