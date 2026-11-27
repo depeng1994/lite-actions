@@ -1268,6 +1268,7 @@ class SelfSmokeTests(unittest.TestCase):
         self.assertIn("pr_number:", on_section)
         self.assertNotIn("pr_head_sha:", on_section)
         self.assertIn("/pr-test", text)
+        self.assertIn('run_head_sha="$pr_head_sha"', text)
 
 
 if __name__ == "__main__":
