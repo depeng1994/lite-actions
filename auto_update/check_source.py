@@ -10,6 +10,8 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from ci_core.permissions import PRIVATE_DIR_MODE
+
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 REF = re.compile(r"refs/heads/[A-Za-z0-9_./-]+\Z")
 
@@ -114,7 +116,7 @@ def stage_source(root: Path, url: str, ref: str, target: str, old: str) -> Path:
     if not SHA.fullmatch(target) or not SHA.fullmatch(old):
         raise SourceError("invalid_commit_sha")
     staging = root / "staging"
-    staging.mkdir(mode=0o700, parents=True, exist_ok=True)
+    staging.mkdir(mode=PRIVATE_DIR_MODE, parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix="candidate-", dir=staging))
     branch = ref.removeprefix("refs/heads/")
     try:

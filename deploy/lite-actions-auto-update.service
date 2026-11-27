@@ -9,6 +9,8 @@ User=root
 EnvironmentFile=/etc/lite-actions/auto-update.env
 ExecStart=/opt/lite-actions/bootstrap/update.sh
 TimeoutStartSec=25min
+# Bootstrap policy: ci_core.permissions.PRIVATE_UMASK.
+# Worker main() selects WORKER_UMASK for non-secret diagnostics.
 UMask=0077
 StandardOutput=journal
 StandardError=journal

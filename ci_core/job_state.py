@@ -7,6 +7,8 @@ import threading
 import time
 from pathlib import Path
 
+from ci_core.permissions import DIAGNOSTIC_FILE_MODE
+
 _MUTEX = threading.RLock()
 _META = "__lite_actions_metadata__"
 
@@ -182,7 +184,7 @@ class JobState:
             f.flush()
             os.fsync(f.fileno())
         tmp.replace(self.path)
-        os.chmod(self.path, 0o644)
+        os.chmod(self.path, DIAGNOSTIC_FILE_MODE)
         fd = os.open(self.path.parent, os.O_RDONLY)
         try:
             os.fsync(fd)

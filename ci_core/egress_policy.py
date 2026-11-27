@@ -12,6 +12,8 @@ import time
 import urllib.parse
 from pathlib import Path
 
+from ci_core.permissions import DIAGNOSTIC_FILE_MODE
+
 
 class Deferred(Exception):
     """A local budget is exhausted; do not attempt or count an HTTP retry."""
@@ -539,7 +541,7 @@ class Egress:
                 temp.flush()
                 os.fsync(temp.fileno())
                 os.replace(name, self.path)
-                os.chmod(self.path, 0o644)
+                os.chmod(self.path, DIAGNOSTIC_FILE_MODE)
                 fd = os.open(self.root, os.O_RDONLY)
                 try:
                     os.fsync(fd)

@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 from auto_update.check_source import checkout_sha
+from ci_core.permissions import PRIVATE_DIR_MODE
 from ci_core.worker_ready import verify_ready
 
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
@@ -67,7 +68,7 @@ def current_release(root: Path) -> tuple[Path, str]:
 def prepare_release(root: Path, stage: Path, sha: str, current: Path) -> Path:
     """Do not move task state or secrets into a Git commit."""
     target = release_at(root, sha)
-    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    target.parent.mkdir(mode=PRIVATE_DIR_MODE, parents=True, exist_ok=True)
     if target.exists():
         if checkout_sha(target) != sha:
             raise SwitchError("existing_release_corrupted")

@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 
 from ci_core.contract import parse_worker_identity
+from ci_core.permissions import NON_OWNER_WRITE_BITS
 from ci_core.transport import run
 
 
@@ -312,13 +313,22 @@ def deployment(asserted=None):
     path = Path("/etc/lite-actions/deployment.json")
     for parent in path.parents:
         st = parent.lstat()
-        if not stat.S_ISDIR(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o022:
+        if (
+            not stat.S_ISDIR(st.st_mode)
+            or st.st_uid != 0
+            or st.st_mode & NON_OWNER_WRITE_BITS
+        ):
             raise ValueError("UNTRUSTED_DEPLOYMENT_DIRECTORY")
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, "rb") as f:
         st = os.fstat(f.fileno())
         data = f.read(65537) if stat.S_ISREG(st.st_mode) else b""
-        if not data or len(data) > 65536 or st.st_uid != 0 or st.st_mode & 0o022:
+        if (
+            not data
+            or len(data) > 65536
+            or st.st_uid != 0
+            or st.st_mode & NON_OWNER_WRITE_BITS
+        ):
             raise ValueError("UNTRUSTED_DEPLOYMENT_CONFIG")
     from ci_core.registry import _unique
 
@@ -373,7 +383,7 @@ def deployment(asserted=None):
     if (
         not state.is_dir()
         or state.stat().st_uid not in {0, os.geteuid()}
-        or state.stat().st_mode & 0o022
+        or state.stat().st_mode & NON_OWNER_WRITE_BITS
     ):
         raise ValueError("UNTRUSTED_STATE_DIRECTORY")
     owner = state / "worker-id"
@@ -382,7 +392,7 @@ def deployment(asserted=None):
         not stat.S_ISREG(st.st_mode)
         or st.st_uid not in {0, os.geteuid()}
         or st.st_size > 64
-        or st.st_mode & 0o022
+        or st.st_mode & NON_OWNER_WRITE_BITS
         or owner.read_text().strip() != worker
     ):
         raise ValueError("STATE_OWNER_MISMATCH")

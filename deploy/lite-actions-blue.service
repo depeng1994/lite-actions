@@ -24,6 +24,8 @@ RestartSec=10
 KillSignal=SIGTERM
 KillMode=mixed
 TimeoutStopSec=900
+# Bootstrap policy: ci_core.permissions.PRIVATE_UMASK.
+# Worker main() selects WORKER_UMASK for non-secret diagnostics.
 UMask=0077
 StandardOutput=journal
 StandardError=journal

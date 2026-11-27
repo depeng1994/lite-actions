@@ -30,6 +30,7 @@ from ci_core.contract import (
 from ci_core.executor import ExternalNpuOccupancy, execute
 from ci_core.gitcode import RunChanged
 from ci_core.job_state import JobState, ordered_queued
+from ci_core.permissions import DIAGNOSTIC_DIR_MODE, DIAGNOSTIC_FILE_MODE
 from ci_core.plan import verify_definition
 from ci_core.reporting import (
     body_for,
@@ -1033,8 +1034,8 @@ class Router:
             / "runs"
             / hashlib.sha256(key.encode()).hexdigest()
         )
-        folder.mkdir(mode=0o755, parents=True, exist_ok=True)
-        os.chmod(folder, 0o755)
+        folder.mkdir(mode=DIAGNOSTIC_DIR_MODE, parents=True, exist_ok=True)
+        os.chmod(folder, DIAGNOSTIC_DIR_MODE)
         return folder
 
     def finalize_report(self, result, locator):
@@ -1282,7 +1283,7 @@ class Router:
                 if self.deployment is not None:
                     path = self.case_folder(key) / "probe.log"
                     path.write_text(p.stdout + p.stderr, encoding="utf-8")
-                    os.chmod(path, 0o644)
+                    os.chmod(path, DIAGNOSTIC_FILE_MODE)
                     locator = {"host": self.deployment["address"], "path": str(path)}
                 if cancel.is_set():
                     self.finish(

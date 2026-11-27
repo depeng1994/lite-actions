@@ -13,6 +13,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable, Iterator, Mapping
 
+from ci_core.permissions import PRIVATE_DIR_MODE
+
 
 class ResourceBusy(RuntimeError):
     """One of the requested physical chips is already leased."""
@@ -192,7 +194,7 @@ def reserve_ports(lock_root: Path, resources: Iterable[Mapping]) -> Iterator[dic
 def single_agent(lock_path: Path | None = None) -> Iterator[None]:
     """Fail fast if another unified Dispatcher process is already active."""
     path = lock_path or agent_lock_path()
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=PRIVATE_DIR_MODE)
     fd = path.open("a+b")
     acquired = False
     try:

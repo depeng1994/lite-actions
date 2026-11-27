@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install the updater around one already-managed Worker. No zone-specific paths.
 set -euo pipefail
-umask 077
+umask u=rwx,go=
 
 usage() {
   cat <<'EOF'
@@ -69,6 +69,12 @@ fi
 export LITE_ACTIONS_UPDATE_PYTHON="$python_path"
 cd "$source_root"
 
+# Import the same filesystem policy as both Worker regions and the updater.
+permission_modes="$("$python_path" -m ci_core.permissions)"
+read -r PRIVATE_FILE_MODE PRIVATE_DIR_MODE DIAGNOSTIC_FILE_MODE DIAGNOSTIC_DIR_MODE EXECUTABLE_FILE_MODE PRIVATE_UMASK \
+  <<< "$permission_modes"
+umask "$PRIVATE_UMASK"
+
 echo "Running read-only Auto Update preflight..."
 if [[ -n "$proxy_env_file" ]]; then
   "$python_path" -m auto_update.preflight \
@@ -92,7 +98,7 @@ fi
 # Git 2.25: use a private global safe.directory config inherited by clone's
 # upload-pack child. Never edit /root/.gitconfig.
 safe_git_config="$(mktemp)"
-chmod 0600 "$safe_git_config"
+chmod "$PRIVATE_FILE_MODE" "$safe_git_config"
 git config --file "$safe_git_config" --add safe.directory "$source_root"
 git config --file "$safe_git_config" --add safe.directory "$source_root/.git"
 trap 'rm -f "$safe_git_config"' EXIT
@@ -113,10 +119,10 @@ printf 'Worker unit: %s\nPython: %s (%s)\nOld version: %s\nApproved version: %s\
   "$worker_unit" "$python_path" "$python_version" "$old_sha" "$approved_sha"
 echo "WARNING: initial installation can stop a Worker and cancel active Actions."
 
-install -d -m 0700 "$install_root/bootstrap"
-install -d -m 0700 /etc/lite-actions /var/lib/lite-actions/auto-update
-install -d -m 0700 /var/log/lite-actions/management
-install -d -m 0700 "$install_root/staging"
+install -d -m "$PRIVATE_DIR_MODE" "$install_root/bootstrap"
+install -d -m "$PRIVATE_DIR_MODE" /etc/lite-actions /var/lib/lite-actions/auto-update
+install -d -m "$DIAGNOSTIC_DIR_MODE" /var/log/lite-actions /var/log/lite-actions/management
+install -d -m "$PRIVATE_DIR_MODE" "$install_root/staging"
 
 seed="$install_root/bootstrap/seed"
 if [[ ! -e "$seed" ]]; then
@@ -144,11 +150,11 @@ install_managed_bootstrap() {
     [[ -f "$dst" && ! -L "$dst" && "$(stat -c %u "$dst")" == "0" ]] \
       || fail "Existing bootstrap is not a root-owned regular file: $dst"
     if ! cmp -s "$src" "$dst"; then
-      install -m 0755 "$src" "$dst.new"
+      install -m "$EXECUTABLE_FILE_MODE" "$src" "$dst.new"
       mv -f "$dst.new" "$dst"
     fi
   else
-    install -m 0755 "$src" "$dst"
+    install -m "$EXECUTABLE_FILE_MODE" "$src" "$dst"
   fi
 }
 install_managed_bootstrap "$source_root/auto_update/bootstrap.sh" "$install_root/bootstrap/update.sh"
@@ -160,9 +166,9 @@ expected_drop="$(mktemp)"
 trap 'rm -f "$safe_git_config" "$service_template" "$expected_env" "$legacy_env" "$expected_drop"' EXIT
 sed "s|/opt/lite-actions|$install_root|g" \
   "$source_root/deploy/lite-actions-auto-update.service" > "$service_template"
-install_unchanged_or_new "$service_template" /etc/systemd/system/lite-actions-auto-update.service 0644
+install_unchanged_or_new "$service_template" /etc/systemd/system/lite-actions-auto-update.service "$DIAGNOSTIC_FILE_MODE"
 install_unchanged_or_new "$source_root/deploy/lite-actions-auto-update.timer" \
-  /etc/systemd/system/lite-actions-auto-update.timer 0644
+  /etc/systemd/system/lite-actions-auto-update.timer "$DIAGNOSTIC_FILE_MODE"
 
 ready_file="/var/lib/lite-actions/worker-ready.json"
 env_file="/etc/lite-actions/auto-update.env"
@@ -179,25 +185,25 @@ LITE_ACTIONS_UPDATE_PYTHON="$python_path"
 EOF
 sed '/^LITE_ACTIONS_UPDATE_PYTHON=/d' "$expected_env" > "$legacy_env"
 if [[ -e "$env_file" || -L "$env_file" ]]; then
-  [[ -f "$env_file" && ! -L "$env_file" && "$(stat -c %u "$env_file")" == "0" && "$(stat -c %a "$env_file")" == "600" ]] \
+  [[ -f "$env_file" && ! -L "$env_file" && "$(stat -c %u "$env_file")" == "0" && "$(stat -c %a "$env_file")" == "${PRIVATE_FILE_MODE#0}" ]] \
     || fail "Existing auto-update.env must be root-owned regular mode 0600"
   if cmp -s "$env_file" "$expected_env"; then
     :
   elif cmp -s "$env_file" "$legacy_env"; then
-    install -m 0600 "$expected_env" "$env_file.new"
+    install -m "$PRIVATE_FILE_MODE" "$expected_env" "$env_file.new"
     mv -f "$env_file.new" "$env_file"
   else
     fail "Existing auto-update.env differs; review settings and use the same --python path before retrying"
   fi
 else
-  install -m 0600 "$expected_env" "$env_file"
+  install -m "$PRIVATE_FILE_MODE" "$expected_env" "$env_file"
 fi
 
 drop_dir="/etc/systemd/system/$worker_unit.d"
-install -d -m 0755 "$drop_dir"
+install -d -m "$DIAGNOSTIC_DIR_MODE" "$drop_dir"
 drop_file="$drop_dir/50-lite-actions-ready.conf"
 printf '[Service]\nEnvironment="LITE_ACTIONS_READY_FILE=%s"\n' "$ready_file" > "$expected_drop"
-install_unchanged_or_new "$expected_drop" "$drop_file" 0644
+install_unchanged_or_new "$expected_drop" "$drop_file" "$DIAGNOSTIC_FILE_MODE"
 
 # Proxy support is opt-in. Without --proxy-env-file no proxy files are created.
 if [[ -n "$proxy_env_file" ]]; then

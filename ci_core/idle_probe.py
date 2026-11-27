@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 from ci_core.executor import _process_rows
+from ci_core.permissions import DIAGNOSTIC_DIR_MODE, DIAGNOSTIC_FILE_MODE
 from ci_core.resources import (
     PhysicalResourceCoordinator,
     resource_keys,
@@ -253,7 +254,9 @@ class IdleProbe:
         if self.report:
             self.report()
         if self.state_path:
-            self.state_path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+            self.state_path.parent.mkdir(
+                mode=DIAGNOSTIC_DIR_MODE, parents=True, exist_ok=True
+            )
             fd, name = tempfile.mkstemp(dir=self.state_path.parent)
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as file:
@@ -265,7 +268,7 @@ class IdleProbe:
                     file.flush()
                     os.fsync(file.fileno())
                 os.replace(name, self.state_path)
-                os.chmod(self.state_path, 0o644)
+                os.chmod(self.state_path, DIAGNOSTIC_FILE_MODE)
             finally:
                 Path(name).unlink(missing_ok=True)
 

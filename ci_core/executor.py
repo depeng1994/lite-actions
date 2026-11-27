@@ -27,6 +27,7 @@ from ci_core.contract import (
     trusted_repositories,
 )
 from ci_core.logs import metadata, select_remote
+from ci_core.permissions import DIAGNOSTIC_DIR_MODE, DIAGNOSTIC_FILE_MODE
 
 BASE = Path(__file__).resolve().parents[1]
 CHIP_PROCESS = re.compile(r"^\|\s*(\d+)\s*([01])\s*\|\s*(\d+)\s*\|")
@@ -991,11 +992,11 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
     cancel = run.get("_ci_cancel_event")
     log_dir = run.get("_ci_pipeline_folder") or task_dir(run, root)
     log_dir.mkdir(parents=True, exist_ok=True)
-    os.chmod(log_dir, 0o755)
+    os.chmod(log_dir, DIAGNOSTIC_DIR_MODE)
     logfile = log_dir / "pipeline.log"
     if cancel is not None and cancel.is_set():
         logfile.write_text("Cancelled before launch\n", encoding="utf-8")
-        os.chmod(logfile, 0o644)
+        os.chmod(logfile, DIAGNOSTIC_FILE_MODE)
         return Execution(130, ["Cancelled before launch"], logfile, True)
     environment = case["verified_env"]
     setup = environment["ASCEND_SET_ENV_PATH"]
@@ -1014,7 +1015,7 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
     run.get("_ci_runtime_callback", lambda value: None)(case)
     runtime_file = log_dir / "runtime-case.json"
     runtime_file.write_text(json.dumps(case) + "\n")
-    os.chmod(runtime_file, 0o644)
+    os.chmod(runtime_file, DIAGNOSTIC_FILE_MODE)
     command = [
         sys.executable,
         "-u",
@@ -1043,7 +1044,7 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
     child_started = False
     staged = False
     stream = logfile.open("w", encoding="utf-8")
-    os.chmod(logfile, 0o644)
+    os.chmod(logfile, DIAGNOSTIC_FILE_MODE)
     with stream:
         rc = 125
         try:

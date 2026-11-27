@@ -18,6 +18,7 @@ from ci_core.contract import configured_repos, is_valid_worker_id, parse_worker_
 from ci_core.egress_policy import Egress
 from ci_core.gitcode import GitCodeClient, MultiPlatformClient
 from ci_core.github import GitHubClient, MultiRepoGitHubClient, authorization
+from ci_core.permissions import PRIVATE_DIR_MODE, WORKER_UMASK
 from ci_core.resources import single_agent
 from ci_core.router import Router
 from ci_core.worker_activity import activity_lock, try_lock
@@ -41,14 +42,14 @@ def _write_sanitized_pools(pools_path: Path, hello: dict) -> None:
         "config_json": encoded,
         "sha256": hashlib.sha256(encoded.encode()).hexdigest(),
     }
-    pools_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    pools_path.parent.mkdir(parents=True, exist_ok=True, mode=PRIVATE_DIR_MODE)
     pools_path.write_text(
         json.dumps(doc, ensure_ascii=False, separators=(",", ":")), encoding="utf-8"
     )
 
 
 def main():
-    os.umask(0o022)
+    os.umask(WORKER_UMASK)
     p = argparse.ArgumentParser()
     p.add_argument("--worker-id", type=_worker_id_arg)
     p.add_argument("--broker-sock", default="")
@@ -73,7 +74,7 @@ def main():
         a.worker_id = hw_id
         os.environ["LITE_ACTIONS_BROKER_SOCK"] = broker_sock
         state_dir = os.environ.get("LITE_ACTIONS_STATE_DIR") or hello["state_dir"]
-        Path(state_dir).mkdir(parents=True, exist_ok=True, mode=0o700)
+        Path(state_dir).mkdir(parents=True, exist_ok=True, mode=PRIVATE_DIR_MODE)
         os.environ["LITE_ACTIONS_STATE_DIR"] = state_dir
         pools_path = Path(
             os.environ.get("LITE_ACTIONS_ACTIVE_POOLS_PATH")

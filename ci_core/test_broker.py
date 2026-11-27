@@ -31,6 +31,11 @@ from ci_core.contract import (
 from ci_core.egress_policy import Deferred
 from ci_core.executor import ExternalNpuOccupancy, execute
 from ci_core.gitcode import RunChanged
+from ci_core.permissions import (
+    BROKER_SOCKET_MODE,
+    DIAGNOSTIC_DIR_MODE,
+    PRIVATE_FILE_MODE,
+)
 from ci_core.plan import verify_definition
 from ci_core.registry import validate_case_environment
 from ci_core.reporting import case_passed, post, progress, report
@@ -496,11 +501,11 @@ class TestBrokerServer:
 
         self._server = _ThreadedUnixServer(str(self.socket_path), Handler)
         sock_mode = (
-            0o666
+            BROKER_SOCKET_MODE
             if self.allowed_unit
             and self.allowed_uid is None
             and self.allowed_user is None
-            else 0o600
+            else PRIVATE_FILE_MODE
         )
         os.chmod(self.socket_path, sock_mode)
         self._thread = threading.Thread(
@@ -1016,7 +1021,7 @@ class TestBrokerServer:
                         / "runs"
                         / hashlib.sha256(key.encode()).hexdigest()
                     )
-                    log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    log_dir.mkdir(parents=True, exist_ok=True, mode=DIAGNOSTIC_DIR_MODE)
                     subrun = {
                         **run,
                         "_ci_test_id": item["test_id"],
