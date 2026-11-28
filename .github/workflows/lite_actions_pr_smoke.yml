@@ -151,6 +151,10 @@ jobs:
           if [ -z "$pr_head_sha" ]; then
             reject_request "PR #$pr_number head SHA is missing"
           fi
+          # issue_comment and pull_request_review workflows execute from the
+          # default branch. The smoke must deploy and run the PR revision,
+          # otherwise a green deployment can test main instead of the PR.
+          run_head_sha="$pr_head_sha"
           if [ "$EVENT_NAME" = "issue_comment" ]; then
             comment_lc=$(printf '%s' "$COMMENT_AUTHOR" | tr '[:upper:]' '[:lower:]')
             author_lc=$(printf '%s' "$pr_author" | tr '[:upper:]' '[:lower:]')
