@@ -27,6 +27,14 @@ from ci_core.contract import (
     is_valid_worker_id,
     validate_lifecycle_payload,
 )
+from ci_core.permissions import (
+    DIAGNOSTIC_DIR_MODE,
+    DIAGNOSTIC_FILE_MODE,
+    EXECUTABLE_FILE_MODE,
+    EXECUTE_BITS,
+    PRIVATE_DIR_MODE,
+    TRAVERSE_DIR_MODE,
+)
 from ci_core.resources import (
     PhysicalResourceCoordinator,
     UnverifiedRemoteRevoke,
@@ -155,7 +163,11 @@ def _safe_extract_tar_gz(archive_path: Path, dest_dir: Path) -> None:
                 if src is not None:
                     with src, target.open("wb") as out:
                         shutil.copyfileobj(src, out)
-                    mode = 0o755 if (member.mode & 0o111) else 0o644
+                    mode = (
+                        EXECUTABLE_FILE_MODE
+                        if (member.mode & EXECUTE_BITS)
+                        else DIAGNOSTIC_FILE_MODE
+                    )
                     os.chmod(target, mode)
 
 
@@ -210,7 +222,7 @@ def build_systemd_command(
                 "-p",
                 f"StateDirectory={state_dir_name}",
                 "-p",
-                "StateDirectoryMode=0700",
+                f"StateDirectoryMode={PRIVATE_DIR_MODE:04o}",
             ]
         )
     else:
@@ -369,6 +381,7 @@ class TestSupervisor:
                 tmp.flush()
                 os.fsync(tmp.fileno())
                 temp.replace(self.ledger_path)
+                os.chmod(self.ledger_path, DIAGNOSTIC_FILE_MODE)
                 dfd = os.open(self.state_dir, os.O_RDONLY)
                 try:
                     os.fsync(dfd)
@@ -578,17 +591,17 @@ class TestSupervisor:
         for path in code_dir.rglob("*"):
             try:
                 if path.is_dir():
-                    os.chmod(path, 0o755)
+                    os.chmod(path, DIAGNOSTIC_DIR_MODE)
                 elif os.access(path, os.X_OK):
-                    os.chmod(path, 0o755)
+                    os.chmod(path, EXECUTABLE_FILE_MODE)
                 else:
-                    os.chmod(path, 0o644)
+                    os.chmod(path, DIAGNOSTIC_FILE_MODE)
             except OSError:
                 pass
         runner_script = code_dir / "scripts/run_test_worker.sh"
         if runner_script.exists():
-            os.chmod(runner_script, 0o755)
-        os.chmod(code_dir, 0o755)
+            os.chmod(runner_script, EXECUTABLE_FILE_MODE)
+        os.chmod(code_dir, DIAGNOSTIC_DIR_MODE)
 
     def _default_launch_systemd(
         self,
@@ -911,12 +924,12 @@ class TestSupervisor:
 
             try:
                 self.worktree_root.mkdir(parents=True, exist_ok=True)
-                os.chmod(self.worktree_root, 0o711)
+                os.chmod(self.worktree_root, TRAVERSE_DIR_MODE)
                 instance_root.mkdir(parents=True, exist_ok=True)
-                os.chmod(instance_root, 0o711)
+                os.chmod(instance_root, TRAVERSE_DIR_MODE)
                 if self._launcher is not None:
                     state_dir.mkdir(parents=True, exist_ok=True)
-                    os.chmod(state_dir, 0o700)
+                    os.chmod(state_dir, PRIVATE_DIR_MODE)
                 else:
                     if unit_state_dir.is_symlink():
                         unit_state_dir.unlink(missing_ok=True)
@@ -925,12 +938,12 @@ class TestSupervisor:
                     shutil.rmtree(state_dir, ignore_errors=True)
                 self.runtime_root.mkdir(parents=True, exist_ok=True)
                 try:
-                    os.chmod(self.runtime_root, 0o711)
+                    os.chmod(self.runtime_root, TRAVERSE_DIR_MODE)
                 except OSError:
                     pass
                 sock_dir.mkdir(parents=True, exist_ok=True)
                 try:
-                    os.chmod(sock_dir, 0o711)
+                    os.chmod(sock_dir, TRAVERSE_DIR_MODE)
                 except OSError:
                     pass
 

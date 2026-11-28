@@ -37,6 +37,7 @@ from auto_update.version_switch import (
     validate_unit,
     wait_ready,
 )
+from ci_core.permissions import PRIVATE_DIR_MODE, PRIVATE_FILE_MODE
 from ci_core.worker_activity import activity_lock, try_lock
 
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
@@ -122,8 +123,8 @@ class Settings:
 
 @contextmanager
 def exclusive(path: Path):
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    path.parent.mkdir(mode=PRIVATE_DIR_MODE, parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, PRIVATE_FILE_MODE)
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise UpdateError("invalid_update_lock")
@@ -137,13 +138,13 @@ def exclusive(path: Path):
 
 
 def _atomic_json(path: Path, value: dict) -> None:
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.parent.mkdir(mode=PRIVATE_DIR_MODE, parents=True, exist_ok=True)
     if path.is_symlink():
         raise UpdateError("state_path_is_symlink")
     fd, temp = tempfile.mkstemp(prefix=".update-", dir=path.parent)
     try:
         with os.fdopen(fd, "w") as f:
-            os.fchmod(f.fileno(), 0o600)
+            os.fchmod(f.fileno(), PRIVATE_FILE_MODE)
             json.dump(value, f, indent=2, sort_keys=True)
             f.write("\n")
             f.flush()

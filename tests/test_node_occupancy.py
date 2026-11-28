@@ -133,7 +133,7 @@ class NodeOccupancyTests(unittest.TestCase):
         with (
             patch(
                 "ci_core.config.execution_node",
-                side_effect=lambda node, _: {"ssh": node["ssh"] + "/fixture"},
+                side_effect=lambda node, _, **kwargs: {"ssh": node["ssh"] + "/fixture"},
             ),
             patch("ci_core.transport.run", side_effect=transport),
         ):

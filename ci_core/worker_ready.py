@@ -10,6 +10,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from ci_core.permissions import DIAGNOSTIC_DIR_MODE, DIAGNOSTIC_FILE_MODE
+
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 
 
@@ -53,17 +55,18 @@ def publish_ready(
         "ready_at": time.time(),
     }
     destination = Path(destination)
-    destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    destination.parent.mkdir(mode=DIAGNOSTIC_DIR_MODE, parents=True, exist_ok=True)
     if destination.is_symlink():
         raise ValueError("Ready path must not be a symlink")
     fd, name = tempfile.mkstemp(prefix=".ready-", dir=destination.parent)
     try:
         with os.fdopen(fd, "w") as f:
-            os.fchmod(f.fileno(), 0o600)
+            os.fchmod(f.fileno(), DIAGNOSTIC_FILE_MODE)
             json.dump(value, f, sort_keys=True)
             f.flush()
             os.fsync(f.fileno())
         os.replace(name, destination)
+        os.chmod(destination, DIAGNOSTIC_FILE_MODE)
         parent = os.open(destination.parent, os.O_DIRECTORY)
         try:
             os.fsync(parent)

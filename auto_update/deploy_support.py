@@ -15,6 +15,13 @@ import sys
 import tempfile
 from pathlib import Path
 
+from ci_core.permissions import (
+    DIAGNOSTIC_DIR_MODE,
+    DIAGNOSTIC_FILE_MODE,
+    PRIVATE_DIR_MODE,
+    PRIVATE_FILE_MODE,
+)
+
 PROXY_ENV_ALLOWLIST = (
     "http_proxy",
     "https_proxy",
@@ -97,7 +104,7 @@ def read_proxy_env_file(path: str | Path, *, expected_uid: int = 0) -> dict[str,
         )
     if info.st_uid != expected_uid:
         raise DeploySupportError("Proxy environment file must be owned by root")
-    if stat.S_IMODE(info.st_mode) != 0o600:
+    if stat.S_IMODE(info.st_mode) != PRIVATE_FILE_MODE:
         raise DeploySupportError(
             "Proxy environment file must have mode 0600 (chmod 0600 FILE)"
         )
@@ -197,7 +204,7 @@ def _check_existing_file(
 
 
 def _create_exclusive(path: Path, content: bytes, mode: int) -> None:
-    path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    path.parent.mkdir(mode=DIAGNOSTIC_DIR_MODE, parents=True, exist_ok=True)
     fd = os.open(
         str(path),
         os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
@@ -239,12 +246,16 @@ def install_managed_proxy_files(
     dropin = Path(dropin_file)
     managed_bytes = render_systemd_environment(values).encode("utf-8")
     dropin_bytes = _DROPIN_CONTENT.encode("utf-8")
-    managed_exists = _check_existing_file(managed, managed_bytes, 0o600, expected_uid)
-    dropin_exists = _check_existing_file(dropin, dropin_bytes, 0o644, expected_uid)
+    managed_exists = _check_existing_file(
+        managed, managed_bytes, PRIVATE_FILE_MODE, expected_uid
+    )
+    dropin_exists = _check_existing_file(
+        dropin, dropin_bytes, DIAGNOSTIC_FILE_MODE, expected_uid
+    )
     if not managed_exists:
-        _create_exclusive(managed, managed_bytes, 0o600)
+        _create_exclusive(managed, managed_bytes, PRIVATE_FILE_MODE)
     if not dropin_exists:
-        _create_exclusive(dropin, dropin_bytes, 0o644)
+        _create_exclusive(dropin, dropin_bytes, DIAGNOSTIC_FILE_MODE)
     return (not managed_exists, not dropin_exists)
 
 
@@ -277,13 +288,13 @@ def clone_seed(source_root: str | Path, seed: str | Path, sha: str) -> None:
         raise DeploySupportError("Seed already exists; refusing to overwrite it")
     if not source.is_dir() or not (source / ".git").exists():
         raise DeploySupportError("Source must be a Git working tree with .git metadata")
-    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    target.parent.mkdir(mode=PRIVATE_DIR_MODE, parents=True, exist_ok=True)
     fd, config_name = tempfile.mkstemp(
         prefix="lite-actions-safe-git-", suffix=".config"
     )
     config = Path(config_name)
     try:
-        os.fchmod(fd, 0o600)
+        os.fchmod(fd, PRIVATE_FILE_MODE)
         safe_entries = []
         for directory in (source, source / ".git", target, target / ".git"):
             escaped = str(directory).replace("\\", "\\\\").replace('"', '\\"')

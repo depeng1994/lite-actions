@@ -13,6 +13,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from ci_core.contract import (
     trusted_repositories,
 )
 from ci_core.logs import metadata, select_remote
+from ci_core.permissions import DIAGNOSTIC_DIR_MODE, DIAGNOSTIC_FILE_MODE
 
 BASE = Path(__file__).resolve().parents[1]
 CHIP_PROCESS = re.compile(r"^\|\s*(\d+)\s*([01])\s*\|\s*(\d+)\s*\|")
@@ -663,6 +665,20 @@ def _bound_host_command(pid, devices, fingerprint, indexing, coverage_devices):
     )
 
 
+def _container_event_sink(evidence):
+    """Publish complete lines even when multi-node preparation runs concurrently."""
+    if evidence is None:
+        return None
+    lock = threading.Lock()
+
+    def record(message):
+        with lock:
+            evidence.write(message + "\n")
+            evidence.flush()
+
+    return record
+
+
 def remote_preflight(
     case: dict,
     pools: dict,
@@ -671,6 +687,7 @@ def remote_preflight(
     evidence=None,
     cleanup: bool = False,
     cancel=None,
+    start_containers: bool = False,
 ) -> None:
     """Check all selected nodes before applying their occupancy policies."""
     if not case.get("allocation"):
@@ -699,6 +716,7 @@ def remote_preflight(
     if ascend_env:
         command = "source " + shlex.quote(ascend_env) + " >/dev/null 2>&1 && " + command
     targets = []
+    on_container_event = _container_event_sink(evidence)
     for request in case["allocation"]:
         check_cancel()
         node = by_host[request["host_id"]]
@@ -733,7 +751,12 @@ def remote_preflight(
             if not isinstance(kill_host, str) or not kill_host or "/" in kill_host:
                 raise ValueError("NPU reclaim requires a host-only SSH alias")
         if case.get("docker"):
-            probe_host = execution_node(node, case["docker"])["ssh"]
+            probe_host = execution_node(
+                node,
+                case["docker"],
+                start_if_stopped=start_containers and not cleanup,
+                on_event=on_container_event,
+            )["ssh"]
         # Explicit preemption is bound to the execution host and its PID table.
         if host_pids:
             probe_host = kill_host
@@ -907,7 +930,7 @@ def remote_preflight(
             wait_if_busy(target, inspect(target, 0, "recheck"))
 
 
-def check_a5_multinode_rootinfo(case: dict, pools: dict) -> None:
+def check_a5_multinode_rootinfo(case: dict, pools: dict, *, evidence=None) -> None:
     """Fail before any NPU reclaim/launch if any multi-node A5 rootinfo is broken."""
     if len(case.get("allocation", [])) <= 1:
         return
@@ -927,14 +950,18 @@ def check_a5_multinode_rootinfo(case: dict, pools: dict) -> None:
         "f'rank_count expected 8, got {n!r}'"
     )
 
+    on_container_event = _container_event_sink(evidence)
+
     def _check_one(allocated: dict) -> str | None:
         host_id = allocated["host_id"]
         node = nodes[host_id]
         binding = node.get("environments", {}).get(case.get("docker"), {})
         container_id = binding.get("container_id", "UNBOUND")
+        # Container preparation failures must not be misreported as bad rootinfo.
+        bound = execution_node(
+            node, case["docker"], start_if_stopped=True, on_event=on_container_event
+        )
         try:
-            # execution_node validates the pinned container and tag first.
-            bound = execution_node(node, case["docker"])
             proc = ssh_run(
                 bound["ssh"],
                 "python3 -c " + shlex.quote(checker),
@@ -991,9 +1018,11 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
     cancel = run.get("_ci_cancel_event")
     log_dir = run.get("_ci_pipeline_folder") or task_dir(run, root)
     log_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(log_dir, DIAGNOSTIC_DIR_MODE)
     logfile = log_dir / "pipeline.log"
     if cancel is not None and cancel.is_set():
         logfile.write_text("Cancelled before launch\n", encoding="utf-8")
+        os.chmod(logfile, DIAGNOSTIC_FILE_MODE)
         return Execution(130, ["Cancelled before launch"], logfile, True)
     environment = case["verified_env"]
     setup = environment["ASCEND_SET_ENV_PATH"]
@@ -1012,6 +1041,7 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
     run.get("_ci_runtime_callback", lambda value: None)(case)
     runtime_file = log_dir / "runtime-case.json"
     runtime_file.write_text(json.dumps(case) + "\n")
+    os.chmod(runtime_file, DIAGNOSTIC_FILE_MODE)
     command = [
         sys.executable,
         "-u",
@@ -1039,15 +1069,22 @@ def execute(case: dict, run: dict, *, root: Path = BASE) -> Execution:
     reclaim_started = False
     child_started = False
     staged = False
-    with logfile.open("w", encoding="utf-8") as stream:
+    stream = logfile.open("w", encoding="utf-8")
+    os.chmod(logfile, DIAGNOSTIC_FILE_MODE)
+    with stream:
         rc = 125
         try:
             if cancel is not None and cancel.is_set():
                 raise InterruptedError("cancelled before launch")
-            check_a5_multinode_rootinfo(case, pools)
+            check_a5_multinode_rootinfo(case, pools, evidence=stream)
             reclaim_started = True
             remote_preflight(
-                case, pools, ascend_env=setup, evidence=stream, cancel=cancel
+                case,
+                pools,
+                ascend_env=setup,
+                evidence=stream,
+                cancel=cancel,
+                start_containers=True,
             )
             if cancel is not None and cancel.is_set():
                 raise InterruptedError("cancelled before launch")

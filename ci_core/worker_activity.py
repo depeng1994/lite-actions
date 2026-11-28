@@ -3,12 +3,14 @@
 import fcntl
 from contextlib import contextmanager
 
+from ci_core.permissions import DIAGNOSTIC_DIR_MODE
+
 
 @contextmanager
 def activity_lock(ready_file, *, create=False):
     path = ready_file.with_name(ready_file.name + ".activity.lock")
     if create:
-        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path.parent.mkdir(mode=DIAGNOSTIC_DIR_MODE, parents=True, exist_ok=True)
     try:
         stream = path.open("ab" if create else "rb")
     except FileNotFoundError:

@@ -15,6 +15,7 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor
 
 from ci_core.contract import REPO, trusted_repositories
+from ci_core.permissions import PRIVATE_DIR_MODE
 
 API = f"https://api.github.com/repos/{REPO}"
 
@@ -377,7 +378,7 @@ class ReleaseLogs:
         self.opener = opener or urllib.request.build_opener(NoRedirect())
         self.clock = clock or time.time
         self.receipts = Path(cfg["state_dir"]) / "release-receipts"
-        self.receipts.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.receipts.mkdir(mode=PRIVATE_DIR_MODE, parents=True, exist_ok=True)
         self.api = f"https://api.github.com/repos/{self.repo}"
 
     def api_call(self, method, path, *, data=None):

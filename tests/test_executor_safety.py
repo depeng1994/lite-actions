@@ -75,6 +75,163 @@ class ExecutorSafetyTests(unittest.TestCase):
         stack.enter_context(patch("ci_core.executor.time.sleep"))
         return stack, mocks
 
+    def test_stopped_bound_container_starts_before_case_launch(self):
+        import json
+
+        from ci_core.config import execution_node
+        from tests.test_node_occupancy import EMPTY
+
+        container = "a" * 64
+        expected_image = "sha256:" + "b" * 64
+        wrong_image = "sha256:" + "c" * 64
+        for initial, actual_image, tag_image, start_result, error in (
+            (False, expected_image, expected_image, "running", None),
+            (True, expected_image, expected_image, "running", None),
+            (False, wrong_image, expected_image, "running", "CONTAINER_IMAGE_MISMATCH"),
+            (False, expected_image, wrong_image, "running", "IMAGE_TAG_CHANGED"),
+            (False, expected_image, expected_image, "error", "CONTAINER_START_FAILED"),
+            (
+                False,
+                expected_image,
+                expected_image,
+                "exited",
+                "CONTAINER_NOT_RUNNING_AFTER_START",
+            ),
+        ):
+            with self.subTest(
+                running=initial,
+                image_matches=actual_image == expected_image,
+                tag_matches=tag_image == expected_image,
+                start_result=start_result,
+            ):
+                running = initial
+                calls = []
+
+                def config_run(host, command, **kwargs):
+                    nonlocal running
+                    if command.startswith("docker inspect "):
+                        calls.append("inspect")
+                        return SimpleNamespace(
+                            stdout=json.dumps(
+                                {
+                                    "Name": "/fixture-ci",
+                                    "Id": container,
+                                    "Image": actual_image,
+                                    "State": {
+                                        "Running": running,
+                                        "Status": "running" if running else "exited",
+                                    },
+                                }
+                            )
+                        )
+                    if command.startswith("docker image inspect "):
+                        calls.append("tag")
+                        return SimpleNamespace(stdout=tag_image)
+                    if command == "docker start " + container:
+                        calls.append("start")
+                        if start_result == "error":
+                            raise RuntimeError("SSH operation failed: exit=1")
+                        running = start_result == "running"
+                        return SimpleNamespace(stdout=container)
+                    if command == "id -u":
+                        self.assertTrue(running)
+                        calls.append("exec")
+                        return SimpleNamespace(stdout="0")
+                    raise AssertionError(command)
+
+                def occupancy(host, command, **kwargs):
+                    self.assertTrue(running)
+                    calls.append("occupancy")
+                    return SimpleNamespace(returncode=0, stdout=EMPTY)
+
+                def launch(*args, **kwargs):
+                    self.assertTrue(running)
+                    calls.append("launch")
+                    kwargs["stdout"].write("CASE_RESULT smoke PASS 0\n")
+                    return Mock(poll=Mock(return_value=0), returncode=0)
+
+                stack, mocks = self.boundaries(stub_preflight=False)
+                with stack:
+                    stack.enter_context(
+                        patch("ci_core.config.execution_node", wraps=execution_node)
+                    )
+                    stack.enter_context(
+                        patch("ci_core.config.run", side_effect=config_run)
+                    )
+                    stack.enter_context(
+                        patch("ci_core.transport.run", side_effect=occupancy)
+                    )
+                    mocks.launch.side_effect = launch
+                    result = execute(self.case, self.run, root=self.root)
+                log = result.log.read_text()
+                if error is None:
+                    self.assertEqual(result.exit_code, 0)
+                    self.assertTrue(result.release_verified)
+                    self.assertEqual(calls.count("start"), int(not initial))
+                    self.assertLess(calls.index("occupancy"), calls.index("launch"))
+                    self.assertIn("CONTAINER_READY", log)
+                    if not initial:
+                        self.assertLess(calls.index("start"), calls.index("occupancy"))
+                        self.assertIn("CONTAINER_START host=", log)
+                        self.assertIn("CONTAINER_START_OK host=", log)
+                    else:
+                        self.assertNotIn("CONTAINER_START host=", log)
+                else:
+                    self.assertEqual(result.exit_code, 125)
+                    mocks.launch.assert_not_called()
+                    self.assertNotIn("occupancy", calls)
+                    self.assertEqual(
+                        calls.count("start"),
+                        int(
+                            actual_image == expected_image
+                            and tag_image == expected_image
+                        ),
+                    )
+                    self.assertIn("192.0.2.10:22", log)
+                    self.assertIn("/fixture-ci", log)
+                    self.assertIn("status=exited", log)
+                    self.assertIn(error, log)
+
+    def test_stopped_container_is_not_started_by_read_only_resolution(self):
+        import json
+
+        from ci_core.config import execution_node
+
+        node = {
+            "host_id": "node-154",
+            "ssh": "node-154",
+            "environments": {
+                "training": {
+                    "container_id": "a" * 64,
+                    "image_id": "sha256:" + "b" * 64,
+                    "image_ref": "fixture:tag",
+                }
+            },
+        }
+
+        def transport(host, command, **kwargs):
+            if command.startswith("docker inspect "):
+                return SimpleNamespace(
+                    stdout=json.dumps(
+                        {
+                            "Name": "/fixture-ci",
+                            "Id": "a" * 64,
+                            "Image": "sha256:" + "b" * 64,
+                            "State": {"Running": False, "Status": "exited"},
+                        }
+                    )
+                )
+            if command.startswith("docker image inspect "):
+                return SimpleNamespace(stdout="sha256:" + "b" * 64)
+            raise AssertionError(f"unexpected mutation: {command}")
+
+        with patch("ci_core.config.run", side_effect=transport):
+            with self.assertRaisesRegex(
+                ValueError,
+                r"CONTAINER_NOT_RUNNING.*node-154.*fixture-ci.*status=exited",
+            ):
+                execution_node(node, "training")
+
     def test_cancel_during_preparation_never_starts_child(self):
         for stage in ("before", "broadcast"):
             with self.subTest(stage=stage):

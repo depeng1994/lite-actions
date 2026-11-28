@@ -20,6 +20,7 @@ from auto_update.deploy_support import (
     render_systemd_environment,
     validate_python_interpreter,
 )
+from ci_core.permissions import DIAGNOSTIC_FILE_MODE, PRIVATE_FILE_MODE
 
 
 @dataclass
@@ -35,7 +36,7 @@ def _run_git(root: Path, args: list[str], extra_safe: tuple[Path, ...] = ()) -> 
     fd, name = tempfile.mkstemp(prefix="lite-actions-preflight-git-")
     config = Path(name)
     try:
-        os.fchmod(fd, 0o600)
+        os.fchmod(fd, PRIVATE_FILE_MODE)
         rows = []
         for path in safe:
             escaped = str(path.resolve()).replace("\\", "\\\\").replace('"', '\\"')
@@ -382,10 +383,12 @@ def run_preflight(
             _check_existing_file(
                 managed,
                 render_systemd_environment(proxy_values).encode(),
-                0o600,
+                PRIVATE_FILE_MODE,
                 0,
             )
-            _check_existing_file(dropin, _DROPIN_CONTENT.encode(), 0o644, 0)
+            _check_existing_file(
+                dropin, _DROPIN_CONTENT.encode(), DIAGNOSTIC_FILE_MODE, 0
+            )
             checks.append(
                 Check(
                     "proxy integration",

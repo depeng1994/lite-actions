@@ -24,6 +24,7 @@ from ci_core.egress_policy import (
     control_proxy,
     estimate_http1_request_bytes,
 )
+from ci_core.permissions import DIAGNOSTIC_DIR_MODE, DIAGNOSTIC_FILE_MODE
 
 TARGET_BYTES = 1880
 RESPONSE_LIMIT = 1024 * 1024
@@ -41,7 +42,7 @@ def _encode(value):
 
 def write_json(path, value):
     """Publish one durable document. A reader sees either complete generation."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(mode=DIAGNOSTIC_DIR_MODE, parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as file:
         temp = Path(file.name)
         try:
@@ -49,6 +50,7 @@ def write_json(path, value):
             file.flush()
             os.fsync(file.fileno())
             temp.replace(path)
+            os.chmod(path, DIAGNOSTIC_FILE_MODE)
             handle = os.open(path.parent, os.O_RDONLY)
             try:
                 os.fsync(handle)
